@@ -122,11 +122,16 @@ try:
 
     print("== delete old upstream ==")
     state.delete_status = 404
+    state.delete_error = "404 page not found"
     status, body = call("POST", "/codearts/accounts/delete", {"uid": "u1"},
                         token=token)
-    check("delete 404 -> 409", status == 409, (status, body))
+    check("delete route 404 -> 409", status == 409, (status, body))
     check("delete 409 message", "版本过旧" in json.dumps(body, ensure_ascii=False),
           body)
+    state.delete_error = "account not found"
+    status, body = call("POST", "/codearts/accounts/delete", {"uid": "nope"},
+                        token=token)
+    check("delete missing account -> 404", status == 404, (status, body))
     state.delete_status = 200
 
     print("== settings ==")
@@ -144,6 +149,13 @@ try:
           body)
     check("settings save ttl", body["codearts"].get("models_ttl_seconds") == 30,
           body)
+
+    status, body = call("POST", "/realm", {"realm": "codearts"}, token=token)
+    check("realm switch to codearts", status == 200 and
+          body.get("current") == "codearts", (status, body))
+    status, body = call("POST", "/realm", {"realm": "intl"}, token=token)
+    check("realm switch back to intl", status == 200 and
+          body.get("current") == "intl", (status, body))
 
     wb_proxy.CURRENT_REALM = "codearts"
     status, body = call("POST", "/settings/save", {

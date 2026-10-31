@@ -61,6 +61,7 @@ class FakeState(object):
                                "next_url": "https://example.test/next",
                                "message": "回调已接收"}
         self.delete_status = 200
+        self.delete_error = "account not found"
         self.delete_body = {"ok": True, "deleted": True, "message": "已删除 u1"}
 
     def reset_requests(self):
@@ -184,7 +185,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/admin/api/accounts/delete":
             if self.state.delete_status != 200:
                 self._send_json(self.state.delete_status,
-                                {"ok": False, "message": "account not found"})
+                                {"ok": False, "message": self.state.delete_error})
                 return
             self._send_json(200, self.state.delete_body)
             return

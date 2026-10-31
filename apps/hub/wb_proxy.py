@@ -21070,6 +21070,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _codearts_admin_error(self, exc):
         if isinstance(exc, wb_codearts.CodeArtsNotFound):
+            message = str(exc)
+            if "account not found" in message.lower():
+                return self._error(404, message, "invalid_request_error")
             return self._error(
                 409, "codearts2api 版本过旧，没有删除账号接口；请升级 apps/codearts 后重建容器。",
                 "invalid_request_error")
@@ -21144,6 +21147,9 @@ class Handler(BaseHTTPRequestHandler):
         """Account-management endpoints (dashboard uses these)."""
         if path.startswith("/codearts"):
             return self._handle_codearts(path, payload)
+        if path == "/realm":
+            # 默认出口切换不依赖账号池：池子不可用时仍然要能把出口改回来。
+            return self._route_realm(payload)
         if POOL is None:
             return self._error(503, "account pool unavailable")
         if path == "/accounts/import" and isinstance(payload, list):
@@ -21172,8 +21178,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_pricing_refresh(payload)
         if path == "/logs/clear":
             return self._route_logs_clear(payload)
-        if path == "/realm":
-            return self._route_realm(payload)
         if path == "/accounts/checkin":
             return self._route_accounts_checkin(payload)
         if path == "/accounts/daily-chat":
@@ -21605,8 +21609,14 @@ class Handler(BaseHTTPRequestHandler):
                                     "panel session, not an API key",
                                "invalid_request_error")
         new_realm = payload.get("realm")
-        if new_realm in ("intl", "cn"):
-            save_persisted_realm(new_realm)
+        if new_realm not in ("intl", "cn", "codearts"):
+            return self._error(400, "realm must be intl, cn or codearts",
+                               "invalid_request_error")
+        if new_realm == "codearts" and not _realm_selectable("codearts"):
+            return self._error(
+                400, "codearts realm is not configured; enable it in settings first",
+                "invalid_request_error")
+        save_persisted_realm(new_realm)
         return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
 
     def _route_accounts_checkin(self, payload):
