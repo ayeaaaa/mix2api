@@ -388,3 +388,127 @@ def invalidate_models():
     with _models_lock:
         _models_cache.clear()
         _models_stale.clear()
+
+
+def _valid_chat_id(value):
+    """codearts2api 的 validChatID：32 位 hex。"""
+    text = str(value or "").strip()
+    if len(text) != 32:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in text)
+
+
+def _derive_chat_id(session_key):
+    """把 wb-hub 的会话键稳定映射成 32hex。
+
+    同一段对话在 wb-hub 侧会拿到同一个 session_key；映射后 codearts2api 的
+    conversation_id 也稳定，多轮会粘在同一个 CodeArts 账号上。
+    """
+    if not session_key:
+        return ""
+    return hashlib.sha256(str(session_key).encode("utf-8")).hexdigest()[:32]
+
+
+#: 这些字段是 wb-hub / OpenAI 客户端私有或 CodeArts 不消费的，转发前删掉。
+_DROP_FIELDS = frozenset((
+    "user", "metadata", "store", "previous_response_id", "prompt_cache_key",
+    "n", "logprobs", "top_logprobs", "stream", "stream_options",
+))
+
+
+def build_chat_body(payload, session_key=None):
+    """把客户端的 Chat Completions 载荷收敛成 CodeArts 能吃的标准 OpenAI 体。
+
+    和 WorkBuddy 的 build_upstream_body 刻意不同：
+      - 不注入 wb-hub 的 SYSTEM_PROMPT（CodeArts 有自己的上游提示）；
+      - 不做 DeepSeek 的 reasoning_content 回填（CodeArts 不要求）；
+      - 始终 stream=true + include_usage，回程由 wb-hub 聚合或透传。
+
+    工具配对的修复复用 wb_proxy 里的三个纯函数；局部导入是为了避开
+    wb_proxy ↔ wb_codearts 的模块级循环。
+    """
+    if not isinstance(payload, dict):
+        raise CodeArtsBadRequest("request body must be a JSON object")
+    from wb_proxy import (cleanup_orphan_tool_calls, merge_adjacent_tool_calls,
+                          normalize_roles, repack_tool_result_blocks)
+    body = {}
+    for key, value in payload.items():
+        name = str(key)
+        if name.startswith("_") or name in _DROP_FIELDS:
+            continue
+        body[name] = value
+    body["model"] = str(payload.get("model") or "glm-5.2")
+    messages = normalize_roles(payload.get("messages") or [])
+    messages = [m for m in messages if isinstance(m, dict)]
+    messages, _ = merge_adjacent_tool_calls(messages)
+    messages, _ = repack_tool_result_blocks(messages)
+    messages, _ = cleanup_orphan_tool_calls(messages)
+    if not messages:
+        raise CodeArtsBadRequest("messages is empty")
+    body["messages"] = messages
+    body["stream"] = True
+    body["stream_options"] = {"include_usage": True}
+    conversation = payload.get("conversation_id")
+    if not _valid_chat_id(conversation):
+        conversation = _derive_chat_id(session_key)
+    if conversation:
+        body["conversation_id"] = conversation
+    else:
+        body.pop("conversation_id", None)
+    return body
+
+
+class CodeArtsAccount(object):
+    """回程处理器需要的最小账号表面。
+
+    `_chat_stream_response` / `_responses_*` / `_messages_*` 只读 uid、realm、
+    chat_base_url()、proxy；这里全部给常量，不参与 WorkBuddy 的账号池、
+    设备指纹、积分或熔断。
+    """
+
+    uid = "codearts"
+    realm = "codearts"
+    product = "codearts"
+    proxy = None
+    nickname = "CodeArts"
+    chat_path = "/v1/chat/completions"
+
+    def __init__(self, config=None):
+        self.config = dict(config or {})
+        self.base_url = str(self.config.get("base_url") or "")
+
+    def chat_base_url(self):
+        return self.base_url
+
+    def model_disabled(self, mid):
+        return False
+
+    def is_cli_identity(self):
+        return False
+
+
+def open_chat(config, body, timeout=None):
+    """POST 到 codearts2api 的 chat 端点，返回 SSE 响应对象。
+
+    始终请求 stream=true：wb-hub 的非流式回程也会用 aggregate_stream 聚合，
+    这样一套解析路径同时服务流式和非流式客户端。
+    """
+    if not configured_config(config):
+        raise CodeArtsUnavailable(
+            "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。")
+    timeout = timeout or config.get("stream_timeout_seconds") \
+        or DEFAULTS["stream_timeout_seconds"]
+    resp = _request(config, "POST", "/v1/chat/completions", payload=body,
+                    timeout=timeout, stream=True)
+    try:
+        resp._wb_billed_model = body.get("model")
+    except Exception:
+        pass
+    return resp
+
+
+def configured_config(config):
+    """已经加载好的配置是否可用（不读盘）。"""
+    return bool(config and config.get("base_url") and config.get("api_key")
+                and config.get("enabled"))
+
