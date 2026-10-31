@@ -117,6 +117,13 @@ REASONING_EFFORTS = {
     "deepseek-v4.1-flash": ["none", "low", "medium", "high", "xhigh", "max"],
     "deepseek-v4.1-flash-1017": ["none", "low", "medium", "high",
                                  "xhigh", "max"],
+    # Verified from the upstream validation message for the GLM backend.
+    "glm-5.2": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    "glm-5.2-sft-harmony": ["none", "minimal", "low", "medium", "high",
+                            "xhigh", "max"],
+    "glm-5.3": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    # Always-thinking model: upstream explicitly says only low/high/max.
+    "glm-5.3-flash": ["low", "high", "max"],
 }
 
 
@@ -1369,6 +1376,9 @@ def model_entries(config):
             entry["reasoning_efforts"] = list(efforts)
             entry["supports_reasoning"] = True
             entry["capabilities"]["reasoning"] = True
+        if str(item["id"]).lower() == "glm-5.3-flash":
+            entry["reasoning_can_disable"] = False
+            entry["always_reasoning"] = True
         if item.get("desc"):
             entry["description"] = item["desc"]
         if item.get("model_category"):

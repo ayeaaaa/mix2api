@@ -96,6 +96,7 @@ try:
     check("ids", set(ids) == {"YYLS/GLM-5.2", "YYLS/GLM-4.7",
                               "YYLS/Qwen3-VL-235B",
                               "YYLS/deepseek-v4.1-flash",
+                              "YYLS/glm-5.3-flash",
                               "YYLS/deepseek-v4-pro-0813"}, ids)
     check("owned_by", payload["data"][0]["owned_by"] == "codearts")
     check("provider", payload["data"][0]["provider"] == "codearts")
@@ -123,6 +124,16 @@ try:
           .get("reasoning_efforts") == ["none", "low", "medium", "high",
                                         "xhigh", "max"],
           by_id.get("YYLS/deepseek-v4.1-flash"))
+    check("glm reasoning efforts",
+          (by_id.get("YYLS/GLM-5.2") or {}).get("reasoning_efforts")
+          == ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+          by_id.get("YYLS/GLM-5.2"))
+    check("glm flash reasoning efforts",
+          (by_id.get("YYLS/glm-5.3-flash") or {}).get("reasoning_efforts")
+          == ["low", "high", "max"]
+          and (by_id.get("YYLS/glm-5.3-flash") or {})
+          .get("reasoning_can_disable") is False,
+          by_id.get("YYLS/glm-5.3-flash"))
     check("catalog source", payload["catalog"]["source"] == "codearts")
     check("benefit flag", any(m.get("benefit") for m in payload["data"]
                               if m["id"] == "YYLS/deepseek-v4-pro-0813"), payload)
@@ -137,7 +148,8 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("filtered status", status == 200, (status, payload))
     check("filtered ids", [m["id"] for m in payload["data"]] ==
-          ["YYLS/GLM-5.2", "YYLS/GLM-4.7"], payload)
+          ["YYLS/GLM-5.2", "YYLS/GLM-4.7", "YYLS/glm-5.3-flash"],
+          payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
     wb_settings.set_api_keys(ACCOUNTS, [
         {"key": "hub-key-1234", "name": "test", "realm": "codearts"},

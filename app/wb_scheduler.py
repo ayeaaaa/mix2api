@@ -112,6 +112,9 @@ class Scheduler:
         # 被放弃的工作线程（卡在网络上、到点不再等它）。它们通常几十秒内自己结束，
         # 但「上游一直滴数据」这种病态情况会拖很久——留个上限，别让线程无限堆。
         self._daily_chat_abandoned = []
+        # CodeArts 独立 30 分钟保活巡检：WorkBuddy 的 keepalive_hours 是每天
+        # 22:00 一次，对华为 token 来说太稀；这里只刷新快过期的账号。
+        self._last_codearts_keepalive = 0.0
         # 启动后第一次巡检要补跑当天还没活跃的国际版账号：进程在时段内停过
         # （或调度线程被卡住）时，旧实现只能等下一个时段，最多再等 12 小时。
         self._catchup_pending = True
@@ -182,6 +185,13 @@ class Scheduler:
         while not self._stop_event.is_set():
             self._reload_schedule()
             self._calc_next_fire()
+            if (self.enabled
+                    and time.time() - self._last_codearts_keepalive >= 1800):
+                self._last_codearts_keepalive = time.time()
+                try:
+                    self._run_codearts_keepalive(True)
+                except Exception as exc:
+                    self.log(f"CodeArts 定时保活异常: {exc}")
             # 每 30 秒检查一次当前整点
             now = time.localtime()
             cur_hour = now.tm_hour

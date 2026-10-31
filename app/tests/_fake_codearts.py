@@ -51,6 +51,10 @@ class FakeState(object):
              "model_name": "DeepSeek-V4.1-Flash",
              "context_window": 1000000, "max_tokens": 128000,
              "supports_images": False, "model_category": "文本生成"},
+            {"model_id": "glm-5.3-flash",
+             "model_name": "GLM-5.3-Flash",
+             "context_window": 1000000, "max_tokens": 48000,
+             "supports_images": False, "model_category": "文本生成"},
         ]
         self.agent_models = [
             {"model_name": "GLM-5.2", "model_id": "GLM-5.2",
