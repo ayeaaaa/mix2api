@@ -136,6 +136,19 @@ try:
     check("oauth callback done", status == 200 and body.get("status") == "done",
           (status, body))
 
+    print("== browser callback ==")
+    started = call("POST", "/codearts/accounts/oauth/start", {}, token=token)[1]
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(started["auth_url"]).query)
+    ticket = (query.get("ticket_id") or [""])[0]
+    req = urllib.request.Request(
+        HUB + "/oauth/callback?code=abc&ticket_id=" + urllib.parse.quote(ticket))
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        html = resp.read().decode("utf-8", "replace")
+    check("browser callback 200", resp.status == 200, resp.status)
+    check("browser callback html", "登录成功" in html, html[:200])
+    check("browser callback saved account",
+          C.pool_for(ACCOUNTS).get("u1") is not None)
+
     print("== delete ==")
     status, body = call("POST", "/codearts/accounts/delete", {"uid": "nope"},
                         token=token)

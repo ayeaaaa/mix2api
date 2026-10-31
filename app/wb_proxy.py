@@ -19022,6 +19022,9 @@ class Handler(BaseHTTPRequestHandler):
         # same wb_agents.py shipped in the repository, no secrets inside).
         if path == "/agents/cli":
             return self._get_agents_cli()
+        if path == "/oauth/callback":
+            # 华为云 OAuth 浏览器回调：不带面板会话，靠 ticket_id/secret 匹配会话。
+            return self._get_codearts_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
         if path in ("/", "/dashboard", "/ui"):
@@ -21033,6 +21036,21 @@ class Handler(BaseHTTPRequestHandler):
                     new == wb_settings.DEFAULT_PANEL_PASSWORD,
             })
         return self._error(404, "not found", "invalid_request_error")
+    def _get_codearts_oauth_callback(self, query):
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        try:
+            status, html = wb_codearts.oauth_callback_get(cfg, query)
+        except Exception as exc:
+            status, html = 400, "<h3>登录失败：%s</h3>" % exc
+        raw = ("<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:sans-serif;"
+               "padding:32px;line-height:1.7\">" + html + "</body>").encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _get_codearts_overview(self):
         cfg = wb_codearts.load_config(ACCOUNTS_DIR)
         if not wb_codearts.configured_config(cfg):
