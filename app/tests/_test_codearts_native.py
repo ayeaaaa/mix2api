@@ -109,6 +109,18 @@ try:
           any(e.get("benefit") for e in entries if e["id"] == "deepseek-v4-pro-0813"))
     check("models meta source", C.models_meta(C.load_config(ACCOUNTS))["source"] == "codearts")
 
+    print("== credits ==")
+    info = C.fetch_account_info(acct)
+    check("credit package", info["is_credit_package"] is True, info)
+    check("credit package name", info["package_name"] == "体验版", info)
+    check("credit total", info["credits"]["total"]["remain"] == 4499.19, info)
+    check("credit used", info["credits"]["total"]["used"] == 0.81, info)
+    check("credit models", info["models"][0]["name"] == "GLM-5.2", info)
+    ov = C.overview(C.load_config(ACCOUNTS))
+    check("overview credits", ov["stats"]["credits"] == 4499.19, ov["stats"])
+    check("account credits", ov["accounts"][0]["credits"]["remain"] == 4499.19,
+          ov["accounts"][0])
+
     print("== refresh ==")
     acct.auth["expiration"] = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10))

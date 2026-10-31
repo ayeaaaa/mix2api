@@ -61,6 +61,7 @@ EP_BENEFIT_CLAIM = "/api/v1/benefit/claim"
 EP_CREDIT_DELIVERY = "/v1/ops/delivery"
 EP_CREDIT_CLAIM = "/v1/ops/claim"
 EP_CREDIT_CONFIRM = "/v1/ops/confirm"
+EP_PACKAGE_INFO = "/v1/statistics/plugin"
 
 HEADER_MAAS_TYPE = "maas_type"
 MAAS_BENEFIT = "benefit"
@@ -342,9 +343,12 @@ class CodeArtsAccount(object):
         self.model_benefit = {}
         self.models_fetched_at = 0.0
         self.checkin = None
+        self.info = None
+        self.info_fetched_at = 0.0
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._models_lock = threading.Lock()
+        self._info_lock = threading.Lock()
 
     def chat_base_url(self):
         return SNAP_HOST
@@ -403,13 +407,27 @@ class CodeArtsAccount(object):
         now = time.time()
         cooling = (not self.disabled) and now < self.cool_until
         reason = self.disabled_reason or self.last_error
+        info = self.info or {}
+        credit_total = ((info.get("credits") or {}).get("total") or {})
+        credits = None
+        if credit_total:
+            credits = {
+                "remain": float(credit_total.get("remain") or 0),
+                "amount": float(credit_total.get("amount") or 0),
+                "used": float(credit_total.get("used") or 0),
+                "expiring": float(credit_total.get("expiring") or 0),
+                "unit": "credit",
+                "package": info.get("package_name") or "",
+                "end_date": info.get("end_date") or "",
+            }
         return {
             "name": self.name,
             "uid": self.uid,
             "nickname": self.nickname,
             "user_name": self.nickname,
             "default_model": "",
-            "credits": 0,
+            "credits": credits,
+            "package": info.get("package_name") or "",
             "checkin": self.checkin,
             "disabled": self.disabled,
             "cooling": cooling,
@@ -1925,21 +1943,131 @@ def oauth_callback_get(config, query):
 # 管理 API（本地账号池）
 # ---------------------------------------------------------------------------
 
+def _credit_metric(metrics, name):
+    for item in metrics or ():
+        if isinstance(item, dict) and item.get("name") == name:
+            return {
+                "amount": float(item.get("package_credit_amount") or 0),
+                "used": float(item.get("package_credit_used") or 0),
+                "remain": float(item.get("package_credit_remain") or 0),
+                "expiring": float(item.get("package_credit_expiring_amount") or 0),
+            }
+    return None
+
+
+def fetch_account_info(acct, timeout=15.0):
+    """查账户/套餐/积分：`snap-manager/v1/statistics/plugin`。
+
+    注意：`Agent-Type` / `X-Language` 必须在签名**之后**追加，不能进入
+    SignedHeaders；否则华为网关会回 401 verify ak sk signature fail。
+    """
+    url = SNAP_MANAGER + EP_PACKAGE_INFO
+    signed = _signed_headers(acct, "GET", url,
+                             {"Content-Type": "application/json"}, b"")
+    signed["Agent-Type"] = "PromptCenter"
+    signed["X-Language"] = "zh-cn"
+    data = _json_http("GET", url, signed, None, timeout)
+    package = data.get("package") or {}
+    metrics = data.get("metrics") or []
+    credits = {
+        "total": _credit_metric(metrics, "usageTotalPackageCredit"),
+        "basic": _credit_metric(metrics, "usageBasicPackageCredit"),
+        "on_demand": _credit_metric(metrics, "usageOnDemandPackageCredit"),
+        "bonus": _credit_metric(metrics, "usageBonusPackageCredit"),
+        "unit": "credit",
+    }
+    models = []
+    for item in data.get("model_metrics") or []:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("model_id") or "")
+        if not mid:
+            continue
+        models.append({
+            "id": mid,
+            "name": str(item.get("model_name") or mid),
+            "description": str(item.get("model_desc") or ""),
+            "type": str(item.get("model_type") or ""),
+            "enabled": item.get("enable") is not False,
+            "status": str(item.get("status") or ""),
+            "luxury": bool(item.get("is_luxury")),
+        })
+    info = {
+        "is_credit_package": package.get("is_credit_package") is True,
+        "is_token_package": package.get("is_token_package") is True,
+        "spec_code": str(package.get("spec_code") or ""),
+        "package_name": str(package.get("package_name_cn")
+                            or package.get("package_name_en") or ""),
+        "package_status": str(package.get("status") or ""),
+        "start_date": str(data.get("start_date") or ""),
+        "end_date": str(data.get("end_date") or ""),
+        "credits": credits,
+        "models": models,
+        "fetched_at": time.time(),
+    }
+    acct.info = info
+    acct.info_fetched_at = time.time()
+    return info
+
+
+def ensure_account_info(acct, force=False, timeout=15.0):
+    if acct.info and not force and time.time() - acct.info_fetched_at < 60.0:
+        return acct.info
+    with acct._info_lock:
+        if acct.info and not force and time.time() - acct.info_fetched_at < 60.0:
+            return acct.info
+        try:
+            return fetch_account_info(acct, timeout=timeout)
+        except CodeArtsError:
+            if acct.info:
+                return acct.info
+            raise
+
+
 _health_cache = {"at": 0.0, "value": {}}
 
 
 def overview(config, force=False):
     pool = pool_for(config["accounts_dir"])
+    for acct in list(pool.accounts):
+        try:
+            ensure_account_info(acct, timeout=8.0)
+        except CodeArtsError:
+            pass
     stats = pool.stats()
+    credit_remain = credit_total = credit_used = 0.0
+    for acct in pool.accounts:
+        total = ((acct.info or {}).get("credits") or {}).get("total")
+        if isinstance(total, dict):
+            credit_remain += float(total.get("remain") or 0)
+            credit_total += float(total.get("amount") or 0)
+            credit_used += float(total.get("used") or 0)
+    stats["credits"] = round(credit_remain, 2)
+    stats["credits_total"] = round(credit_total, 2)
+    stats["credits_used"] = round(credit_used, 2)
     accounts = pool.list()
     models = []
     seen = set()
     for acct in pool.accounts:
-        for item in acct.models or ():
-            key = str(item.get("id") or "").lower()
-            if key and key not in seen:
-                seen.add(key)
-                models.append({"id": item.get("id")})
+        infos = (acct.info or {}).get("models") or []
+        if infos:
+            for item in infos:
+                mid = str(item.get("id") or "")
+                key = mid.lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    models.append({
+                        "id": mid,
+                        "name": item.get("name") or mid,
+                        "description": item.get("description") or "",
+                    })
+        else:
+            for item in acct.models or ():
+                mid = str(item.get("id") or "")
+                key = mid.lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    models.append({"id": mid})
     if not models:
         models = [{"id": mid} for mid in SEED_MODELS]
     return {
@@ -2085,6 +2213,7 @@ def checkin_account(acct, timeout=30.0):
               "campaigns": results}
     acct.checkin = {"ok": result["ok"], "message": message,
                     "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    acct.info_fetched_at = 0.0
     acct.pool.save_state()
     return result
 

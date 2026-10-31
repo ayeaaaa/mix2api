@@ -60,6 +60,33 @@ class FakeState(object):
         }]
         self.token_calls = 0
         self.model_calls = 0
+        self.package = {
+            "spec_code": "codearts.agent.individual.trial",
+            "status": "normal",
+            "package_name_cn": "体验版",
+            "package_name_en": "Trial",
+            "is_token_package": False,
+            "is_credit_package": True,
+        }
+        self.credit_metrics = [
+            {"name": "usageTotalPackageCredit", "package_credit_amount": 4500.0,
+             "package_credit_used": 0.81, "package_credit_remain": 4499.19,
+             "package_credit_expiring_amount": 0},
+            {"name": "usageBasicPackageCredit", "package_credit_amount": 500.0,
+             "package_credit_used": 0.0, "package_credit_remain": 500.0,
+             "package_credit_expiring_amount": 0},
+            {"name": "usageOnDemandPackageCredit", "package_credit_amount": 0,
+             "package_credit_used": 0, "package_credit_remain": 0,
+             "package_credit_expiring_amount": 0},
+            {"name": "usageBonusPackageCredit", "package_credit_amount": 4000.0,
+             "package_credit_used": 0.81, "package_credit_remain": 3999.19,
+             "package_credit_expiring_amount": 0},
+        ]
+        self.model_metrics = [
+            {"model_id": "GLM-5.2", "model_name": "GLM-5.2",
+             "model_desc": "最新旗舰模型", "model_type": "system",
+             "enable": True, "status": "normal", "is_luxury": False},
+        ]
 
     def reset_requests(self):
         self.requests = []
@@ -231,6 +258,15 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/gateway/config":
             self._send_json(200, {"error_code": "0000", "result": {
                 "base_url": "https://example.test", "models": state.benefit_models}})
+            return
+        if path == "/snap-manager/v1/statistics/plugin":
+            self._send_json(200, {
+                "metrics": state.credit_metrics,
+                "model_metrics": state.model_metrics,
+                "package": state.package,
+                "start_date": "2026-10-31",
+                "end_date": "2026-12-01",
+            })
             return
         if path == "/v1/ops/delivery":
             self._send_json(200, {"code": 0, "message": "ok",

@@ -1840,6 +1840,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     'API Key 已设置；留空保存不会覆盖。': 'An API key is set; leave the field blank to keep it.',
     '还没有设置 API Key。': 'No API key set yet.',
     '健康账号': 'Healthy accounts',
+    '积分': 'Credits',
+    'CodeArts 积分': 'CodeArts credits',
+    '剩余 / 总 ': 'Remaining / total ',
     '模型': 'Models',
     '冷却': 'Cooling',
     '停用': 'Disabled',
@@ -4156,7 +4159,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
           <span id="tabCodeartsHealthy" style="font-size:22px;font-weight:700;color:var(--accent);letter-spacing:-.5px" title="健康账号数 / 账号总数">—</span>
-          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCodeartsTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabCodeartsModels" style="color:var(--fg);font-weight:600">0</span> 模型</span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCodeartsTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabCodeartsModels" style="color:var(--fg);font-weight:600">0</span> 模型 · <span id="tabCodeartsCredits" style="color:var(--fg);font-weight:600">—</span> 积分</span>
         </div>
         <span id="tabCodeartsKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -6561,6 +6564,8 @@ function updateUI(){
   if(elCaTotal) elCaTotal.textContent = caTotal;
   const elCaModels = document.getElementById("tabCodeartsModels");
   if(elCaModels) elCaModels.textContent = caModels;
+  const elCaCredits = document.getElementById("tabCodeartsCredits");
+  if(elCaCredits) elCaCredits.textContent = fmtCredits(caStats.credits);
   const elCaOffline = document.getElementById("tabCodeartsOffline");
   if(elCaOffline) elCaOffline.style.display = (ca.online === false) ? "inline-block" : "none";
   const elCaHost = document.getElementById("tabCodeartsHost");
@@ -6662,14 +6667,23 @@ async function loadCodeartsOverview(force){
   }
 }
 
+function fmtCredits(value){
+  if(value == null || value === "" || isNaN(Number(value))) return "—";
+  return Number(value).toLocaleString(undefined, {maximumFractionDigits: 2});
+}
+
 function renderCodeartsCards(r){
   const box = document.getElementById("codeartsCards");
   if(!box) return;
   const st = r.stats || {};
   const healthy = (st.healthy != null) ? st.healthy : "—";
   const total = (st.total != null) ? st.total : 0;
+  const credits = (st.credits != null) ? st.credits : null;
+  const creditsTotal = (st.credits_total != null) ? st.credits_total : null;
   box.innerHTML =
     card("健康账号", healthy + "/" + total, "由本进程直接管理")
+    + card("积分", fmtCredits(credits),
+           creditsTotal != null ? ("剩余 / 总 " + fmtCredits(creditsTotal)) : "CodeArts 积分")
     + card("模型", (r.models || []).length, "CodeArts 目录")
     + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
     + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
@@ -6686,7 +6700,7 @@ function renderCodeartsAccounts(r){
     return;
   }
   let html = '<div class="table-wrap"><table><thead><tr>'
-    + '<th>账号</th><th>状态</th><th>Token</th><th>并发</th><th>签到</th><th>操作</th>'
+    + '<th>账号</th><th>状态</th><th>Token</th><th>积分</th><th>并发</th><th>签到</th><th>操作</th>'
     + '</tr></thead><tbody>';
   accounts.forEach(function(a){
     const uid = escapeHtml(a.uid || "");
@@ -6695,6 +6709,7 @@ function renderCodeartsAccounts(r){
     if(a.disabled) status = '<span class="badge bad mini">已停用</span>';
     else if(a.cooling) status = '<span class="badge warn mini">冷却中</span>';
     const token = escapeHtml((a.token_remaining || "—") + (a.expires_at ? " · " + a.expires_at : ""));
+    const credits = (a.credits && a.credits.remain != null) ? fmtCredits(a.credits.remain) : "—";
     const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
       + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
     let checkin = "—";
@@ -6712,6 +6727,7 @@ function renderCodeartsAccounts(r){
     html += '<tr><td><b>' + name + '</b><div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
       + '<td>' + status + (a.reason ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.reason) + '</div>' : '') + '</td>'
       + '<td class="mono" style="font-size:11px">' + token + '</td>'
+      + '<td>' + credits + '</td>'
       + '<td>' + conc + '</td><td>' + checkin + '</td>'
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
   });
