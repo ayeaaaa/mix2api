@@ -119,6 +119,33 @@ try:
     check("auth file rewritten", C.load_auths(ACCOUNTS)[0]["expiration"] ==
           acct.auth["expiration"])
 
+    print("== content parts ==")
+    parts_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hello "},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "text", "text": "world"},
+        ]}],
+    }, "sess-parts")
+    check("content parts flattened",
+          parts_body["messages"][0]["content"] == "hello world", parts_body)
+
+    print("== named tool choice ==")
+    tool_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "a", "parameters": {}}},
+            {"type": "function", "function": {"name": "b", "parameters": {}}},
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "b"}},
+    }, "sess-tool")
+    check("tool choice narrowed", len(tool_body["tools"]) == 1
+          and tool_body["tools"][0]["function"]["name"] == "b", tool_body)
+    check("tool choice required", tool_body["tool_choice"] == "required",
+          tool_body)
+
     print("== text snapshot stream ==")
     state.chat_mode = "text"
     body = C.build_chat_body({"model": "GLM-5.2",

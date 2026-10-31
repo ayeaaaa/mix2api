@@ -1032,20 +1032,30 @@ def _fetch_benefit_models(acct, timeout, auto_claim=True):
 
 
 def fetch_models(acct, timeout=20.0, auto_claim=True):
-    """三路发现并写入账号目录；单路失败不影响其他路。"""
+    """三路发现并写入账号目录；单路失败不影响其他路。
+
+    三路互不依赖，并行跑：最坏等待从「3 × timeout」降到「1 × timeout」。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     sets = []
     errors = []
-    for name, fn in (
-        ("agent", lambda: _fetch_agent_models(acct, timeout)),
-        ("builtin", lambda: _fetch_builtin_models(acct, timeout)),
-        ("benefit", lambda: _fetch_benefit_models(acct, timeout, auto_claim)),
-    ):
-        try:
-            items = fn()
-            if items:
-                sets.append((name, items))
-        except CodeArtsError as exc:
-            errors.append("%s: %s" % (name, exc))
+    tasks = {
+        "agent": lambda: _fetch_agent_models(acct, timeout),
+        "builtin": lambda: _fetch_builtin_models(acct, timeout),
+        "benefit": lambda: _fetch_benefit_models(acct, timeout, auto_claim),
+    }
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(fn): name for name, fn in tasks.items()}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                items = future.result()
+                if items:
+                    sets.append((name, items))
+            except CodeArtsError as exc:
+                errors.append("%s: %s" % (name, exc))
+            except Exception as exc:
+                errors.append("%s: %s" % (name, exc))
     merged = _merge_models(sets)
     if not merged:
         # 全失败：保留旧目录；没有旧目录就用种子。
@@ -1172,32 +1182,68 @@ def _derive_chat_id(session_key, messages):
     return secrets.token_hex(16)
 
 
+def _flatten_content(content):
+    """把 OpenAI 内容分片压成纯文本；CodeArts 只消费 text 分片。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(part.get("text") or "")
+                       for part in content if isinstance(part, dict))
+    return str(content)
+
+
 def build_chat_body(payload, session_key=None):
     """把客户端载荷收敛成 CodeArts `/api/v2/chat/completions` 的请求体。"""
     if not isinstance(payload, dict):
         raise CodeArtsBadRequest("request body must be a JSON object")
     from wb_proxy import (cleanup_orphan_tool_calls, merge_adjacent_tool_calls,
                           normalize_roles, repack_tool_result_blocks)
-    drop = {
-        "user", "metadata", "store", "previous_response_id", "prompt_cache_key",
-        "n", "logprobs", "top_logprobs", "stream", "stream_options",
-        "conversation_id",
+    # 只发 Go 版 chatBodyV2 会发的字段；客户端多出来的采样/格式字段一律丢掉，
+    # 避免华为网关对未知字段返回 400。
+    allowed = {
+        "model", "messages", "temperature", "top_p", "max_tokens",
+        "max_completion_tokens", "reasoning_effort", "tools", "tool_choice",
     }
-    body = {}
-    for key, value in payload.items():
-        name = str(key)
-        if name.startswith("_") or name in drop:
-            continue
-        body[name] = value
+    body = {str(k): v for k, v in payload.items() if str(k) in allowed}
     body["model"] = str(payload.get("model") or "GLM-5.2")
     messages = normalize_roles(payload.get("messages") or [])
     messages = [m for m in messages if isinstance(m, dict)]
+    flattened = []
+    for message in messages:
+        if isinstance(message.get("content"), list):
+            message = dict(message)
+            message["content"] = _flatten_content(message.get("content"))
+        flattened.append(message)
+    messages = flattened
     messages, _ = merge_adjacent_tool_calls(messages)
     messages, _ = repack_tool_result_blocks(messages)
     messages, _ = cleanup_orphan_tool_calls(messages)
     if not messages:
         raise CodeArtsBadRequest("messages is empty")
     body["messages"] = messages
+    # 指定函数名时 CodeArts 只认字符串 required：把工具清单收窄到该函数，
+    # 再把 tool_choice 改成 required（与 Go 版 nativeTools 一致）。
+    tools = body.get("tools")
+    choice = body.get("tool_choice")
+    if isinstance(choice, dict):
+        function = choice.get("function") or {}
+        name = function.get("name") if isinstance(function, dict) else ""
+        if name and isinstance(tools, list):
+            filtered = [tool for tool in tools
+                        if isinstance(tool, dict)
+                        and isinstance(tool.get("function"), dict)
+                        and tool["function"].get("name") == name]
+            if filtered:
+                body["tools"] = filtered
+                body["tool_choice"] = "required"
+            else:
+                body.pop("tool_choice", None)
+        else:
+            body.pop("tool_choice", None)
+    if not body.get("tools"):
+        body.pop("tool_choice", None)
     if body.get("max_completion_tokens") is not None and body.get("max_tokens") is None:
         body["max_tokens"] = body.pop("max_completion_tokens")
     chat_id = payload.get("conversation_id")
@@ -1219,8 +1265,6 @@ def _chat_headers(acct, chat_id, session_id, benefit):
         "X-Language": "zh-cn",
         "app-id": "CodeAgent3.0",
         "is_confidential": "false",
-        "Chat-Id": chat_id,
-        "Session-Id": session_id,
     }
     if benefit:
         headers[HEADER_MAAS_TYPE] = MAAS_BENEFIT
@@ -1451,6 +1495,9 @@ def _client_chat(acct, body, session_key):
     raw = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
     headers = _chat_headers(acct, chat_id, session_id, acct.is_benefit(model))
     headers = _signed_headers(acct, "POST", SNAP_HOST + EP_CHAT, headers, raw)
+    # 与 Go 版一致：Chat-Id / Session-Id 在签名之后才加，不进入 SignedHeaders。
+    headers["Chat-Id"] = chat_id
+    headers["Session-Id"] = session_id
     timeout = float(acct.pool.config.get("stream_timeout_seconds")
                     or DEFAULTS["stream_timeout_seconds"])
     req = urllib.request.Request(SNAP_HOST + EP_CHAT, data=raw,
