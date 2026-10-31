@@ -21,13 +21,12 @@ assert.ok(/r\.next_url/.test(script), 'OAuth 中转必须处理 next_url');
 assert.ok(/pollCodeartsOAuth\(true\)/.test(script), 'continue 后应继续轮询');
 
 assert.ok(html.includes('id="setCodeartsEnabled"'), '缺少启用开关');
-assert.ok(html.includes('id="setCodeartsBaseUrl"'), '缺少 Base URL');
-assert.ok(html.includes('id="setCodeartsApiKey"'), '缺少 API Key 输入');
+assert.ok(html.includes('id="setCodeartsMaxConcurrent"'), '缺少单账号并发');
 assert.ok(html.includes('id="setCodeartsTimeout"'), '缺少管理超时');
 assert.ok(html.includes('id="setCodeartsStreamTimeout"'), '缺少流式超时');
 assert.ok(html.includes('id="setCodeartsModelsTtl"'), '缺少模型缓存 TTL');
 assert.ok(html.includes('id="setCodeartsHint"'), '缺少 Key 状态提示');
-assert.ok(/api_key_set/.test(script), '设置页应显示 Key 是否已设置，而不是明文');
+assert.ok(/cfg\.accounts/.test(script), '设置页应显示账号数');
 assert.ok(/saveCodeartsSettings/.test(script), '缺少保存函数');
 assert.ok(/testCodeartsConnection/.test(script), '缺少测试连接函数');
 
@@ -47,18 +46,16 @@ try {
 console.log = realLog;
 
 api.renderCodeartsSettings({
-  enabled: true, base_url: 'http://codearts:7866', api_key_set: true,
-  configured: true, timeout_seconds: 30, stream_timeout_seconds: 600,
-  models_ttl_seconds: 60,
+  enabled: true, max_concurrent: 3, configured: true,
+  timeout_seconds: 30, stream_timeout_seconds: 600,
+  models_ttl_seconds: 300, accounts: 2, healthy: 1,
 });
 assert.equal(document.getElementById('setCodeartsEnabled').checked, true,
   '启用开关应回填');
-assert.equal(document.getElementById('setCodeartsBaseUrl').value,
-  'http://codearts:7866', 'Base URL 应回填');
-assert.equal(document.getElementById('setCodeartsApiKey').value, '',
-  'API Key 输入框不应回填明文');
-assert.ok(document.getElementById('setCodeartsHint').textContent.includes('已设置'),
-  '应提示 Key 已设置');
+assert.equal(document.getElementById('setCodeartsMaxConcurrent').value, 3,
+  '并发数应回填');
+assert.ok(document.getElementById('setCodeartsHint').textContent.includes('2 个账号'),
+  '应提示账号数');
 assert.equal(document.getElementById('setCodeartsState').textContent, '(已启用)',
   '应显示已启用');
 

@@ -150,8 +150,8 @@ class _Handler(BaseHTTPRequestHandler):
         raw = self._read()
         state = self.state
         state.requests.append({"path": path, "body": raw.decode("utf-8", "replace"),
-                               "headers": dict(self.headers)})
-        state.last_headers = dict(self.headers)
+                               "headers": {k.lower(): v for k, v in self.headers.items()}})
+        state.last_headers = {k.lower(): v for k, v in self.headers.items()}
         try:
             state.last_body = json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
@@ -197,8 +197,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         state = self.state
-        state.requests.append({"path": path, "body": "", "headers": dict(self.headers)})
-        state.last_headers = dict(self.headers)
+        state.requests.append({"path": path, "body": "",
+                               "headers": {k.lower(): v for k, v in self.headers.items()}})
+        state.last_headers = {k.lower(): v for k, v in self.headers.items()}
         if path == "/v1/login/ticket":
             self._send_json(200, self._token_payload())
             return

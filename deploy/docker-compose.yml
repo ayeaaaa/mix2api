@@ -1,7 +1,7 @@
 services:
   hub:
-    build: ../apps/hub
-    container_name: mix2api-hub
+    build: ../app
+    container_name: mix2api
     restart: unless-stopped
     ports:
       - "8788:8788"
@@ -10,22 +10,5 @@ services:
       - PORT=8788
       - TZ=Asia/Shanghai
     volumes:
-      - ../data/hub/accounts:/app/accounts
-      - ../data/hub/usage:/app/usage
-    depends_on:
-      - codearts
-
-  codearts:
-    build: ../apps/codearts
-    container_name: mix2api-codearts
-    restart: unless-stopped
-    ports:
-      # 只绑本机：admin API 能停用/删除账号，不要直接开到公网
-      - "127.0.0.1:7866:7866"
-    environment:
-      CA2A_API_KEY: ${CA2A_API_KEY:?set CA2A_API_KEY in deploy/.env}
-      TZ: Asia/Shanghai
-    volumes:
-      - ../data/codearts/auths:/app/auths
-      - ../data/codearts/data:/app/data
-      - ./config/codearts.json:/app/config.json:ro
+      - ../data/accounts:/app/accounts
+      - ../data/usage:/app/usage

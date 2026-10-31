@@ -1,6 +1,6 @@
-"""CodeArts 路由：chat / responses / messages 与用量归因。
+"""单进程 CodeArts 路由：chat / responses / messages 与用量归因。
 
-用假 codearts2api + 真 hub handler；不碰 WorkBuddy 账号池、不碰外网。
+假华为云上游 + 真 hub handler；不碰 WorkBuddy 账号池、不碰外网。
 """
 import json
 import os
@@ -20,7 +20,8 @@ _TMP = isolated_data_dirs("wb-codearts-routing-")
 ACCOUNTS = os.environ["ACCOUNTS_DIR"]
 USAGE = os.environ["WB_PROXY_USAGE_DIR"]
 
-import wb_codearts  # noqa: E402
+import wb_codearts as C  # noqa: E402
+import wb_codearts_crypto as crypto  # noqa: E402
 import wb_proxy  # noqa: E402
 import wb_settings  # noqa: E402
 from _fake_codearts import start_server, stop_server  # noqa: E402
@@ -38,16 +39,14 @@ def check(label, cond, extra=""):
         print("  [FAIL] " + label + ("  " + str(extra) if extra else ""))
 
 
-def post(path, payload, key, stream=False):
+def post(path, payload, key):
     req = urllib.request.Request(
-        HUB + path,
-        data=json.dumps(payload).encode("utf-8"),
+        HUB + path, data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": "Bearer " + key,
-                 "Content-Type": "application/json"},
-        method="POST")
+                 "Content-Type": "application/json"}, method="POST")
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        return resp.status, resp.read().decode("utf-8")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
 
@@ -68,8 +67,6 @@ def sse_objects(raw):
 
 
 class FakePool(object):
-    """WorkBuddy 池替身：get 返回 None，其余访问直接失败。"""
-
     def get(self, uid):
         return None
 
@@ -77,7 +74,13 @@ class FakePool(object):
         raise AssertionError("WorkBuddy pool used: %s" % name)
 
 
-fake, fake_base, state = start_server()
+srv, base, state = start_server()
+C.SNAP_HOST = base
+C.SNAP_MANAGER = base + "/snap-manager"
+C.STS_HOST = base
+C.BENEFIT_HOST = base
+C.PORTAL_HOST = base + "/portal"
+
 hub = wb_proxy.GatewayServer(("127.0.0.1", 0), wb_proxy.Handler)
 threading.Thread(target=hub.serve_forever, daemon=True).start()
 HUB = "http://127.0.0.1:%d" % hub.server_address[1]
@@ -90,17 +93,24 @@ try:
         "key": "hub-key-1234", "name": "test", "realm": "codearts",
     }])
     wb_proxy.API_KEY = None
-    wb_codearts.save_config(ACCOUNTS, {
-        "enabled": True, "base_url": fake_base, "api_key": "test-key",
-    })
-    wb_codearts.invalidate_models()
+    C.save_config(ACCOUNTS, {"enabled": True, "benefit_auto_claim": True})
+    auth = {
+        "user_id": "u1", "user_name": "账号一", "domain_id": "d1",
+        "cloud_dragon_token": state.token,
+        "access_key_id": state.api_key, "secret_access_key": state.secret_key,
+        "expiration": state.expiration, "refresh_token": state.refresh_token,
+        "code_verifier": "v", "client_id": C.CLIENT_ID,
+        "dpop_private_key": crypto.jwk_from_keypair(*crypto.generate_keypair()),
+    }
+    C.pool_for(ACCOUNTS).add(C.save_auth(ACCOUNTS, auth))
+    C.invalidate_models()
 
     chat = {"model": "GLM-5.2",
             "messages": [{"role": "user", "content": "hi"}]}
 
     print("== chat stream ==")
-    status, raw = post("/v1/chat/completions",
-                       dict(chat, stream=True), "hub-key-1234")
+    status, raw = post("/v1/chat/completions", dict(chat, stream=True),
+                       "hub-key-1234")
     check("stream status", status == 200, (status, raw[:300]))
     events = sse_objects(raw)
     text = "".join(
@@ -109,16 +119,30 @@ try:
     check("stream text", "你好" in text, text)
     check("stream usage", any(e.get("usage") for e in events), events[-3:])
     check("upstream stream forced", state.last_body.get("stream") is True)
-    check("upstream usage requested",
-          state.last_body.get("stream_options") == {"include_usage": True})
+    check("upstream has chat_id",
+          len(str(state.last_body.get("chat_id") or "")) == 32,
+          state.last_body)
+    check("upstream signed",
+          str(state.last_headers.get("authorization") or "").startswith(
+              "SDK-HMAC-SHA256"), state.last_headers)
 
     print("== chat nonstream ==")
-    status, raw = post("/v1/chat/completions",
-                       dict(chat, stream=False), "hub-key-1234")
+    status, raw = post("/v1/chat/completions", dict(chat, stream=False),
+                       "hub-key-1234")
     check("nonstream status", status == 200, (status, raw[:300]))
     obj = json.loads(raw)
     check("nonstream text", obj["choices"][0]["message"]["content"] == "你好",
           obj)
+
+    print("== benefit header ==")
+    state.require_benefit_header = True
+    status, raw = post("/v1/chat/completions",
+                       dict(chat, model="deepseek-v4-pro-0813", stream=False),
+                       "hub-key-1234")
+    check("benefit status", status == 200, (status, raw[:300]))
+    check("benefit header sent", state.last_headers.get("maas_type") == "benefit",
+          state.last_headers)
+    state.require_benefit_header = False
 
     print("== responses ==")
     responses_req = {
@@ -138,10 +162,8 @@ try:
 
     print("== messages ==")
     messages_req = {
-        "model": "GLM-5.2",
-        "max_tokens": 64,
-        "messages": [{"role": "user", "content": "hi"}],
-        "stream": False,
+        "model": "GLM-5.2", "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hi"}], "stream": False,
     }
     status, raw = post("/v1/messages", messages_req, "hub-key-1234")
     check("messages status", status == 200, (status, raw[:300]))
@@ -163,34 +185,34 @@ try:
     check("all realm codearts", all(r.get("realm") == "codearts" for r in rows),
           [r.get("realm") for r in rows])
     check("all account codearts",
-          all(r.get("account") == "codearts" for r in rows),
+          all(r.get("account") == "u1" for r in rows),
           [r.get("account") for r in rows])
     check("all unpriced",
           all(r.get("cost_policy") == "codearts:unpriced" for r in rows),
           [r.get("cost_policy") for r in rows])
 
     print("== errors ==")
-    state.chat_error = (400, {"error": {"message": "bad request"}})
+    state.chat_error = (400, {"error_msg": "bad request"})
     status, raw = post("/v1/chat/completions", chat, "hub-key-1234")
     check("400 passthrough", status == 400, (status, raw[:300]))
     check("400 message", "bad request" in raw, raw[:300])
 
-    state.chat_error = (500, {"error": {"message": "boom"}})
+    state.chat_error = (500, {"error_msg": "boom"})
     status, raw = post("/v1/chat/completions", chat, "hub-key-1234")
     check("500 -> 502", status == 502, (status, raw[:300]))
 
     state.chat_error = None
-    wb_codearts.save_config(ACCOUNTS, {"base_url": "http://127.0.0.1:1"})
+    C.SNAP_HOST = "http://127.0.0.1:1"
     status, raw = post("/v1/chat/completions", chat, "hub-key-1234")
     check("unreachable -> 502", status == 502, (status, raw[:300]))
-    check("unreachable message", "CodeArts" in raw, raw[:300])
+    check("unreachable message", "CodeArts" in raw or "华为云" in raw, raw[:300])
 finally:
     try:
         hub.shutdown()
         hub.server_close()
     except Exception:
         pass
-    stop_server(fake)
+    stop_server(srv)
 
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

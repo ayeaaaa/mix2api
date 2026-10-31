@@ -42,8 +42,7 @@ check("unknown realm clears", entry["realm"] == "", entry)
 
 print("== options ==")
 check("unconfigured options", wb_proxy.realm_options() == ["intl", "cn"])
-wb_codearts.save_config(ACCOUNTS, {
-    "enabled": True, "base_url": "http://127.0.0.1:7866", "api_key": "k"})
+wb_codearts.save_config(ACCOUNTS, {"enabled": True})
 check("configured options", wb_proxy.realm_options() ==
       ["intl", "cn", "codearts"])
 
@@ -74,8 +73,7 @@ wb_proxy.save_persisted_realm("codearts")
 check("cannot save unconfigured codearts", wb_proxy.CURRENT_REALM == "intl")
 
 print("== cross realm ==")
-wb_codearts.save_config(ACCOUNTS, {
-    "enabled": True, "base_url": "http://127.0.0.1:7866", "api_key": "k"})
+wb_codearts.save_config(ACCOUNTS, {"enabled": True})
 h = wb_proxy.Handler.__new__(wb_proxy.Handler)
 h.key_entry = {"name": "测试 Key"}
 check("codearts bypasses exclusive realm",

@@ -1,85 +1,84 @@
 # mix2api
 
-把 **WorkBuddy 国际版**、**WorkBuddy 国内版** 和 **华为云 CodeArts** 三个上游，收进一个 OpenAI 兼容网关、一个看板、一套 API Key。
+一个 **Python 单进程** OpenAI 兼容网关：把 **WorkBuddy 国际版**、**WorkBuddy 国内版** 和 **华为云 CodeArts** 三个上游收进一个服务、一个看板、一套 API Key。
 
 ```text
-客户端 ──► mix2api / hub ──► WorkBuddy 国际版
-                        ├──► WorkBuddy 国内版
-                        └──► codearts2api ──► 华为云 CodeArts
+客户端 ──► mix2api（单进程）──► WorkBuddy 国际版
+                          ├──► WorkBuddy 国内版
+                          └──► 华为云 CodeArts（OAuth / 续期 / 模型 / 签到都在进程内）
 ```
 
-- **一个地址**：`http://<host>:8788/v1`
+- **一个服务**：不再需要单独运行 codearts2api；CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签到都由本进程直接完成。
 - **三个出口**：看板顶部切换 `国际版 / 国内版 / CodeArts`；也可以给不同 API Key 各绑一个出口，三个同时用。
-- **一个看板**：WorkBuddy 和 CodeArts 的账号都在这里增删、启停、签到；CodeArts 的账号池、token 续期仍由 codearts2api 负责。
+- **一个看板**：三个出口的账号都在这里增删、启停、签到；CodeArts 账号用华为云 OAuth 添加。
 - **三类协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、Anthropic Messages（需显式开启）都能走 CodeArts。
 
 ## 目录
 
-| 路径 | 内容 | 来源 |
-|---|---|---|
-| `apps/hub` | Python 网关 + 看板（三出口） | [workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub) 派生 |
-| `apps/codearts` | Go 服务，CodeArts 账号池 / token / 签到 | [codearts2api](https://github.com/HITZY2002/codearts2api) 派生 |
-| `deploy/` | 一套 compose 把两个服务拉起来 | 本仓库 |
-| `docs/` | 设计、实施计划、部署说明 | 本仓库 |
+| 路径 | 内容 |
+|---|---|
+| `app/` | 唯一的服务：Python 网关 + 看板（三出口） |
+| `deploy/` | 单服务 compose |
+| `docs/` | 设计、实施计划、部署说明 |
+| `reference/codearts2api/` | Go 版 codearts2api 源码，**仅作协议移植参考，不构建、不运行** |
 
-两个上游都是 MIT，版权与同步方式见 [`UPSTREAM.md`](UPSTREAM.md)。
+`app/` 派生自 [workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub)；`reference/codearts2api` 派生自 [codearts2api](https://github.com/HITZY2002/codearts2api)。两者都是 MIT，版权与同步方式见 [`UPSTREAM.md`](UPSTREAM.md)。
 
 ## 快速启动（Docker）
 
 ```bash
 cd deploy
-cp .env.example .env
-# 改 .env 里的 CA2A_API_KEY（codearts2api 的访问密钥，必填）
 docker compose up -d --build
-```
-
-也可以：
-
-```bash
-make build   # 构建两个镜像
-make up      # 启动
-make test    # 跑 hub + codearts 的全部测试
-make logs    # 跟踪日志
 ```
 
 打开 `http://127.0.0.1:8788/`：
 
 1. 用面板密码登录（默认 `admin`，首次登录后立刻改）。
-2. 进「设置 → CodeArts 接入」，填 `http://codearts:7866` 和 `.env` 里的 `CA2A_API_KEY`，点「测试连接」，启用。
+2. 进「设置 → CodeArts 接入」，勾选「启用 CodeArts 出口」并保存。不需要填 Base URL 或 API Key。
 3. 切到 CodeArts 视图，点「+ 添加账号 (OAuth)」，用华为云账号完成授权。
-4. 在「设置 → API Key」里建一个 Key，出口选 `CodeArts`（或留空跟随顶部默认出口）。
+   - 浏览器和网关在同一台机器：授权后回调 `127.0.0.1:<端口>/oauth/callback` 会自动完成。
+   - 网关在远端：浏览器打不开 127.0.0.1 回调，把地址栏完整地址粘贴到弹窗的「远端回调」输入框，点「中转回调」。
+4. 在「设置 → API Key 与出口绑定」里建一个 Key，出口选 `CodeArts`，或留空跟随顶部默认出口。
 
-CodeArts 自己的 WebUI 仍在 `http://127.0.0.1:7866/`（compose 只绑本机），账号池的底层状态以它为准。
+也可以：
+
+```bash
+make build   # 构建镜像
+make up      # 启动
+make test    # 跑全部测试
+make logs    # 跟踪日志
+```
 
 ## 本地开发
 
 ```bash
-# 终端 1：CodeArts 上游
-cd apps/codearts
-cp config.example.json config.json
-export CA2A_API_KEY=$(openssl rand -hex 24)
-go run ./cmd/server -config config.json
-
-# 终端 2：hub
-cd apps/hub
-python wb_proxy.py --port 8788
+cd app
+python3 wb_proxy.py --port 8788
 ```
 
-hub 的 CodeArts 配置指向 `http://127.0.0.1:7866`，Key 与上面的 `CA2A_API_KEY` 一致。
+CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accounts/` 下。两者互不干扰。
+
+## CodeArts 说明
+
+- 登录：华为云 CodeArts OAuth2（PKCE + DPoP），refresh_token 与 client_id、DPoP 私钥一起落盘。
+- 续期：token 到期前 30 分钟自动刷新；refresh_token 终态失效时账号标记为「需要重新登录」。
+- 模型：agent-center / builtin / 限时福利三路合并，福利模型聊天时自动加 `maas_type: benefit`。
+- 聊天：`/api/v2/chat/completions`，AK/SK `SDK-HMAC-SHA256` 签名 + `x-auth-token`。
+- 签到：`/v1/ops/delivery|claim|confirm`，看板「签到 / 全员签到」手动触发。
+- 限制：CodeArts 没有可查询的积分余额，看板显示 `—`；CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号。
 
 ## 安全
 
-- CodeArts 的 API Key 只存在 hub 服务端的 `accounts/settings.json`；看板只显示「已设置」，不返回明文。
-- `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号是破坏性操作，会二次确认。
-- codearts2api 的 admin API 能停用/删除账号，不要直接暴露到公网；远程部署请套 TLS 和访问控制。
+- 华为云凭据只存在本机 `app/accounts/codearts/codearts-*.json`（权限 600），不返回浏览器、不写日志。
+- `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
 - 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。
 
 ## 文档
 
-- 设计：`apps/hub/docs/superpowers/specs/2026-10-31-codearts-realm-design.md`
-- 实施计划：`docs/superpowers/plans/2026-10-31-codearts-realm.md`
+- 设计：`app/docs/superpowers/specs/2026-10-31-codearts-native-design.md`
+- 实施计划：`docs/superpowers/plans/2026-10-31-codearts-native.md`
 - 部署与回滚：`docs/setup.md`
 
 ## License
 
-MIT。`apps/hub` 与 `apps/codearts` 保留各自上游的 MIT 许可证与版权声明。
+MIT。`app/` 与 `reference/codearts2api/` 保留各自上游的 MIT 许可证与版权声明。

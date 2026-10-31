@@ -1,24 +1,23 @@
 # runtime data
 data/
-deploy/.env
 
 # python
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# go
-apps/codearts/bin/
-apps/codearts/auths/
-apps/codearts/data/
-apps/codearts/config.json
+# app runtime
+app/accounts/
+app/usage/
+app/catalog/product-config-*.json
+!app/accounts/README.txt
+!app/usage/README.txt
 
-# hub runtime
-apps/hub/accounts/
-apps/hub/usage/
-apps/hub/catalog/product-config-*.json
-!apps/hub/accounts/README.txt
-!apps/hub/usage/README.txt
+# reference upstream (not built or run)
+reference/codearts2api/auths/
+reference/codearts2api/data/
+reference/codearts2api/bin/
+reference/codearts2api/config.json
 
 # editors / os
 .DS_Store

@@ -19174,7 +19174,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             cfg = wb_codearts.load_config(ACCOUNTS_DIR)
             codearts = {"configured": wb_codearts.configured_config(cfg),
-                        "base_url": cfg.get("base_url") or ""}
+                        "base_url": wb_codearts.SNAP_HOST}
             if codearts["configured"]:
                 codearts.update(wb_codearts.health(cfg))
             info["codearts"] = codearts
@@ -21047,7 +21047,7 @@ class Handler(BaseHTTPRequestHandler):
         health = wb_codearts.health(cfg)
         out["online"] = health["ok"]
         out["health"] = health
-        out["base_url"] = cfg["base_url"]
+        out["base_url"] = wb_codearts.SNAP_HOST
         return self._json(200, out)
 
     def _get_codearts_accounts(self):
@@ -21065,7 +21065,7 @@ class Handler(BaseHTTPRequestHandler):
             "accounts": data.get("accounts") or [],
             "stats": data.get("stats") or {},
             "models": data.get("models") or [],
-            "base_url": cfg["base_url"],
+            "base_url": wb_codearts.SNAP_HOST,
         })
 
     def _codearts_admin_error(self, exc):
@@ -21106,7 +21106,11 @@ class Handler(BaseHTTPRequestHandler):
                     "models": len(data.get("models") or []),
                 })
             if path == "/codearts/accounts/oauth/start":
-                return self._json(200, wb_codearts.oauth_start(cfg))
+                try:
+                    port = int(self.server.server_address[1])
+                except Exception:
+                    port = 8788
+                return self._json(200, wb_codearts.oauth_start(cfg, port))
             if path == "/codearts/accounts/oauth/poll":
                 return self._json(200, wb_codearts.oauth_poll(
                     cfg, payload.get("session_id")))
@@ -22949,15 +22953,15 @@ class Handler(BaseHTTPRequestHandler):
                 upstream, model, fp, account, t_start, effort=effort)
 
     def _open_codearts_chat(self, payload, session_key):
-        """打开 CodeArts 的 SSE 上游；返回 (response, account, model)。"""
+        """选号并打开 CodeArts 的 SSE 上游；返回 (stream, account, model)。"""
         cfg = wb_codearts.load_config(ACCOUNTS_DIR)
         if not wb_codearts.configured_config(cfg):
             # 本地配置问题，按 400 回：502 会让人以为上游坏了。
             raise wb_codearts.CodeArtsBadRequest(
-                "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。")
+                "CodeArts 出口未启用：请到设置页打开「启用 CodeArts 出口」。")
         body = wb_codearts.build_chat_body(payload, session_key)
-        upstream = wb_codearts.open_chat(cfg, body)
-        return upstream, wb_codearts.CodeArtsAccount(cfg), body.get("model")
+        stream, account, model = wb_codearts.open_chat(cfg, body, session_key)
+        return stream, account, model
 
     def _codearts_error(self, model, exc, t_start, realm):
         """把 CodeArts 异常落一条用量行，再回一个可读的 OpenAI 错误。"""

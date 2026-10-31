@@ -1,9 +1,10 @@
-"""`/codearts/*` 管理代理：面板鉴权、账号 CRUD、OAuth、设置保存。"""
+"""`/codearts/*` 管理端点：本地账号池的增删启停、OAuth 与设置。"""
 import json
 import os
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +17,8 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402
 _TMP = isolated_data_dirs("wb-codearts-admin-")
 ACCOUNTS = os.environ["ACCOUNTS_DIR"]
 
-import wb_codearts  # noqa: E402
+import wb_codearts as C  # noqa: E402
+import wb_codearts_crypto as crypto  # noqa: E402
 import wb_proxy  # noqa: E402
 from _fake_codearts import start_server, stop_server  # noqa: E402
 
@@ -43,7 +45,7 @@ def call(method, path, payload=None, token=None, key=None):
     req = urllib.request.Request(HUB + path, data=data, headers=headers,
                                  method=method)
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return resp.status, json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -54,19 +56,31 @@ def call(method, path, payload=None, token=None, key=None):
             return exc.code, {"raw": raw}
 
 
-fake, fake_base, state = start_server()
+srv, base, state = start_server()
+C.SNAP_HOST = base
+C.SNAP_MANAGER = base + "/snap-manager"
+C.STS_HOST = base
+C.BENEFIT_HOST = base
+C.PORTAL_HOST = base + "/portal"
+
 hub = wb_proxy.GatewayServer(("127.0.0.1", 0), wb_proxy.Handler)
 threading.Thread(target=hub.serve_forever, daemon=True).start()
 HUB = "http://127.0.0.1:%d" % hub.server_address[1]
+HUB_PORT = hub.server_address[1]
 
 try:
     wb_proxy.POOL = None
     wb_proxy.API_KEY = None
-    state.api_key = "super-secret-key"
-    wb_codearts.save_config(ACCOUNTS, {
-        "enabled": True, "base_url": fake_base,
-        "api_key": "super-secret-key",
-    })
+    C.save_config(ACCOUNTS, {"enabled": True})
+    auth = {
+        "user_id": "u1", "user_name": "账号一", "domain_id": "d1",
+        "cloud_dragon_token": state.token,
+        "access_key_id": state.api_key, "secret_access_key": state.secret_key,
+        "expiration": state.expiration, "refresh_token": state.refresh_token,
+        "code_verifier": "v", "client_id": C.CLIENT_ID,
+        "dpop_private_key": crypto.jwk_from_keypair(*crypto.generate_keypair()),
+    }
+    C.pool_for(ACCOUNTS).add(C.save_auth(ACCOUNTS, auth))
 
     status, body = call("POST", "/panel/login", {"password": "admin"})
     check("panel login", status == 200 and body.get("token"), (status, body))
@@ -80,22 +94,17 @@ try:
     check("delete with api key only -> 401", status == 401, (status, body))
     status, body = call("GET", "/codearts/overview", token=token)
     check("overview with panel", status == 200, (status, body))
-    check("overview accounts", len(body.get("accounts") or []) == 2, body)
+    check("overview accounts", len(body.get("accounts") or []) == 1, body)
     check("overview online", body.get("online") is True, body)
-    check("overview base_url", body.get("base_url") == fake_base, body)
-    check("overview hides key", "super-secret-key" not in json.dumps(body), body)
+    check("overview no token leak", state.token not in json.dumps(body), body)
 
     print("== account actions ==")
-    for action, path in (("enable", "/codearts/accounts/enable"),
-                         ("disable", "/codearts/accounts/disable"),
-                         ("clear-cooldown", "/codearts/accounts/clear-cooldown"),
-                         ("delete", "/codearts/accounts/delete"),
-                         ("checkin", "/codearts/accounts/checkin")):
-        status, body = call("POST", path, {"uid": "u1"}, token=token)
+    for action in ("disable", "enable", "clear-cooldown", "checkin"):
+        status, body = call("POST", "/codearts/accounts/" + action,
+                            {"uid": "u1"}, token=token)
         check("%s ok" % action, status == 200 and body.get("ok") is True,
               (status, body))
-        check("%s uid sent" % action, state.last_body.get("uid") == "u1",
-              state.last_body)
+    check("account still in pool", C.pool_for(ACCOUNTS).get("u1") is not None)
 
     status, body = call("POST", "/codearts/accounts/enable", {}, token=token)
     check("missing uid -> 400", status == 400, (status, body))
@@ -104,63 +113,51 @@ try:
     check("keepalive", status == 200, (status, body))
 
     status, body = call("POST", "/codearts/models/refresh", {}, token=token)
-    check("models refresh", status == 200 and body.get("models") == 3,
+    check("models refresh", status == 200 and body.get("models", 0) >= 3,
+          (status, body))
+
+    status, body = call("POST", "/codearts/test", {}, token=token)
+    check("test connection", status == 200 and body.get("ok") is True,
           (status, body))
 
     print("== oauth ==")
     status, body = call("POST", "/codearts/accounts/oauth/start", {}, token=token)
-    check("oauth start", status == 200 and body.get("session_id") == "sess-1",
-          (status, body))
+    check("oauth start", status == 200 and body.get("session_id"), (status, body))
+    session_id = body["session_id"]
+    check("oauth url", "authorize" in body.get("auth_url", ""), body)
     status, body = call("POST", "/codearts/accounts/oauth/poll",
-                        {"session_id": "sess-1"}, token=token)
-    check("oauth poll", status == 200 and body.get("status") == "pending",
+                        {"session_id": session_id}, token=token)
+    check("oauth poll pending", status == 200 and body.get("status") == "pending",
           (status, body))
-    status, body = call("POST", "/codearts/accounts/oauth/callback",
-                        {"session_id": "sess-1",
-                         "callback_url": "http://127.0.0.1/oauth/callback?code=x"},
-                        token=token)
-    check("oauth callback continue", status == 200 and
-          body.get("status") == "continue", (status, body))
-    check("oauth next_url passthrough", body.get("next_url") ==
-          "https://example.test/next", body)
+    status, body = call("POST", "/codearts/accounts/oauth/callback", {
+        "session_id": session_id,
+        "callback_url": "http://127.0.0.1:%d/oauth/callback?code=abc" % HUB_PORT,
+    }, token=token)
+    check("oauth callback done", status == 200 and body.get("status") == "done",
+          (status, body))
 
-    print("== delete old upstream ==")
-    state.delete_status = 404
-    state.delete_error = "404 page not found"
-    status, body = call("POST", "/codearts/accounts/delete", {"uid": "u1"},
-                        token=token)
-    check("delete route 404 -> 409", status == 409, (status, body))
-    check("delete 409 message", "版本过旧" in json.dumps(body, ensure_ascii=False),
-          body)
-    state.delete_error = "account not found"
+    print("== delete ==")
     status, body = call("POST", "/codearts/accounts/delete", {"uid": "nope"},
                         token=token)
-    check("delete missing account -> 404", status == 404, (status, body))
-    state.delete_status = 200
+    check("delete missing -> 404", status == 404, (status, body))
+    status, body = call("POST", "/codearts/accounts/delete", {"uid": "u1"},
+                        token=token)
+    check("delete ok", status == 200 and body.get("deleted") is True,
+          (status, body))
+    check("account gone", C.pool_for(ACCOUNTS).get("u1") is None)
+    check("auth file gone", C.load_auths(ACCOUNTS) == [])
 
     print("== settings ==")
     status, body = call("GET", "/settings", token=token)
     check("settings has codearts", isinstance(body.get("codearts"), dict), body)
-    check("settings hides key", "super-secret-key" not in json.dumps(body), body)
-    check("settings key set", body["codearts"].get("api_key_set") is True, body)
-
+    check("settings no secret", state.token not in json.dumps(body), body)
+    check("settings codearts has no key", "api_key" not in body["codearts"], body)
     status, body = call("POST", "/settings/save", {
-        "codearts": {"enabled": True, "base_url": fake_base,
-                     "api_key": "", "models_ttl_seconds": 30},
+        "codearts": {"enabled": True, "max_concurrent": 2},
     }, token=token)
     check("settings save", status == 200, (status, body))
-    check("settings save keeps key", body["codearts"].get("api_key_set") is True,
-          body)
-    check("settings save ttl", body["codearts"].get("models_ttl_seconds") == 30,
-          body)
-
-    status, body = call("POST", "/realm", {"realm": "codearts"}, token=token)
-    check("realm switch to codearts", status == 200 and
-          body.get("current") == "codearts", (status, body))
-    status, body = call("POST", "/realm", {"realm": "intl"}, token=token)
-    check("realm switch back to intl", status == 200 and
-          body.get("current") == "intl", (status, body))
-
+    check("settings max concurrent",
+          body["codearts"].get("max_concurrent") == 2, body)
     wb_proxy.CURRENT_REALM = "codearts"
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": False},
@@ -169,18 +166,13 @@ try:
     check("disable warning", "warning" in body, body)
     check("disable resets realm", wb_proxy.CURRENT_REALM == "intl",
           wb_proxy.CURRENT_REALM)
-
-    status, body = call("POST", "/settings/save", {
-        "codearts": {"base_url": "ftp://bad"},
-    }, token=token)
-    check("bad base url -> 400", status == 400, (status, body))
 finally:
     try:
         hub.shutdown()
         hub.server_close()
     except Exception:
         pass
-    stop_server(fake)
+    stop_server(srv)
 
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

@@ -4301,13 +4301,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <section id="codeartsAccountsSection" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <h2 style="margin:0">CodeArts 账号<em id="codeartsAcctCount"></em></h2>
-      <div class="legend" style="margin:0">账号、token 续期、冷却与签到由 codearts2api 执行；这里只做增删启停。</div>
+      <div class="legend" style="margin:0">账号、token 续期、模型发现、冷却与签到都由本进程直接完成。</div>
     </div>
     <div class="toolbar">
       <button onclick="openCodeartsOauthModal()">+ 添加账号 (OAuth)</button>
       <button class="sec" onclick="codeartsCheckinAll(this)">全员签到</button>
       <button class="sec" onclick="codeartsKeepalive(this)">保活</button>
-      <button class="sec" onclick="openCodeartsConsole()">打开 codearts2api 控制台</button>
       <button class="sec" onclick="loadCodeartsOverview(true)">刷新</button>
     </div>
     <div id="codeartsAccounts"></div>
@@ -4897,8 +4896,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <h2>CodeArts 接入 <em id="setCodeartsState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
-        把 codearts2api 接成第三个出口。账号、token 续期、冷却与签到仍由它负责；
-        这里只保存它的地址和访问 Key，并代理账号管理。
+        第三个出口直接连华为云 CodeArts：OAuth 登录、token 续期、模型发现、
+        冷却与签到都在本进程内完成，不需要再跑独立的 codearts2api 服务。
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
@@ -4906,13 +4905,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           启用 CodeArts 出口
         </label>
         <div>
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">Base URL</div>
-          <input id="setCodeartsBaseUrl" type="text" placeholder="http://127.0.0.1:7866"
-                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
-        </div>
-        <div>
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">API Key</div>
-          <input id="setCodeartsApiKey" type="password" placeholder="已设置则留空"
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
+          <input id="setCodeartsMaxConcurrent" type="number" min="1" max="20"
                  style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
         </div>
         <div>
@@ -5980,7 +5974,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </div>
     <div class="modal-bd">
       <div style="font-size:12px;color:var(--dim);margin-bottom:10px">
-        用华为云账号完成授权。浏览器和 codearts2api 不在同一台机器时，回调地址会打不开；
+        用华为云账号完成授权。浏览器和本网关不在同一台机器时，回调地址会打不开；
         把地址栏里的完整地址粘贴到下面，点「中转回调」。
       </div>
       <div style="font-size:12px;color:var(--dim);margin-bottom:4px">授权链接</div>
@@ -6876,16 +6870,14 @@ function renderCodeartsSettings(cfg){
   if(!cfg) return;
   const enabled = document.getElementById("setCodeartsEnabled");
   if(enabled) enabled.checked = cfg.enabled === true;
-  const base = document.getElementById("setCodeartsBaseUrl");
-  if(base) base.value = cfg.base_url || "";
+  const conc = document.getElementById("setCodeartsMaxConcurrent");
+  if(conc) conc.value = cfg.max_concurrent || 5;
   const timeout = document.getElementById("setCodeartsTimeout");
   if(timeout) timeout.value = cfg.timeout_seconds || 30;
   const stream = document.getElementById("setCodeartsStreamTimeout");
   if(stream) stream.value = cfg.stream_timeout_seconds || 600;
   const ttl = document.getElementById("setCodeartsModelsTtl");
-  if(ttl) ttl.value = cfg.models_ttl_seconds || 60;
-  const key = document.getElementById("setCodeartsApiKey");
-  if(key) key.value = "";
+  if(ttl) ttl.value = cfg.models_ttl_seconds || 300;
   const state = document.getElementById("setCodeartsState");
   if(state){
     state.textContent = cfg.configured ? "(已启用)" : "(未启用)";
@@ -6893,9 +6885,8 @@ function renderCodeartsSettings(cfg){
   }
   const hint = document.getElementById("setCodeartsHint");
   if(hint){
-    hint.textContent = cfg.api_key_set
-      ? "API Key 已设置；留空保存不会覆盖。"
-      : "还没有设置 API Key。";
+    hint.textContent = (cfg.accounts || 0) + " 个账号，"
+      + (cfg.healthy || 0) + " 个健康；账号在「账号」页的 CodeArts 视图管理。";
   }
 }
 
@@ -6903,11 +6894,10 @@ async function saveCodeartsSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
   const payload = {
     enabled: !!(document.getElementById("setCodeartsEnabled") || {}).checked,
-    base_url: val("setCodeartsBaseUrl"),
-    api_key: val("setCodeartsApiKey"),
+    max_concurrent: parseInt(val("setCodeartsMaxConcurrent"), 10) || 5,
     timeout_seconds: parseFloat(val("setCodeartsTimeout")) || 30,
     stream_timeout_seconds: parseFloat(val("setCodeartsStreamTimeout")) || 600,
-    models_ttl_seconds: parseFloat(val("setCodeartsModelsTtl")) || 60,
+    models_ttl_seconds: parseFloat(val("setCodeartsModelsTtl")) || 300,
   };
   if(btn) btn.disabled = true;
   try{

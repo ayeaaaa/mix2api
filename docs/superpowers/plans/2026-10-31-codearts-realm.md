@@ -10,7 +10,7 @@
 
 **Spec:** `apps/hub/docs/superpowers/specs/2026-10-31-codearts-realm-design.md`
 
-**Status:** 已实现（2026-10-31）。提交记录见 `git log --oneline`；验收结果见 `docs/setup.md`。
+**Status:** 已废弃，被 `2026-10-31-codearts-native.md` 取代（单进程 Python）。
 
 ## Global Constraints
 

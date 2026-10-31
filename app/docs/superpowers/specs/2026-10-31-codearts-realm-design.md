@@ -1,7 +1,7 @@
 # CodeArts 第三出口接入设计
 
 - 日期：2026-10-31
-- 状态：已实现（`mix2api` monorepo）
+- 状态：已废弃，被 `2026-10-31-codearts-native-design.md` 取代（单进程 Python）
 - 目标仓库：`ardeyouxipianyi/workbuddy2api-hub`（主）、`HITZY2002/codearts2api`（配套小改）
 - 相关文档：`CONTRIBUTING.md`、`README.md`
 

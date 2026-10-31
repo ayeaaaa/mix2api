@@ -1,15 +1,10 @@
-.PHONY: test test-hub test-codearts build up down logs
+.PHONY: test build up down logs
 
-test: test-hub test-codearts
-
-test-hub:
-	cd apps/hub && python3 tests/run_all.py
-
-test-codearts:
-	cd apps/codearts && go test ./...
+test:
+	cd app && python3 tests/run_all.py
 
 build:
-	docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example build
+	docker compose -f deploy/docker-compose.yml build
 
 up:
 	cd deploy && docker compose up -d --build
