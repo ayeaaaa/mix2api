@@ -34,11 +34,16 @@ import wb_codearts_crypto as crypto
 # 常量
 # ---------------------------------------------------------------------------
 
-SNAP_HOST = "https://snap-access.cn-north-4.myhuaweicloud.com"
-SNAP_MANAGER = SNAP_HOST + "/snap-manager"
-PORTAL_HOST = "https://codearts.huaweicloud.com/portal"
-STS_HOST = "https://sts.cn-north-4.myhuaweicloud.com"
-BENEFIT_HOST = "https://opengw.developer.huaweicloud.com"
+SNAP_HOST = os.environ.get("WB_CODEARTS_SNAP_HOST") or \
+    "https://snap-access.cn-north-4.myhuaweicloud.com"
+SNAP_MANAGER = os.environ.get("WB_CODEARTS_SNAP_MANAGER") or \
+    SNAP_HOST + "/snap-manager"
+PORTAL_HOST = os.environ.get("WB_CODEARTS_PORTAL_HOST") or \
+    "https://codearts.huaweicloud.com/portal"
+STS_HOST = os.environ.get("WB_CODEARTS_STS_HOST") or \
+    "https://sts.cn-north-4.myhuaweicloud.com"
+BENEFIT_HOST = os.environ.get("WB_CODEARTS_BENEFIT_HOST") or \
+    "https://opengw.developer.huaweicloud.com"
 
 CLIENT_ID = "codearts-agent"
 PLUGIN_NAME = "snap_AIIDE"
