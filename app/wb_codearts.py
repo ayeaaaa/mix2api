@@ -1094,6 +1094,10 @@ def model_entries(config):
     sets = []
     for acct in list(pool.accounts):
         try:
+            _ensure_token(acct)
+        except CodeArtsError:
+            pass
+        try:
             ensure_models(acct, timeout=8.0)
         except CodeArtsError:
             pass
