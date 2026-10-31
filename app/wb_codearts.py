@@ -674,10 +674,11 @@ class CodeArtsPool(object):
                 acct.active_concurrent -= 1
 
     def note_success(self, acct):
-        acct.err_count = 0
-        acct.cool_until = 0
-        acct.last_error = ""
-        self.save_state()
+        if acct.err_count or acct.cool_until or acct.last_error:
+            acct.err_count = 0
+            acct.cool_until = 0
+            acct.last_error = ""
+            self.save_state()
 
     def note_error(self, acct, message, soft=False, terminal=False):
         acct.last_error = str(message or "")[:200]
@@ -1605,6 +1606,7 @@ def open_chat(config, body, session_key=None):
             except CodeArtsError:
                 pass
             stream, used = _client_chat(acct, body, session_key)
+            pool.note_success(acct)
             pool.bind_session(session_key, acct.uid)
             return stream, acct, used
         except CodeArtsBadRequest:
