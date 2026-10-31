@@ -2,7 +2,7 @@
 FROM python:3.11-alpine
 
 # Set environment
-ENV PYTHONUNBUFFERED=1     HOST=0.0.0.0     PORT=58675     API_KEY=     TZ=Asia/Shanghai
+ENV PYTHONUNBUFFERED=1     HOST=0.0.0.0     PORT=58675     TZ=Asia/Shanghai
 
 WORKDIR /app
 
