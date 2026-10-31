@@ -475,6 +475,8 @@ class CodeArtsPool(object):
             acct.disabled = bool(entry.get("disabled"))
             acct.disabled_reason = str(entry.get("reason") or "")
             acct.last_error = str(entry.get("last_error") or "")
+            if isinstance(entry.get("checkin"), dict):
+                acct.checkin = entry["checkin"]
             accounts.append(acct)
         with self._lock:
             self.accounts = accounts
@@ -506,6 +508,7 @@ class CodeArtsPool(object):
                 "disabled": acct.disabled,
                 "reason": acct.disabled_reason,
                 "last_error": acct.last_error,
+                "checkin": acct.checkin,
             })
         try:
             _atomic_write(self.state_file, items)

@@ -178,6 +178,10 @@ try:
     check("checkin ok", result["ok"] is True, result)
     check("checkin credits", result["credits"] == 1000, result)
     check("checkin stored", acct.checkin and acct.checkin.get("ok") is True)
+    pool.save_state()
+    reloaded = C.CodeArtsPool(ACCOUNTS, C.load_config(ACCOUNTS))
+    check("checkin persisted", reloaded.get("u1").checkin == acct.checkin,
+          reloaded.get("u1").checkin)
 
     print("== oauth ==")
     started = C.oauth_start(C.load_config(ACCOUNTS), port=8788)
