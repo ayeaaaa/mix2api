@@ -252,6 +252,21 @@ try:
           and cost["source"] == "codearts:unpriced", cost)
 
     print("== errors ==")
+    state.embedded_error = {"error_code": "not_multimodal",
+                            "error_msg": "The request model is not multimodal"}
+    status, raw = post("/v1/chat/completions", {
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]}],
+        "stream": False,
+    }, "hub-key-1234")
+    check("non-vision image -> 400", status == 400, (status, raw[:300]))
+    check("non-vision image message", "不支持图片" in raw, raw[:300])
+    state.embedded_error = None
+
     state.chat_error = (400, {"error_msg": "bad request"})
     status, raw = post("/v1/chat/completions", chat, "hub-key-1234")
     check("400 passthrough", status == 400, (status, raw[:300]))

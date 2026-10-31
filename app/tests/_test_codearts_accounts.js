@@ -14,6 +14,9 @@ assert.ok(html.includes('id="codeartsAccounts"'), '缺少 CodeArts 账号表');
 assert.ok(/renderCodeartsAccounts/.test(script), '缺少账号表渲染函数');
 assert.ok(/codeartsSlotSelectHtml/.test(script), '缺少 CodeArts 出口选择器');
 assert.ok(script.includes('/codearts/accounts/proxy'), '缺少出口绑定端点');
+assert.ok(script.includes("codeartsAccountAction(\\'test\\'"), '缺少单账号测试入口');
+assert.ok(script.includes("codeartsAccountAction(\\'tasks\\'"), '缺少任务开关入口');
+assert.ok(/function codeartsEditNote/.test(script), '缺少备注编辑入口');
 assert.ok(script.includes("codeartsAccountAction(\\'delete\\'"),
           '缺少删除操作入口');
 assert.ok(/confirm\("删除 CodeArts 账号/.test(script), '删除应有二次确认');
@@ -61,7 +64,7 @@ api.renderCodeartsAccounts({
   stats: {total: 2, healthy: 1},
   accounts: [
     {uid: 'u1', nickname: '账号一', disabled: false, cooling: false,
-     proxy_slot: 'slot-1',
+     proxy_slot: 'slot-1', note: '备注一', tasks_enabled: true,
      token_remaining: '1h0m0s', expires_at: '2026-10-31T12:00:00+08:00',
      active_concurrent: 0, max_concurrent: 5, checkin: {ok: true}},
     {uid: 'u2', nickname: '账号二', disabled: true, cooling: false,
@@ -82,6 +85,7 @@ assert.ok(box.innerHTML.includes("codeartsAccountAction('delete','u1')"),
 assert.ok(box.innerHTML.includes('codeartsSetProxy'), '应显示出口选择器');
 assert.ok(box.innerHTML.includes('slot-1'), '出口选择器应包含已绑定槽位');
 assert.ok(box.innerHTML.includes('美国 住宅'), '出口选择器应显示槽位名称');
+assert.ok(box.innerHTML.includes('备注一'), '账号表应显示备注');
 
 (async () => {
   await api.codeartsAccountAction('delete', 'u1');
@@ -110,6 +114,22 @@ assert.ok(box.innerHTML.includes('美国 住宅'), '出口选择器应显示槽�
   const on = POSTS.filter(p => p.url.indexOf('/settings/save') >= 0).pop();
   assert.equal(on.body.codearts.auto_checkin, true,
     '开启自动签到应写入 auto_checkin=true');
+
+  POSTS = [];
+  await api.codeartsAccountAction('tasks', 'u1', false);
+  const tasks = POSTS.find(p => p.url.indexOf('/codearts/accounts/tasks') >= 0);
+  assert.ok(tasks, '任务开关应 POST /codearts/accounts/tasks');
+  assert.equal(tasks.body.enabled, false, '任务开关应带上 enabled');
+  POSTS = [];
+  await api.codeartsAccountAction('note', 'u1', 'hello');
+  const note = POSTS.find(p => p.url.indexOf('/codearts/accounts/note') >= 0);
+  assert.ok(note, '备注应 POST /codearts/accounts/note');
+  assert.equal(note.body.note, 'hello', '备注应带上 note');
+  POSTS = [];
+  await api.codeartsAccountAction('test', 'u1');
+  const tested = POSTS.find(p => p.url.indexOf('/codearts/accounts/test') >= 0);
+  assert.ok(tested, '测试应 POST /codearts/accounts/test');
+  assert.equal(tested.body.uid, 'u1', '测试应带上 uid');
 
   POSTS = [];
   await api.codeartsCheckinAll();

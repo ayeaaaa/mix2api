@@ -19240,19 +19240,12 @@ class Handler(BaseHTTPRequestHandler):
             save_persisted_realm("intl")
         return self._json(200, {"current": CURRENT_REALM, "options": options})
 
-    def _get_codearts_models(self):
-        """CodeArts 出口的模型目录：实时拉 codearts2api，失败回退缓存。"""
+    def _codearts_model_data(self):
+        """CodeArts entries in the public YYLS/ namespace, key-filtered."""
         cfg = wb_codearts.load_config(ACCOUNTS_DIR)
         if not wb_codearts.configured_config(cfg):
-            return self._error(
-                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
-                "invalid_request_error")
-        try:
-            data = wb_codearts.model_entries(cfg)
-        except wb_codearts.CodeArtsAuthError as exc:
-            return self._error(502, str(exc), "invalid_request_error")
-        except wb_codearts.CodeArtsError as exc:
-            return self._error(502, str(exc), "invalid_request_error")
+            return None, None
+        data = wb_codearts.model_entries(cfg)
         for entry in data:
             bare = str(entry.get("id") or "")
             entry["upstream_id"] = bare
@@ -19262,6 +19255,20 @@ class Handler(BaseHTTPRequestHandler):
                     if (wb_settings.key_allows_model(self.key_entry, m.get("id"))
                         or wb_settings.key_allows_model(
                             self.key_entry, m.get("upstream_id")))]
+        return data, cfg
+
+    def _get_codearts_models(self):
+        """CodeArts 出口的模型目录：实时拉 codearts2api，失败回退缓存。"""
+        try:
+            data, cfg = self._codearts_model_data()
+        except wb_codearts.CodeArtsAuthError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        except wb_codearts.CodeArtsError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        if data is None:
+            return self._error(
+                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
+                "invalid_request_error")
         payload = {
             "object": "list",
             "data": data,
@@ -19318,6 +19325,13 @@ class Handler(BaseHTTPRequestHandler):
                     "required": "standard",
                     "at": gate_at,
                 }
+        if req_realm == "all" and pinned is None:
+            try:
+                codearts_data, _codearts_cfg = self._codearts_model_data()
+            except Exception:
+                codearts_data = None
+            if codearts_data:
+                data.extend(codearts_data)
         payload = {"object": "list", "data": data,
                    "realm": req_realm or CURRENT_REALM}
         # 来源说明（面板展示用）：这批清单是上游 API 实时取的，还是读的
@@ -21199,6 +21213,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/codearts/accounts/proxy":
                 result = wb_codearts.set_proxy_slot(
                     cfg, uid, payload.get("slot_id"))
+            elif path == "/codearts/accounts/note":
+                result = wb_codearts.set_note(cfg, uid, payload.get("note"))
+            elif path == "/codearts/accounts/tasks":
+                result = wb_codearts.set_tasks_enabled(
+                    cfg, uid, payload.get("enabled"))
+            elif path == "/codearts/accounts/test":
+                result = wb_codearts.test_account(cfg, uid)
             elif path == "/codearts/accounts/enable":
                 result = wb_codearts.enable(cfg, uid)
             elif path == "/codearts/accounts/disable":

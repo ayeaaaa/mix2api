@@ -390,11 +390,15 @@ class Scheduler:
         cycle_hour = time.localtime().tm_hour
         run_checkin = (not daily_chat_only
                        and (force or cycle_hour in self.checkin_hours))
+        run_keepalive = (not daily_chat_only
+                         and (force or cycle_hour in self.keepalive_hours))
         if not self.pool:
             self.log("账号池不可用，跳过本次巡检")
             return
         accounts = list(self.pool.accounts)
-        if not accounts and not self._codearts_checkin_pending(run_checkin):
+        if not accounts and not (
+                self._codearts_checkin_pending(run_checkin)
+                or self._codearts_keepalive_pending(run_keepalive)):
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
 
@@ -406,8 +410,6 @@ class Scheduler:
         daily_chat_targets = []
         run_travel = (not daily_chat_only
                       and (force or cycle_hour in self.travel_hours))
-        run_keepalive = (not daily_chat_only
-                         and (force or cycle_hour in self.keepalive_hours))
         run_cat = (not daily_chat_only
                    and (force or cycle_hour in self.cat_hours))
         # 时段永远存在（面板留空时是「今天随机抽的两个」），所以国际版活跃只按
@@ -513,7 +515,48 @@ class Scheduler:
             daily_chat_count = self._run_daily_chat_batch(daily_chat_targets)
 
         codearts_checkin_count = self._run_codearts_checkin(run_checkin)
-        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，CodeArts 签到 {codearts_checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+        codearts_keepalive_count = self._run_codearts_keepalive(run_keepalive)
+        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，CodeArts 签到 {codearts_checkin_count} 个，CodeArts 保活 {codearts_keepalive_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+
+    def _codearts_keepalive_pending(self, run_keepalive):
+        """Whether any enabled CodeArts account needs a token refresh now."""
+        if not run_keepalive:
+            return False
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return False
+        try:
+            import wb_codearts
+            cfg = wb_codearts.load_config(directory)
+            if not cfg.get("enabled"):
+                return False
+            pool = wb_codearts.pool_for(directory)
+        except Exception:
+            return False
+        return any((not acct.disabled)
+                   and (acct.expiring_soon() or acct.expired())
+                   for acct in pool.accounts)
+
+    def _run_codearts_keepalive(self, run_keepalive):
+        """Refresh CodeArts tokens on the same 22:00 sweep as WorkBuddy."""
+        if not run_keepalive:
+            return 0
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return 0
+        try:
+            import wb_codearts
+            cfg = wb_codearts.load_config(directory)
+            if not cfg.get("enabled"):
+                return 0
+            res = wb_codearts.keepalive(cfg)
+        except Exception as exc:
+            self.log(f"CodeArts 自动保活失败: {exc}")
+            return 0
+        refreshed = int(res.get("refreshed") or 0)
+        if refreshed:
+            self.log(f"✓ CodeArts 自动保活续期 {refreshed} 个账号")
+        return refreshed
 
     def _codearts_checkin_pending(self, run_checkin):
         """Whether this cycle should even enter the CodeArts check-in path."""
@@ -530,7 +573,7 @@ class Scheduler:
             pool = wb_codearts.pool_for(directory)
         except Exception:
             return False
-        return any(not acct.disabled for acct in pool.accounts)
+        return any(acct.tasks_enabled for acct in pool.accounts)
 
     def _run_codearts_checkin(self, run_checkin):
         """Daily CodeArts check-in for enabled accounts.
@@ -564,7 +607,7 @@ class Scheduler:
         now = time.time()
         for acct in list(pool.accounts):
             uid8 = (acct.uid or "?")[:8]
-            if acct.disabled:
+            if not acct.tasks_enabled:
                 continue
             if acct.cool_until > now:
                 self.log(f"跳过 CodeArts 账号 [{uid8}]：冷却中")
@@ -572,7 +615,7 @@ class Scheduler:
             if acct.checked_in_today(now):
                 continue
             try:
-                res = wb_codearts.checkin(cfg, acct.uid)
+                res = wb_codearts.checkin(cfg, acct.uid, trigger="scheduler")
             except Exception as exc:
                 self.log(f"! CodeArts 账号 [{uid8}] 自动签到失败: {exc}")
                 continue

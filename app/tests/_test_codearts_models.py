@@ -61,9 +61,10 @@ threading.Thread(target=hub.serve_forever, daemon=True).start()
 HUB = "http://127.0.0.1:%d" % hub.server_address[1]
 
 try:
-    wb_settings.set_api_keys(ACCOUNTS, [{
-        "key": "hub-key-1234", "name": "test", "realm": "codearts",
-    }])
+    wb_settings.set_api_keys(ACCOUNTS, [
+        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
+        {"key": "hub-key-any", "name": "any", "realm": ""},
+    ])
     wb_proxy.API_KEY = None
     C.save_config(ACCOUNTS, {"enabled": True})
     C.invalidate_models()
@@ -108,6 +109,15 @@ try:
     check("text model not flagged",
           (by_id.get("YYLS/GLM-5.2") or {}).get("capabilities", {})
           .get("vision") is False, by_id.get("YYLS/GLM-5.2"))
+    check("context/max output aliases",
+          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("context_length") == 131072
+          and (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("max_output_tokens") == 8192,
+          by_id.get("YYLS/Qwen3-VL-235B"))
+    check("tool capability advertised",
+          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("capabilities", {})
+          .get("tool_calls") is True
+          and (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("supports_tool_calls") is True,
+          by_id.get("YYLS/Qwen3-VL-235B"))
     check("deepseek reasoning efforts",
           (by_id.get("YYLS/deepseek-v4.1-flash") or {})
           .get("reasoning_efforts") == ["none", "low", "medium", "high",
@@ -129,6 +139,23 @@ try:
     check("filtered ids", [m["id"] for m in payload["data"]] ==
           ["YYLS/GLM-5.2", "YYLS/GLM-4.7"], payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
+    wb_settings.set_api_keys(ACCOUNTS, [
+        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
+        {"key": "hub-key-any", "name": "any", "realm": ""},
+    ])
+
+    print("== all realm ==")
+    original_fetch = wb_proxy.fetch_models
+    wb_proxy.fetch_models = lambda realm=None: [("GLM-5.2", {})]
+    try:
+        status, payload = get(HUB + "/v1/models?realm=all", "hub-key-any")
+    finally:
+        wb_proxy.fetch_models = original_fetch
+    check("all status", status == 200, (status, payload))
+    all_ids = [m["id"] for m in payload["data"]]
+    check("all has workbuddy", "GLM-5.2" in all_ids, all_ids)
+    check("all has codearts",
+          any(i.startswith("YYLS/") for i in all_ids), all_ids)
 
     # 未启用 -> 503
     C.save_config(ACCOUNTS, {"enabled": False})

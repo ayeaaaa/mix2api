@@ -309,6 +309,23 @@ try:
           and any(p.get("type") == "image_url" for p in upstream_parts),
           state.last_body)
 
+    print("== request params ==")
+    params_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["\n"], "frequency_penalty": 0.1,
+        "presence_penalty": 0.2, "seed": 42,
+        "response_format": {"type": "json_object"},
+    }, "sess-params")
+    check("stop preserved", params_body.get("stop") == ["\n"], params_body)
+    check("penalties preserved",
+          params_body.get("frequency_penalty") == 0.1
+          and params_body.get("presence_penalty") == 0.2, params_body)
+    check("seed preserved", params_body.get("seed") == 42, params_body)
+    check("response_format preserved",
+          params_body.get("response_format") == {"type": "json_object"},
+          params_body)
+
     print("== reasoning effort ==")
     effort_body = C.build_chat_body({
         "model": "deepseek-v4.1-flash",
@@ -408,9 +425,11 @@ try:
           sched._run_codearts_checkin(True) == 0)
     C.save_config(ACCOUNTS, {"auto_checkin": True})
     acct.disabled = True
-    check("auto checkin skips disabled",
+    acct.tasks_enabled = False
+    check("auto checkin skips tasks-off",
           sched._run_codearts_checkin(True) == 0)
     acct.disabled = False
+    acct.tasks_enabled = True
     check("auto checkin only on checkin slots",
           sched._run_codearts_checkin(False) == 0)
     acct.checkin = None
@@ -420,6 +439,28 @@ try:
     sched._run_cycle("test cycle", force=True)
     check("scheduler cycle runs codearts without workbuddy",
           acct.checked_in_today() is True)
+    acct.checkin = None
+    acct.disabled = False
+    acct.tasks_enabled = False
+    pool.save_state()
+    check("auto checkin obeys tasks toggle",
+          sched._run_codearts_checkin(True) == 0)
+    acct.tasks_enabled = True
+    acct.disabled = True
+    acct.checkin = None
+    pool.save_state()
+    check("disabled account can still check in",
+          sched._run_codearts_checkin(True) == 1)
+    acct.disabled = False
+    pool.save_state()
+
+    acct.auth["expiration"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10))
+    check("codearts keepalive pending",
+          sched._codearts_keepalive_pending(True) is True)
+    check("codearts keepalive runs",
+          sched._run_codearts_keepalive(True) >= 1)
+    check("codearts keepalive restored", acct.expires_at() > time.time())
 
     print("== oauth ==")
     started = C.oauth_start(C.load_config(ACCOUNTS), port=8788)

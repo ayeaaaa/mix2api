@@ -33,7 +33,7 @@ RESULTS = ("ok", "failed")
 RESULT_ALIASES = {"ok": "ok", "success": "ok", "succeeded": "ok",
                   "failed": "failed", "fail": "failed", "failure": "failed"}
 
-REALMS = ("cn", "intl")
+REALMS = ("cn", "intl", "codearts")
 
 # 允许出现在 API 响应里的字段，一个不多。JSONL 是磁盘上的文件而不是我们的内存，
 # 一行里完全可能多出别的键（别的写入方、手工补的行、被塞进来的凭证），读取侧

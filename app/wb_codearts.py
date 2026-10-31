@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 
 import wb_settings
+import wb_activity
 import wb_codearts_crypto as crypto
 
 # ---------------------------------------------------------------------------
@@ -365,6 +366,9 @@ class CodeArtsAccount(object):
         # CodeArtsPool.apply_proxy_slots() derives from the current settings.
         self.proxy_slot = str(auth.get("proxySlot") or "").strip()
         self.proxy = ""
+        # Panel-side metadata; state.json is the source of truth for both.
+        self.note = ""
+        self.tasks_enabled = True
         self.disabled = False
         self.disabled_reason = ""
         self.cool_until = 0.0
@@ -479,6 +483,8 @@ class CodeArtsAccount(object):
             "models": len(self.models),
             "proxy_slot": self.proxy_slot,
             "proxy": self.proxy,
+            "note": self.note,
+            "tasks_enabled": bool(self.tasks_enabled),
         }
 
     def checked_in_today(self, now=None):
@@ -546,6 +552,8 @@ class CodeArtsPool(object):
             acct.disabled = bool(entry.get("disabled"))
             acct.disabled_reason = str(entry.get("reason") or "")
             acct.last_error = str(entry.get("last_error") or "")
+            acct.note = str(entry.get("note") or "")[:200]
+            acct.tasks_enabled = bool(entry.get("tasks_enabled", True))
             if isinstance(entry.get("checkin"), dict):
                 acct.checkin = entry["checkin"]
             accounts.append(acct)
@@ -581,6 +589,8 @@ class CodeArtsPool(object):
                 "reason": acct.disabled_reason,
                 "last_error": acct.last_error,
                 "checkin": acct.checkin,
+                "note": acct.note,
+                "tasks_enabled": bool(acct.tasks_enabled),
             })
         try:
             _atomic_write(self.state_file, items)
@@ -703,6 +713,22 @@ class CodeArtsPool(object):
             return False
         acct.cool_until = 0
         acct.err_count = 0
+        self.save_state()
+        return True
+
+    def set_note(self, uid, note):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        acct.note = str(note or "").strip()[:200]
+        self.save_state()
+        return True
+
+    def set_tasks_enabled(self, uid, enabled):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        acct.tasks_enabled = bool(enabled)
         self.save_state()
         return True
 
@@ -1037,6 +1063,29 @@ def _known_vision(mid):
     return str(mid or "").strip().lower() in _KNOWN_VISION_IDS
 
 
+def _wb_catalog_limits(mid):
+    """Context/output limits from the WorkBuddy catalog for the same model id.
+
+    CodeArts' builtin list often omits context_window/max_tokens. For ids that
+    are the same backend model, the WorkBuddy catalogue has the spec; use it as
+    a fallback rather than advertising no limit at all.
+    """
+    key = str(mid or "").strip().lower()
+    if not key:
+        return 0, 0
+    try:
+        import wb_catalog
+        for table in (wb_catalog.STATIC_MODELS, wb_catalog.STATIC_CN_MODELS):
+            for item in table:
+                if str(item.get("id") or "").strip().lower() != key:
+                    continue
+                return (int(item.get("maxInputTokens") or 0),
+                        int(item.get("maxOutputTokens") or 0))
+    except Exception:
+        pass
+    return 0, 0
+
+
 def _merge_models(sets):
     merged = {}
     for source, items in sets:
@@ -1275,10 +1324,21 @@ def model_entries(config):
             "provider": "codearts",
             "name": item.get("name") or item["id"],
         }
-        if item.get("context_window"):
-            entry["context_window"] = item["context_window"]
-        if item.get("max_tokens"):
-            entry["max_tokens"] = item["max_tokens"]
+        ctx = int(item.get("context_window") or 0)
+        out_tokens = int(item.get("max_tokens") or 0)
+        if not ctx or not out_tokens:
+            wb_ctx, wb_out = _wb_catalog_limits(item["id"])
+            ctx = ctx or wb_ctx
+            out_tokens = out_tokens or wb_out
+        if ctx:
+            entry["context_window"] = ctx
+            entry["context_length"] = ctx
+            entry["max_input_tokens"] = ctx
+        if out_tokens:
+            entry["max_tokens"] = out_tokens
+            entry["max_output_tokens"] = out_tokens
+            entry["max_completion_tokens"] = out_tokens
+            entry["max_output"] = out_tokens
         if item.get("benefit"):
             entry["benefit"] = True
         supports = item.get("supports_images")
@@ -1288,12 +1348,14 @@ def model_entries(config):
         inputs = ["text"] + (["image"] if vision else [])
         # Same convention set WorkBuddy emits: clients read different spellings
         # for vision support, and DSH specifically needs input modalities.
-        entry["capabilities"] = {"vision": vision}
+        entry["capabilities"] = {"vision": vision, "tool_calls": True}
         entry["supports_vision"] = vision
         entry["supports_images"] = vision
+        entry["supports_tool_calls"] = True
         entry["vision"] = vision
         entry["multimodal"] = vision
-        entry["abilities"] = {"vision": vision}
+        entry["abilities"] = {"vision": vision, "functionCall": True,
+                              "function_call": True}
         entry["input_modalities"] = inputs
         entry["output_modalities"] = ["text"]
         entry["modalities"] = {"input": inputs, "output": ["text"]}
@@ -1443,6 +1505,10 @@ def build_chat_body(payload, session_key=None):
     allowed = {
         "model", "messages", "temperature", "top_p", "max_tokens",
         "max_completion_tokens", "reasoning_effort", "tools", "tool_choice",
+        # Verified against the CodeArts upstream: it accepts these and applies
+        # them, but the earlier narrow allow-list silently dropped them.
+        "stop", "frequency_penalty", "presence_penalty", "seed",
+        "response_format",
     }
     body = {str(k): v for k, v in payload.items() if str(k) in allowed}
     bare_model, _namespaced = split_model_id(payload.get("model") or "GLM-5.2")
@@ -1794,6 +1860,14 @@ def _client_chat(acct, body, session_key):
             stream.preflight()
         except CodeArtsUpstreamError as exc:
             stream.close()
+            text = str(exc).lower()
+            if ("not multimodal" in text
+                    or "does not support image" in text
+                    or "image input" in text and "not support" in text):
+                raise CodeArtsBadRequest(
+                    "模型 %s 不支持图片输入；可用视觉模型："
+                    "YYLS/Qwen3-VL-235B、YYLS/kimi-k2.6-vl" % model,
+                    status=400)
             if _is_concurrency_message(str(exc)):
                 last_error = exc
                 if attempt < 2:
@@ -2362,6 +2436,42 @@ def clear_cooldown(config, uid):
     return {"ok": True, "message": "已清冷却 %s" % uid}
 
 
+def set_note(config, uid, note):
+    pool = pool_for(config["accounts_dir"])
+    if not pool.set_note(uid, note):
+        raise CodeArtsNotFound("account not found")
+    return {"ok": True, "uid": uid, "note": pool.get(uid).note}
+
+
+def set_tasks_enabled(config, uid, enabled):
+    pool = pool_for(config["accounts_dir"])
+    if not pool.set_tasks_enabled(uid, enabled):
+        raise CodeArtsNotFound("account not found")
+    return {"ok": True, "uid": uid,
+            "tasks_enabled": bool(pool.get(uid).tasks_enabled)}
+
+
+def test_account(config, uid):
+    pool = pool_for(config["accounts_dir"])
+    acct = pool.get(uid)
+    if acct is None:
+        raise CodeArtsNotFound("account not found")
+    try:
+        _ensure_token(acct)
+        ensure_models(acct, force=True, timeout=15.0)
+        info = fetch_account_info(acct, timeout=15.0)
+        total = (info.get("credits") or {}).get("total") or {}
+        return {
+            "ok": True,
+            "uid": uid,
+            "models": len(acct.models),
+            "credits": total.get("remain"),
+            "message": "连接正常",
+        }
+    except CodeArtsError as exc:
+        return {"ok": False, "uid": uid, "message": str(exc)[:300]}
+
+
 def apply_proxy_slots(accounts_dir, slots=None):
     """Re-resolve CodeArts account exits after the panel saves slots."""
     pool_for(accounts_dir).apply_proxy_slots(slots)
@@ -2428,7 +2538,7 @@ def _credit_request(acct, method, path, payload=None, timeout=30.0):
                        agent_type="PromptCenter")
 
 
-def checkin_account(acct, timeout=30.0):
+def checkin_account(acct, timeout=30.0, trigger="manual"):
     data = _credit_request(acct, "GET",
                            EP_CREDIT_DELIVERY + "?channel=IDE",
                            timeout=timeout)
@@ -2484,24 +2594,32 @@ def checkin_account(acct, timeout=30.0):
                     "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
     acct.info_fetched_at = 0.0
     acct.pool.save_state()
+    try:
+        wb_activity.record(uid=acct.uid, nickname=acct.nickname,
+                           realm="codearts", task=wb_activity.TASK_CHECKIN,
+                           trigger=trigger, ok=result["ok"],
+                           message=message)
+    except Exception:
+        pass
     return result
 
 
-def checkin(config, uid=""):
+def checkin(config, uid="", trigger="manual"):
     pool = pool_for(config["accounts_dir"])
     if uid:
         acct = pool.get(uid)
         if acct is None:
             raise CodeArtsNotFound("account not found")
         _ensure_token(acct)
-        return checkin_account(acct)
+        return checkin_account(acct, trigger=trigger)
     results = []
     for acct in list(pool.accounts):
         if acct.disabled:
             continue
         try:
             _ensure_token(acct)
-            results.append({"uid": acct.uid, **checkin_account(acct)})
+            results.append({"uid": acct.uid,
+                            **checkin_account(acct, trigger=trigger)})
         except CodeArtsError as exc:
             results.append({"uid": acct.uid, "ok": False, "message": str(exc)})
     total = sum(float(r.get("credits") or 0) for r in results)

@@ -105,6 +105,11 @@ try:
         check("%s ok" % action, status == 200 and body.get("ok") is True,
               (status, body))
     check("account still in pool", C.pool_for(ACCOUNTS).get("u1") is not None)
+    status, body = call("GET", "/activity/history?range=all", token=token)
+    check("codearts checkin in activity",
+          any(r.get("realm") == "codearts" and r.get("task") == "checkin"
+              and r.get("uid") == "u1"
+              for r in body.get("rows") or []), body)
 
     print("== proxy slots ==")
     import wb_settings
@@ -142,6 +147,26 @@ try:
     check("codearts direct after removal",
           C.pool_for(ACCOUNTS).get("u1").proxy == "",
           C.pool_for(ACCOUNTS).get("u1").proxy)
+
+    print("== account metadata ==")
+    status, body = call("POST", "/codearts/accounts/note",
+                        {"uid": "u1", "note": "hello"}, token=token)
+    check("note ok", status == 200 and body.get("note") == "hello",
+          (status, body))
+    status, body = call("GET", "/codearts/overview", token=token)
+    check("note in view", body["accounts"][0].get("note") == "hello", body)
+    status, body = call("POST", "/codearts/accounts/tasks",
+                        {"uid": "u1", "enabled": False}, token=token)
+    check("tasks off", status == 200
+          and body.get("tasks_enabled") is False, (status, body))
+    status, body = call("POST", "/codearts/accounts/tasks",
+                        {"uid": "u1", "enabled": True}, token=token)
+    check("tasks on", status == 200
+          and body.get("tasks_enabled") is True, (status, body))
+    status, body = call("POST", "/codearts/accounts/test",
+                        {"uid": "u1"}, token=token)
+    check("account test", status == 200 and body.get("ok") is True,
+          (status, body))
 
     status, body = call("POST", "/codearts/accounts/enable", {}, token=token)
     check("missing uid -> 400", status == 400, (status, body))
