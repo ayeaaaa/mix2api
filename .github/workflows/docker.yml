@@ -4,16 +4,16 @@ name: docker
 #
 #   push v*            -> tag the image with the pushed tag + latest
 #   workflow_dispatch  -> build the current main and tag it with the input tag
-#                         (used to backfill v1.0.0 after the release existed)
+#                         (used to backfill a release image after it exists)
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (e.g. v1.0.0)"
+        description: "Image tag to publish (e.g. v1.0.1)"
         required: true
-        default: "v1.0.0"
+        default: "v1.0.1"
 
 permissions:
   contents: read
