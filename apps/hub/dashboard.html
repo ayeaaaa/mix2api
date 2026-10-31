@@ -6466,14 +6466,17 @@ function updateUI(){
     : (isCnGw ? "https://copilot.tencent.com/v2"
               : ((window.CODEARTS_OVERVIEW || {}).base_url || "codearts2api"));
 
-  const nextGw = (gwRealm === "intl") ? "cn" : (gwRealm === "cn" ? "codearts" : "intl");
+  const gwOptions = (window.REALM_OPTIONS && window.REALM_OPTIONS.length)
+    ? window.REALM_OPTIONS : ["intl", "cn"];
+  let gwIdx = gwOptions.indexOf(gwRealm);
+  if(gwIdx < 0) gwIdx = 0;
+  const nextGw = gwOptions[(gwIdx + 1) % gwOptions.length];
   const nextGwName = (nextGw === "intl") ? "国际版" : (nextGw === "cn" ? "国内版" : "CodeArts");
   const btnToggle = document.getElementById("btnToggleRealm");
   if(btnToggle) {
     btnToggle.textContent = "切换默认出口为【" + nextGwName + "】";
     btnToggle.style.borderColor = isIntlGw ? "var(--accent)" : (isCnGw ? "var(--bad)" : "#5b3fa0");
     btnToggle.style.color = isIntlGw ? "var(--accent)" : (isCnGw ? "var(--bad)" : "#5b3fa0");
-    btnToggle.style.display = (!caEnabled && nextGw === "codearts") ? "none" : "";
   }
   const cardGw = document.getElementById("cardGatewayCtrl");
   if(cardGw){

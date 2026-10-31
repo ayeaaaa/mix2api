@@ -26,8 +26,8 @@ assert.ok(html.includes('id="workbuddyAccountsSection"'), 'WorkBuddy 账号区�
 assert.ok(html.includes('id="workbuddyDisabledSection"'), 'WorkBuddy 禁用区缺少可定位 id');
 assert.ok(html.includes('id="workbuddyActivitySection"'), 'WorkBuddy 活动区缺少可定位 id');
 
-assert.ok(/const nextGw = \(gwRealm === "intl"\) \? "cn"/.test(script),
-  '默认出口应按 intl → cn → codearts 循环');
+assert.ok(/const nextGw = gwOptions\[\(gwIdx \+ 1\) % gwOptions\.length\]/.test(script),
+  '默认出口应按服务端 options 循环（未配置时跳过 codearts）');
 assert.ok(/window\.REALM_OPTIONS/.test(script),
   '默认出口循环应读取服务端返回的 options');
 assert.ok(/if\(r === "codearts"\)\{/.test(script),
