@@ -13,6 +13,26 @@
 - **一个看板**：三个出口的账号都在这里增删、启停、签到；CodeArts 账号用华为云 OAuth 添加。
 - **三类协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、Anthropic Messages（需显式开启）都能走 CodeArts。
 
+## 项目由来
+
+本项目是 [workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub)（MIT）和 [codearts2api](https://github.com/HITZY2002/codearts2api)（MIT）的整合分支。
+
+- **起点**：wb-hub 只有 WorkBuddy 国际版 / 国内版两个出口；codearts2api 是一个独立的 Go 服务，自己管华为云账号池。
+- **目标**：让 wb-hub 的出口开关多一个 `CodeArts`，三个上游共用一个地址、一个看板、一套 API Key。
+- **过程**：先做过「hub + 独立 codearts2api」的代理版；确认要单进程后，把 CodeArts 的 OAuth、token 续期、模型发现、聊天 SSE、签到和积分查询移植进 Python，最终只运行 `app/` 一个服务。
+- **代码关系**：`app/` 派生自 wb-hub；`reference/codearts2api/` 只保留 Go 源码作协议参考，不参与构建和运行。
+
+## 这次做了什么
+
+- **单进程 CodeArts 客户端**：华为云 OAuth2（PKCE + DPoP）、refresh_token 续期、账号池、并发/冷却、模型发现（agent-center / builtin / 限时福利）、聊天 SSE、签到、积分余额。
+- **纯标准库密码学**：P-256 ECDSA、DPoP JWT、PKCE、华为云 `SDK-HMAC-SHA256` 签名；ECDSA 与 HMAC 都用 Go 侧向量对拍。
+- **看板**：第三张 CodeArts 出口卡片、三出口切换、CodeArts 账号表（OAuth 添加 / 启停 / 清冷却 / 签到 / 删除）、设置页、积分余额与已用/总额、模型描述。
+- **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`，不按 WorkBuddy 价目表计价。
+- **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
+- **测试**：243 个 hub 套件全过；CodeArts 链路用本机假华为云上游覆盖，密码学有 Go 对照向量。
+
+> 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号，不要共享或转售账号。
+
 ## 目录
 
 | 路径 | 内容 |
