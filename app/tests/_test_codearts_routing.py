@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -21,6 +22,7 @@ ACCOUNTS = os.environ["ACCOUNTS_DIR"]
 USAGE = os.environ["WB_PROXY_USAGE_DIR"]
 
 import wb_codearts as C  # noqa: E402
+import wb_pricing  # noqa: E402
 import wb_codearts_crypto as crypto  # noqa: E402
 import wb_proxy  # noqa: E402
 import wb_settings  # noqa: E402
@@ -190,6 +192,15 @@ try:
     check("all unpriced",
           all(r.get("cost_policy") == "codearts:unpriced" for r in rows),
           [r.get("cost_policy") for r in rows])
+
+    print("== unpriced ==")
+    cost = wb_pricing.cost_for_row({
+        "model": "deepseek-v4.1-flash", "cost_policy": "codearts:unpriced",
+        "at": time.time(), "prompt_tokens": 10, "completion_tokens": 5,
+    })
+    check("codearts row unpriced", cost["known"] is False
+          and cost["cny"] == 0.0
+          and cost["source"] == "codearts:unpriced", cost)
 
     print("== errors ==")
     state.chat_error = (400, {"error_msg": "bad request"})
