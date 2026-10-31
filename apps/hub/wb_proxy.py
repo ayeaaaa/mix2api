@@ -21115,6 +21115,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = wb_codearts.keepalive(cfg)
                 wb_codearts.invalidate_overview()
                 return self._json(200, result)
+            if path == "/codearts/models/refresh":
+                return self._json(200, wb_codearts.refresh_models(cfg))
+            if path == "/codearts/accounts/checkin":
+                # uid 可空：空 = 全员签到。
+                result = wb_codearts.checkin(cfg, uid)
+                wb_codearts.invalidate_overview()
+                return self._json(200, result)
             if not uid:
                 return self._error(400, "uid required", "invalid_request_error")
             if path == "/codearts/accounts/enable":
@@ -21125,8 +21132,6 @@ class Handler(BaseHTTPRequestHandler):
                 result = wb_codearts.remove(cfg, uid)
             elif path == "/codearts/accounts/clear-cooldown":
                 result = wb_codearts.clear_cooldown(cfg, uid)
-            elif path == "/codearts/accounts/checkin":
-                result = wb_codearts.checkin(cfg, uid)
             else:
                 return self._error(404, "unknown codearts endpoint",
                                    "invalid_request_error")

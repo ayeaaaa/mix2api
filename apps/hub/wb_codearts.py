@@ -390,6 +390,14 @@ def invalidate_models():
         _models_stale.clear()
 
 
+def refresh_models(config):
+    """强制重取模型目录；看板的「刷新模型清单」用。"""
+    invalidate_models()
+    entries = models(config, force=True)
+    return {"ok": True, "models": len(entries),
+            "catalog": models_meta(config)}
+
+
 def _valid_chat_id(value):
     """codearts2api 的 validChatID：32 位 hex。"""
     text = str(value or "").strip()
