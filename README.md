@@ -59,11 +59,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.0.4
+docker pull ghcr.io/ayeaaaa/mix2api:v1.0.5
 docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.0.4
+  ghcr.io/ayeaaaa/mix2api:v1.0.5
 ```
 
 ### 方式二：本地构建
@@ -110,6 +110,8 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 - 积分：`snap-manager/v1/statistics/plugin` 查询剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表积分列显示 `0.00`、估算价格显示 `—`。
 - 代理：CodeArts 账号可绑定「账号代理槽」，出站请求与 WorkBuddy 共用 `wb_upstream_pool`（连接复用、代理认证、`no_proxy`、失效连接重试）；槽位停用/删除回退直连，首次 OAuth 换 token 仍直连。
 - 图片：`/v1/models` 按 CodeArts 上游的 `supports_images` 宣告视觉能力，并输出 WorkBuddy 同款 `capabilities.vision` / `input_modalities` 等字段。当前 `Qwen3-VL-235B`、`kimi-k2.6-vl` 为 true；`GLM-5.2`、`kimi-k3`、`deepseek-v4.1-flash` 等为 false，不会向客户端误报可读图。视觉模型支持 OpenAI `image_url`、Responses `input_image`、Anthropic `image` 块；data URL 已实测，远程 URL 原样透传（能否抓取取决于上游）。
+- 模型命名：CodeArts 对外统一用 `YYLS/<模型名>`（如 `YYLS/GLM-5.2`、`YYLS/deepseek-v4.1-flash`），避免和 WorkBuddy 同名模型冲突。`/v1/models?realm=codearts` 返回带前缀的 ID；请求带 `YYLS/` 时自动路由到 CodeArts，并在发给华为前剥掉前缀。
+- 推理档位：`deepseek-v4.1-flash` 和 `deepseek-v4.1-flash-1017` 支持 `none / low / medium / high / xhigh / max`，`/v1/models` 会宣告 `reasoning_efforts`；`auto` 或未知值在本地直接 400，并列出允许值。
 - 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；代理槽按 HTTP/HTTPS 代理实现。
 
 ## 安全

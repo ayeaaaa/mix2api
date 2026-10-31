@@ -209,7 +209,7 @@ try:
     ids = [m["id"] for m in models]
     check("agent/builtin/benefit merged", set(ids) ==
           {"GLM-5.2", "GLM-4.7", "Qwen3-VL-235B",
-           "deepseek-v4-pro-0813"}, ids)
+           "deepseek-v4.1-flash", "deepseek-v4-pro-0813"}, ids)
     check("benefit marked", acct.is_benefit("deepseek-v4-pro-0813") is True)
     check("normal not benefit", acct.is_benefit("GLM-5.2") is False)
     entries = C.model_entries(C.load_config(ACCOUNTS))
@@ -223,6 +223,10 @@ try:
     check("entries text not vision",
           entry_by_id["GLM-5.2"]["capabilities"]["vision"] is False,
           entry_by_id.get("GLM-5.2"))
+    check("entries reasoning efforts",
+          entry_by_id["deepseek-v4.1-flash"].get("reasoning_efforts")
+          == ["none", "low", "medium", "high", "xhigh", "max"],
+          entry_by_id.get("deepseek-v4.1-flash"))
     check("models meta source", C.models_meta(C.load_config(ACCOUNTS))["source"] == "codearts")
 
     print("== credits ==")
@@ -304,6 +308,24 @@ try:
           isinstance(upstream_parts, list)
           and any(p.get("type") == "image_url" for p in upstream_parts),
           state.last_body)
+
+    print("== reasoning effort ==")
+    effort_body = C.build_chat_body({
+        "model": "deepseek-v4.1-flash",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "max",
+    }, "sess-effort")
+    check("reasoning effort kept", effort_body.get("reasoning_effort") == "max",
+          effort_body)
+    try:
+        C.build_chat_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "auto",
+        }, "sess-effort-bad")
+        check("reasoning effort rejects auto", False)
+    except C.CodeArtsBadRequest as exc:
+        check("reasoning effort rejects auto", "none" in str(exc), str(exc))
 
     print("== named tool choice ==")
     tool_body = C.build_chat_body({

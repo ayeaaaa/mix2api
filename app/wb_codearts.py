@@ -103,6 +103,33 @@ DEFAULTS = {
     "auto_checkin": True,
 }
 
+#: External namespace for CodeArts models. WorkBuddy and CodeArts share many
+#: bare ids (GLM-5.2, kimi-k3...), so /v1/models exposes CodeArts entries as
+#: YYLS/<id>; requests with that prefix route here and the prefix is stripped
+#: before the upstream call.
+MODEL_NAMESPACE = "YYLS/"
+
+#: Verified with the upstream validation error: reasoning_effort must be one of
+#: none/low/medium/high/xhigh/max. `minimal` is accepted but not in that list;
+#: `auto` is rejected.
+REASONING_EFFORTS = {
+    "deepseek-v4.1-flash": ["none", "low", "medium", "high", "xhigh", "max"],
+    "deepseek-v4.1-flash-1017": ["none", "low", "medium", "high",
+                                 "xhigh", "max"],
+}
+
+
+def split_model_id(model):
+    """Return (bare_id, was_namespaced) for an external model id."""
+    text = str(model or "")
+    if text.lower().startswith(MODEL_NAMESPACE.lower()):
+        return text[len(MODEL_NAMESPACE):], True
+    return text, False
+
+
+def qualify_model_id(model):
+    return MODEL_NAMESPACE + str(model)
+
 _LOCK = threading.RLock()
 
 
@@ -974,7 +1001,8 @@ def signed_post(acct, url, payload, headers=None, timeout=30.0, agent_type=""):
 # ---------------------------------------------------------------------------
 
 def _canonical_model(acct, model):
-    mid = str(model or "").strip()
+    mid, _namespaced = split_model_id(model)
+    mid = str(mid or "").strip()
     if not mid:
         return mid
     lower = mid.lower()
@@ -1274,6 +1302,11 @@ def model_entries(config):
             "output_modalities": ["text"],
             "modality": "+".join(inputs) + "->text",
         }
+        efforts = REASONING_EFFORTS.get(str(item["id"]).lower())
+        if efforts:
+            entry["reasoning_efforts"] = list(efforts)
+            entry["supports_reasoning"] = True
+            entry["capabilities"]["reasoning"] = True
         if item.get("desc"):
             entry["description"] = item["desc"]
         if item.get("model_category"):
@@ -1412,7 +1445,20 @@ def build_chat_body(payload, session_key=None):
         "max_completion_tokens", "reasoning_effort", "tools", "tool_choice",
     }
     body = {str(k): v for k, v in payload.items() if str(k) in allowed}
-    body["model"] = str(payload.get("model") or "GLM-5.2")
+    bare_model, _namespaced = split_model_id(payload.get("model") or "GLM-5.2")
+    body["model"] = str(bare_model or "GLM-5.2")
+    effort = body.get("reasoning_effort")
+    allowed_efforts = REASONING_EFFORTS.get(body["model"].lower())
+    if effort is not None and allowed_efforts:
+        effort_text = str(effort).strip().lower()
+        if effort_text and effort_text not in allowed_efforts:
+            raise CodeArtsBadRequest(
+                "reasoning_effort must be one of %s for %s"
+                % ("/".join(allowed_efforts), body["model"]))
+        if effort_text:
+            body["reasoning_effort"] = effort_text
+        else:
+            body.pop("reasoning_effort", None)
     messages = normalize_roles(payload.get("messages") or [])
     messages = [m for m in messages if isinstance(m, dict)]
     flattened = []

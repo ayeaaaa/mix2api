@@ -71,11 +71,11 @@ try:
     # 没有账号：种子目录
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("seed status", status == 200, (status, payload))
-    check("seed has GLM-5.2", any(m["id"] == "GLM-5.2" for m in payload["data"]),
-          payload)
+    check("seed has GLM-5.2",
+          any(m["id"] == "YYLS/GLM-5.2" for m in payload["data"]), payload)
     check("seed benefit flag",
           any(m.get("benefit") for m in payload["data"]
-              if m["id"] == "deepseek-v4-pro-0813"), payload)
+              if m["id"] == "YYLS/deepseek-v4-pro-0813"), payload)
 
     # 加一个账号
     auth = {
@@ -92,23 +92,30 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("status 200", status == 200, (status, payload))
     ids = [m["id"] for m in payload["data"]]
-    check("ids", set(ids) == {"GLM-5.2", "GLM-4.7", "Qwen3-VL-235B",
-                              "deepseek-v4-pro-0813"}, ids)
+    check("ids", set(ids) == {"YYLS/GLM-5.2", "YYLS/GLM-4.7",
+                              "YYLS/Qwen3-VL-235B",
+                              "YYLS/deepseek-v4.1-flash",
+                              "YYLS/deepseek-v4-pro-0813"}, ids)
     check("owned_by", payload["data"][0]["owned_by"] == "codearts")
     check("provider", payload["data"][0]["provider"] == "codearts")
     by_id = {m["id"]: m for m in payload["data"]}
     check("vision model flagged",
-          (by_id.get("Qwen3-VL-235B") or {}).get("capabilities", {})
-          .get("vision") is True, by_id.get("Qwen3-VL-235B"))
+          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("capabilities", {})
+          .get("vision") is True, by_id.get("YYLS/Qwen3-VL-235B"))
     check("vision modalities",
-          (by_id.get("Qwen3-VL-235B") or {}).get("input_modalities")
-          == ["text", "image"], by_id.get("Qwen3-VL-235B"))
+          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("input_modalities")
+          == ["text", "image"], by_id.get("YYLS/Qwen3-VL-235B"))
     check("text model not flagged",
-          (by_id.get("GLM-5.2") or {}).get("capabilities", {})
-          .get("vision") is False, by_id.get("GLM-5.2"))
+          (by_id.get("YYLS/GLM-5.2") or {}).get("capabilities", {})
+          .get("vision") is False, by_id.get("YYLS/GLM-5.2"))
+    check("deepseek reasoning efforts",
+          (by_id.get("YYLS/deepseek-v4.1-flash") or {})
+          .get("reasoning_efforts") == ["none", "low", "medium", "high",
+                                        "xhigh", "max"],
+          by_id.get("YYLS/deepseek-v4.1-flash"))
     check("catalog source", payload["catalog"]["source"] == "codearts")
     check("benefit flag", any(m.get("benefit") for m in payload["data"]
-                              if m["id"] == "deepseek-v4-pro-0813"), payload)
+                              if m["id"] == "YYLS/deepseek-v4-pro-0813"), payload)
 
     # Key 模型限制
     wb_settings.set_filter_models_by_key(ACCOUNTS, True)
@@ -120,7 +127,7 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("filtered status", status == 200, (status, payload))
     check("filtered ids", [m["id"] for m in payload["data"]] ==
-          ["GLM-5.2", "GLM-4.7"], payload)
+          ["YYLS/GLM-5.2", "YYLS/GLM-4.7"], payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
 
     # 未启用 -> 503

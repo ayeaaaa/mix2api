@@ -47,6 +47,10 @@ class FakeState(object):
             {"model_id": "Qwen3-VL-235B", "model_name": "Qwen3-VL-235B",
              "context_window": 131072, "max_tokens": 8192,
              "supports_images": True, "model_category": "图片理解"},
+            {"model_id": "deepseek-v4.1-flash",
+             "model_name": "DeepSeek-V4.1-Flash",
+             "context_window": 1000000, "max_tokens": 128000,
+             "supports_images": False, "model_category": "文本生成"},
         ]
         self.agent_models = [
             {"model_name": "GLM-5.2", "model_id": "GLM-5.2",
