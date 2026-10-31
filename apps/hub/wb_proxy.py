@@ -842,7 +842,7 @@ def _best_cached_tokens(usage):
 
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
                 account=None, outcome="completed", key=None, effort=None,
-                requested_model=None):
+                requested_model=None, realm=None):
     """Record one finished request as exactly one JSONL row.
 
     A request without a usage block still gets a row (flagged usage_missing):
@@ -886,7 +886,7 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     if account:
         row["account"] = account
     acc = POOL.get(account) if (account and POOL) else None
-    row["realm"] = acc.realm if acc else CURRENT_REALM
+    row["realm"] = realm or (acc.realm if acc else CURRENT_REALM)
     # The refresher visits one account per tick, so on a large pool the cached
     # balance can be hours old; subtract this request's real cost at once so
     # reserve_credits keeps working between refreshes (#442).
@@ -900,7 +900,8 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     # The price policy this request is measured against, stored as a reference
     # so the table can be de-duplicated and swept. A row written before the
     # table existed has no reference and falls back to the timeline.
-    row["cost_policy"] = wb_pricing.current_policy_id(model)
+    row["cost_policy"] = ("codearts:unpriced" if realm == "codearts"
+                          else wb_pricing.current_policy_id(model))
     # Only when the request had one: the panel shows a chip for rows that carry
     # the field, and a model without reasoning controls has nothing to report.
     if effort:
@@ -974,7 +975,7 @@ def upstream_failure_response(handler, model, exc, t_start, key_id=None):
 
 def record_error(model, status, message, elapsed_ms=None, account=None,
                  usage=None, stream=None, ttft_ms=None, gen_ms=None, fp=None,
-                 outcome="failed", key=None):
+                 outcome="failed", key=None, realm=None):
     """Record one failed request as exactly one JSONL row.
 
     Passing the account uid records which account the request was bound to, so
@@ -1014,10 +1015,13 @@ def record_error(model, status, message, elapsed_ms=None, account=None,
     row.update(fields)
     if fp:
         row.update(fp)
+    if realm:
+        row["realm"] = realm
     if account:
         row["account"] = account
         acc = POOL.get(account) if POOL else None
-        row["realm"] = acc.realm if acc else CURRENT_REALM
+        if not realm:
+            row["realm"] = acc.realm if acc else CURRENT_REALM
     row["key"] = key or ""
     _persist_usage(row, "error persist failed")
     dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
@@ -21976,6 +21980,10 @@ class Handler(BaseHTTPRequestHandler):
             key_blocked = self._key_model_error(chat_req.get("model"))
             if key_blocked:
                 return self._error(400, key_blocked, "invalid_request_error")
+            if req_realm == "codearts":
+                return self._handle_codearts_responses(
+                    chat_req, session_key, model, want_stream, compaction,
+                    custom_names, request_meta, ns_map, fp, t_start)
             upstream, account, effort = open_upstream_with_fallback(
                 chat_req, session_key=session_key, target_realm=req_realm,
                 allow_realm_fallback=not explicit_realm,
@@ -22184,7 +22192,7 @@ class Handler(BaseHTTPRequestHandler):
             record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, account=account.uid,
+                         fp=fp, account=account.uid, realm=realm,
                          outcome="client_aborted", key=self._key_id(), effort=effort)
             return
         except Exception as exc:
@@ -22194,7 +22202,8 @@ class Handler(BaseHTTPRequestHandler):
                          usage=holder.get("usage"), stream=True,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, outcome="upstream_aborted", key=self._key_id())
+                         fp=fp, outcome="upstream_aborted", realm=realm,
+                         key=self._key_id())
             try:
                 self.wfile.write(responses_stream_error_frame(
                     "upstream stream aborted: %s" % exc))
@@ -22213,11 +22222,12 @@ class Handler(BaseHTTPRequestHandler):
         record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                      ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort,
+                     fp=fp, account=account.uid, realm=realm,
+                     key=self._key_id(), effort=effort,
                      outcome=("failed" if holder.get("empty_reasoning") else "completed"))
         return
 
-    def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None):
+    def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None, allow_web_tools=True):
         # 跟串流那条一样：客户端宣告 web_search / web_fetch 时由反代代跑。
         # 中间那几轮对客户端不可见，最后才组成一个 Responses 物件回传；不这样
         # 做的话 web_search 的 function_call 会直接漏给客户端，客户端只会回
@@ -22225,14 +22235,15 @@ class Handler(BaseHTTPRequestHandler):
         sources = []
         rounds = 0
         # 开关关闭时不拦同名呼叫：那是客户端自己的工具。
-        web_tools = web_tools_active(base_body)
+        # CodeArts 出口没有 wb-hub 的 web_search/web_fetch 代跑，调用方传 False。
+        web_tools = web_tools_active(base_body) if allow_web_tools else False
         while True:
             try:
                 chat_obj = aggregate_stream(upstream, model, None)
             except Exception as exc:
                 record_error(model, 502, str(exc),
                              elapsed_ms=int((time.time() - t_start) * 1000),
-                             account=account.uid, key=self._key_id())
+                             account=account.uid, realm=realm, key=self._key_id())
                 return self._error(502, f"upstream stream error: {exc}")
             calls = internal_calls_from_chat(chat_obj, web_tools=web_tools)
             if not calls:
@@ -22253,7 +22264,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 record_error(model, 502, "web tool follow-up failed: %s" % exc,
                              elapsed_ms=int((time.time() - t_start) * 1000),
-                             account=account.uid, key=self._key_id())
+                             account=account.uid, realm=realm, key=self._key_id())
                 return self._error(502, "web tool follow-up failed: %s" % exc)
             sources = holder.get("web_sources") or sources
         wall = int((time.time() - t_start) * 1000)
@@ -22263,11 +22274,13 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, "upstream returned reasoning without output text",
                          elapsed_ms=wall, account=account.uid,
                          usage=chat_obj.get("usage"), stream=False,
-                         fp=fp, outcome="empty_reasoning", key=self._key_id())
+                         fp=fp, outcome="empty_reasoning", realm=realm,
+                         key=self._key_id())
             return self._error(
                 502, "upstream returned reasoning without output text; retry")
         record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
-                     account=account.uid, key=self._key_id(), effort=effort)
+                     account=account.uid, realm=realm, key=self._key_id(),
+                     effort=effort)
         return self._json(200, result)
 
     def _handle_messages_count_tokens(self, payload):
@@ -22315,6 +22328,9 @@ class Handler(BaseHTTPRequestHandler):
             key_blocked = self._key_model_error(chat_req.get("model"))
             if key_blocked:
                 return self._anthropic_error(400, key_blocked, "invalid_request_error")
+            if req_realm == "codearts":
+                return self._handle_codearts_messages(
+                    chat_req, session_key, model, want_stream, fp, t_start)
             upstream, account, effort = open_upstream_with_fallback(
                 chat_req, session_key=session_key, target_realm=req_realm,
                 allow_realm_fallback=not explicit_realm,
@@ -22393,12 +22409,14 @@ class Handler(BaseHTTPRequestHandler):
             result = chat_to_messages(chat_obj)
             wall = int((time.time() - t_start) * 1000)
             record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall,
-                         fp=fp, account=account.uid, key=self._key_id(), effort=effort)
+                         fp=fp, account=account.uid, realm=realm,
+                         key=self._key_id(), effort=effort)
             return self._json(200, result)
         except Exception as exc:
             wall = int((time.time() - t_start) * 1000)
             record_error(model, 502, "messages upstream error: %s" % exc,
-                         elapsed_ms=wall, account=account.uid, key=self._key_id())
+                         elapsed_ms=wall, account=account.uid, realm=realm,
+                         key=self._key_id())
             return self._anthropic_error(502, "upstream stream error: %s" % exc)
         finally:
             try:
@@ -22431,7 +22449,7 @@ class Handler(BaseHTTPRequestHandler):
             record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, account=account.uid,
+                         fp=fp, account=account.uid, realm=realm,
                          outcome="client_aborted", key=self._key_id(), effort=effort)
             return
         except Exception as exc:
@@ -22440,7 +22458,7 @@ class Handler(BaseHTTPRequestHandler):
                          elapsed_ms=wall, account=account.uid,
                          usage=holder.get("usage"), stream=True,
                          ttft_ms=first_ms, fp=fp, outcome="upstream_aborted",
-                         key=self._key_id())
+                         realm=realm, key=self._key_id())
             try:
                 heartbeat.write(anthropic_sse_frame("error", {
                     "error": {"type": "api_error", "message": str(exc)}}))
@@ -22456,7 +22474,8 @@ class Handler(BaseHTTPRequestHandler):
         record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                      ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort)
+                     fp=fp, account=account.uid, realm=realm,
+                     key=self._key_id(), effort=effort)
         return
 
     def do_POST(self):
@@ -22677,6 +22696,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_responses(payload)
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
+        session_key = extract_session_key(self.headers, payload)
+        want_stream = bool(payload.get("stream"))
+        model = payload.get("model") or "hy4-preview"
+        t_start = time.time()
+        explicit_realm = self._request_realm()
+        req_realm = explicit_realm or CURRENT_REALM
+        if req_realm == "codearts":
+            # CodeArts 不走 WorkBuddy 的 build_upstream_body / 账号池：请求体、
+            # 超时、错误映射都由 wb_codearts 负责，回程复用下面的处理器。
+            return self._handle_codearts_chat(payload, session_key, req_realm)
         forwarded = build_upstream_body(payload)
         given = client_effort_of(payload) or payload.get("reasoning") \
             or payload.get("thinking") or payload.get("enable_thinking")
@@ -22691,14 +22720,8 @@ class Handler(BaseHTTPRequestHandler):
                 key_label(self._key_id()) or "-",
             )
         )
-        session_key = extract_session_key(self.headers, payload)
         fp = prompt_fingerprint(forwarded.get("messages"))
-        want_stream = bool(payload.get("stream"))
-        model = payload.get("model") or "hy4-preview"
-        t_start = time.time()
         try:
-            explicit_realm = self._request_realm()
-            req_realm = explicit_realm or CURRENT_REALM
             blocked = self._cross_realm_error(payload.get("model"), req_realm)
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
@@ -22771,8 +22794,114 @@ class Handler(BaseHTTPRequestHandler):
             return self._chat_nonstream_response(
                 upstream, model, fp, account, t_start, effort=effort)
 
+    def _open_codearts_chat(self, payload, session_key):
+        """打开 CodeArts 的 SSE 上游；返回 (response, account, model)。"""
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        if not wb_codearts.configured_config(cfg):
+            raise wb_codearts.CodeArtsUnavailable(
+                "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。")
+        body = wb_codearts.build_chat_body(payload, session_key)
+        upstream = wb_codearts.open_chat(cfg, body)
+        return upstream, wb_codearts.CodeArtsAccount(cfg), body.get("model")
+
+    def _codearts_error(self, model, exc, t_start, realm):
+        """把 CodeArts 异常落一条用量行，再回一个可读的 OpenAI 错误。"""
+        elapsed = int((time.time() - t_start) * 1000)
+        if isinstance(exc, wb_codearts.CodeArtsBadRequest):
+            status = 400
+        elif isinstance(exc, wb_codearts.CodeArtsAuthError):
+            status = 502
+        elif isinstance(exc, wb_codearts.CodeArtsNotFound):
+            status = 409
+        elif isinstance(exc, wb_codearts.CodeArtsConflict):
+            status = 409
+        else:
+            status = 502
+        record_error(model, status, str(exc)[:200], elapsed_ms=elapsed,
+                     realm=realm, key=self._key_id())
+        return self._error(status, str(exc), "invalid_request_error")
+
+    def _handle_codearts_chat(self, payload, session_key, realm):
+        """`/v1/chat/completions` 的 CodeArts 分支。"""
+        model = payload.get("model") or "glm-5.2"
+        want_stream = bool(payload.get("stream"))
+        t_start = time.time()
+        fp = prompt_fingerprint(payload.get("messages"))
+        try:
+            upstream, account, billed_model = self._open_codearts_chat(
+                payload, session_key)
+        except wb_codearts.CodeArtsError as exc:
+            return self._codearts_error(model, exc, t_start, realm)
+        log("codearts chat: model=%s stream=%s msgs=%d key=%s"
+            % (billed_model or model, want_stream,
+               len(payload.get("messages") or []),
+               key_label(self._key_id()) or "-"))
+        with upstream:
+            if want_stream:
+                return self._chat_stream_response(
+                    upstream, model, fp, account, t_start, realm=realm)
+            return self._chat_nonstream_response(
+                upstream, model, fp, account, t_start, realm=realm)
+
+    def _handle_codearts_responses(self, chat_req, session_key, model, want_stream,
+                                   compaction, custom_names, request_meta, ns_map,
+                                   fp, t_start):
+        """`/v1/responses` 的 CodeArts 分支。"""
+        try:
+            upstream, account, effort = self._open_codearts_chat(
+                chat_req, session_key)
+        except wb_codearts.CodeArtsError as exc:
+            return self._codearts_error(model, exc, t_start, "codearts")
+        with upstream:
+            if compaction:
+                return self._responses_compaction_response(
+                    upstream, model, fp, account, t_start, want_stream,
+                    session_key=session_key, realm="codearts")
+            if want_stream:
+                return self._responses_stream_response(
+                    upstream, model, custom_names, request_meta, fp, account,
+                    t_start, ns_map, base_body=chat_req, session_key=session_key,
+                    realm="codearts", effort=effort)
+            return self._responses_nonstream_response(
+                upstream, model, custom_names, request_meta, fp, account,
+                t_start, ns_map, base_body=chat_req, session_key=session_key,
+                realm="codearts", effort=effort, allow_web_tools=False)
+
+    def _codearts_anthropic_error(self, model, exc, t_start, realm):
+        if isinstance(exc, wb_codearts.CodeArtsBadRequest):
+            status, etype = 400, "invalid_request_error"
+        elif isinstance(exc, (wb_codearts.CodeArtsNotFound,
+                              wb_codearts.CodeArtsConflict)):
+            status, etype = 409, "invalid_request_error"
+        elif isinstance(exc, wb_codearts.CodeArtsError) and exc.status == 429:
+            status, etype = 429, "rate_limit_error"
+        else:
+            status, etype = 502, "api_error"
+        record_error(model, status, str(exc)[:200],
+                     elapsed_ms=int((time.time() - t_start) * 1000),
+                     realm=realm, key=self._key_id())
+        return self._anthropic_error(status, str(exc), etype)
+
+    def _handle_codearts_messages(self, chat_req, session_key, model, want_stream,
+                                  fp, t_start):
+        """Anthropic Messages 的 CodeArts 分支。"""
+        try:
+            upstream, account, effort = self._open_codearts_chat(
+                chat_req, session_key)
+        except wb_codearts.CodeArtsError as exc:
+            return self._codearts_anthropic_error(model, exc, t_start, "codearts")
+        with upstream:
+            if want_stream:
+                return self._messages_stream_response(
+                    upstream, model, fp, account, t_start, base_body=chat_req,
+                    session_key=session_key, realm="codearts", effort=effort)
+            return self._messages_nonstream_response(
+                upstream, model, fp, account, t_start, base_body=chat_req,
+                session_key=session_key, realm="codearts", effort=effort)
+
     def _chat_stream_response(self, upstream, model, fp, account, t_start, effort=None,
-                              reopen=None, headers_sent=False, retried=False):
+                              reopen=None, headers_sent=False, retried=False,
+                              realm=None):
             if not headers_sent:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -22808,7 +22937,8 @@ class Handler(BaseHTTPRequestHandler):
             egress_key = None
             if egress_on:
                 egress_key = wb_upstream_pool.egress_key(
-                    account.chat_base_url() + CHAT_PATH, account.proxy)
+                    account.chat_base_url() + getattr(account, "chat_path", CHAT_PATH),
+                account.proxy)
 
             def flush_out():
                 if out_buf:
@@ -22918,7 +23048,7 @@ class Handler(BaseHTTPRequestHandler):
                 record_upstream_usage(upstream, model, last_usage, stream=True,
                              elapsed_ms=wall, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, account=account.uid,
+                             fp=fp, account=account.uid, realm=realm,
                              outcome="client_aborted", key=self._key_id(), effort=effort)
                 return
             except Exception as exc:
@@ -22947,7 +23077,7 @@ class Handler(BaseHTTPRequestHandler):
                             return self._chat_stream_response(
                                 new_upstream, model, fp, new_account, t_start,
                                 effort=new_effort, reopen=None,
-                                headers_sent=True, retried=True)
+                                headers_sent=True, retried=True, realm=realm)
                         finally:
                             try:
                                 new_upstream.close()
@@ -22958,7 +23088,8 @@ class Handler(BaseHTTPRequestHandler):
                              elapsed_ms=wall, account=account.uid,
                              usage=last_usage, stream=True, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, outcome="upstream_aborted", key=self._key_id())
+                             fp=fp, outcome="upstream_aborted", realm=realm,
+                             key=self._key_id())
                 try:
                     release(leak_filter.flush())
                     if out_buf:
@@ -22992,27 +23123,30 @@ class Handler(BaseHTTPRequestHandler):
                              elapsed_ms=wall, account=account.uid,
                              usage=last_usage, stream=True, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, outcome="failed", key=self._key_id())
+                             fp=fp, outcome="failed", realm=realm, key=self._key_id())
             else:
                 record_upstream_usage(upstream, model, last_usage, stream=True,
                              elapsed_ms=wall, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, account=account.uid, key=self._key_id(), effort=effort)
+                             fp=fp, account=account.uid, realm=realm,
+                             key=self._key_id(), effort=effort)
             return
 
-    def _chat_nonstream_response(self, upstream, model, fp, account, t_start, effort=None):
+    def _chat_nonstream_response(self, upstream, model, fp, account, t_start, effort=None,
+                                 realm=None):
         egress_on = wb_settings.egress_backoff_enabled(ACCOUNTS_DIR)
         egress_key = None
         if egress_on:
             egress_key = wb_upstream_pool.egress_key(
-                account.chat_base_url() + CHAT_PATH, account.proxy)
+                account.chat_base_url() + getattr(account, "chat_path", CHAT_PATH),
+                account.proxy)
         try:
             result = aggregate_stream(upstream, model, None)
         except Exception as exc:
             if egress_on and egress_key:
                 wb_egress.note_transient(egress_key)
             record_error(model, 502, str(exc), elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=account.uid, key=self._key_id())
+                         account=account.uid, realm=realm, key=self._key_id())
             return self._error(502, f"upstream stream error: {exc}")
         if egress_on and egress_key:
             wb_egress.note_success(egress_key)
@@ -23023,7 +23157,8 @@ class Handler(BaseHTTPRequestHandler):
         record_upstream_usage(upstream, model, result.get("usage"), stream=False,
                      elapsed_ms=wall, ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort)
+                     fp=fp, account=account.uid, realm=realm,
+                     key=self._key_id(), effort=effort)
         return self._json(200, result)
 
 # ---------------------------------------------------------------------------
