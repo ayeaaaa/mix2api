@@ -33,6 +33,15 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+也可以：
+
+```bash
+make build   # 构建两个镜像
+make up      # 启动
+make test    # 跑 hub + codearts 的全部测试
+make logs    # 跟踪日志
+```
+
 打开 `http://127.0.0.1:8788/`：
 
 1. 用面板密码登录（默认 `admin`，首次登录后立刻改）。

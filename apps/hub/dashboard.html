@@ -4150,7 +4150,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <div id="tabCodearts" class="realm-card" onclick="switchViewRealm('codearts')" style="display:none">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="realm-badge-codearts">CodeArts (华为云)</span>
-        <span class="mono" style="font-size:11px;color:var(--dim)">codearts2api</span>
+        <span id="tabCodeartsHost" class="mono" style="font-size:11px;color:var(--dim)">codearts2api</span>
         <span id="tabCodeartsDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
         <span id="tabCodeartsViewBadge" class="badge s mini" style="display:none">当前视图</span>
         <span id="tabCodeartsOffline" class="badge bad mini" style="display:none">离线</span>
@@ -6571,6 +6571,11 @@ function updateUI(){
   if(elCaModels) elCaModels.textContent = caModels;
   const elCaOffline = document.getElementById("tabCodeartsOffline");
   if(elCaOffline) elCaOffline.style.display = (ca.online === false) ? "inline-block" : "none";
+  const elCaHost = document.getElementById("tabCodeartsHost");
+  if(elCaHost && ca.base_url){
+    try { elCaHost.textContent = new URL(ca.base_url).host; }
+    catch(e) { elCaHost.textContent = ca.base_url; }
+  }
 
   // CodeArts 视图隐藏 WorkBuddy 专属区块，避免把两套账号/积分读混。
   ["workbuddyAccountsSection", "workbuddyDisabledSection",
