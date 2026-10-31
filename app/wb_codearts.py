@@ -1274,15 +1274,64 @@ def _derive_chat_id(session_key, messages):
 
 
 def _flatten_content(content):
-    """把 OpenAI 内容分片压成纯文本；CodeArts 只消费 text 分片。"""
+    """Normalize text/image content parts for CodeArts.
+
+    CodeArts accepts OpenAI-style content arrays on `/api/v2/chat/completions`:
+    `{"type":"text","text":...}` and
+    `{"type":"image_url","image_url":{"url":"data:..." | "https://..."}}`.
+    Text-only content is still flattened to a string so existing requests keep
+    their exact wire shape; any image part switches the message to a structured
+    array. Anthropic `image` blocks and Responses `input_image` parts are
+    normalized to the same `image_url` shape.
+    """
     if content is None:
         return ""
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        return "".join(str(part.get("text") or "")
-                       for part in content if isinstance(part, dict))
-    return str(content)
+    if not isinstance(content, list):
+        return str(content)
+    parts = []
+    for piece in content:
+        if isinstance(piece, str):
+            parts.append({"type": "text", "text": piece})
+            continue
+        if not isinstance(piece, dict):
+            continue
+        ptype = str(piece.get("type") or "")
+        if ptype in ("text", "input_text", "output_text", "summary_text"):
+            text = piece.get("text")
+            if text is not None:
+                parts.append({"type": "text", "text": str(text)})
+            continue
+        if ptype not in ("image_url", "input_image", "image") \
+                and "image_url" not in piece:
+            continue
+        raw = piece.get("image_url") or piece.get("url")
+        url = ""
+        if isinstance(raw, dict):
+            url = str(raw.get("url") or "")
+        elif raw:
+            url = str(raw)
+        if not url and isinstance(piece.get("source"), dict):
+            source = piece["source"]
+            stype = str(source.get("type") or "")
+            if stype == "base64":
+                media = str(source.get("media_type") or "image/png")
+                data = str(source.get("data") or "")
+                if data:
+                    url = "data:%s;base64,%s" % (media, data)
+            elif stype == "url":
+                url = str(source.get("url") or "")
+        if not url and piece.get("data"):
+            mime = str(piece.get("mimeType")
+                       or piece.get("mime_type") or "image/png")
+            url = "data:%s;base64,%s" % (mime, piece["data"])
+        if url:
+            parts.append({"type": "image_url",
+                          "image_url": {"url": url}})
+    if any(part.get("type") == "image_url" for part in parts):
+        return parts
+    return "".join(str(part.get("text") or "") for part in parts)
 
 
 def build_chat_body(payload, session_key=None):

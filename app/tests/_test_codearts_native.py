@@ -240,16 +240,62 @@ try:
           acct.auth["expiration"])
 
     print("== content parts ==")
+    expected_parts = [
+        {"type": "text", "text": "hello "},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        {"type": "text", "text": "world"},
+    ]
     parts_body = C.build_chat_body({
+        "model": "Qwen3-VL-235B",
+        "messages": [{"role": "user", "content": expected_parts}],
+    }, "sess-parts")
+    check("content parts preserved",
+          parts_body["messages"][0]["content"] == expected_parts, parts_body)
+    text_body = C.build_chat_body({
         "model": "GLM-5.2",
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": "hello "},
-            {"type": "image_url", "image_url": {"url": "data:..."}},
             {"type": "text", "text": "world"},
         ]}],
-    }, "sess-parts")
-    check("content parts flattened",
-          parts_body["messages"][0]["content"] == "hello world", parts_body)
+    }, "sess-text-parts")
+    check("text-only parts flattened",
+          text_body["messages"][0]["content"] == "hello world", text_body)
+    image_body = C.build_chat_body({
+        "model": "Qwen3-VL-235B",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": "data:image/png;base64,BBB"},
+        ]}],
+    }, "sess-image")
+    check("image url string normalized",
+          image_body["messages"][0]["content"] == [
+              {"type": "text", "text": "look"},
+              {"type": "image_url",
+               "image_url": {"url": "data:image/png;base64,BBB"}},
+          ], image_body)
+    source_body = C.build_chat_body({
+        "model": "Qwen3-VL-235B",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image",
+             "source": {"type": "base64", "media_type": "image/png",
+                        "data": "CCC"}},
+        ]}],
+    }, "sess-source")
+    check("anthropic image normalized",
+          source_body["messages"][0]["content"] == [
+              {"type": "text", "text": "look"},
+              {"type": "image_url",
+               "image_url": {"url": "data:image/png;base64,CCC"}},
+          ], source_body)
+    stream, _, _ = C.open_chat(C.load_config(ACCOUNTS), image_body, "sess-image")
+    b"".join(stream)
+    stream.close()
+    upstream_parts = state.last_body["messages"][0]["content"]
+    check("image part reached upstream",
+          isinstance(upstream_parts, list)
+          and any(p.get("type") == "image_url" for p in upstream_parts),
+          state.last_body)
 
     print("== named tool choice ==")
     tool_body = C.build_chat_body({

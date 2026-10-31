@@ -2,7 +2,7 @@
 #   docker compose -f docker-compose.image.yml up -d
 services:
   hub:
-    image: ghcr.io/ayeaaaa/mix2api:v1.0.2
+    image: ghcr.io/ayeaaaa/mix2api:v1.0.3
     container_name: mix2api
     restart: unless-stopped
     ports:
