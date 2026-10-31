@@ -187,6 +187,21 @@ try:
     check("oauth continue", cont["status"] == "continue", cont)
     check("oauth next_url", cont["next_url"].startswith("https://"), cont)
 
+    print("== oauth without identity ==")
+    import base64
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "sub-123"}).encode()).decode().rstrip("=")
+    check("refresh token sub", C.identity_from_refresh_token("a." + payload + ".b") == "sub-123")
+    state.omit_identity = True
+    started3 = C.oauth_start(C.load_config(ACCOUNTS), port=8788)
+    done3 = C.oauth_callback(
+        C.load_config(ACCOUNTS), started3["session_id"],
+        "http://127.0.0.1:8788/oauth/callback?code=abc")
+    check("oauth no identity done", done3["status"] == "done", done3)
+    saved3 = [a for a in C.load_auths(ACCOUNTS) if a["user_id"] == "u1"]
+    check("identity looked up", bool(saved3) and saved3[0]["user_name"] == "账号一",
+          saved3)
+    state.omit_identity = False
+
     print("== overview ==")
     ov = C.overview(C.load_config(ACCOUNTS))
     check("overview service", ov["service"] == "codearts")

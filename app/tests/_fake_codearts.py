@@ -36,6 +36,7 @@ class FakeState(object):
         self.chat_error = None    # (status, body_dict) 或 None
         self.embedded_error = None  # {"error_code": ..., "error_msg": ...}
         self.require_benefit_header = False
+        self.omit_identity = False
         self.builtin = [
             {"model_id": "GLM-5.2", "model_name": "GLM-5.2",
              "context_window": 131072, "max_tokens": 8192},
@@ -132,10 +133,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _token_payload(self):
         state = self.state
-        return {
-            "user_id": state.user_id,
-            "user_name": state.user_name,
-            "domain_id": state.domain_id,
+        payload = {
             "refresh_token": state.refresh_token,
             "credentials": {
                 "access_key_id": state.api_key,
@@ -144,6 +142,13 @@ class _Handler(BaseHTTPRequestHandler):
                 "expiration": state.expiration,
             },
         }
+        if not state.omit_identity:
+            payload.update({
+                "user_id": state.user_id,
+                "user_name": state.user_name,
+                "domain_id": state.domain_id,
+            })
+        return payload
 
     def do_POST(self):
         path = self.path.split("?")[0]

@@ -1692,14 +1692,83 @@ def _find_session(session_id=None, ticket_id=None, secret=None):
         return pending[0] if pending else None
 
 
+class _CredentialHolder(object):
+    """只带 credential() 的轻量对象，给 signed_get 查身份用。"""
+
+    def __init__(self, access_key_id, secret_access_key, security_token):
+        self._cred = {
+            "access_key_id": access_key_id or "",
+            "secret_access_key": secret_access_key or "",
+            "security_token": security_token or "",
+        }
+
+    def credential(self):
+        return dict(self._cred)
+
+
+def identity_from_refresh_token(refresh_token):
+    """refresh_token 是 JWT 时取 sub；portal 回调不带身份时的兜底。"""
+    parts = str(refresh_token or "").split(".")
+    if len(parts) < 2:
+        return ""
+    try:
+        payload = json.loads(crypto.b64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return ""
+    return str(payload.get("sub") or "")
+
+
+def lookup_identity(creds):
+    """用刚拿到的 STS 凭证查身份：caller-identity → current/user。"""
+    holder = _CredentialHolder(creds.get("access_key_id"),
+                               creds.get("secret_access_key"),
+                               creds.get("security_token"))
+    try:
+        data = signed_get(holder, STS_HOST + "/v5/caller-identity", timeout=10)
+        uid = str(data.get("principal_id") or data.get("account_id") or "")
+        urn = str(data.get("principal_urn") or "")
+        name = urn.rsplit("/", 1)[-1] if "/" in urn else ""
+        domain = str(data.get("account_id") or "")
+        if uid:
+            return uid, name, domain
+    except CodeArtsError:
+        pass
+    try:
+        data = signed_get(holder, SNAP_MANAGER + "/v1/current/user", timeout=10)
+        uid = str(data.get("user_id") or "")
+        name = str(data.get("user_name") or "")
+        domain = str(data.get("domain_id") or "")
+        if uid:
+            return uid, name, domain
+    except CodeArtsError:
+        pass
+    return "", "", ""
+
+
 def _save_login(config, session, token):
     uid = str(token.get("user_id") or "")
+    name = str(token.get("user_name") or "")
+    domain = str(token.get("domain_id") or "")
+    creds = token.get("credentials") or {}
+    if not uid or not name:
+        # portal 回调只回 code，token 响应通常不带身份；用 STS 凭证补查。
+        looked_uid, looked_name, looked_domain = lookup_identity(creds)
+        uid = uid or looked_uid
+        name = name or looked_name
+        domain = domain or looked_domain
     if not uid:
-        raise CodeArtsError("登录响应缺少 user_id，无法保存账号")
+        uid = identity_from_refresh_token(token.get("refresh_token") or "")
+    if not uid:
+        # 最后兜底：refresh_token 的稳定哈希，避免写出 codearts-unknown.json。
+        import hashlib
+        uid = "codearts-" + hashlib.sha256(
+            str(token.get("refresh_token") or "").encode("utf-8")).hexdigest()[:12]
+    if not name:
+        name = uid
     auth = {
         "user_id": uid,
-        "user_name": str(token.get("user_name") or uid),
-        "domain_id": str(token.get("domain_id") or ""),
+        "user_name": name,
+        "domain_id": domain,
         "cloud_dragon_token": token["credentials"]["security_token"],
         "access_key_id": token["credentials"]["access_key_id"],
         "secret_access_key": token["credentials"]["secret_access_key"],
