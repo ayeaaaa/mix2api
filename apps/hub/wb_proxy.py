@@ -6061,6 +6061,42 @@ def realm_state_file():
     return os.path.join(ACCOUNTS_DIR, "active_realm.json")
 
 
+def _realm_selectable(realm):
+    """这个出口现在能不能被选中。
+
+    intl/cn 永远可用；codearts 只有配置完整时才可用，避免持久化了一个已经
+    被删掉/关闭的出口，进程起来后所有未绑定 Key 都打到 503。
+    """
+    if realm in ("intl", "cn"):
+        return True
+    if realm == "codearts":
+        try:
+            return wb_settings.codearts_configured(ACCOUNTS_DIR)
+        except Exception:
+            return False
+    return False
+
+
+def realm_options():
+    """看板/`/realm` 的出口选项。CodeArts 未配置时不出现在列表里。"""
+    options = ["intl", "cn"]
+    if _realm_selectable("codearts"):
+        options.append("codearts")
+    return options
+
+
+def reconcile_codearts_realm():
+    """CodeArts 被关闭/删配置后，把默认出口从 codearts 收敛回 intl。
+
+    返回 True 表示真的发生了收敛；调用方（设置保存）据此给看板带一条 warning。
+    """
+    if CURRENT_REALM == "codearts" and not _realm_selectable("codearts"):
+        save_persisted_realm("intl")
+        log("codearts realm disabled; default exit reset to intl")
+        return True
+    return False
+
+
 def load_persisted_realm():
     global CURRENT_REALM
     path = realm_state_file()
@@ -6069,7 +6105,11 @@ def load_persisted_realm():
             with open(path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
                 r = d.get("realm")
-                if r in ("intl", "cn"):
+                if r in ("intl", "cn", "codearts"):
+                    if r == "codearts" and not _realm_selectable(r):
+                        log("persisted realm 'codearts' is not configured; "
+                            "falling back to intl")
+                        return CURRENT_REALM
                     CURRENT_REALM = r
                     return CURRENT_REALM
         except Exception as e:
@@ -6077,7 +6117,9 @@ def load_persisted_realm():
     return CURRENT_REALM
 def save_persisted_realm(realm):
     global CURRENT_REALM
-    if realm in ("intl", "cn"):
+    if realm in ("intl", "cn", "codearts"):
+        if realm == "codearts" and not _realm_selectable(realm):
+            return CURRENT_REALM
         CURRENT_REALM = realm
         try:
             os.makedirs(ACCOUNTS_DIR, exist_ok=True)
@@ -18784,6 +18826,11 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not realm or not model:
             return ""
+        if realm == "codearts":
+            # CodeArts 的模型名和 WorkBuddy 大量重叠（GLM-5.2、
+            # deepseek-v4-pro-0813…），按模型名猜出口在这里必然误判。出口已经
+            # 由 Key/面板显式选定，直接放行。
+            return ""
         owner = exclusive_realm(model)
         if not owner or owner == realm:
             return ""
@@ -19125,7 +19172,12 @@ class Handler(BaseHTTPRequestHandler):
     # differ in whether they append "/v1" themselves.
 
     def _get_realm(self):
-        return self._json(200, {"current": CURRENT_REALM, "options": ["intl", "cn"]})
+        options = realm_options()
+        if CURRENT_REALM not in options:
+            # 配置被删/关闭后，持久化的出口可能已经不在选项里。收敛到 intl，
+            # 否则看板会显示一个自己都解释不了的 current。
+            save_persisted_realm("intl")
+        return self._json(200, {"current": CURRENT_REALM, "options": options})
 
     def _get_v1_models(self):
         if not self._authorized():
@@ -19799,9 +19851,13 @@ class Handler(BaseHTTPRequestHandler):
                     realm = str(item.get("realm") or "").strip().lower()
                 else:
                     realm = str(stored.get("realm") or "").strip().lower()
-                if realm not in ("", "intl", "cn"):
-                    return self._error(400, "realm must be intl, cn or empty",
+                if realm not in wb_settings.REALMS:
+                    return self._error(400, "realm must be intl, cn, codearts or empty",
                                        "invalid_request_error")
+                if realm == "codearts" and not _realm_selectable("codearts"):
+                    return self._error(
+                        400, "codearts realm is not configured; enable it in settings first",
+                        "invalid_request_error")
                 # An older cached panel does not know this field at all, so a
                 # row that omits it keeps whatever is stored instead of
                 # silently dropping the restriction.
