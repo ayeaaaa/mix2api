@@ -96,7 +96,7 @@ DEFAULTS = {
     "timeout_seconds": 30.0,
     "stream_timeout_seconds": 600.0,
     "models_ttl_seconds": 300.0,
-    "max_concurrent": 5,
+    "max_concurrent": 1,
     "benefit_auto_claim": True,
     "credits_auto_claim": True,
 }
@@ -336,7 +336,7 @@ class CodeArtsAccount(object):
         self.err_count = 0
         self.last_error = ""
         self.active_concurrent = 0
-        self.max_concurrent = pool.config.get("max_concurrent", 5)
+        self.max_concurrent = pool.config.get("max_concurrent", 1)
         self.last_used = 0.0
         self.models = []
         self.model_benefit = {}
@@ -689,7 +689,7 @@ def pool_for(accounts_dir):
         else:
             pool.config = cfg
             for acct in pool.accounts:
-                acct.max_concurrent = cfg.get("max_concurrent", 5)
+                acct.max_concurrent = cfg.get("max_concurrent", 1)
         return pool
 
 
@@ -1483,6 +1483,13 @@ def _ensure_token(acct):
         acct.update_auth(token)
 
 
+def _is_concurrency_message(message):
+    text = str(message or "").lower()
+    return ("并发会话" in text or "tm.00001041" in text
+            or "concurrent session" in text or "maximum number of active"
+            in text)
+
+
 def _client_chat(acct, body, session_key):
     model = _canonical_model(acct, body.get("model"))
     chat_id = body.get("chat_id") or _derive_chat_id(session_key, body.get("messages"))
@@ -1504,35 +1511,53 @@ def _client_chat(acct, body, session_key):
     headers["Session-Id"] = session_id
     timeout = float(acct.pool.config.get("stream_timeout_seconds")
                     or DEFAULTS["stream_timeout_seconds"])
-    req = urllib.request.Request(SNAP_HOST + EP_CHAT, data=raw,
-                                 headers=headers, method="POST")
-    try:
-        resp = _opener().open(req, timeout=timeout)
-    except urllib.error.HTTPError as exc:
+    last_error = None
+    for attempt in range(3):
+        req = urllib.request.Request(SNAP_HOST + EP_CHAT, data=raw,
+                                     headers=headers, method="POST")
         try:
-            err = exc.read(ERROR_BODY_MAX)
+            resp = _opener().open(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            try:
+                err = exc.read(ERROR_BODY_MAX)
+            except Exception:
+                err = b""
+            message = _error_text(err)
+            if exc.code in (401, 403):
+                raise CodeArtsAuthError(message, status=exc.code)
+            if exc.code == 400 and _is_concurrency_message(message):
+                last_error = CodeArtsUpstreamError(
+                    message, status=429, code="TM.00001041")
+                if attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                raise last_error
+            if exc.code == 400:
+                raise CodeArtsBadRequest(message, status=exc.code)
+            if exc.code == 429:
+                raise CodeArtsUpstreamError(message, status=exc.code, code="429")
+            raise CodeArtsError("CodeArts 返回 HTTP %s：%s" % (exc.code, message),
+                                status=exc.code)
+        except (urllib.error.URLError, socket.timeout, TimeoutError,
+                ConnectionError, OSError) as exc:
+            reason = getattr(exc, "reason", None) or exc
+            raise CodeArtsUnavailable("连不上 CodeArts 聊天接口：%s" % reason)
+        stream = CodeArtsStream(resp, model, acct, acct.pool)
+        try:
+            stream.preflight()
+        except CodeArtsUpstreamError as exc:
+            stream.close()
+            if _is_concurrency_message(str(exc)):
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+            raise
         except Exception:
-            err = b""
-        message = _error_text(err)
-        if exc.code in (401, 403):
-            raise CodeArtsAuthError(message, status=exc.code)
-        if exc.code == 400:
-            raise CodeArtsBadRequest(message, status=exc.code)
-        if exc.code == 429:
-            raise CodeArtsUpstreamError(message, status=exc.code, code="429")
-        raise CodeArtsError("CodeArts 返回 HTTP %s：%s" % (exc.code, message),
-                            status=exc.code)
-    except (urllib.error.URLError, socket.timeout, TimeoutError,
-            ConnectionError, OSError) as exc:
-        reason = getattr(exc, "reason", None) or exc
-        raise CodeArtsUnavailable("连不上 CodeArts 聊天接口：%s" % reason)
-    stream = CodeArtsStream(resp, model, acct, acct.pool)
-    try:
-        stream.preflight()
-    except Exception:
-        stream.close()
-        raise
-    return stream, model
+            stream.close()
+            raise
+        return stream, model
+    raise last_error or CodeArtsUpstreamError("CodeArts 并发会话已满")
 
 
 def open_chat(config, body, session_key=None):
@@ -1719,18 +1744,23 @@ def identity_from_refresh_token(refresh_token):
 
 
 def lookup_identity(creds):
-    """用刚拿到的 STS 凭证查身份：caller-identity → current/user。"""
+    """用刚拿到的 STS 凭证查身份：caller-identity → current/user。
+
+    caller-identity 有时只给 principal_id/account_id，不给人名；此时继续查
+    current/user 把昵称补上，避免账号表里显示一串 UID。
+    """
     holder = _CredentialHolder(creds.get("access_key_id"),
                                creds.get("secret_access_key"),
                                creds.get("security_token"))
+    first_uid = first_name = first_domain = ""
     try:
         data = signed_get(holder, STS_HOST + "/v5/caller-identity", timeout=10)
-        uid = str(data.get("principal_id") or data.get("account_id") or "")
+        first_uid = str(data.get("principal_id") or data.get("account_id") or "")
         urn = str(data.get("principal_urn") or "")
-        name = urn.rsplit("/", 1)[-1] if "/" in urn else ""
-        domain = str(data.get("account_id") or "")
-        if uid:
-            return uid, name, domain
+        first_name = urn.rsplit("/", 1)[-1] if "/" in urn else ""
+        first_domain = str(data.get("account_id") or "")
+        if first_uid and first_name and first_name != first_uid:
+            return first_uid, first_name, first_domain
     except CodeArtsError:
         pass
     try:
@@ -1738,11 +1768,13 @@ def lookup_identity(creds):
         uid = str(data.get("user_id") or "")
         name = str(data.get("user_name") or "")
         domain = str(data.get("domain_id") or "")
-        if uid:
-            return uid, name, domain
+        if uid or first_uid:
+            return (first_uid or uid,
+                    name or first_name,
+                    domain or first_domain)
     except CodeArtsError:
         pass
-    return "", "", ""
+    return first_uid, first_name, first_domain
 
 
 def _save_login(config, session, token):

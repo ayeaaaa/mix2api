@@ -34,6 +34,7 @@ class FakeState(object):
         self.chat_text = "你好"
         self.chat_mode = "delta"  # delta | text
         self.chat_error = None    # (status, body_dict) 或 None
+        self.chat_error_remaining = -1  # -1 = 一直失败；N = 失败 N 次后恢复
         self.embedded_error = None  # {"error_code": ..., "error_msg": ...}
         self.require_benefit_header = False
         self.omit_identity = False
@@ -180,8 +181,13 @@ class _Handler(BaseHTTPRequestHandler):
                                       "error_msg": "model is not registered"})
                 return
             if state.chat_error:
-                self._send_json(*state.chat_error)
-                return
+                if state.chat_error_remaining == 0:
+                    state.chat_error = None
+                else:
+                    if state.chat_error_remaining > 0:
+                        state.chat_error_remaining -= 1
+                    self._send_json(*state.chat_error)
+                    return
             if state.embedded_error:
                 raw_sse = ("data: " + json.dumps(state.embedded_error) + "\n").encode()
                 self._send_sse(raw_sse)

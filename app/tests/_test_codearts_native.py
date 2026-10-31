@@ -59,7 +59,7 @@ try:
     print("== config ==")
     cfg = C.load_config(ACCOUNTS)
     check("default disabled", cfg["enabled"] is False)
-    check("default max concurrent", cfg["max_concurrent"] == 5)
+    check("default max concurrent", cfg["max_concurrent"] == 1)
     C.save_config(ACCOUNTS, {"enabled": True, "max_concurrent": 2})
     check("enabled", C.configured(ACCOUNTS) is True)
     check("max concurrent saved", C.load_config(ACCOUNTS)["max_concurrent"] == 2)
@@ -145,6 +145,20 @@ try:
           and tool_body["tools"][0]["function"]["name"] == "b", tool_body)
     check("tool choice required", tool_body["tool_choice"] == "required",
           tool_body)
+
+    print("== concurrency retry ==")
+    state.chat_error = (400, {"error_msg": "并发会话数已达上限(3个)，请关闭部分会话后重试。"})
+    state.chat_error_remaining = 1
+    body = C.build_chat_body({"model": "GLM-5.2",
+                              "messages": [{"role": "user", "content": "hi"}],
+                              "stream": False}, "sess-retry")
+    stream, acct3, model3 = C.open_chat(C.load_config(ACCOUNTS), body, "sess-retry")
+    raw = b"".join(stream)
+    stream.close()
+    check("concurrency retry succeeds", "你好" in raw.decode("utf-8", "replace"),
+          raw[:200])
+    state.chat_error = None
+    state.chat_error_remaining = -1
 
     print("== text snapshot stream ==")
     state.chat_mode = "text"
