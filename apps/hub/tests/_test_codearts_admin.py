@@ -103,6 +103,10 @@ try:
     status, body = call("POST", "/codearts/keepalive", {}, token=token)
     check("keepalive", status == 200, (status, body))
 
+    status, body = call("POST", "/codearts/models/refresh", {}, token=token)
+    check("models refresh", status == 200 and body.get("models") == 3,
+          (status, body))
+
     print("== oauth ==")
     status, body = call("POST", "/codearts/accounts/oauth/start", {}, token=token)
     check("oauth start", status == 200 and body.get("session_id") == "sess-1",
