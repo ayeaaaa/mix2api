@@ -83,6 +83,9 @@ cd apps/hub && python tests/run_all.py
 cd apps/codearts && go test ./...
 ```
 
+当前基线：`apps/hub` 243 个套件全过（181 Python + 62 JS），`apps/codearts` 全部 Go 包通过。
+CodeArts 路由/管理链路的测试用 `tests/_fake_codearts.py` 起本机假上游，不依赖真实账号；真实华为云账号的 OAuth 与对话需要部署后按第 2 节手动走一遍。
+
 ## 5. 回滚
 
 CodeArts 出口默认关闭，回滚不会动 WorkBuddy 的数据。

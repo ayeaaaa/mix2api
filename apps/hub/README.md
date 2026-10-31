@@ -169,7 +169,34 @@ docker run -d --name wb-proxy-watchtower --restart unless-stopped \
 - **健康检查**：镜像自带 `HEALTHCHECK`（每 30s 探一次 `/health`），`docker ps` 的 STATUS 列会显示 healthy / unhealthy；
 - **源码构建**：`docker compose -f docker-compose.build.yml up -d --build`。
 
-### 6. 测试
+### 6. CodeArts 第三出口
+
+本仓库的 `apps/codearts` 是 [codearts2api](https://github.com/HITZY2002/codearts2api) 的派生副本。把华为云 CodeArts（盘古助手/码道）接成 wb-hub 的第三个出口：
+
+- 顶部出口卡片从 `国际版 / 国内版` 变成 `国际版 / 国内版 / CodeArts`；
+- 选中 CodeArts 时，`/v1/models` 返回 CodeArts 的模型目录，`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 都转发到 codearts2api；
+- API Key 可以绑定 `codearts` 出口，三个出口可以同时用；
+- 看板「账号」页的 CodeArts 视图可以添加（OAuth）、启用、停用、清冷却、签到、删除 CodeArts 账号。
+
+**首次配置**
+
+1. 启动 codearts2api（compose 里的 `codearts` 服务，或本机 `go run ./cmd/server`），拿到 `CA2A_API_KEY`。
+2. 打开 wb-hub 看板 →「设置 → CodeArts 接入」：
+   - Base URL：compose 内填 `http://codearts:7866`，本机填 `http://127.0.0.1:7866`；
+   - API Key：与 `CA2A_API_KEY` 一致；
+   - 点「测试连接」，成功后勾选「启用 CodeArts 出口」并保存。
+3. 切到 CodeArts 视图，点「+ 添加账号 (OAuth)」完成华为云授权。
+4. 在「设置 → API Key 与出口绑定」里新建 Key，出口选 `CodeArts`，或留空跟随顶部默认出口。
+
+**口径与限制**
+
+- 账号、token 续期、冷却、签到、并发仍由 codearts2api 执行；wb-hub 只保存它的地址和 Key，不保存华为云凭据。
+- CodeArts 没有可查询的积分余额：看板不显示积分，显示 `—`，以华为云控制台为准。
+- CodeArts 出口不参与 WorkBuddy 的积分/额度护栏，也不参与 `国际版 → 国内版` 的跨出口回退。
+- CodeArts 出口没有 wb-hub 的 web_search / web_fetch 代跑；客户端自带工具照常透传。
+- `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
+
+### 7. 测试
 
 ```bash
 python tests/run_all.py            # 全部套件
@@ -482,6 +509,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+- **CodeArts 第三出口**：新增 `codearts` 出口，看板可在 `国际版 / 国内版 / CodeArts` 之间切换；`/v1/models`、`/v1/chat/completions`、`/v1/responses` 与 Anthropic Messages 都可路由到 codearts2api；API Key 可绑定该出口。看板「账号」页新增 CodeArts 视图，支持 OAuth 添加、启用/停用、清冷却、签到、删除；管理端点只接受面板会话，CodeArts API Key 不出服务端。CodeArts 账号池、token 续期、冷却与签到仍由 codearts2api 负责，默认关闭，未配置时行为与旧版一致。 / **CodeArts as a third exit**: a new `codearts` realm that the panel can switch to alongside Global and China; `/v1/models`, `/v1/chat/completions`, `/v1/responses` and Anthropic Messages all route to codearts2api, and an API key can bind to it. The Accounts page gains a CodeArts view with OAuth add, enable/disable, cooldown clearing, check-in and delete; the management endpoints require a panel session and the CodeArts API key never leaves the server. The account pool, token renewal, cooldowns and check-in stay in codearts2api. Off by default, so an unconfigured install behaves exactly as before.
 
 - **面板密码加密异常明确报错**（#658）：解释器缺少 `hashlib.pbkdf2_hmac` 支持时（如 Windows SAC 拦截便携运行时 DLL），不再将计算异常吞成「密码错误」返回 401，而是明确返回 500 与环境排查指引；启动自检与 `/health`、`/panel/status` 暴露 `crypto_ok` 状态并在面板提示。新增 `tests/_test_panel_crypto_unavailable.py`。
 - **v1.9.1 发布**：集成 #692 与 #693，详见 [更新记录](docs/CHANGELOG.md#v191)。

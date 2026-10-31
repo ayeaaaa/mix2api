@@ -1,7 +1,7 @@
 # CodeArts 第三出口接入设计
 
 - 日期：2026-10-31
-- 状态：待评审
+- 状态：已实现（`mix2api` monorepo）
 - 目标仓库：`ardeyouxipianyi/workbuddy2api-hub`（主）、`HITZY2002/codearts2api`（配套小改）
 - 相关文档：`CONTRIBUTING.md`、`README.md`
 
@@ -474,3 +474,17 @@ if req_realm == "codearts":
 
 - 是否接受在 `codearts2api` 增加 `POST /admin/api/accounts/delete`（约 40 行 + 测试）？这是「看板里能删账号」的前提。
 - CodeArts 账号添加是否只做 OAuth 就够了？还是也要支持粘贴 `auths/codearts-*.json`？
+
+## 14. 实现落点（2026-10-31）
+
+- `apps/hub/wb_codearts.py`：配置、直连 HTTP、模型缓存、请求体、`CodeArtsAccount`、管理 API、健康检查。
+- `apps/hub/wb_proxy.py`：`codearts` 出口持久化与收敛、`/v1/models` 分支、三类入口分支、`/codearts/*` 管理代理、用量 `realm` 归因、`/health` 子字段。
+- `apps/hub/wb_settings.py`：`REALMS` 加 `codearts`，配置读写薄包装。
+- `apps/hub/dashboard.html`：第三张卡片、三出口视图、CodeArts 账号表、OAuth 弹窗、设置区块、i18n。
+- `apps/codearts`：`auth.Delete` / `auth.Exists`、`Pool.Remove`、`POST /admin/api/accounts/delete`、测试与 README。
+- 与设计的差异：
+  - 默认出口卡片仍是「循环到下一个出口」的按钮（`intl → cn → codearts`），没有改成三段并排控件；行为与设计一致，改动面更小。
+  - `CodeArtsAccount` 适配对象直接复用现有回程处理器，没有为 CodeArts 单独写一套 SSE/JSON 转换。
+  - 模型刷新走新增的 `POST /codearts/models/refresh`，不复用 WorkBuddy 的 `/catalog/refresh`。
+  - CodeArts 视图的统计条显示健康/总数、模型数、冷却、停用；不显示积分（见 §2）。
+
