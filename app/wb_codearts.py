@@ -1618,6 +1618,16 @@ def open_chat(config, body, session_key=None):
             raise
     if last_error is not None:
         raise last_error
+    reasons = []
+    now = time.time()
+    for acct in list(pool.accounts):
+        if acct.disabled:
+            reasons.append("%s 已停用：%s" % (acct.nickname, acct.disabled_reason or "手动停用"))
+        elif acct.cool_until > now:
+            reasons.append("%s 冷却中：%s" % (acct.nickname, acct.last_error or "稍后重试"))
+    if reasons:
+        raise CodeArtsUnavailable(
+            "没有可用的 CodeArts 账号：" + "；".join(reasons[:2]))
     raise CodeArtsUnavailable(
         "没有可用的 CodeArts 账号：请在看板「账号」页添加并启用至少一个账号。")
 
