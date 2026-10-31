@@ -1,78 +1,82 @@
 # -*- coding: utf-8 -*-
-"""测试用的假 codearts2api。
+"""测试用的假华为云 CodeArts 上游。
 
-不依赖网络、不依赖真实账号：起一个 127.0.0.1 的 HTTP 服务，实现 wb-hub 用到
-的推理/管理端点，并把收到的请求记在 state 里供断言。
+模拟单进程版本用到的端点：OAuth 换 token、聊天 SSE、模型发现、福利领取、
+每日签到。测试把 `wb_codearts.SNAP_HOST` / `STS_HOST` / `BENEFIT_HOST`
+指到本服务，不碰外网、不碰真实账号。
 
-只给测试用；文件名不以 `_test_` 开头，`tests/run_all.py` 不会把它当套件跑。
+文件名不以 `_test_` 开头，`tests/run_all.py` 不会把它当套件跑。
 """
 
 import json
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+NOW = int(time.time())
 
 
 class FakeState(object):
     def __init__(self):
-        self.api_key = "test-key"
-        self.models = [
-            {"id": "GLM-5.2", "object": "model", "created": 1700000000},
-            {"id": "glm-5.2", "object": "model", "created": 1700000000},
-            {"id": "deepseek-v4-pro-0813", "object": "model", "created": 1700000000},
-        ]
-        self.models_hits = 0
-        self.fail_models = False
-        self.models_error = (500, {"error": {"message": "models exploded"}})
-        self.chat_text = "你好"
-        self.chat_usage = {"prompt_tokens": 3, "completion_tokens": 2,
-                           "total_tokens": 5}
-        self.chat_error = None  # (status, body_dict) 或 None
+        self.token = "TOKEN"
+        self.refresh_token = "refresh-1"
+        self.api_key = "AK"
+        self.secret_key = "SK"
+        self.user_id = "u1"
+        self.user_name = "账号一"
+        self.domain_id = "d1"
+        self.expiration = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
         self.requests = []
-        self.last_auth = None
-        self.last_body = None
         self.last_headers = None
-        self.overview = {
-            "service": "codearts2api",
-            "region": "cn",
-            "stats": {"total": 2, "healthy": 1, "disabled": 1, "cooling": 0,
-                      "credits": 1},
-            "accounts": [
-                {"uid": "u1", "nickname": "账号一", "disabled": False,
-                 "cooling": False, "until": "", "reason": "", "err_count": 0,
-                 "active_concurrent": 0, "max_concurrent": 5,
-                 "token_remaining": "1h0m0s",
-                 "expires_at": "2026-10-31T12:00:00+08:00", "checkin": None},
-                {"uid": "u2", "nickname": "账号二", "disabled": True,
-                 "cooling": False, "until": "", "reason": "manual",
-                 "err_count": 2, "active_concurrent": 0, "max_concurrent": 5,
-                 "token_remaining": "2h0m0s",
-                 "expires_at": "2026-10-31T13:00:00+08:00", "checkin": None},
-            ],
-            "models": [{"id": "GLM-5.2"}, {"id": "glm-5.2"}],
-            "schedule": {"watch": {"enabled": True}},
-        }
-        self.oauth_start = {"ok": True, "session_id": "sess-1",
-                            "auth_url": "https://example.test/auth",
-                            "expires_in": 600}
-        self.oauth_poll = {"ok": True, "status": "pending",
-                           "message": "等待浏览器授权"}
-        self.oauth_callback = {"ok": True, "status": "continue",
-                               "next_url": "https://example.test/next",
-                               "message": "回调已接收"}
-        self.delete_status = 200
-        self.delete_error = "account not found"
-        self.delete_body = {"ok": True, "deleted": True, "message": "已删除 u1"}
+        self.last_body = None
+        self.chat_text = "你好"
+        self.chat_mode = "delta"  # delta | text
+        self.chat_error = None    # (status, body_dict) 或 None
+        self.embedded_error = None  # {"error_code": ..., "error_msg": ...}
+        self.require_benefit_header = False
+        self.builtin = [
+            {"model_id": "GLM-5.2", "model_name": "GLM-5.2",
+             "context_window": 131072, "max_tokens": 8192},
+            {"model_id": "GLM-4.7", "model_name": "GLM-4.7"},
+        ]
+        self.agent_models = [
+            {"model_name": "GLM-5.2", "model_id": "GLM-5.2",
+             "model_parameters": {"context_window": 131072, "max_tokens": 8192}},
+        ]
+        self.benefit_models = [
+            {"model_id": "deepseek-v4-pro-0813", "model_name": "deepseek-v4-pro-0813",
+             "context_window": 65536, "max_tokens": 4096},
+        ]
+        self.campaigns = [{
+            "campaignId": 1, "title": "每日签到", "status": "ELIGIBLE",
+            "claimable": True, "benefitUnit": "CREDIT",
+            "pendingTotalAmount": 1000,
+            "extra": {"startTime": "2026-01-01T00:00:00Z",
+                      "endTime": "2026-12-31T00:00:00Z"},
+        }]
+        self.token_calls = 0
+        self.model_calls = 0
 
     def reset_requests(self):
         self.requests = []
-        self.last_auth = None
-        self.last_body = None
         self.last_headers = None
+        self.last_body = None
 
 
-def _sse_body(state, model):
+def _sse_chunks(state, model):
     created = int(time.time())
+    if state.chat_mode == "text":
+        events = [
+            {"text": "你", "prompt_tokens": 3, "completion_tokens": 1},
+            {"text": "你好", "prompt_tokens": 3, "completion_tokens": 2},
+            {"text": "[DONE]", "error_code": "0"},
+        ]
+        out = b""
+        for event in events:
+            out += ("data: " + json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        return out
     chunks = [
         {"id": "chatcmpl-fake", "object": "chat.completion.chunk",
          "created": created, "model": model,
@@ -87,12 +91,13 @@ def _sse_body(state, model):
          "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
         {"id": "chatcmpl-fake", "object": "chat.completion.chunk",
          "created": created, "model": model, "choices": [],
-         "usage": state.chat_usage},
+         "usage": {"prompt_tokens": 3, "completion_tokens": 2,
+                   "total_tokens": 5}},
     ]
     out = b""
     for chunk in chunks:
-        out += ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode("utf-8")
-    out += b"data: [DONE]\n\n"
+        out += ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n").encode("utf-8")
+    out += b"data: [DONE]\n"
     return out
 
 
@@ -112,109 +117,133 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _auth_ok(self):
-        auth = self.headers.get("Authorization") or ""
-        return auth == "Bearer %s" % self.state.api_key
+    def _send_sse(self, raw):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
 
-    def _read_json(self):
+    def _read(self):
         length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
-        try:
-            return json.loads(raw.decode("utf-8")) if raw else {}
-        except Exception:
-            return {}
+        return self.rfile.read(length) if length else b""
 
-    def do_GET(self):
-        path = self.path.split("?")[0]
-        if path == "/healthz":
-            raw = b"ok"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-            return
-        if not self._auth_ok():
-            self._send_json(401, {"error": {"message": "invalid api key"}})
-            return
-        if path == "/v1/models":
-            self.state.models_hits += 1
-            if self.state.fail_models:
-                self._send_json(*self.state.models_error)
-                return
-            self._send_json(200, {"object": "list", "data": self.state.models})
-            return
-        if path == "/admin/api/overview":
-            self._send_json(200, self.state.overview)
-            return
-        self._send_json(404, {"error": {"message": "not found"}})
+    def _token_payload(self):
+        state = self.state
+        return {
+            "user_id": state.user_id,
+            "user_name": state.user_name,
+            "domain_id": state.domain_id,
+            "refresh_token": state.refresh_token,
+            "credentials": {
+                "access_key_id": state.api_key,
+                "secret_access_key": state.secret_key,
+                "security_token": state.token,
+                "expiration": state.expiration,
+            },
+        }
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        body = self._read_json()
-        self.state.requests.append({"path": path, "body": body,
-                                    "headers": dict(self.headers)})
-        self.state.last_auth = self.headers.get("Authorization")
-        self.state.last_headers = dict(self.headers)
-        self.state.last_body = body
-        if not self._auth_ok():
-            self._send_json(401, {"error": {"message": "invalid api key"}})
+        raw = self._read()
+        state = self.state
+        state.requests.append({"path": path, "body": raw.decode("utf-8", "replace"),
+                               "headers": dict(self.headers)})
+        state.last_headers = dict(self.headers)
+        try:
+            state.last_body = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            state.last_body = {}
+        if path == "/v1/oauth2/tokens":
+            state.token_calls += 1
+            form = urllib.parse.parse_qs(raw.decode("utf-8"))
+            if form.get("grant_type", [""])[0] == "refresh_token":
+                if not self.headers.get("DPoP"):
+                    self._send_json(400, {"error": "invalid_grant",
+                                          "error_msg": "missing DPoP"})
+                    return
+            self._send_json(200, self._token_payload())
             return
-        if path == "/v1/chat/completions":
-            if self.state.chat_error:
-                self._send_json(*self.state.chat_error)
+        if path == "/api/v2/chat/completions":
+            if self.headers.get("x-auth-token") != state.token:
+                self._send_json(401, {"error_msg": "bad token"})
                 return
-            raw = _sse_body(self.state, body.get("model") or "GLM-5.2")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Content-Length", str(len(raw)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(raw)
-            return
-        if path == "/admin/api/accounts/enable":
-            self._send_json(200, {"ok": True, "message": "已启用"})
-            return
-        if path == "/admin/api/accounts/disable":
-            self._send_json(200, {"ok": True, "message": "已停用"})
-            return
-        if path == "/admin/api/accounts/clear-cooldown":
-            self._send_json(200, {"ok": True, "message": "已清冷却"})
-            return
-        if path == "/admin/api/accounts/delete":
-            if self.state.delete_status != 200:
-                self._send_json(self.state.delete_status,
-                                {"ok": False, "message": self.state.delete_error})
+            if state.require_benefit_header and self.headers.get("maas_type") != "benefit":
+                self._send_json(200, {"error_code": "InferHub.002002009.404",
+                                      "error_msg": "model is not registered"})
                 return
-            self._send_json(200, self.state.delete_body)
+            if state.chat_error:
+                self._send_json(*state.chat_error)
+                return
+            if state.embedded_error:
+                raw_sse = ("data: " + json.dumps(state.embedded_error) + "\n").encode()
+                self._send_sse(raw_sse)
+                return
+            self._send_sse(_sse_chunks(state, state.last_body.get("model") or "GLM-5.2"))
             return
-        if path == "/admin/api/checkin":
-            self._send_json(200, {"ok": True, "message": "签到完成"})
+        if path == "/api/v1/benefit/claim":
+            self._send_json(200, {"error_code": "0000", "error_msg": ""})
             return
-        if path == "/admin/api/keepalive":
-            self._send_json(200, {"ok": True, "message": "保活完成"})
+        if path == "/v1/ops/claim":
+            self._send_json(200, {"code": 0, "message": "ok", "data": {}})
             return
-        if path == "/admin/api/oauth/start":
-            self._send_json(200, self.state.oauth_start)
+        if path == "/v1/ops/confirm":
+            self._send_json(200, {"code": 0, "message": "ok", "data": {}})
             return
-        if path == "/admin/api/oauth/poll":
-            self._send_json(200, self.state.oauth_poll)
+        self._send_json(404, {"error_msg": "not found"})
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        state = self.state
+        state.requests.append({"path": path, "body": "", "headers": dict(self.headers)})
+        state.last_headers = dict(self.headers)
+        if path == "/v1/login/ticket":
+            self._send_json(200, self._token_payload())
             return
-        if path == "/admin/api/oauth/import-callback":
-            self._send_json(200, self.state.oauth_callback)
+        if path == "/v1/model/builtin":
+            state.model_calls += 1
+            self._send_json(200, {"builtinModels": state.builtin})
             return
-        self._send_json(404, {"error": {"message": "not found"}})
+        if path == "/v1/agent-center/agents/useragents":
+            self._send_json(200, {"agents": [{
+                "agent_id": "agent-1", "agent_name": "CodeAgent",
+                "is_primary_agent": True, "show_in_ide": True,
+                "alias": {"alias_zh_cn": "智能体"},
+            }]})
+            return
+        if path == "/v1/agent-center/agents/detail":
+            self._send_json(200, {"gpts": {"models": state.agent_models}})
+            return
+        if path == "/api/v1/gateway/config":
+            self._send_json(200, {"error_code": "0000", "result": {
+                "base_url": "https://example.test", "models": state.benefit_models}})
+            return
+        if path == "/v1/ops/delivery":
+            self._send_json(200, {"code": 0, "message": "ok",
+                                  "data": {"items": state.campaigns}})
+            return
+        if path == "/v5/caller-identity":
+            self._send_json(200, {"account_id": state.domain_id,
+                                  "principal_id": state.user_id,
+                                  "principal_urn": "iam::%s:user/%s" % (
+                                      state.domain_id, state.user_name)})
+            return
+        if path == "/v1/current/user":
+            self._send_json(200, {"user_id": state.user_id,
+                                  "user_name": state.user_name,
+                                  "domain_id": state.domain_id})
+            return
+        self._send_json(404, {"error_msg": "not found"})
 
 
 def start_server(state=None):
-    """起服务，返回 (server, base_url, state)。调用方负责 shutdown()。"""
     state = state or FakeState()
-    handler = type("FakeHandler", (_Handler,), {"state": state})
+    handler = type("FakeHuawei", (_Handler,), {"state": state})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     base = "http://127.0.0.1:%d" % server.server_address[1]
     return server, base, state
 

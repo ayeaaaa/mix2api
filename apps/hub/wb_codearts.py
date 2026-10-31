@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
-"""CodeArts（华为云）第三出口的客户端与配置。
+"""华为云 CodeArts（盘古助手/码道）原生客户端与账号池。
 
-这个模块只做三件事：
+这是单进程版本：wb-hub 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
+聊天 SSE 与签到，不再依赖独立的 codearts2api 服务。
 
-1. 读写 `accounts/settings.json` 里的 `codearts` 配置；
-2. 用标准库直连 codearts2api 的 OpenAI 兼容接口（推理）和 admin API（账号管理）；
-3. 把 codearts2api 的模型目录/流式响应适配成 wb-hub 现有回程处理器能吃的形状。
+协议来源：codearts2api 的 Go 实现与 `docs/reverse-engineering.md`。关键点：
 
-它**不**保存任何华为云凭据：账号、refresh token、DPoP 私钥、签到、冷却都在
-codearts2api 进程里。wb-hub 只持有 codearts2api 的 base_url 和 API Key。
+- 聊天：`POST https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions`
+  `x-auth-token` + 华为云 AK/SK `SDK-HMAC-SHA256` 签名；`stream=true`。
+- 登录：华为云 CodeArts OAuth2（PKCE + DPoP）→ `sts.cn-north-4/v1/oauth2/tokens`
+  换 STS 临时 AK/SK + security_token；refresh_token 与 client_id、DPoP 公钥绑定。
+- 模型：agent-center / builtin / 限时福利三路合并，福利模型聊天时加
+  `maas_type: benefit`。
+- 签到：`/v1/ops/delivery|claim|confirm`，`Agent-Type: PromptCenter`。
 
-依赖：Python 3.9+ 标准库。不要引入第三方包。
+依赖：Python 3.9+ 标准库；密码学原语在 `wb_codearts_crypto.py`。
 """
 
-import hashlib
 import json
+import os
+import secrets
 import socket
 import threading
 import time
@@ -23,34 +28,82 @@ import urllib.parse
 import urllib.request
 
 import wb_settings
+import wb_codearts_crypto as crypto
 
-#: 配置默认值。`enabled` 默认 False：老安装升级后行为不变。
+# ---------------------------------------------------------------------------
+# 常量
+# ---------------------------------------------------------------------------
+
+SNAP_HOST = "https://snap-access.cn-north-4.myhuaweicloud.com"
+SNAP_MANAGER = SNAP_HOST + "/snap-manager"
+PORTAL_HOST = "https://codearts.huaweicloud.com/portal"
+STS_HOST = "https://sts.cn-north-4.myhuaweicloud.com"
+BENEFIT_HOST = "https://opengw.developer.huaweicloud.com"
+
+CLIENT_ID = "codearts-agent"
+PLUGIN_NAME = "snap_AIIDE"
+PLUGIN_VERSION = "5.2.0"
+REDIRECT_PATH = "/oauth/callback"
+
+EP_CHAT = "/api/v2/chat/completions"
+EP_OAUTH_TOKENS = "/v1/oauth2/tokens"
+EP_LOGIN_TICKET = "/v1/login/ticket"
+EP_MODEL_BUILTIN = "/v1/model/builtin"
+EP_AGENT_LIST = "/v1/agent-center/agents/useragents"
+EP_AGENT_DETAIL = "/v1/agent-center/agents/detail"
+EP_BENEFIT_CONFIG = "/api/v1/gateway/config"
+EP_BENEFIT_CLAIM = "/api/v1/benefit/claim"
+EP_CREDIT_DELIVERY = "/v1/ops/delivery"
+EP_CREDIT_CLAIM = "/v1/ops/claim"
+EP_CREDIT_CONFIRM = "/v1/ops/confirm"
+
+HEADER_MAAS_TYPE = "maas_type"
+MAAS_BENEFIT = "benefit"
+
+#: 冷启动种子：首次发现前也能列出/路由福利模型。
+SEED_BENEFIT_MODELS = (
+    "deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "glm-5.3-flash",
+)
+SEED_KNOWN_MODELS = (
+    "GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
+    "OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash",
+    "Qwen3-VL-235B", "Qwen3.5-397B-A17B-VL", "Qwen3.6-27B-VL",
+)
+SEED_MODELS = tuple(SEED_KNOWN_MODELS) + tuple(SEED_BENEFIT_MODELS)
+
+#: 模型目录缓存 1 小时；失败时保留上一轮。
+CATALOG_TTL = 3600.0
+#: 单个账号的模型发现最短间隔（避免每次 /v1/models 都打三路上游）。
+CATALOG_MIN_INTERVAL = 60.0
+#: 错误阈值与冷却。
+ERR_THRESHOLD = 3
+ERR_COOLDOWN = 600.0
+SOFT_COOLDOWN = 60.0
+#: token 提前刷新窗口。
+REFRESH_SKEW = 1800.0
+#: OAuth 会话 TTL。
+OAUTH_TTL = 600.0
+#: 错误体读取上限。
+ERROR_BODY_MAX = 256 * 1024
+
 DEFAULTS = {
     "enabled": False,
-    "base_url": "http://127.0.0.1:7866",
-    "api_key": "",
     "timeout_seconds": 30.0,
     "stream_timeout_seconds": 600.0,
-    "models_ttl_seconds": 60.0,
+    "models_ttl_seconds": 300.0,
+    "max_concurrent": 5,
+    "benefit_auto_claim": True,
+    "credits_auto_claim": True,
 }
 
-#: 错误体最多读这么多，防止一个异常大的 body 吃掉内存。
-_ERROR_BODY_MAX = 64 * 1024
+_LOCK = threading.RLock()
 
-#: 模型缓存的 TTL 下限/上限，防止面板填 0 或一个荒唐的大数。
-_MIN_TTL = 1.0
-_MAX_TTL = 3600.0
 
-_models_lock = threading.Lock()
-#: key -> {"entries": [...], "fetched_at": float, "expires_at": float}
-_models_cache = {}
-#: key -> bool：最近一次刷新是否失败、当前返回的是不是旧缓存
-_models_stale = {}
-
+# ---------------------------------------------------------------------------
+# 异常
+# ---------------------------------------------------------------------------
 
 class CodeArtsError(Exception):
-    """CodeArts 上游的基类错误。message 已经是可以直接给用户看的中文。"""
-
     def __init__(self, message, status=None, code=None):
         super(CodeArtsError, self).__init__(message)
         self.status = status
@@ -58,76 +111,56 @@ class CodeArtsError(Exception):
 
 
 class CodeArtsUnavailable(CodeArtsError):
-    """连不上、超时、DNS/路由失败。"""
+    pass
 
 
 class CodeArtsAuthError(CodeArtsError):
-    """codearts2api 拒绝了配置的 API Key（401/403）。"""
+    pass
 
 
 class CodeArtsBadRequest(CodeArtsError):
-    """请求本身不合法（400/422），原样转给客户端。"""
+    pass
 
 
 class CodeArtsNotFound(CodeArtsError):
-    """资源不存在（404），例如旧版本没有 delete 端点。"""
+    pass
 
 
 class CodeArtsConflict(CodeArtsError):
-    """状态冲突（409）。"""
+    pass
 
+
+class CodeArtsUpstreamError(CodeArtsError):
+    """上游 HTTP 200 但 SSE 内嵌业务错误（排队/TPM/模型未注册等）。"""
+
+
+# ---------------------------------------------------------------------------
+# 配置
+# ---------------------------------------------------------------------------
 
 def _positive_float(value, default, low, high):
     try:
         out = float(value)
     except (TypeError, ValueError):
         return float(default)
-    if out < low:
-        return float(low)
-    if out > high:
-        return float(high)
-    return out
+    return min(max(out, float(low)), float(high))
 
 
-def normalize_base_url(value):
-    """校验并规范化 codearts2api 的地址。
-
-    只接受 http/https；拒绝 URL 内嵌用户名密码、query、fragment；去掉尾部
-    斜杠。允许一个路径前缀（反代到 `/codearts` 的部署）。
-    """
-    raw = str(value or "").strip()
-    if not raw:
-        raise ValueError("base_url is required")
-    parsed = urllib.parse.urlsplit(raw)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("base_url must start with http:// or https://")
-    if not parsed.netloc:
-        raise ValueError("base_url has no host")
-    if parsed.username or parsed.password:
-        raise ValueError("base_url must not embed credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError("base_url must not contain query or fragment")
-    path = parsed.path.rstrip("/")
-    return "%s://%s%s" % (parsed.scheme, parsed.netloc, path)
+def _positive_int(value, default, low, high):
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return min(max(out, int(low)), int(high))
 
 
 def load_config(accounts_dir):
-    """读取并收敛 CodeArts 配置。
-
-    非法值回落到默认值而不是抛异常：一个手改坏的 settings.json 不应该让
-    整个网关起不来。真正要写配置时走 save_config()，那里会严格校验。
-    """
+    """读取并收敛 CodeArts 配置；非法值回落默认，不阻塞网关启动。"""
     raw = wb_settings.load(accounts_dir).get("codearts")
     if not isinstance(raw, dict):
         raw = {}
-    try:
-        base_url = normalize_base_url(raw.get("base_url") or DEFAULTS["base_url"])
-    except ValueError:
-        base_url = DEFAULTS["base_url"]
     return {
         "enabled": raw.get("enabled") is True,
-        "base_url": base_url,
-        "api_key": str(raw.get("api_key") or "").strip(),
         "timeout_seconds": _positive_float(
             raw.get("timeout_seconds"), DEFAULTS["timeout_seconds"], 1.0, 600.0),
         "stream_timeout_seconds": _positive_float(
@@ -135,28 +168,25 @@ def load_config(accounts_dir):
             DEFAULTS["stream_timeout_seconds"], 1.0, 3600.0),
         "models_ttl_seconds": _positive_float(
             raw.get("models_ttl_seconds"), DEFAULTS["models_ttl_seconds"],
-            _MIN_TTL, _MAX_TTL),
+            60.0, 86400.0),
+        "max_concurrent": _positive_int(
+            raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20),
+        "benefit_auto_claim": raw.get("benefit_auto_claim", True) is not False,
+        "credits_auto_claim": raw.get("credits_auto_claim", True) is not False,
+        "accounts_dir": accounts_dir,
     }
 
 
 def save_config(accounts_dir, patch):
-    """保存 CodeArts 配置；空 api_key 表示保留旧值。
-
-    返回保存后的完整配置（含默认值）。非法值抛 ValueError，调用方负责转成
-    400；不会写半份配置。
-    """
+    """保存配置；返回完整配置。非法值抛 ValueError。"""
     if not isinstance(patch, dict):
         raise ValueError("codearts settings must be an object")
     current = load_config(accounts_dir)
     merged = dict(current)
-    merged.update({k: v for k, v in patch.items() if k in DEFAULTS})
-    merged["base_url"] = normalize_base_url(merged.get("base_url"))
+    for key in DEFAULTS:
+        if key in patch:
+            merged[key] = patch[key]
     merged["enabled"] = merged.get("enabled") is True
-    key = str(patch.get("api_key") or "").strip()
-    if key:
-        merged["api_key"] = key
-    else:
-        merged["api_key"] = current.get("api_key") or ""
     merged["timeout_seconds"] = _positive_float(
         merged.get("timeout_seconds"), DEFAULTS["timeout_seconds"], 1.0, 600.0)
     merged["stream_timeout_seconds"] = _positive_float(
@@ -164,288 +194,990 @@ def save_config(accounts_dir, patch):
         DEFAULTS["stream_timeout_seconds"], 1.0, 3600.0)
     merged["models_ttl_seconds"] = _positive_float(
         merged.get("models_ttl_seconds"), DEFAULTS["models_ttl_seconds"],
-        _MIN_TTL, _MAX_TTL)
+        60.0, 86400.0)
+    merged["max_concurrent"] = _positive_int(
+        merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20)
+    merged["benefit_auto_claim"] = merged.get("benefit_auto_claim", True) is not False
+    merged["credits_auto_claim"] = merged.get("credits_auto_claim", True) is not False
     data = wb_settings.load(accounts_dir)
-    data["codearts"] = merged
+    data["codearts"] = {k: merged[k] for k in DEFAULTS}
     wb_settings.save(accounts_dir, data)
-    return merged
+    return load_config(accounts_dir)
 
 
 def configured(accounts_dir):
-    """出口是否可用：开关打开 + 有地址 + 有 Key。"""
-    cfg = load_config(accounts_dir)
-    return bool(cfg["enabled"] and cfg["base_url"] and cfg["api_key"])
+    return load_config(accounts_dir)["enabled"]
 
 
 def masked_config(accounts_dir):
-    """给看板的配置视图：不返回明文 Key，只告诉它有没有设置。"""
     cfg = load_config(accounts_dir)
-    out = dict(cfg)
-    out["api_key"] = ""
-    out["api_key_set"] = bool(cfg["api_key"])
-    out["configured"] = bool(cfg["enabled"] and cfg["api_key"])
+    pool = pool_for(accounts_dir)
+    out = {k: v for k, v in cfg.items() if k != "accounts_dir"}
+    out["configured"] = bool(cfg["enabled"])
+    out["accounts"] = len(pool.accounts) if pool else 0
+    out["healthy"] = pool.stats()["healthy"] if pool else 0
     return out
 
 
-def _cache_key(config):
-    key_hash = hashlib.sha256(
-        str(config.get("api_key") or "").encode("utf-8")).hexdigest()[:8]
-    return (config.get("base_url") or "", key_hash)
+# ---------------------------------------------------------------------------
+# 账号文件与状态
+# ---------------------------------------------------------------------------
+
+def accounts_path(accounts_dir):
+    return os.path.join(accounts_dir, "codearts")
 
 
-def _sanitize(text, config):
-    """把可能被上游回显的 Key 从错误文本里抹掉。"""
-    out = str(text or "")
-    key = str(config.get("api_key") or "")
-    if key:
-        out = out.replace(key, "***")
-    return out
+def _auth_filename(uid):
+    safe = str(uid or "").replace(os.sep, "_").replace("/", "_")
+    return "codearts-%s.json" % (safe or "unknown")
 
 
-def _error_message(body):
-    """从 OpenAI 风格或 codearts2api 风格错误体里取一条可读消息。"""
+def _atomic_write(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def load_auths(accounts_dir):
+    """读取 accounts/codearts/codearts-*.json。"""
+    folder = accounts_path(accounts_dir)
+    out = []
     try:
-        parsed = json.loads(body)
-    except Exception:
-        parsed = None
-    if isinstance(parsed, dict):
-        err = parsed.get("error")
-        if isinstance(err, dict):
-            for field in ("message", "code", "type"):
-                value = err.get(field)
-                if value:
-                    return str(value)
-        for field in ("message", "detail", "error"):
-            value = parsed.get(field)
-            if isinstance(value, str) and value:
-                return value
-    text = str(body or "").strip()
-    return text[:500]
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return out
+    for name in names:
+        if not name.startswith("codearts-") or not name.endswith(".json"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if not data.get("cloud_dragon_token") or not data.get("user_id"):
+            continue
+        data["_path"] = path
+        out.append(data)
+    return out
 
+
+def save_auth(accounts_dir, auth):
+    path = auth.get("_path") or os.path.join(
+        accounts_path(accounts_dir), _auth_filename(auth.get("user_id")))
+    auth = dict(auth)
+    auth.pop("_path", None)
+    _atomic_write(path, auth)
+    auth["_path"] = path
+    return auth
+
+
+def delete_auth(accounts_dir, uid):
+    path = os.path.join(accounts_path(accounts_dir), _auth_filename(uid))
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _parse_expiration(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    text = text.replace("Z", "+00:00")
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _fmt_duration(seconds):
+    seconds = int(max(0, seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, _ = divmod(rest, 60)
+    if hours:
+        return "%dh%dm" % (hours, minutes)
+    return "%dm" % minutes
+
+
+# ---------------------------------------------------------------------------
+# 账号
+# ---------------------------------------------------------------------------
+
+class CodeArtsAccount(object):
+    """一个华为云 CodeArts 账号；也是 wb-hub 回程处理器需要的账号表面。"""
+
+    uid = ""
+    realm = "codearts"
+    product = "codearts"
+    proxy = None
+    chat_path = EP_CHAT
+
+    def __init__(self, auth, pool):
+        self.auth = dict(auth)
+        self.pool = pool
+        self.uid = str(auth.get("user_id") or "")
+        self.name = self.uid
+        self.nickname = str(auth.get("user_name") or self.uid)
+        self.disabled = False
+        self.disabled_reason = ""
+        self.cool_until = 0.0
+        self.err_count = 0
+        self.last_error = ""
+        self.active_concurrent = 0
+        self.max_concurrent = pool.config.get("max_concurrent", 5)
+        self.last_used = 0.0
+        self.models = []
+        self.model_benefit = {}
+        self.models_fetched_at = 0.0
+        self.checkin = None
+        self._lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
+
+    def chat_base_url(self):
+        return SNAP_HOST
+
+    def model_disabled(self, mid):
+        return False
+
+    def is_cli_identity(self):
+        return False
+
+    # ---- 凭证 ----
+    def credential(self):
+        return {
+            "access_key_id": self.auth.get("access_key_id") or "",
+            "secret_access_key": self.auth.get("secret_access_key") or "",
+            "security_token": self.auth.get("cloud_dragon_token") or "",
+        }
+
+    def expires_at(self):
+        return _parse_expiration(self.auth.get("expiration"))
+
+    def token_remaining(self):
+        exp = self.expires_at()
+        if not exp:
+            return 0
+        return max(0, exp - time.time())
+
+    def expired(self):
+        exp = self.expires_at()
+        return bool(exp and exp <= time.time())
+
+    def expiring_soon(self, skew=REFRESH_SKEW):
+        exp = self.expires_at()
+        return bool(exp and exp - time.time() <= skew)
+
+    def update_auth(self, token):
+        creds = token.get("credentials") or {}
+        self.auth.update({
+            "user_id": token.get("user_id") or self.uid,
+            "user_name": token.get("user_name") or self.nickname,
+            "domain_id": token.get("domain_id") or self.auth.get("domain_id") or "",
+            "cloud_dragon_token": creds.get("security_token") or "",
+            "access_key_id": creds.get("access_key_id") or "",
+            "secret_access_key": creds.get("secret_access_key") or "",
+            "expiration": creds.get("expiration") or "",
+            "refresh_token": token.get("refresh_token") or self.auth.get("refresh_token") or "",
+            "updated_at": int(time.time()),
+        })
+        self.auth = save_auth(self.pool.accounts_dir, self.auth)
+        self.disabled = False
+        self.disabled_reason = ""
+        self.last_error = ""
+
+    # ---- 状态快照 ----
+    def view(self):
+        now = time.time()
+        cooling = (not self.disabled) and now < self.cool_until
+        reason = self.disabled_reason or self.last_error
+        return {
+            "name": self.name,
+            "uid": self.uid,
+            "nickname": self.nickname,
+            "user_name": self.nickname,
+            "default_model": "",
+            "credits": 0,
+            "checkin": self.checkin,
+            "disabled": self.disabled,
+            "cooling": cooling,
+            "until": (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.cool_until))
+                      if cooling else ""),
+            "err_count": self.err_count,
+            "reason": reason,
+            "last_error": self.last_error,
+            "active_concurrent": self.active_concurrent,
+            "max_concurrent": self.max_concurrent,
+            "token_remaining": _fmt_duration(self.token_remaining()),
+            "expires_at": (time.strftime("%Y-%m-%dT%H:%M:%S",
+                                         time.localtime(self.expires_at()))
+                           if self.expires_at() else ""),
+            "models": len(self.models),
+        }
+
+    def healthy(self, now=None):
+        now = now or time.time()
+        return (not self.disabled) and now >= self.cool_until and not self.expired()
+
+    def has_model(self, model):
+        mid = str(model or "").lower()
+        if not mid:
+            return True
+        if not self.models:
+            return True  # 目录还没发现，先给它一次机会
+        return any(str(m.get("id") or "").lower() == mid for m in self.models)
+
+    def is_benefit(self, model):
+        return bool(self.model_benefit.get(str(model or "").lower()))
+
+
+# ---------------------------------------------------------------------------
+# 账号池
+# ---------------------------------------------------------------------------
+
+class CodeArtsPool(object):
+    def __init__(self, accounts_dir, config):
+        self.accounts_dir = accounts_dir
+        self.folder = accounts_path(accounts_dir)
+        self.state_file = os.path.join(self.folder, "state.json")
+        self.config = dict(config)
+        self.accounts = []
+        self._lock = threading.RLock()
+        self.load()
+
+    # ---- 持久化 ----
+    def load(self):
+        auths = load_auths(self.accounts_dir)
+        state = self._load_state()
+        accounts = []
+        for auth in auths:
+            acct = CodeArtsAccount(auth, self)
+            entry = state.get(acct.uid) or {}
+            acct.err_count = int(entry.get("err_count") or 0)
+            acct.cool_until = float(entry.get("cool_until") or 0)
+            acct.disabled = bool(entry.get("disabled"))
+            acct.disabled_reason = str(entry.get("reason") or "")
+            acct.last_error = str(entry.get("last_error") or "")
+            accounts.append(acct)
+        with self._lock:
+            self.accounts = accounts
+
+    def _load_state(self):
+        try:
+            with open(self.state_file, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except Exception:
+            return {}
+        if isinstance(raw, dict) and isinstance(raw.get("accounts"), list):
+            raw = raw["accounts"]
+        out = {}
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and item.get("name"):
+                    out[str(item["name"])] = item
+        return out
+
+    def save_state(self):
+        items = []
+        with self._lock:
+            accounts = list(self.accounts)
+        for acct in accounts:
+            items.append({
+                "name": acct.uid,
+                "err_count": acct.err_count,
+                "cool_until": acct.cool_until,
+                "disabled": acct.disabled,
+                "reason": acct.disabled_reason,
+                "last_error": acct.last_error,
+            })
+        try:
+            _atomic_write(self.state_file, items)
+        except Exception:
+            pass
+
+    # ---- 查询 ----
+    def get(self, uid):
+        with self._lock:
+            for acct in self.accounts:
+                if acct.uid == uid or acct.name == uid:
+                    return acct
+        return None
+
+    def list(self):
+        with self._lock:
+            accounts = list(self.accounts)
+        return [acct.view() for acct in sorted(accounts, key=lambda a: a.uid)]
+
+    def stats(self):
+        now = time.time()
+        total = healthy = disabled = cooling = 0
+        with self._lock:
+            accounts = list(self.accounts)
+        for acct in accounts:
+            total += 1
+            if acct.disabled:
+                disabled += 1
+            elif now < acct.cool_until:
+                cooling += 1
+            else:
+                healthy += 1
+        return {"total": total, "healthy": healthy, "disabled": disabled,
+                "cooling": cooling}
+
+    # ---- 增删启停 ----
+    def add(self, auth):
+        acct = CodeArtsAccount(auth, self)
+        with self._lock:
+            for index, existing in enumerate(self.accounts):
+                if existing.uid == acct.uid:
+                    existing.auth = acct.auth
+                    existing.nickname = acct.nickname
+                    existing.disabled = False
+                    existing.disabled_reason = ""
+                    existing.last_error = ""
+                    existing.err_count = 0
+                    existing.cool_until = 0
+                    existing.models_fetched_at = 0
+                    self.accounts[index] = existing
+                    self.save_state()
+                    return existing
+            self.accounts.append(acct)
+        self.save_state()
+        return acct
+
+    def remove(self, uid):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        with self._lock:
+            self.accounts = [a for a in self.accounts if a.uid != uid]
+        delete_auth(self.accounts_dir, uid)
+        self.save_state()
+        return True
+
+    def enable(self, uid):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        acct.disabled = False
+        acct.disabled_reason = ""
+        acct.last_error = ""
+        acct.err_count = 0
+        acct.cool_until = 0
+        self.save_state()
+        return True
+
+    def disable(self, uid, reason="manual disable"):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        acct.disabled = True
+        acct.disabled_reason = reason
+        acct.last_error = reason
+        self.save_state()
+        return True
+
+    def clear_cooldown(self, uid):
+        acct = self.get(uid)
+        if acct is None:
+            return False
+        acct.cool_until = 0
+        acct.err_count = 0
+        self.save_state()
+        return True
+
+    # ---- 调度 ----
+    def pick(self, model="", session_key=None, exclude=None):
+        """按「能服务该模型 + 健康 + 并发未满」选一个账号。"""
+        exclude = set(exclude or ())
+        now = time.time()
+        with self._lock:
+            accounts = list(self.accounts)
+        # 会话粘性：同一段对话优先回到上次的账号。
+        if session_key:
+            uid = self._affinity.get(session_key)
+            if uid and uid not in exclude:
+                acct = self.get(uid)
+                if acct and acct.healthy(now) and acct.has_model(model) \
+                        and acct.active_concurrent < acct.max_concurrent:
+                    return acct
+        candidates = [a for a in accounts
+                      if a.uid not in exclude and a.healthy(now)
+                      and a.active_concurrent < a.max_concurrent]
+        capable = [a for a in candidates if a.has_model(model)]
+        pool = capable or candidates
+        if not pool:
+            return None
+        pool.sort(key=lambda a: (a.active_concurrent, a.last_used or 0))
+        return pool[0]
+
+    _affinity = {}
+
+    def bind_session(self, session_key, uid):
+        if not session_key or not uid:
+            return
+        self._affinity[session_key] = uid
+        if len(self._affinity) > 4096:
+            # 简单上限：丢掉最早插入的一批。
+            for key in list(self._affinity)[:1024]:
+                self._affinity.pop(key, None)
+
+    def acquire(self, acct):
+        with acct._lock:
+            if acct.active_concurrent >= acct.max_concurrent:
+                return False
+            acct.active_concurrent += 1
+            acct.last_used = time.time()
+            return True
+
+    def release(self, acct):
+        with acct._lock:
+            if acct.active_concurrent > 0:
+                acct.active_concurrent -= 1
+
+    def note_success(self, acct):
+        acct.err_count = 0
+        acct.cool_until = 0
+        acct.last_error = ""
+        self.save_state()
+
+    def note_error(self, acct, message, soft=False, terminal=False):
+        acct.last_error = str(message or "")[:200]
+        if terminal:
+            acct.disabled = True
+            acct.disabled_reason = acct.last_error
+        elif soft:
+            acct.cool_until = time.time() + SOFT_COOLDOWN
+        else:
+            acct.err_count += 1
+            if acct.err_count >= ERR_THRESHOLD:
+                acct.cool_until = time.time() + ERR_COOLDOWN
+                acct.err_count = 0
+        self.save_state()
+
+
+_POOLS = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def pool_for(accounts_dir):
+    """按 accounts_dir 取单例池；配置变化时刷新池配置。"""
+    key = os.path.abspath(str(accounts_dir or "."))
+    cfg = load_config(accounts_dir)
+    with _POOLS_LOCK:
+        pool = _POOLS.get(key)
+        if pool is None:
+            pool = CodeArtsPool(accounts_dir, cfg)
+            _POOLS[key] = pool
+        else:
+            pool.config = cfg
+            for acct in pool.accounts:
+                acct.max_concurrent = cfg.get("max_concurrent", 5)
+        return pool
+
+
+def invalidate_pool(accounts_dir=None):
+    with _POOLS_LOCK:
+        if accounts_dir is None:
+            _POOLS.clear()
+        else:
+            _POOLS.pop(os.path.abspath(str(accounts_dir)), None)
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
 
 def _opener():
-    """直连 opener。
-
-    不用环境变量里的 HTTP_PROXY：codearts2api 通常在 127.0.0.1 或容器网络里，
-    一个全局代理会把本机请求带出去。需要代理的部署应在 base_url 前面放反代。
-    """
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _request(config, method, path, payload=None, timeout=None, stream=False):
-    """发一个请求；返回 urllib 响应（stream=True）或解析后的 JSON。"""
-    base = str(config.get("base_url") or "").rstrip("/")
-    if not base:
-        raise CodeArtsUnavailable("CodeArts 出口未配置 Base URL")
-    url = base + path
-    data = None
-    if payload is not None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {
-        "Authorization": "Bearer %s" % (config.get("api_key") or ""),
-        "Accept": "text/event-stream" if stream else "application/json",
-    }
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    timeout = float(timeout or config.get("timeout_seconds")
-                    or DEFAULTS["timeout_seconds"])
-    try:
-        resp = _opener().open(req, timeout=timeout)
-    except urllib.error.HTTPError as exc:
-        try:
-            raw = exc.read(_ERROR_BODY_MAX)
-        except Exception:
-            raw = b""
-        message = _error_message(raw.decode("utf-8", "replace"))
-        message = _sanitize(message, config) or ("HTTP %s" % exc.code)
-        if exc.code in (401, 403):
-            raise CodeArtsAuthError(
-                "CodeArts 拒绝了当前 API Key（HTTP %s）：%s" % (exc.code, message),
-                status=exc.code)
-        if exc.code in (400, 422):
-            raise CodeArtsBadRequest(message, status=exc.code)
-        if exc.code == 404:
-            raise CodeArtsNotFound(message, status=404)
-        if exc.code == 409:
-            raise CodeArtsConflict(message, status=409)
-        raise CodeArtsError(
-            "CodeArts 上游返回 HTTP %s：%s" % (exc.code, message), status=exc.code)
-    except (urllib.error.URLError, socket.timeout, TimeoutError,
-            ConnectionError, OSError) as exc:
-        reason = getattr(exc, "reason", None) or exc
-        host = urllib.parse.urlsplit(base).netloc or base
-        raise CodeArtsUnavailable(
-            "连不上 CodeArts（%s）：%s - 请确认 codearts2api 正在运行，"
-            "且 wb-hub 能访问该地址。" % (host, _sanitize(reason, config)))
-    if stream:
-        return resp
-    try:
-        raw = resp.read(_ERROR_BODY_MAX * 4)
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
+def _error_text(raw):
     try:
         parsed = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
-        raise CodeArtsError(
-            "CodeArts 返回了无法解析的响应：%s"
-            % _sanitize(raw[:200].decode("utf-8", "replace"), config))
-    if isinstance(parsed, dict) and parsed.get("error"):
-        raise CodeArtsError(_sanitize(_error_message(raw), config))
+        return raw.decode("utf-8", "replace")[:500]
+    if isinstance(parsed, dict):
+        for key in ("error_msg", "message", "error_description", "error"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value:
+                return value[:500]
+        code = parsed.get("error_code") or parsed.get("code")
+        if code not in (None, "", 0, "0"):
+            return "error_code=%s" % code
+    return raw.decode("utf-8", "replace")[:500]
+
+
+def _http(method, url, headers=None, body=None, timeout=30.0):
+    """发一个普通 HTTP 请求，返回 (status, raw_bytes)。"""
+    req = urllib.request.Request(url, data=body, headers=headers or {},
+                                 method=method)
+    try:
+        with _opener().open(req, timeout=timeout) as resp:
+            return resp.status, resp.read(ERROR_BODY_MAX * 4)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(ERROR_BODY_MAX)
+        except Exception:
+            raw = b""
+        return exc.code, raw
+    except (urllib.error.URLError, socket.timeout, TimeoutError,
+            ConnectionError, OSError) as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise CodeArtsUnavailable(
+            "连不上华为云 CodeArts：%s - 请检查本机网络或代理。" % reason)
+
+
+def _json_http(method, url, headers=None, body=None, timeout=30.0):
+    status, raw = _http(method, url, headers, body, timeout)
+    try:
+        parsed = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        parsed = None
+    if status >= 400:
+        message = _error_text(raw)
+        if status in (401, 403):
+            raise CodeArtsAuthError(message, status=status)
+        if status == 400:
+            raise CodeArtsBadRequest(message, status=status)
+        if status == 404:
+            raise CodeArtsNotFound(message, status=status)
+        raise CodeArtsError("华为云返回 HTTP %s：%s" % (status, message),
+                            status=status)
+    if not isinstance(parsed, dict):
+        raise CodeArtsError("华为云返回了无法解析的响应：%s"
+                            % raw[:200].decode("utf-8", "replace"))
     return parsed
 
 
-def _json(config, method, path, payload=None, timeout=None):
-    return _request(config, method, path, payload=payload, timeout=timeout,
-                    stream=False)
-
-
-def models(config, force=False):
-    """返回 codearts2api 的模型条目；失败时回退到上次成功的缓存。"""
-    key = _cache_key(config)
-    now = time.time()
-    with _models_lock:
-        cached = _models_cache.get(key)
-        if cached and not force and now < cached["expires_at"]:
-            return list(cached["entries"])
-    try:
-        payload = _json(config, "GET", "/v1/models")
-        data = payload.get("data") if isinstance(payload, dict) else None
-        entries = [dict(item) for item in (data or [])
-                   if isinstance(item, dict) and item.get("id")]
-        if not entries:
-            raise CodeArtsError("CodeArts 返回了空的模型目录")
-    except (CodeArtsAuthError, CodeArtsBadRequest):
-        # Key 错/请求错时不要把旧目录端出来：那会让看板看起来正常，实际每个
-        # 请求都会失败。只有网络/上游 5xx 才回退到上次成功的缓存。
-        raise
-    except CodeArtsError:
-        with _models_lock:
-            cached = _models_cache.get(key)
-            if cached:
-                _models_stale[key] = True
-                return list(cached["entries"])
-        raise
-    with _models_lock:
-        _models_cache[key] = {
-            "entries": entries,
-            "fetched_at": now,
-            "expires_at": now + float(config.get("models_ttl_seconds")
-                                      or DEFAULTS["models_ttl_seconds"]),
+def _normalize_token(payload):
+    """把 oauth2/tokens 响应归一成统一结构。"""
+    creds = payload.get("credentials") or {}
+    legacy = payload.get("credential") or {}
+    if not creds.get("security_token") and legacy.get("securitytoken"):
+        creds = {
+            "access_key_id": legacy.get("access") or "",
+            "secret_access_key": legacy.get("secret") or "",
+            "security_token": legacy.get("securitytoken") or "",
+            "expiration": legacy.get("expires_at") or "",
         }
-        _models_stale[key] = False
-    return list(entries)
-
-
-def models_meta(config):
-    """模型目录的来源信息，给 /v1/models 的 `catalog` 字段用。"""
-    key = _cache_key(config)
-    with _models_lock:
-        cached = _models_cache.get(key)
-        stale = bool(_models_stale.get(key))
-        fetched_at = cached["fetched_at"] if cached else None
     return {
-        "source": "codearts2api",
-        "fetched_at": fetched_at,
-        "stale": stale,
+        "user_id": str(payload.get("user_id") or ""),
+        "user_name": str(payload.get("user_name") or ""),
+        "domain_id": str(payload.get("domain_id") or ""),
+        "refresh_token": str(payload.get("refresh_token") or ""),
+        "credentials": {
+            "access_key_id": str(creds.get("access_key_id") or ""),
+            "secret_access_key": str(creds.get("secret_access_key") or ""),
+            "security_token": str(creds.get("security_token") or ""),
+            "expiration": str(creds.get("expiration") or ""),
+        },
     }
 
 
-def model_entries(config):
-    """把上游模型条目映射成 wb-hub /v1/models 的形状。
+def request_token(form, dpop_jwk, timeout=30.0):
+    url = STS_HOST + EP_OAUTH_TOKENS
+    body = urllib.parse.urlencode(form).encode("utf-8")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "DPoP": crypto.dpop_proof(dpop_jwk, url),
+    }
+    payload = _json_http("POST", url, headers, body, timeout)
+    token = _normalize_token(payload)
+    if not token["credentials"]["security_token"]:
+        raise CodeArtsError("登录响应缺少 security_token：%s"
+                            % json.dumps(payload, ensure_ascii=False)[:300])
+    return token
 
-    只宣告 id/object/created/owned_by/provider，不伪造能力或价格：CodeArts
-    的模型能力以它自己的目录为准。
-    """
-    raw = models(config)
+
+def exchange_code(code, verifier, port, dpop_jwk):
+    form = {
+        "client_id": CLIENT_ID,
+        "code": code,
+        "code_verifier": verifier,
+        "grant_type": "authorization_code",
+        "redirect_uri": "http://127.0.0.1:%d%s" % (port, REDIRECT_PATH),
+    }
+    return request_token(form, dpop_jwk)
+
+
+def refresh_token_for(auth, timeout=30.0):
+    jwk = auth.get("dpop_private_key")
+    if not isinstance(jwk, dict) or not jwk.get("d"):
+        jwk = crypto.jwk_from_keypair(*crypto.generate_keypair())
+    form = {
+        "client_id": str(auth.get("client_id") or CLIENT_ID),
+        "code_verifier": str(auth.get("code_verifier") or ""),
+        "grant_type": "refresh_token",
+        "refresh_token": str(auth.get("refresh_token") or ""),
+    }
+    try:
+        return request_token(form, jwk, timeout)
+    except CodeArtsBadRequest as exc:
+        message = str(exc)
+        lowered = message.lower()
+        if ("invalid_grant" in lowered or "expiredrefreshtoken" in lowered
+                or "invaliddpopheader" in lowered
+                or "invalid client id" in lowered
+                or "has been used" in lowered):
+            raise CodeArtsAuthError(
+                "refresh_token 已失效或被拒，需要重新登录：%s" % message,
+                status=exc.status)
+        raise
+
+
+def poll_ticket(ticket_id, secret, timeout=30.0):
+    url = SNAP_MANAGER + EP_LOGIN_TICKET + "?" + urllib.parse.urlencode(
+        {"ticket_id": ticket_id, "secret": secret})
+    headers = {"plugin-name": PLUGIN_NAME, "plugin-version": PLUGIN_VERSION}
+    payload = _json_http("GET", url, headers, None, timeout)
+    return _normalize_token(payload)
+
+
+# ---------------------------------------------------------------------------
+# 华为云签名请求
+# ---------------------------------------------------------------------------
+
+def _signed_headers(acct, method, url, headers, body):
+    cred = acct.credential()
+    return crypto.sign_request(
+        method, url, headers, body,
+        cred["access_key_id"], cred["secret_access_key"],
+        cred["security_token"])
+
+
+def signed_get(acct, url, headers=None, timeout=30.0, agent_type=""):
+    base = {"Content-Type": "application/json", "X-Language": "zh-cn"}
+    if agent_type:
+        base["Agent-Type"] = agent_type
+    base.update(headers or {})
+    signed = _signed_headers(acct, "GET", url, base, b"")
+    return _json_http("GET", url, signed, None, timeout)
+
+
+def signed_post(acct, url, payload, headers=None, timeout=30.0, agent_type=""):
+    raw = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    base = {"Content-Type": "application/json", "X-Language": "zh-cn"}
+    if agent_type:
+        base["Agent-Type"] = agent_type
+    base.update(headers or {})
+    signed = _signed_headers(acct, "POST", url, base, raw)
+    return _json_http("POST", url, signed, raw, timeout)
+
+
+# ---------------------------------------------------------------------------
+# 模型目录
+# ---------------------------------------------------------------------------
+
+def _canonical_model(acct, model):
+    mid = str(model or "").strip()
+    if not mid:
+        return mid
+    lower = mid.lower()
+    for item in acct.models or ():
+        if str(item.get("id") or "").lower() == lower:
+            return str(item["id"])
+    for seed in SEED_KNOWN_MODELS + SEED_BENEFIT_MODELS:
+        if seed.lower() == lower:
+            return seed
+    static = {
+        "snap-chat": "GLM-5.2", "glm-5.2": "GLM-5.2",
+        "glm-5.1": "GLM-5.1", "glm-4.7": "GLM-4.7",
+        "qwen3-vl-235b": "Qwen3-VL-235B",
+        "qwen3.5-397b-a17b-vl": "Qwen3.5-397B-A17B-VL",
+        "qwen3.6-27b-vl": "Qwen3.6-27B-VL",
+    }
+    return static.get(lower, mid)
+
+
+def _merge_models(sets):
+    merged = {}
+    for source, items in sets:
+        for item in items or []:
+            mid = str(item.get("id") or "").strip()
+            if not mid:
+                continue
+            key = mid.lower()
+            current = merged.get(key)
+            if current is None:
+                merged[key] = {
+                    "id": mid,
+                    "name": str(item.get("name") or mid),
+                    "context_window": int(item.get("context_window") or 0),
+                    "max_tokens": int(item.get("max_tokens") or 0),
+                    "desc": str(item.get("desc") or ""),
+                    "benefit": bool(item.get("benefit")),
+                }
+                continue
+            if not current.get("context_window") and item.get("context_window"):
+                current["context_window"] = int(item.get("context_window"))
+            if not current.get("max_tokens") and item.get("max_tokens"):
+                current["max_tokens"] = int(item.get("max_tokens"))
+            if item.get("benefit"):
+                current["benefit"] = True
+            if not current.get("desc") and item.get("desc"):
+                current["desc"] = item["desc"]
+    return list(merged.values())
+
+
+def _fetch_agent_models(acct, timeout):
+    url = SNAP_HOST + EP_AGENT_LIST + "?" + urllib.parse.urlencode(
+        {"offset": 0, "limit": 100, "is_primary_agent": "true"})
+    listing = signed_get(acct, url, timeout=timeout, agent_type="PromptCenter")
+    agents = listing.get("agents") or []
+    agent_id = ""
+    for item in agents:
+        alias = item.get("alias") or {}
+        if (item.get("agent_name") == "CodeAgent"
+                and alias.get("alias_zh_cn") == "智能体"
+                and item.get("show_in_ide")):
+            agent_id = str(item.get("agent_id") or "")
+            break
+    if not agent_id:
+        for item in agents:
+            if item.get("is_primary_agent"):
+                agent_id = str(item.get("agent_id") or "")
+                break
+    if not agent_id and agents:
+        agent_id = str(agents[0].get("agent_id") or "")
+    if not agent_id:
+        return []
+    detail_url = SNAP_HOST + EP_AGENT_DETAIL + "?" + urllib.parse.urlencode(
+        {"agent_id": agent_id})
+    detail = signed_get(acct, detail_url, timeout=timeout,
+                        agent_type="PromptCenter")
+    models = ((detail.get("gpts") or {}).get("models") or [])
     out = []
-    seen = set()
-    created = int(time.time())
-    for item in raw:
-        mid = str(item.get("id") or "").strip()
-        if not mid or mid in seen:
+    for item in models:
+        params = item.get("model_parameters") or {}
+        mid = (item.get("model_name") or item.get("model_id")
+               or item.get("model_alias") or params.get("model_id") or "")
+        if not mid:
             continue
-        seen.add(mid)
+        out.append({
+            "id": str(mid),
+            "name": str(mid),
+            "context_window": int(params.get("context_window") or 0),
+            "max_tokens": int(params.get("max_tokens") or 0),
+            "desc": str(params.get("model_desc") or ""),
+            "benefit": False,
+        })
+    return out
+
+
+def _fetch_builtin_models(acct, timeout):
+    data = signed_get(acct, SNAP_HOST + EP_MODEL_BUILTIN,
+                      timeout=timeout, agent_type="PromptCenter")
+    out = []
+    for item in data.get("builtinModels") or []:
+        mid = item.get("model_id") or item.get("model_name") or ""
+        if not mid:
+            continue
+        out.append({
+            "id": str(mid),
+            "name": str(mid),
+            "context_window": int(item.get("context_window") or 0),
+            "max_tokens": int(item.get("max_tokens") or 0),
+            "desc": str(item.get("model_desc") or ""),
+            "benefit": False,
+        })
+    return out
+
+
+def _claim_benefit(acct, timeout):
+    try:
+        signed_post(acct, BENEFIT_HOST + EP_BENEFIT_CLAIM, {},
+                    timeout=timeout)
+    except CodeArtsError:
+        pass
+
+
+def _fetch_benefit_models(acct, timeout, auto_claim=True):
+    if auto_claim:
+        _claim_benefit(acct, timeout)
+    data = signed_get(acct, BENEFIT_HOST + EP_BENEFIT_CONFIG,
+                      timeout=timeout)
+    out = []
+    result = data.get("result") or {}
+    for item in result.get("models") or []:
+        mid = item.get("model_id") or item.get("model_name") or ""
+        if not mid:
+            continue
+        out.append({
+            "id": str(mid),
+            "name": str(item.get("model_name") or mid),
+            "context_window": int(item.get("context_window") or 0),
+            "max_tokens": int(item.get("max_tokens") or 0),
+            "desc": str(item.get("model_desc") or ""),
+            "benefit": True,
+        })
+    return out
+
+
+def fetch_models(acct, timeout=20.0, auto_claim=True):
+    """三路发现并写入账号目录；单路失败不影响其他路。"""
+    sets = []
+    errors = []
+    for name, fn in (
+        ("agent", lambda: _fetch_agent_models(acct, timeout)),
+        ("builtin", lambda: _fetch_builtin_models(acct, timeout)),
+        ("benefit", lambda: _fetch_benefit_models(acct, timeout, auto_claim)),
+    ):
+        try:
+            items = fn()
+            if items:
+                sets.append((name, items))
+        except CodeArtsError as exc:
+            errors.append("%s: %s" % (name, exc))
+    merged = _merge_models(sets)
+    if not merged:
+        # 全失败：保留旧目录；没有旧目录就用种子。
+        if acct.models:
+            return acct.models
+        merged = _merge_models([("seed", [
+            {"id": mid, "name": mid,
+             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS}}
+            for mid in SEED_MODELS])])
+    acct.models = merged
+    acct.model_benefit = {str(m["id"]).lower(): bool(m.get("benefit"))
+                          for m in merged}
+    acct.models_fetched_at = time.time()
+    return merged
+
+
+def ensure_models(acct, force=False, timeout=20.0):
+    cfg = acct.pool.config
+    ttl = float(cfg.get("models_ttl_seconds") or DEFAULTS["models_ttl_seconds"])
+    age = time.time() - (acct.models_fetched_at or 0)
+    if acct.models and not force and age < min(ttl, CATALOG_TTL):
+        return acct.models
+    try:
+        return fetch_models(acct, timeout=timeout,
+                            auto_claim=cfg.get("benefit_auto_claim", True))
+    except CodeArtsError:
+        if acct.models:
+            return acct.models
+        raise
+
+
+def model_entries(config):
+    """所有账号目录的并集 + 种子；给 `/v1/models` 用。"""
+    pool = pool_for(config["accounts_dir"])
+    sets = []
+    for acct in list(pool.accounts):
+        try:
+            ensure_models(acct, timeout=8.0)
+        except CodeArtsError:
+            pass
+        if acct.models:
+            sets.append(("account", acct.models))
+    merged = _merge_models(sets)
+    if not merged:
+        merged = _merge_models([("seed", [
+            {"id": mid, "name": mid,
+             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS}}
+            for mid in SEED_MODELS])])
+    now = int(time.time())
+    out = []
+    for item in merged:
         entry = {
-            "id": mid,
+            "id": item["id"],
             "object": "model",
-            "created": int(item.get("created") or created),
+            "created": now,
             "owned_by": "codearts",
             "provider": "codearts",
+            "name": item.get("name") or item["id"],
         }
-        name = item.get("name")
-        if name:
-            entry["name"] = name
+        if item.get("context_window"):
+            entry["context_window"] = item["context_window"]
+        if item.get("max_tokens"):
+            entry["max_tokens"] = item["max_tokens"]
+        if item.get("benefit"):
+            entry["benefit"] = True
         out.append(entry)
     return out
 
 
+def models_meta(config):
+    pool = pool_for(config["accounts_dir"])
+    stamps = [a.models_fetched_at for a in pool.accounts if a.models_fetched_at]
+    return {
+        "source": "codearts",
+        "fetched_at": max(stamps) if stamps else None,
+        "stale": False,
+        "accounts": len(pool.accounts),
+    }
+
+
 def invalidate_models():
-    """清空模型缓存；配置改动或手动刷新时调用。"""
-    with _models_lock:
-        _models_cache.clear()
-        _models_stale.clear()
+    with _POOLS_LOCK:
+        pools = list(_POOLS.values())
+    for pool in pools:
+        for acct in pool.accounts:
+            acct.models = []
+            acct.model_benefit = {}
+            acct.models_fetched_at = 0
 
 
 def refresh_models(config):
-    """强制重取模型目录；看板的「刷新模型清单」用。"""
-    invalidate_models()
-    entries = models(config, force=True)
+    pool = pool_for(config["accounts_dir"])
+    total = 0
+    for acct in list(pool.accounts):
+        try:
+            ensure_models(acct, force=True, timeout=20.0)
+            total += len(acct.models)
+        except CodeArtsError:
+            pass
+    entries = model_entries(config)
     return {"ok": True, "models": len(entries),
             "catalog": models_meta(config)}
 
 
+# ---------------------------------------------------------------------------
+# 聊天
+# ---------------------------------------------------------------------------
+
 def _valid_chat_id(value):
-    """codearts2api 的 validChatID：32 位 hex。"""
     text = str(value or "").strip()
-    if len(text) != 32:
-        return False
-    return all(c in "0123456789abcdefABCDEF" for c in text)
+    return len(text) == 32 and all(c in "0123456789abcdefABCDEF" for c in text)
 
 
-def _derive_chat_id(session_key):
-    """把 wb-hub 的会话键稳定映射成 32hex。
-
-    同一段对话在 wb-hub 侧会拿到同一个 session_key；映射后 codearts2api 的
-    conversation_id 也稳定，多轮会粘在同一个 CodeArts 账号上。
-    """
-    if not session_key:
-        return ""
-    return hashlib.sha256(str(session_key).encode("utf-8")).hexdigest()[:32]
-
-
-#: 这些字段是 wb-hub / OpenAI 客户端私有或 CodeArts 不消费的，转发前删掉。
-_DROP_FIELDS = frozenset((
-    "user", "metadata", "store", "previous_response_id", "prompt_cache_key",
-    "n", "logprobs", "top_logprobs", "stream", "stream_options",
-))
+def _derive_chat_id(session_key, messages):
+    import hashlib
+    if session_key:
+        return hashlib.sha256(str(session_key).encode("utf-8")).hexdigest()[:32]
+    for item in messages or ():
+        if isinstance(item, dict) and item.get("role") == "user":
+            text = item.get("content")
+            if isinstance(text, str) and text:
+                return hashlib.sha256(("codearts:" + text).encode("utf-8")).hexdigest()[:32]
+    return secrets.token_hex(16)
 
 
 def build_chat_body(payload, session_key=None):
-    """把客户端的 Chat Completions 载荷收敛成 CodeArts 能吃的标准 OpenAI 体。
-
-    和 WorkBuddy 的 build_upstream_body 刻意不同：
-      - 不注入 wb-hub 的 SYSTEM_PROMPT（CodeArts 有自己的上游提示）；
-      - 不做 DeepSeek 的 reasoning_content 回填（CodeArts 不要求）；
-      - 始终 stream=true + include_usage，回程由 wb-hub 聚合或透传。
-
-    工具配对的修复复用 wb_proxy 里的三个纯函数；局部导入是为了避开
-    wb_proxy ↔ wb_codearts 的模块级循环。
-    """
+    """把客户端载荷收敛成 CodeArts `/api/v2/chat/completions` 的请求体。"""
     if not isinstance(payload, dict):
         raise CodeArtsBadRequest("request body must be a JSON object")
     from wb_proxy import (cleanup_orphan_tool_calls, merge_adjacent_tool_calls,
                           normalize_roles, repack_tool_result_blocks)
+    drop = {
+        "user", "metadata", "store", "previous_response_id", "prompt_cache_key",
+        "n", "logprobs", "top_logprobs", "stream", "stream_options",
+        "conversation_id",
+    }
     body = {}
     for key, value in payload.items():
         name = str(key)
-        if name.startswith("_") or name in _DROP_FIELDS:
+        if name.startswith("_") or name in drop:
             continue
         body[name] = value
-    body["model"] = str(payload.get("model") or "glm-5.2")
+    body["model"] = str(payload.get("model") or "GLM-5.2")
     messages = normalize_roles(payload.get("messages") or [])
     messages = [m for m in messages if isinstance(m, dict)]
     messages, _ = merge_adjacent_tool_calls(messages)
@@ -454,188 +1186,740 @@ def build_chat_body(payload, session_key=None):
     if not messages:
         raise CodeArtsBadRequest("messages is empty")
     body["messages"] = messages
+    if body.get("max_completion_tokens") is not None and body.get("max_tokens") is None:
+        body["max_tokens"] = body.pop("max_completion_tokens")
+    chat_id = payload.get("conversation_id")
+    if not _valid_chat_id(chat_id):
+        chat_id = _derive_chat_id(session_key, messages)
+    body["chat_id"] = chat_id
+    body["prompt_cache_key"] = chat_id
     body["stream"] = True
-    body["stream_options"] = {"include_usage": True}
-    conversation = payload.get("conversation_id")
-    if not _valid_chat_id(conversation):
-        conversation = _derive_chat_id(session_key)
-    if conversation:
-        body["conversation_id"] = conversation
-    else:
-        body.pop("conversation_id", None)
+    body["tool_stream"] = True
     return body
 
 
-class CodeArtsAccount(object):
-    """回程处理器需要的最小账号表面。
+def _chat_headers(acct, chat_id, session_id, benefit):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "x-auth-token": acct.auth.get("cloud_dragon_token") or "",
+        "x-snap-traceid": secrets.token_hex(16),
+        "X-Language": "zh-cn",
+        "app-id": "CodeAgent3.0",
+        "is_confidential": "false",
+        "Chat-Id": chat_id,
+        "Session-Id": session_id,
+    }
+    if benefit:
+        headers[HEADER_MAAS_TYPE] = MAAS_BENEFIT
+    return headers
 
-    `_chat_stream_response` / `_responses_*` / `_messages_*` 只读 uid、realm、
-    chat_base_url()、proxy；这里全部给常量，不参与 WorkBuddy 的账号池、
-    设备指纹、积分或熔断。
+
+class CodeArtsStream(object):
+    """把华为云 SSE 包成 wb-hub 回程处理器能吃的行迭代器。
+
+    wb-hub 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
+    chunk（choices[].delta / finish_reason / usage）。这里把 CodeArts 的
+    `text` 全文快照、`output` 终态和顶层 `delta` 都归一成标准 chunk。
     """
 
-    uid = "codearts"
-    realm = "codearts"
-    product = "codearts"
-    proxy = None
-    nickname = "CodeArts"
-    chat_path = "/v1/chat/completions"
+    def __init__(self, raw, model, acct, pool):
+        self.raw = raw
+        self.model = model
+        self.acct = acct
+        self.pool = pool
+        self._wb_billed_model = model
+        self._pending = b""
+        self._done = False
+        self._finish_sent = False
+        self._last_text = ""
+        self._usage = None
+        self._created = int(time.time())
 
-    def __init__(self, config=None):
-        self.config = dict(config or {})
-        self.base_url = str(self.config.get("base_url") or "")
+    def __enter__(self):
+        return self
 
-    def chat_base_url(self):
-        return self.base_url
-
-    def model_disabled(self, mid):
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
         return False
 
-    def is_cli_identity(self):
-        return False
-
-
-def open_chat(config, body, timeout=None):
-    """POST 到 codearts2api 的 chat 端点，返回 SSE 响应对象。
-
-    始终请求 stream=true：wb-hub 的非流式回程也会用 aggregate_stream 聚合，
-    这样一套解析路径同时服务流式和非流式客户端。
-    """
-    if not configured_config(config):
-        raise CodeArtsUnavailable(
-            "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。")
-    timeout = timeout or config.get("stream_timeout_seconds") \
-        or DEFAULTS["stream_timeout_seconds"]
-    resp = _request(config, "POST", "/v1/chat/completions", payload=body,
-                    timeout=timeout, stream=True)
-    try:
-        resp._wb_billed_model = body.get("model")
-    except Exception:
-        pass
-    return resp
-
-
-def configured_config(config):
-    """已经加载好的配置是否可用（不读盘）。"""
-    return bool(config and config.get("base_url") and config.get("api_key")
-                and config.get("enabled"))
-
-
-# ---------------------------------------------------------------------------
-# 管理 API（账号 CRUD / OAuth / 签到 / 保活）
-# ---------------------------------------------------------------------------
-
-_overview_lock = threading.Lock()
-_overview_cache = {}
-_OVERVIEW_TTL = 5.0
-
-
-def overview(config, force=False):
-    """codearts2api 的账号总览；5 秒缓存，看板轮询不会打爆上游。"""
-    key = _cache_key(config)
-    now = time.time()
-    with _overview_lock:
-        cached = _overview_cache.get(key)
-        if cached and not force and now < cached[0]:
-            return dict(cached[1])
-    data = _json(config, "GET", "/admin/api/overview")
-    if not isinstance(data, dict):
-        raise CodeArtsError("CodeArts 返回了无法识别的 overview")
-    with _overview_lock:
-        _overview_cache[key] = (now + _OVERVIEW_TTL, data)
-    return dict(data)
-
-
-def invalidate_overview():
-    with _overview_lock:
-        _overview_cache.clear()
-    with _health_lock:
-        _health_cache.clear()
-
-
-_health_lock = threading.Lock()
-_health_cache = {}
-_HEALTH_TTL = 5.0
-
-
-def health(config, force=False):
-    """轻量探活：/healthz 返回 200 即视为在线。不抛异常。
-
-    5 秒缓存 + 最多 2 秒超时：`/health` 每次都被启动器和监控轮询，不能因为
-    CodeArts 远端黑洞把整个健康检查拖到 5 秒。
-    """
-    key = _cache_key(config)
-    now = time.time()
-    with _health_lock:
-        cached = _health_cache.get(key)
-        if cached and not force and now < cached[0]:
-            return dict(cached[1])
-    started = time.time()
-    base = str(config.get("base_url") or "").rstrip("/")
-    try:
-        req = urllib.request.Request(
-            base + "/healthz",
-            headers={"Authorization": "Bearer %s" % (config.get("api_key") or "")})
-        resp = _opener().open(req, timeout=min(
-            2.0, float(config.get("timeout_seconds") or 2.0)))
+    def close(self):
         try:
-            ok = 200 <= resp.status < 300
-        finally:
-            resp.close()
-        result = {"ok": ok, "latency_ms": int((time.time() - started) * 1000)}
-    except Exception as exc:
-        result = {"ok": False, "latency_ms": int((time.time() - started) * 1000),
-                  "error": _sanitize(getattr(exc, "reason", None) or exc, config)}
-    with _health_lock:
-        _health_cache[key] = (now + _HEALTH_TTL, result)
-    return dict(result)
+            self.raw.close()
+        except Exception:
+            pass
+        try:
+            self.pool.release(self.acct)
+        except Exception:
+            pass
+
+    def preflight(self):
+        """读到首个 data 事件；HTTP 200 里内嵌的业务错误在这里抛出。"""
+        while True:
+            line = self.raw.readline()
+            if not line:
+                return
+            stripped = line.strip()
+            if not stripped.startswith(b"data:"):
+                continue
+            data = stripped[5:].strip()
+            if not data:
+                continue
+            self._pending = line if line.endswith(b"\n") else line + b"\n"
+            self._raise_embedded(data)
+            return
+
+    def _raise_embedded(self, data):
+        text = data.decode("utf-8", "replace")
+        if text == "[DONE]":
+            return
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        code = payload.get("error_code") or payload.get("code")
+        if code not in (None, "", 0, "0"):
+            raise CodeArtsUpstreamError(
+                str(payload.get("error_msg") or payload.get("message") or text)[:300],
+                code=str(code))
+
+    def _chunk(self, delta, finish=None):
+        payload = {
+            "id": "chatcmpl-codearts",
+            "object": "chat.completion.chunk",
+            "created": self._created,
+            "model": self.model,
+            "choices": [{"index": 0, "delta": delta or {},
+                         "finish_reason": finish}],
+        }
+        return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
+
+    def _text_delta(self, text):
+        if text is None:
+            return b""
+        text = str(text)
+        if text == self._last_text:
+            return b""
+        if text.startswith(self._last_text):
+            delta = text[len(self._last_text):]
+        else:
+            delta = text
+        self._last_text = text
+        return self._chunk({"content": delta}) if delta else b""
+
+    def __iter__(self):
+        if self._pending:
+            line, self._pending = self._pending, b""
+            yield line
+        while not self._done:
+            line = self.raw.readline()
+            if not line:
+                break
+            stripped = line.strip()
+            if not stripped.startswith(b"data:"):
+                continue
+            data = stripped[5:].strip()
+            if not data:
+                continue
+            text = data.decode("utf-8", "replace")
+            if text == "[DONE]":
+                self._done = True
+                break
+            self._raise_embedded(data)
+            try:
+                payload = json.loads(text)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                self._usage = usage
+            choices = payload.get("choices")
+            if isinstance(choices, list) and choices:
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    message = choice.get("message")
+                    if isinstance(message, dict):
+                        delta = {"role": message.get("role") or "assistant",
+                                 "content": message.get("content")}
+                        if message.get("tool_calls"):
+                            delta["tool_calls"] = message["tool_calls"]
+                    else:
+                        delta = {}
+                out = {
+                    "id": payload.get("id") or "chatcmpl-codearts",
+                    "object": "chat.completion.chunk",
+                    "created": int(payload.get("created") or self._created),
+                    "model": payload.get("model") or self.model,
+                    "choices": [{
+                        "index": choice.get("index", 0),
+                        "delta": delta,
+                        "finish_reason": choice.get("finish_reason"),
+                    }],
+                }
+                yield ("data: " + json.dumps(out, ensure_ascii=False) + "\n\n").encode("utf-8")
+                if choice.get("finish_reason"):
+                    self._finish_sent = True
+                continue
+            # 顶层 delta（部分 CodeArts 事件）
+            delta = payload.get("delta")
+            if isinstance(delta, dict):
+                yield self._chunk(delta)
+                continue
+            # 全文快照
+            if "text" in payload:
+                chunk = self._text_delta(payload.get("text"))
+                if chunk:
+                    yield chunk
+                continue
+            # 终态 output 数组
+            output = payload.get("output")
+            if isinstance(output, list):
+                text_out = "".join(
+                    str(item.get("text") or "") for item in output
+                    if isinstance(item, dict) and item.get("type") == "output_text")
+                chunk = self._text_delta(text_out)
+                if chunk:
+                    yield chunk
+        if not self._finish_sent:
+            yield self._chunk({}, "stop")
+        if self._usage:
+            yield ("data: " + json.dumps({
+                "id": "chatcmpl-codearts",
+                "object": "chat.completion.chunk",
+                "created": self._created,
+                "model": self.model,
+                "choices": [],
+                "usage": self._usage,
+            }, ensure_ascii=False) + "\n\n").encode("utf-8")
+        yield b"data: [DONE]\n\n"
 
 
-def _admin(config, path, payload=None):
-    return _json(config, "POST", path, payload if payload is not None else {})
+def _ensure_token(acct):
+    if not acct.expiring_soon() and not acct.expired():
+        return
+    try:
+        token = refresh_token_for(acct.auth)
+    except CodeArtsAuthError as exc:
+        acct.pool.note_error(acct, str(exc), terminal=True)
+        raise
+    except CodeArtsError:
+        if acct.expired():
+            raise
+        return
+    acct.update_auth(token)
 
 
-def oauth_start(config):
-    return _admin(config, "/admin/api/oauth/start", {})
+def _client_chat(acct, body, session_key):
+    model = _canonical_model(acct, body.get("model"))
+    chat_id = body.get("chat_id") or _derive_chat_id(session_key, body.get("messages"))
+    if not _valid_chat_id(chat_id):
+        chat_id = _derive_chat_id(session_key, body.get("messages"))
+    import hashlib
+    session_id = hashlib.sha256(("codearts-session:" + chat_id).encode()).hexdigest()[:32]
+    upstream_body = dict(body)
+    upstream_body["model"] = model
+    upstream_body["chat_id"] = chat_id
+    upstream_body["prompt_cache_key"] = chat_id
+    upstream_body["stream"] = True
+    upstream_body["tool_stream"] = True
+    raw = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
+    headers = _chat_headers(acct, chat_id, session_id, acct.is_benefit(model))
+    headers = _signed_headers(acct, "POST", SNAP_HOST + EP_CHAT, headers, raw)
+    timeout = float(acct.pool.config.get("stream_timeout_seconds")
+                    or DEFAULTS["stream_timeout_seconds"])
+    req = urllib.request.Request(SNAP_HOST + EP_CHAT, data=raw,
+                                 headers=headers, method="POST")
+    try:
+        resp = _opener().open(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            err = exc.read(ERROR_BODY_MAX)
+        except Exception:
+            err = b""
+        message = _error_text(err)
+        if exc.code in (401, 403):
+            raise CodeArtsAuthError(message, status=exc.code)
+        if exc.code == 400:
+            raise CodeArtsBadRequest(message, status=exc.code)
+        if exc.code == 429:
+            raise CodeArtsUpstreamError(message, status=exc.code, code="429")
+        raise CodeArtsError("CodeArts 返回 HTTP %s：%s" % (exc.code, message),
+                            status=exc.code)
+    except (urllib.error.URLError, socket.timeout, TimeoutError,
+            ConnectionError, OSError) as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise CodeArtsUnavailable("连不上 CodeArts 聊天接口：%s" % reason)
+    stream = CodeArtsStream(resp, model, acct, acct.pool)
+    try:
+        stream.preflight()
+    except Exception:
+        stream.close()
+        raise
+    return stream, model
+
+
+def open_chat(config, body, session_key=None):
+    """选账号、续期、发现模型并打开 SSE；返回 (stream, account, model)。"""
+    if not config.get("enabled"):
+        raise CodeArtsBadRequest(
+            "CodeArts 出口未启用：请到设置页打开「启用 CodeArts 出口」。")
+    pool = pool_for(config["accounts_dir"])
+    model = body.get("model") or ""
+    exclude = set()
+    last_error = None
+    attempts = max(2, len(pool.accounts) + 1)
+    for _ in range(attempts):
+        acct = pool.pick(model, session_key=session_key, exclude=exclude)
+        if acct is None:
+            break
+        if not pool.acquire(acct):
+            exclude.add(acct.uid)
+            continue
+        try:
+            _ensure_token(acct)
+            try:
+                ensure_models(acct, timeout=8.0)
+            except CodeArtsError:
+                pass
+            stream, used = _client_chat(acct, body, session_key)
+            pool.bind_session(session_key, acct.uid)
+            return stream, acct, used
+        except CodeArtsBadRequest:
+            pool.release(acct)
+            raise
+        except CodeArtsAuthError as exc:
+            pool.note_error(acct, str(exc), terminal=True)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except CodeArtsUpstreamError as exc:
+            soft = (exc.status == 429 or "429" in str(exc.code or ""))
+            pool.note_error(acct, str(exc), soft=soft)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except CodeArtsUnavailable as exc:
+            pool.note_error(acct, str(exc), soft=True)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except CodeArtsError as exc:
+            pool.note_error(acct, str(exc))
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except Exception:
+            pool.release(acct)
+            raise
+    if last_error is not None:
+        raise last_error
+    raise CodeArtsUnavailable(
+        "没有可用的 CodeArts 账号：请在看板「账号」页添加并启用至少一个账号。")
+
+
+# ---------------------------------------------------------------------------
+# OAuth
+# ---------------------------------------------------------------------------
+
+_OAUTH_LOCK = threading.RLock()
+_OAUTH_SESSIONS = {}
+_OAUTH_TTL_SECONDS = OAUTH_TTL
+
+
+class OAuthSession(object):
+    def __init__(self, session_id, ticket_id, secret, verifier, dpop_jwk, port):
+        self.id = session_id
+        self.ticket_id = ticket_id
+        self.secret = secret
+        self.verifier = verifier
+        self.dpop_jwk = dpop_jwk
+        self.port = port
+        self.created_at = time.time()
+        self.status = "pending"
+        self.message = "等待浏览器完成授权…"
+        self.account = None
+        self.ticket_fallback = False
+        self.auth_url = ""
+
+    def public(self):
+        out = {
+            "ok": self.status != "error",
+            "status": self.status,
+            "message": self.message,
+            "session_id": self.id,
+            "auth_url": self.auth_url,
+        }
+        if self.account:
+            out["account"] = self.account
+        return out
+
+
+def _gc_oauth(now=None):
+    now = now or time.time()
+    for key, session in list(_OAUTH_SESSIONS.items()):
+        if now - session.created_at > _OAUTH_TTL_SECONDS:
+            _OAUTH_SESSIONS.pop(key, None)
+
+
+def oauth_start(config, port=8788):
+    _gc_oauth()
+    ticket_id = crypto.random_hex(16)
+    secret = crypto.random_hex(16)
+    verifier, challenge = crypto.pkce_pair()
+    dpop_jwk = crypto.jwk_from_keypair(*crypto.generate_keypair())
+    session_id = secrets.token_hex(8)
+    query = {
+        "theme": "2",
+        "locale": "zh-cn",
+        "uri_scheme": CLIENT_ID,
+        "client_id": CLIENT_ID,
+        "port": str(int(port)),
+        "code_challenge": challenge,
+        "code_challenge_method": "SHA-256",
+        "ticket_id": ticket_id,
+        "plugin-name": PLUGIN_NAME,
+        "plugin-version": PLUGIN_VERSION,
+    }
+    auth_url = PORTAL_HOST + "/authorize?" + urllib.parse.urlencode(query)
+    session = OAuthSession(session_id, ticket_id, secret, verifier, dpop_jwk,
+                           int(port))
+    session.auth_url = auth_url
+    with _OAUTH_LOCK:
+        _OAUTH_SESSIONS[session_id] = session
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "auth_url": auth_url,
+        "expires_in": int(_OAUTH_TTL_SECONDS),
+        "message": "请在浏览器打开授权链接，完成后等待自动检测",
+    }
+
+
+def _find_session(session_id=None, ticket_id=None, secret=None):
+    _gc_oauth()
+    with _OAUTH_LOCK:
+        if session_id:
+            return _OAUTH_SESSIONS.get(session_id)
+        if secret:
+            for session in _OAUTH_SESSIONS.values():
+                if session.secret == secret and session.status == "pending":
+                    return session
+            return None
+        if ticket_id:
+            for session in _OAUTH_SESSIONS.values():
+                if session.ticket_id == ticket_id and session.status == "pending":
+                    return session
+            return None
+        pending = [s for s in _OAUTH_SESSIONS.values() if s.status == "pending"]
+        pending.sort(key=lambda s: s.created_at, reverse=True)
+        return pending[0] if pending else None
+
+
+def _save_login(config, session, token):
+    uid = str(token.get("user_id") or "")
+    if not uid:
+        raise CodeArtsError("登录响应缺少 user_id，无法保存账号")
+    auth = {
+        "user_id": uid,
+        "user_name": str(token.get("user_name") or uid),
+        "domain_id": str(token.get("domain_id") or ""),
+        "cloud_dragon_token": token["credentials"]["security_token"],
+        "access_key_id": token["credentials"]["access_key_id"],
+        "secret_access_key": token["credentials"]["secret_access_key"],
+        "expiration": token["credentials"]["expiration"],
+        "refresh_token": token.get("refresh_token") or "",
+        "code_verifier": session.verifier,
+        "client_id": CLIENT_ID,
+        "dpop_private_key": session.dpop_jwk,
+        "updated_at": int(time.time()),
+    }
+    auth = save_auth(config["accounts_dir"], auth)
+    pool_for(config["accounts_dir"]).add(auth)
+    session.status = "done"
+    session.message = "登录成功：%s" % auth["user_name"]
+    session.account = {"uid": uid, "nickname": auth["user_name"]}
+    return auth
+
+
+def _exchange_session(config, session, code):
+    token = exchange_code(code, session.verifier, session.port,
+                          session.dpop_jwk)
+    return _save_login(config, session, token)
 
 
 def oauth_poll(config, session_id):
-    return _admin(config, "/admin/api/oauth/poll",
-                  {"session_id": str(session_id or "")})
+    session = _find_session(session_id=session_id)
+    if session is None:
+        raise CodeArtsNotFound("会话不存在或已过期，请重新发起授权")
+    if session.status in ("done", "error"):
+        return session.public()
+    if session.ticket_fallback:
+        try:
+            token = poll_ticket(session.ticket_id, session.secret)
+        except CodeArtsError as exc:
+            session.status = "error"
+            session.message = str(exc)
+            return session.public()
+        if token.get("user_id") and token["credentials"]["security_token"]:
+            _save_login(config, session, token)
+        else:
+            session.message = "等待浏览器完成登录…"
+    return session.public()
+
+
+def _loopback_host(host):
+    return str(host or "").lower() in ("127.0.0.1", "localhost", "::1")
 
 
 def oauth_callback(config, session_id, callback_url):
-    return _admin(config, "/admin/api/oauth/import-callback",
-                  {"session_id": str(session_id or ""),
-                   "callback_url": str(callback_url or "")})
+    session = _find_session(session_id=session_id)
+    if session is None:
+        raise CodeArtsNotFound("会话不存在或已过期，请重新发起授权")
+    parsed = urllib.parse.urlsplit(str(callback_url or "").strip())
+    if (parsed.scheme != "http" or parsed.username or parsed.password
+            or parsed.path != REDIRECT_PATH or not _loopback_host(parsed.hostname)):
+        raise CodeArtsBadRequest("只接受华为返回的 127.0.0.1 OAuth 回调地址")
+    if parsed.port and session.port and parsed.port != session.port:
+        raise CodeArtsBadRequest("回调端口与当前授权会话不匹配")
+    query = urllib.parse.parse_qs(parsed.query)
+    code = (query.get("code") or [""])[0]
+    secret = (query.get("secret") or [""])[0]
+    redirect = (query.get("redirect") or [""])[0]
+    if code:
+        _exchange_session(config, session, code)
+        return session.public()
+    if secret and redirect:
+        session.secret = secret
+        session.ticket_fallback = True
+        session.message = "回调已接收，继续等待授权结果…"
+        return {
+            "ok": True, "status": "continue", "next_url": redirect,
+            "message": session.message,
+        }
+    raise CodeArtsBadRequest("回调地址缺少 code 或 secret")
+
+
+def oauth_callback_get(config, query):
+    """浏览器 GET /oauth/callback 的处理；返回 HTML。"""
+    def value(key):
+        raw = query.get(key)
+        if isinstance(raw, list):
+            return raw[0] if raw else ""
+        return raw or ""
+    session = _find_session(ticket_id=value("ticket_id"), secret=value("secret"))
+    if session is None:
+        return 400, "<h3>登录会话不存在或已过期，请回到看板重新发起。</h3>"
+    code = value("code")
+    secret = value("secret")
+    redirect = value("redirect")
+    try:
+        if code:
+            _exchange_session(config, session, code)
+            return 200, "<h3>CodeArts 登录成功，可以关闭此页面。</h3>"
+        if secret and redirect:
+            session.secret = secret
+            session.ticket_fallback = True
+            session.message = "回调已接收，继续等待授权结果…"
+            html = ('<meta http-equiv="refresh" content="0;url=%s">'
+                    '<h3>正在继续华为云授权…</h3>' % redirect)
+            return 200, html
+    except CodeArtsError as exc:
+        session.status = "error"
+        session.message = str(exc)
+        return 400, "<h3>登录失败：%s</h3>" % exc
+    return 400, "<h3>回调地址缺少 code 或 secret。</h3>"
+
+
+# ---------------------------------------------------------------------------
+# 管理 API（本地账号池）
+# ---------------------------------------------------------------------------
+
+_health_cache = {"at": 0.0, "value": {}}
+
+
+def overview(config, force=False):
+    pool = pool_for(config["accounts_dir"])
+    stats = pool.stats()
+    accounts = pool.list()
+    models = []
+    seen = set()
+    for acct in pool.accounts:
+        for item in acct.models or ():
+            key = str(item.get("id") or "").lower()
+            if key and key not in seen:
+                seen.add(key)
+                models.append({"id": item.get("id")})
+    if not models:
+        models = [{"id": mid} for mid in SEED_MODELS]
+    return {
+        "service": "codearts",
+        "region": "cn",
+        "online": bool(config.get("enabled")),
+        "base_url": SNAP_HOST,
+        "stats": stats,
+        "accounts": accounts,
+        "models": models,
+        "schedule": {"watch": {"enabled": False}},
+    }
+
+
+def health(config, force=False):
+    now = time.time()
+    if not force and now - _health_cache["at"] < 5.0:
+        return dict(_health_cache["value"])
+    pool = pool_for(config["accounts_dir"])
+    stats = pool.stats()
+    value = {
+        "ok": bool(config.get("enabled")),
+        "configured": bool(config.get("enabled")),
+        "accounts": stats["total"],
+        "healthy": stats["healthy"],
+        "base_url": SNAP_HOST,
+    }
+    _health_cache.update({"at": now, "value": value})
+    return dict(value)
+
+
+def invalidate_overview():
+    _health_cache["at"] = 0.0
+
+
+def configured_config(config):
+    return bool(config and config.get("enabled"))
 
 
 def enable(config, uid):
-    return _admin(config, "/admin/api/accounts/enable", {"uid": str(uid or "")})
+    if not pool_for(config["accounts_dir"]).enable(uid):
+        raise CodeArtsNotFound("account not found")
+    invalidate_overview()
+    return {"ok": True, "message": "已启用 %s" % uid}
 
 
-def disable(config, uid, reason=""):
-    payload = {"uid": str(uid or "")}
-    if reason:
-        payload["reason"] = str(reason)
-    return _admin(config, "/admin/api/accounts/disable", payload)
+def disable(config, uid, reason="manual disable"):
+    if not pool_for(config["accounts_dir"]).disable(uid, reason):
+        raise CodeArtsNotFound("account not found")
+    invalidate_overview()
+    return {"ok": True, "message": "已停用 %s" % uid}
 
 
 def remove(config, uid):
-    return _admin(config, "/admin/api/accounts/delete", {"uid": str(uid or "")})
+    if not pool_for(config["accounts_dir"]).remove(uid):
+        raise CodeArtsNotFound("account not found")
+    invalidate_overview()
+    return {"ok": True, "deleted": True, "message": "已删除 %s" % uid}
 
 
 def clear_cooldown(config, uid):
-    return _admin(config, "/admin/api/accounts/clear-cooldown",
-                  {"uid": str(uid or "")})
-
-
-def checkin(config, uid=""):
-    payload = {"uid": str(uid)} if uid else {}
-    return _admin(config, "/admin/api/checkin", payload)
+    if not pool_for(config["accounts_dir"]).clear_cooldown(uid):
+        raise CodeArtsNotFound("account not found")
+    invalidate_overview()
+    return {"ok": True, "message": "已清冷却 %s" % uid}
 
 
 def keepalive(config):
-    return _admin(config, "/admin/api/keepalive", {})
+    pool = pool_for(config["accounts_dir"])
+    refreshed = 0
+    for acct in list(pool.accounts):
+        if acct.disabled:
+            continue
+        try:
+            if acct.expiring_soon() or acct.expired():
+                _ensure_token(acct)
+                refreshed += 1
+        except CodeArtsError:
+            pass
+    return {"ok": True, "refreshed": refreshed,
+            "message": "已检查 %d 个账号，续期 %d 个" % (len(pool.accounts), refreshed)}
 
 
+def _credit_request(acct, method, path, payload=None, timeout=30.0):
+    url = SNAP_HOST + path
+    if method == "GET":
+        return signed_get(acct, url, timeout=timeout, agent_type="PromptCenter")
+    return signed_post(acct, url, payload or {}, timeout=timeout,
+                       agent_type="PromptCenter")
+
+
+def checkin_account(acct, timeout=30.0):
+    data = _credit_request(acct, "GET",
+                           EP_CREDIT_DELIVERY + "?channel=IDE",
+                           timeout=timeout)
+    items = ((data.get("data") or {}).get("items") or [])
+    results = []
+    total_credits = 0.0
+    for item in items:
+        campaign_id = item.get("campaignId")
+        if campaign_id not in (1, 4):
+            continue
+        status = str(item.get("status") or "").strip()
+        title = str(item.get("title") or ("积分活动 %s" % campaign_id))
+        unit = item.get("benefitUnit")
+        if unit and unit != "CREDIT":
+            continue
+        if status in ("CONFIRMED", "CONSUMED"):
+            results.append({"campaign_id": campaign_id, "title": title,
+                            "ok": True, "status": status, "message": "已领取"})
+            continue
+        if status == "ELIGIBLE":
+            if not item.get("claimable"):
+                results.append({"campaign_id": campaign_id, "title": title,
+                                "ok": False, "status": status,
+                                "message": "暂不可领取，稍后重试"})
+                continue
+            _credit_request(acct, "POST", EP_CREDIT_CLAIM, {
+                "campaignId": campaign_id, "channel": "IDE",
+                "idempotentKey": "claim_%s_%d" % (campaign_id, int(time.time() * 1000)),
+            }, timeout=timeout)
+            credits = float(item.get("pendingTotalAmount")
+                            or item.get("benefitAmount") or 0)
+            total_credits += credits
+            status = "CLAIMED"
+        if status in ("CLAIMED", "ELIGIBLE"):
+            _credit_request(acct, "POST", EP_CREDIT_CONFIRM,
+                            {"campaignId": campaign_id}, timeout=timeout)
+            results.append({"campaign_id": campaign_id, "title": title,
+                            "ok": True, "status": "CONFIRMED",
+                            "credits": total_credits,
+                            "message": "领取成功（%g 积分）" % total_credits
+                            if total_credits else "已补确认"})
+        elif status not in ("CONFIRMED", "CONSUMED"):
+            results.append({"campaign_id": campaign_id, "title": title,
+                            "ok": False, "status": status,
+                            "message": "未获得活动资格"})
+    message = "; ".join("%s: %s" % (r["title"], r["message"]) for r in results)
+    if not message:
+        message = "无可领取的签到或新手活动"
+    result = {"ok": all(r.get("ok") for r in results) if results else True,
+              "credits": total_credits, "message": message,
+              "campaigns": results}
+    acct.checkin = {"ok": result["ok"], "message": message,
+                    "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    return result
+
+
+def checkin(config, uid=""):
+    pool = pool_for(config["accounts_dir"])
+    if uid:
+        acct = pool.get(uid)
+        if acct is None:
+            raise CodeArtsNotFound("account not found")
+        result = checkin_account(acct)
+        return result
+    results = []
+    for acct in list(pool.accounts):
+        if acct.disabled:
+            continue
+        try:
+            results.append({"uid": acct.uid, **checkin_account(acct)})
+        except CodeArtsError as exc:
+            results.append({"uid": acct.uid, "ok": False, "message": str(exc)})
+    total = sum(float(r.get("credits") or 0) for r in results)
+    return {"ok": all(r.get("ok") for r in results) if results else True,
+            "credits": total,
+            "message": "已处理 %d 个账号，共领取 %g 积分" % (len(results), total),
+            "results": results}
