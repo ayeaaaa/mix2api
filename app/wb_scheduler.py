@@ -387,7 +387,14 @@ class Scheduler:
                    daily_chat_only=False):
         self.last_run_time = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log(f"开始执行任务 ({trigger_reason})...")
-        if not self.pool or not self.pool.accounts:
+        cycle_hour = time.localtime().tm_hour
+        run_checkin = (not daily_chat_only
+                       and (force or cycle_hour in self.checkin_hours))
+        if not self.pool:
+            self.log("账号池不可用，跳过本次巡检")
+            return
+        accounts = list(self.pool.accounts)
+        if not accounts and not self._codearts_checkin_pending(run_checkin):
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
 
@@ -397,9 +404,6 @@ class Scheduler:
         travel_count = 0
         daily_chat_count = 0
         daily_chat_targets = []
-        cycle_hour = time.localtime().tm_hour
-        run_checkin = (not daily_chat_only
-                       and (force or cycle_hour in self.checkin_hours))
         run_travel = (not daily_chat_only
                       and (force or cycle_hour in self.travel_hours))
         run_keepalive = (not daily_chat_only
@@ -412,7 +416,7 @@ class Scheduler:
         run_daily_chat = (force or daily_chat_only or catchup
                           or (not self.daily_chat_times and run_checkin))
 
-        for idx, acc in enumerate(list(self.pool.accounts)):
+        for idx, acc in enumerate(accounts):
             if idx > 0:
                 # 账号间随机错峰防并发风控（2~5秒浮动延时，issue #394）
                 time.sleep(random.uniform(2.0, 5.0))
@@ -508,7 +512,79 @@ class Scheduler:
         if daily_chat_targets:
             daily_chat_count = self._run_daily_chat_batch(daily_chat_targets)
 
-        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+        codearts_checkin_count = self._run_codearts_checkin(run_checkin)
+        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，CodeArts 签到 {codearts_checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+
+    def _codearts_checkin_pending(self, run_checkin):
+        """Whether this cycle should even enter the CodeArts check-in path."""
+        if not run_checkin:
+            return False
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return False
+        try:
+            import wb_codearts
+            cfg = wb_codearts.load_config(directory)
+            if not cfg.get("enabled") or not cfg.get("auto_checkin", True):
+                return False
+            pool = wb_codearts.pool_for(directory)
+        except Exception:
+            return False
+        return any(not acct.disabled for acct in pool.accounts)
+
+    def _run_codearts_checkin(self, run_checkin):
+        """Daily CodeArts check-in for enabled accounts.
+
+        Follows the same check-in hours as the WorkBuddy China realm (09:00 /
+        21:00 by default). A successful check-in is recorded in the account's
+        state, so the second slot and a manual force-run skip it; a failed
+        attempt stays retryable. Cooling accounts are skipped because a chat
+        cooldown usually means the upstream is unhappy with this account.
+        """
+        if not run_checkin:
+            return 0
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return 0
+        try:
+            import wb_codearts
+            cfg = wb_codearts.load_config(directory)
+        except Exception as exc:
+            self.log(f"CodeArts 自动签到读取配置失败: {exc}")
+            return 0
+        if not cfg.get("enabled") or not cfg.get("auto_checkin", True):
+            return 0
+        try:
+            pool = wb_codearts.pool_for(directory)
+        except Exception as exc:
+            self.log(f"CodeArts 自动签到读取账号失败: {exc}")
+            return 0
+
+        checked = 0
+        now = time.time()
+        for acct in list(pool.accounts):
+            uid8 = (acct.uid or "?")[:8]
+            if acct.disabled:
+                continue
+            if acct.cool_until > now:
+                self.log(f"跳过 CodeArts 账号 [{uid8}]：冷却中")
+                continue
+            if acct.checked_in_today(now):
+                continue
+            try:
+                res = wb_codearts.checkin(cfg, acct.uid)
+            except Exception as exc:
+                self.log(f"! CodeArts 账号 [{uid8}] 自动签到失败: {exc}")
+                continue
+            if res.get("ok"):
+                checked += 1
+                self.log(f"✓ CodeArts 账号 [{uid8}] 自动签到成功: "
+                         f"{res.get('message') or ''}")
+            else:
+                self.log(f"! CodeArts 账号 [{uid8}] 自动签到未成功: "
+                         f"{res.get('message') or ''}")
+            time.sleep(1.0)
+        return checked
 
     def _daily_chat_concurrency(self):
         directory = getattr(self.pool, "dir", "") or ""
@@ -726,9 +802,19 @@ class Scheduler:
         travel = _hhmm(self.travel_hours)
         keepalive = _hhmm(self.keepalive_hours)
         cat = _hhmm(self.cat_hours)
+        ca_auto = False
+        try:
+            import wb_codearts
+            ca_cfg = wb_codearts.load_config(getattr(self.pool, "dir", "") or "")
+            ca_auto = bool(ca_cfg.get("enabled")
+                           and ca_cfg.get("auto_checkin", True))
+        except Exception:
+            ca_auto = False
         mode_cn = ("整点排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · "
                    "Token保活 %s · 夜猫 %s) + 模型额度窗口探针"
                    % (checkin, travel, keepalive, cat))
+        if ca_auto:
+            mode_cn += " + CodeArts 自动签到"
         mode_intl = ("账号 Token 自动保活与凭证常驻 (每日 %s 集中巡检) "
                      "+ 模型额度窗口探针" % keepalive)
         return {
@@ -736,6 +822,7 @@ class Scheduler:
             "mode": mode_cn,
             "mode_cn": mode_cn,
             "mode_intl": mode_intl,
+            "codearts_checkin": ca_auto,
             "last_run_time": self.last_run_time or "尚未运行",
             "next_run_time": self.next_run_time or "待调度",
             "windows": windows,

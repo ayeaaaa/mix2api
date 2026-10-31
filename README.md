@@ -106,7 +106,7 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 - 续期：token 到期前 30 分钟自动刷新；refresh_token 终态失效时账号标记为「需要重新登录」。
 - 模型：agent-center / builtin / 限时福利三路合并，福利模型聊天时自动加 `maas_type: benefit`。
 - 聊天：`/api/v2/chat/completions`，AK/SK `SDK-HMAC-SHA256` 签名 + `x-auth-token`。
-- 签到：`/v1/ops/delivery|claim|confirm`，看板「签到 / 全员签到」手动触发。
+- 签到：`/v1/ops/delivery|claim|confirm`；看板「签到 / 全员签到」可手动触发，「设置 → CodeArts 接入」的「每天自动签到」默认开启，跟随国内版签到时段（默认 09:00 / 21:00），只跑已启用且未冷却的账号，当天成功后不重复。
 - 积分：`snap-manager/v1/statistics/plugin` 查询剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表积分列显示 `0.00`、估算价格显示 `—`。
 - 代理：CodeArts 账号可绑定「账号代理槽」，出站请求与 WorkBuddy 共用 `wb_upstream_pool`（连接复用、代理认证、`no_proxy`、失效连接重试）；槽位停用/删除回退直连，首次 OAuth 换 token 仍直连。
 - 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；代理槽按 HTTP/HTTPS 代理实现。

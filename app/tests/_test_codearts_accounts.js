@@ -44,6 +44,7 @@ try {
             codeartsAccountAction: codeartsAccountAction,
             codeartsCheckinAll: codeartsCheckinAll,
             codeartsSetProxy: codeartsSetProxy,
+            saveCodeartsSettings: saveCodeartsSettings,
             setSlots: function(v){ PROXY_SLOTS = v; }};
   `)();
 } catch (e) {
@@ -94,6 +95,21 @@ assert.ok(box.innerHTML.includes('美国 住宅'), '出口选择器应显示槽�
   assert.ok(bind, '出口绑定应 POST /codearts/accounts/proxy');
   assert.equal(bind.body.uid, 'u1', '出口绑定应带上 uid');
   assert.equal(bind.body.slot_id, 'slot-1', '出口绑定应带上 slot_id');
+
+  POSTS = [];
+  const auto = document.getElementById('setCodeartsAutoCheckin');
+  assert.ok(auto, 'CodeArts 设置缺少自动签到开关');
+  auto.checked = false;
+  await api.saveCodeartsSettings(null);
+  const off = POSTS.find(p => p.url.indexOf('/settings/save') >= 0);
+  assert.ok(off, '保存 CodeArts 设置应 POST /settings/save');
+  assert.equal(off.body.codearts.auto_checkin, false,
+    '关闭自动签到应写入 auto_checkin=false');
+  auto.checked = true;
+  await api.saveCodeartsSettings(null);
+  const on = POSTS.filter(p => p.url.indexOf('/settings/save') >= 0).pop();
+  assert.equal(on.body.codearts.auto_checkin, true,
+    '开启自动签到应写入 auto_checkin=true');
 
   POSTS = [];
   await api.codeartsCheckinAll();

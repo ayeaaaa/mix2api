@@ -202,12 +202,24 @@ try:
     check("settings has codearts", isinstance(body.get("codearts"), dict), body)
     check("settings no secret", state.token not in json.dumps(body), body)
     check("settings codearts has no key", "api_key" not in body["codearts"], body)
+    check("settings auto checkin default",
+          body["codearts"].get("auto_checkin") is True, body)
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": True, "max_concurrent": 2},
     }, token=token)
     check("settings save", status == 200, (status, body))
     check("settings max concurrent",
           body["codearts"].get("max_concurrent") == 2, body)
+    status, body = call("POST", "/settings/save", {
+        "codearts": {"enabled": True, "auto_checkin": False},
+    }, token=token)
+    check("settings auto checkin can be disabled",
+          body["codearts"].get("auto_checkin") is False, body)
+    status, body = call("POST", "/settings/save", {
+        "codearts": {"enabled": True, "auto_checkin": True},
+    }, token=token)
+    check("settings auto checkin restored",
+          body["codearts"].get("auto_checkin") is True, body)
     wb_proxy.CURRENT_REALM = "codearts"
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": False},

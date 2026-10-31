@@ -60,6 +60,13 @@ try:
     cfg = C.load_config(ACCOUNTS)
     check("default disabled", cfg["enabled"] is False)
     check("default max concurrent", cfg["max_concurrent"] == 1)
+    check("auto checkin default on", cfg["auto_checkin"] is True)
+    C.save_config(ACCOUNTS, {"auto_checkin": False})
+    check("auto checkin can be disabled",
+          C.load_config(ACCOUNTS)["auto_checkin"] is False)
+    C.save_config(ACCOUNTS, {"auto_checkin": True})
+    check("auto checkin restored",
+          C.load_config(ACCOUNTS)["auto_checkin"] is True)
     C.save_config(ACCOUNTS, {"enabled": True, "max_concurrent": 2})
     check("enabled", C.configured(ACCOUNTS) is True)
     check("max concurrent saved", C.load_config(ACCOUNTS)["max_concurrent"] == 2)
@@ -295,6 +302,48 @@ try:
     reloaded = C.CodeArtsPool(ACCOUNTS, C.load_config(ACCOUNTS))
     check("checkin persisted", reloaded.get("u1").checkin == acct.checkin,
           reloaded.get("u1").checkin)
+
+    print("== scheduler auto checkin ==")
+    import wb_scheduler
+
+    class DummyPool(object):
+        dir = ACCOUNTS
+        accounts = []
+
+    sched = wb_scheduler.Scheduler(DummyPool())
+    sched.log = lambda *args, **kwargs: None
+    acct.checkin = None
+    acct.disabled = False
+    acct.cool_until = 0
+    pool.save_state()
+    check("auto checkin runs", sched._run_codearts_checkin(True) == 1)
+    check("auto checkin marks today", acct.checked_in_today() is True)
+    check("scheduler status shows codearts checkin",
+          sched.status().get("codearts_checkin") is True)
+    check("auto checkin skips same day",
+          sched._run_codearts_checkin(True) == 0)
+    acct.checkin = None
+    acct.cool_until = time.time() + 3600
+    check("auto checkin skips cooling",
+          sched._run_codearts_checkin(True) == 0)
+    acct.cool_until = 0
+    C.save_config(ACCOUNTS, {"auto_checkin": False})
+    check("auto checkin obeys switch",
+          sched._run_codearts_checkin(True) == 0)
+    C.save_config(ACCOUNTS, {"auto_checkin": True})
+    acct.disabled = True
+    check("auto checkin skips disabled",
+          sched._run_codearts_checkin(True) == 0)
+    acct.disabled = False
+    check("auto checkin only on checkin slots",
+          sched._run_codearts_checkin(False) == 0)
+    acct.checkin = None
+    acct.disabled = False
+    acct.cool_until = 0
+    pool.save_state()
+    sched._run_cycle("test cycle", force=True)
+    check("scheduler cycle runs codearts without workbuddy",
+          acct.checked_in_today() is True)
 
     print("== oauth ==")
     started = C.oauth_start(C.load_config(ACCOUNTS), port=8788)

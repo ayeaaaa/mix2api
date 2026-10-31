@@ -100,6 +100,7 @@ DEFAULTS = {
     "max_concurrent": 1,
     "benefit_auto_claim": True,
     "credits_auto_claim": True,
+    "auto_checkin": True,
 }
 
 _LOCK = threading.RLock()
@@ -179,6 +180,7 @@ def load_config(accounts_dir):
             raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20),
         "benefit_auto_claim": raw.get("benefit_auto_claim", True) is not False,
         "credits_auto_claim": raw.get("credits_auto_claim", True) is not False,
+        "auto_checkin": raw.get("auto_checkin", True) is not False,
         "accounts_dir": accounts_dir,
     }
 
@@ -205,6 +207,7 @@ def save_config(accounts_dir, patch):
         merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20)
     merged["benefit_auto_claim"] = merged.get("benefit_auto_claim", True) is not False
     merged["credits_auto_claim"] = merged.get("credits_auto_claim", True) is not False
+    merged["auto_checkin"] = merged.get("auto_checkin", True) is not False
     data = wb_settings.load(accounts_dir)
     data["codearts"] = {k: merged[k] for k in DEFAULTS}
     wb_settings.save(accounts_dir, data)
@@ -450,6 +453,23 @@ class CodeArtsAccount(object):
             "proxy_slot": self.proxy_slot,
             "proxy": self.proxy,
         }
+
+    def checked_in_today(self, now=None):
+        """Whether this account already completed a successful check-in today.
+
+        A failed attempt (``ok`` false) does not count, so the 21:00 slot can
+        retry after a 09:00 failure. The timestamp is local time, matching the
+        scheduler's clock.
+        """
+        entry = self.checkin if isinstance(self.checkin, dict) else {}
+        if not entry.get("ok"):
+            return False
+        text = str(entry.get("checked_at") or "")
+        if len(text) < 10:
+            return False
+        today = time.strftime("%Y-%m-%d",
+                              time.localtime(now if now is not None else time.time()))
+        return text[:10] == today
 
     def healthy(self, now=None):
         """能否被选中。

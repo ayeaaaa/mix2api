@@ -26,6 +26,9 @@ assert.ok(html.includes('id="tabCodeartsCredits"'), '缺少 CodeArts 积分显�
 assert.ok(html.includes('<th>积分</th>'), 'CodeArts 账号表缺少积分列');
 assert.ok(html.includes('<th>出口</th>'), 'CodeArts 账号表缺少出口列');
 assert.ok(/codeartsSlotSelectHtml/.test(script), '缺少 CodeArts 出口选择器');
+assert.ok(html.includes('id="setCodeartsAutoCheckin"'),
+  'CodeArts 设置缺少自动签到开关');
+assert.ok(/auto_checkin/.test(script), 'CodeArts 设置缺少 auto_checkin 字段');
 assert.ok(/function fmtCredits/.test(script), '缺少积分格式化函数');
 assert.ok(html.includes('id="workbuddyAccountsSection"'), 'WorkBuddy 账号区缺少可定位 id');
 assert.ok(html.includes('id="workbuddyDisabledSection"'), 'WorkBuddy 禁用区缺少可定位 id');
