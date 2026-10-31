@@ -119,6 +119,19 @@ try:
     check("auth file rewritten", C.load_auths(ACCOUNTS)[0]["expiration"] ==
           acct.auth["expiration"])
 
+    print("== text snapshot stream ==")
+    state.chat_mode = "text"
+    body = C.build_chat_body({"model": "GLM-5.2",
+                              "messages": [{"role": "user", "content": "hi"}],
+                              "stream": False}, "sess-text")
+    stream, acct2, model2 = C.open_chat(C.load_config(ACCOUNTS), body, "sess-text")
+    raw = b"".join(stream)
+    stream.close()
+    text = raw.decode("utf-8", "replace")
+    check("text stream content", "你好" in text, text[:300])
+    check("text stream no done content", '"content": "[DONE]"' not in text, text[:300])
+    state.chat_mode = "delta"
+
     print("== checkin ==")
     result = C.checkin(C.load_config(ACCOUNTS))
     check("checkin ok", result["ok"] is True, result)

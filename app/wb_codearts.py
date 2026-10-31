@@ -1382,7 +1382,11 @@ class CodeArtsStream(object):
                 continue
             # 全文快照
             if "text" in payload:
-                chunk = self._text_delta(payload.get("text"))
+                text_value = str(payload.get("text") or "")
+                if text_value.strip() == "[DONE]" or text_value.strip().lower() == "done":
+                    self._done = True
+                    break
+                chunk = self._text_delta(text_value)
                 if chunk:
                     yield chunk
                 continue
