@@ -422,8 +422,13 @@ class CodeArtsAccount(object):
         }
 
     def healthy(self, now=None):
+        """能否被选中。
+
+        故意不检查 token 是否过期：过期账号仍要被选中，交给 `_ensure_token`
+        刷新；把过期号直接过滤掉会让整池过期时一个号都选不到、也无法续期。
+        """
         now = now or time.time()
-        return (not self.disabled) and now >= self.cool_until and not self.expired()
+        return (not self.disabled) and now >= self.cool_until
 
     def has_model(self, model):
         mid = str(model or "").lower()
