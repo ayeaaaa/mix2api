@@ -1,5 +1,9 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
+> **mix2api 单进程分支**：CodeArts 已并入本进程。部署请使用仓库根目录的
+> `deploy/docker-compose.yml`（本地构建），不要拉上游 GHCR 镜像——上游镜像
+> 不包含 CodeArts 原生客户端。
+
 > [!IMPORTANT]
 > **项目进入低频维护（2026-10-23） / Low-frequency maintenance**
 >

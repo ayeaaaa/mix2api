@@ -21,6 +21,20 @@ data/accounts/codearts/   # CodeArts 账号凭据 codearts-{uid}.json + state.js
 data/usage/               # 请求与用量流水
 ```
 
+### 从两服务版本迁移
+
+如果之前跑过「hub + codearts2api」两服务版本：
+
+```bash
+mv data/hub/accounts/* data/accounts/ 2>/dev/null || true
+mv data/hub/usage/* data/usage/ 2>/dev/null || true
+mkdir -p data/accounts/codearts
+cp codearts2api/auths/codearts-*.json data/accounts/codearts/ 2>/dev/null || true
+```
+
+CodeArts 账号文件字段与 Go 版兼容；`state.json` 里的停用/冷却状态不会自动迁移，
+需要的话在新看板里重新启用/清冷却。
+
 ## 2. 首次配置
 
 1. 打开 `http://<host>:8788/`，用默认面板密码 `admin` 登录，立刻在「设置」里改掉。

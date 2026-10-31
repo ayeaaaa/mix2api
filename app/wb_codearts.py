@@ -344,6 +344,7 @@ class CodeArtsAccount(object):
         self.checkin = None
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
+        self._models_lock = threading.Lock()
 
     def chat_base_url(self):
         return SNAP_HOST
@@ -1064,16 +1065,17 @@ def fetch_models(acct, timeout=20.0, auto_claim=True):
 def ensure_models(acct, force=False, timeout=20.0):
     cfg = acct.pool.config
     ttl = float(cfg.get("models_ttl_seconds") or DEFAULTS["models_ttl_seconds"])
-    age = time.time() - (acct.models_fetched_at or 0)
-    if acct.models and not force and age < min(ttl, CATALOG_TTL):
-        return acct.models
-    try:
-        return fetch_models(acct, timeout=timeout,
-                            auto_claim=cfg.get("benefit_auto_claim", True))
-    except CodeArtsError:
-        if acct.models:
+    with acct._models_lock:
+        age = time.time() - (acct.models_fetched_at or 0)
+        if acct.models and not force and age < min(ttl, CATALOG_TTL):
             return acct.models
-        raise
+        try:
+            return fetch_models(acct, timeout=timeout,
+                                auto_claim=cfg.get("benefit_auto_claim", True))
+        except CodeArtsError:
+            if acct.models:
+                return acct.models
+            raise
 
 
 def model_entries(config):
@@ -1416,16 +1418,21 @@ class CodeArtsStream(object):
 def _ensure_token(acct):
     if not acct.expiring_soon() and not acct.expired():
         return
-    try:
-        token = refresh_token_for(acct.auth)
-    except CodeArtsAuthError as exc:
-        acct.pool.note_error(acct, str(exc), terminal=True)
-        raise
-    except CodeArtsError:
-        if acct.expired():
+    # refresh_token 是一次性的：同一账号并发刷新会让后一个请求拿到已消费的
+    # token。串行化，并在拿到锁后重新判断（前一个请求可能已经刷好了）。
+    with acct._refresh_lock:
+        if not acct.expiring_soon() and not acct.expired():
+            return
+        try:
+            token = refresh_token_for(acct.auth)
+        except CodeArtsAuthError as exc:
+            acct.pool.note_error(acct, str(exc), terminal=True)
             raise
-        return
-    acct.update_auth(token)
+        except CodeArtsError:
+            if acct.expired():
+                raise
+            return
+        acct.update_auth(token)
 
 
 def _client_chat(acct, body, session_key):
@@ -1922,13 +1929,14 @@ def checkin(config, uid=""):
         acct = pool.get(uid)
         if acct is None:
             raise CodeArtsNotFound("account not found")
-        result = checkin_account(acct)
-        return result
+        _ensure_token(acct)
+        return checkin_account(acct)
     results = []
     for acct in list(pool.accounts):
         if acct.disabled:
             continue
         try:
+            _ensure_token(acct)
             results.append({"uid": acct.uid, **checkin_account(acct)})
         except CodeArtsError as exc:
             results.append({"uid": acct.uid, "ok": False, "message": str(exc)})
