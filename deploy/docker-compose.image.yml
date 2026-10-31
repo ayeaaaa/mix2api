@@ -1,0 +1,16 @@
+# 使用 GHCR 预构建镜像（linux/amd64 + linux/arm64）
+#   docker compose -f docker-compose.image.yml up -d
+services:
+  hub:
+    image: ghcr.io/ayeaaaa/mix2api:v1.0.0
+    container_name: mix2api
+    restart: unless-stopped
+    ports:
+      - "58675:58675"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=58675
+      - TZ=Asia/Shanghai
+    volumes:
+      - ../data/accounts:/app/accounts
+      - ../data/usage:/app/usage

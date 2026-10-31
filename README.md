@@ -46,6 +46,27 @@
 
 ## 快速启动（Docker）
 
+### 方式一：拉预构建镜像（推荐）
+
+镜像已发布到 GHCR，支持 `linux/amd64` 与 `linux/arm64`：
+
+```bash
+cd deploy
+docker compose -f docker-compose.image.yml up -d
+```
+
+或手动：
+
+```bash
+docker pull ghcr.io/ayeaaaa/mix2api:v1.0.0
+docker run -d --name mix2api -p 58675:58675 \
+  -v "$PWD/data/accounts:/app/accounts" \
+  -v "$PWD/data/usage:/app/usage" \
+  ghcr.io/ayeaaaa/mix2api:v1.0.0
+```
+
+### 方式二：本地构建
+
 ```bash
 cd deploy
 docker compose up -d --build
