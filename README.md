@@ -27,6 +27,7 @@
 - **单进程 CodeArts 客户端**：华为云 OAuth2（PKCE + DPoP）、refresh_token 续期、账号池、并发/冷却、模型发现（agent-center / builtin / 限时福利）、聊天 SSE、签到、积分余额。
 - **纯标准库密码学**：P-256 ECDSA、DPoP JWT、PKCE、华为云 `SDK-HMAC-SHA256` 签名；ECDSA 与 HMAC 都用 Go 侧向量对拍。
 - **看板**：第三张 CodeArts 出口卡片、三出口切换、CodeArts 账号表（OAuth 添加 / 启停 / 清冷却 / 签到 / 删除）、设置页、积分余额与已用/总额、模型描述。
+- **账号代理槽**：CodeArts 账号可绑定与 WorkBuddy 相同的「账号代理槽」，账号表直接选出口；聊天、模型发现、token 续期、签到和积分查询都走该槽。出站复用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
 - **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`，不按 WorkBuddy 价目表计价。
 - **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
 - **测试**：243 个 hub 套件全过；CodeArts 链路用本机假华为云上游覆盖，密码学有 Go 对照向量。
@@ -106,7 +107,9 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 - 模型：agent-center / builtin / 限时福利三路合并，福利模型聊天时自动加 `maas_type: benefit`。
 - 聊天：`/api/v2/chat/completions`，AK/SK `SDK-HMAC-SHA256` 签名 + `x-auth-token`。
 - 签到：`/v1/ops/delivery|claim|confirm`，看板「签到 / 全员签到」手动触发。
-- 限制：CodeArts 没有可查询的积分余额，看板显示 `—`；CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号。
+- 积分：`snap-manager/v1/statistics/plugin` 查询剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表积分列显示 `0.00`、估算价格显示 `—`。
+- 代理：CodeArts 账号可绑定「账号代理槽」，出站请求与 WorkBuddy 共用 `wb_upstream_pool`（连接复用、代理认证、`no_proxy`、失效连接重试）；槽位停用/删除回退直连，首次 OAuth 换 token 仍直连。
+- 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；代理槽按 HTTP/HTTPS 代理实现。
 
 ## 安全
 
