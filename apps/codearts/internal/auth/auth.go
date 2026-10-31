@@ -267,6 +267,27 @@ func SaveNew(dir string, a *Auth) error {
 	return a.Save()
 }
 
+// Exists 报告某个账号的凭据文件是否还在。
+func Exists(dir, userID string) bool {
+	if dir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, (&Auth{UserID: userID}).FileName()))
+	return err == nil
+}
+
+// Delete 删除某个账号的凭据文件。文件本来就不存在不算错误。
+func Delete(dir, userID string) error {
+	if dir == "" {
+		return fmt.Errorf("auth: empty dir")
+	}
+	path := filepath.Join(dir, (&Auth{UserID: userID}).FileName())
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func saveLocked(path string, v any) error {
 	if path == "" {
 		return fmt.Errorf("auth: empty path")

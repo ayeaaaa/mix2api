@@ -3,6 +3,9 @@ package pool
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +84,32 @@ func TestRefreshSkewControlsThreshold(t *testing.T) {
 	// 真刷新需要网络，故只检查不触发的那一侧不报错）。
 	if err := p.CheckAndRefreshTokenWithin("u-skew", time.Hour); err != nil {
 		t.Fatalf("剩余 2h、skew=1h 不应触发刷新: %v", err)
+	}
+}
+
+func TestRemoveDeletesAccountAndState(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state.json")
+	a := auth.New("u1", "user", "domain", "token", "ak", "sk",
+		time.Now().Add(time.Hour).Format(time.RFC3339), "", "verifier")
+	p, err := New([]*auth.Auth{a}, Config{}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Remove("u1") {
+		t.Fatal("Remove returned false for an existing account")
+	}
+	if len(p.List()) != 0 {
+		t.Fatalf("pool still has %d accounts", len(p.List()))
+	}
+	if p.Remove("u1") {
+		t.Fatal("Remove returned true for a missing account")
+	}
+	raw, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "u1") {
+		t.Fatalf("state file still mentions removed account: %s", raw)
 	}
 }

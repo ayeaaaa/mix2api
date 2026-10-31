@@ -53,6 +53,25 @@ curl -X POST http://127.0.0.1:7866/v1/chat/completions \
 浏览器打开 **http://127.0.0.1:7866/** 即 WebUI：账号/token 状态、对话测试（流式/非流式）。多轮上下文按账号自动续接（chat_id 分组）；也可用请求头
 `X-Codearts-Chat-Id: <chatId>` 或 body 里 `conversation_id` 显式指定会话。
 
+### 管理 API
+
+以下端点都用 `Authorization: Bearer $CA2A_API_KEY` 鉴权：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin/api/overview` | 账号、模型、统计、调度状态 |
+| POST | `/admin/api/accounts/enable` | `{uid}` 启用 |
+| POST | `/admin/api/accounts/disable` | `{uid, reason?}` 停用 |
+| POST | `/admin/api/accounts/clear-cooldown` | `{uid}` 清冷却 |
+| POST | `/admin/api/accounts/delete` | `{uid}` **永久删除**凭据与池内条目；不可恢复，不删历史用量；未配置 API Key 时 403 |
+| POST | `/admin/api/checkin` | `{uid?}` 签到，空=全员 |
+| POST | `/admin/api/keepalive` | 全员保活 |
+| POST | `/admin/api/oauth/start` | 发起华为云授权 |
+| POST | `/admin/api/oauth/poll` | `{session_id}` 轮询授权 |
+| POST | `/admin/api/oauth/import-callback` | `{session_id, callback_url}` 中转远端回调 |
+
+删除账号只删 `auths/codearts-{uid}.json` 与内存/状态里的条目，不会删除 `usage` 历史；正在进行的请求会自然结束。
+
 流式请求设置 `"stream_options":{"include_usage":true}` 后，会在 `[DONE]` 前返回一次
 `choices: []` 的 usage chunk；其余 chunk 的 `usage` 为 `null`。未启用时不返回 usage。
 流式和非流式均优先使用上游 usage；上游未提供时按文本长度估算，估算值不是精确 token 计数。

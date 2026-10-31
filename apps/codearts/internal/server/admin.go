@@ -230,6 +230,52 @@ func (h *Handler) adminClearCooldown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已清冷却 " + body.UID})
 }
 
+// adminDelete 永久删除一个账号：凭据文件 + 池内条目 + 会话亲和。
+//
+// 这是唯一会丢凭据的管理写操作，所以额外 fail closed：没有配置 API Key 的
+// 旧版本/异常部署直接拒绝，避免一个无鉴权的 listener 能删号。
+func (h *Handler) adminDelete(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.APIKey == "" {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"ok": false, "message": "admin disabled: no api_key configured"})
+		return
+	}
+	body, err := readUIDBody(r)
+	if err != nil || body.UID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "uid required"})
+		return
+	}
+	existed := h.cfg.Pool.Get(body.UID) != nil || auth.Exists(h.cfg.AuthDir, body.UID)
+	if !existed {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "message": "account not found"})
+		return
+	}
+	removed := h.cfg.Pool.Remove(body.UID)
+	if err := auth.Delete(h.cfg.AuthDir, body.UID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok": false, "removed": removed,
+			"message": "删除凭据失败: " + err.Error()})
+		return
+	}
+	h.forgetAccount(body.UID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "deleted": true, "message": "已删除 " + body.UID})
+}
+
+// forgetAccount 清掉删除账号留下的内存映射，避免后续请求继续粘到一个
+// 已经不存在的账号上。
+func (h *Handler) forgetAccount(uid string) {
+	h.convMu.Lock()
+	delete(h.chats, uid)
+	for conv, acct := range h.convAcct {
+		if acct == uid {
+			delete(h.convAcct, conv)
+		}
+	}
+	h.convMu.Unlock()
+	h.saveChats()
+}
+
 func (h *Handler) pickTargets(uid string) []string {
 	if uid != "" {
 		if h.cfg.Pool.Get(uid) == nil {

@@ -266,6 +266,23 @@ func (p *Pool) ClearCooldown(name string) bool {
 	return false
 }
 
+// Remove 从池中移除一个账号并重写 state.json。找不到返回 false。
+//
+// 调用方负责同时删除 auths/ 下的凭据文件；这里只动内存和状态文件，避免池
+// 在删除文件失败时留下一个指向不存在凭据的条目。
+func (p *Pool) Remove(name string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, a := range p.accounts {
+		if a.Name == name || a.UID == name {
+			p.accounts = append(p.accounts[:i], p.accounts[i+1:]...)
+			p.saveState()
+			return true
+		}
+	}
+	return false
+}
+
 // SyncToDir 用磁盘 auths 全量对齐。
 func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	p.mu.Lock()
