@@ -994,30 +994,19 @@ def _canonical_model(acct, model):
     return static.get(lower, mid)
 
 
-def _known_vision(mid):
-    """Fallback vision metadata when a discovery source omits the flag.
+#: CodeArts models known to read images even when a discovery source omits
+#: `supports_images`. Deliberately CodeArts-specific: WorkBuddy marks several
+#: overlapping ids (GLM-5.2, kimi-k3, deepseek-v4.1-flash) as vision, but the
+#: CodeArts backend answers "The request model is not multimodal" for them.
+_KNOWN_VISION_IDS = {
+    "qwen3-vl-235b", "qwen3.5-397b-a17b-vl",
+    "qwen3.6-27b-vl", "kimi-k2.6-vl",
+}
 
-    CodeArts' builtin catalogue carries `supports_images`; the agent/benefit
-    sources do not always. For those, reuse the WorkBuddy catalog metadata
-    (many models are the same) plus the known CodeArts VL ids.
-    """
-    key = str(mid or "").strip().lower()
-    if not key:
-        return False
-    if key in {"qwen3-vl-235b", "qwen3.5-397b-a17b-vl",
-               "qwen3.6-27b-vl", "kimi-k2.6-vl"}:
-        return True
-    try:
-        import wb_catalog
-        for table in (wb_catalog.STATIC_MODELS, wb_catalog.STATIC_CN_MODELS):
-            for item in table:
-                if str(item.get("id") or "").strip().lower() != key:
-                    continue
-                return (bool(item.get("supportsImages"))
-                        and not item.get("disabledMultimodal"))
-    except Exception:
-        pass
-    return False
+
+def _known_vision(mid):
+    """Fallback vision metadata when a discovery source omits the flag."""
+    return str(mid or "").strip().lower() in _KNOWN_VISION_IDS
 
 
 def _merge_models(sets):
