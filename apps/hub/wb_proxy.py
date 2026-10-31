@@ -70,6 +70,7 @@ import wb_accounts
 import wb_activity
 import wb_atrest
 import wb_catalog
+import wb_codearts
 import wb_egress
 import wb_ipintel
 import wb_logstore
@@ -19179,10 +19180,36 @@ class Handler(BaseHTTPRequestHandler):
             save_persisted_realm("intl")
         return self._json(200, {"current": CURRENT_REALM, "options": options})
 
+    def _get_codearts_models(self):
+        """CodeArts 出口的模型目录：实时拉 codearts2api，失败回退缓存。"""
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        if not wb_codearts.configured_config(cfg):
+            return self._error(
+                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
+                "invalid_request_error")
+        try:
+            data = wb_codearts.model_entries(cfg)
+        except wb_codearts.CodeArtsAuthError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        except wb_codearts.CodeArtsError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        if wb_settings.filter_models_by_key(ACCOUNTS_DIR) and self.key_entry:
+            data = [m for m in data
+                    if wb_settings.key_allows_model(self.key_entry, m.get("id"))]
+        payload = {
+            "object": "list",
+            "data": data,
+            "realm": "codearts",
+            "catalog": wb_codearts.models_meta(cfg),
+        }
+        return self._json(200, payload)
+
     def _get_v1_models(self):
         if not self._authorized():
             return
         req_realm = self._request_realm() or CURRENT_REALM
+        if req_realm == "codearts":
+            return self._get_codearts_models()
         try:
             entries = fetch_models(realm=req_realm)
         except Exception as exc:
