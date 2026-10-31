@@ -994,6 +994,32 @@ def _canonical_model(acct, model):
     return static.get(lower, mid)
 
 
+def _known_vision(mid):
+    """Fallback vision metadata when a discovery source omits the flag.
+
+    CodeArts' builtin catalogue carries `supports_images`; the agent/benefit
+    sources do not always. For those, reuse the WorkBuddy catalog metadata
+    (many models are the same) plus the known CodeArts VL ids.
+    """
+    key = str(mid or "").strip().lower()
+    if not key:
+        return False
+    if key in {"qwen3-vl-235b", "qwen3.5-397b-a17b-vl",
+               "qwen3.6-27b-vl", "kimi-k2.6-vl"}:
+        return True
+    try:
+        import wb_catalog
+        for table in (wb_catalog.STATIC_MODELS, wb_catalog.STATIC_CN_MODELS):
+            for item in table:
+                if str(item.get("id") or "").strip().lower() != key:
+                    continue
+                return (bool(item.get("supportsImages"))
+                        and not item.get("disabledMultimodal"))
+    except Exception:
+        pass
+    return False
+
+
 def _merge_models(sets):
     merged = {}
     for source, items in sets:
@@ -1011,6 +1037,10 @@ def _merge_models(sets):
                     "max_tokens": int(item.get("max_tokens") or 0),
                     "desc": str(item.get("desc") or ""),
                     "benefit": bool(item.get("benefit")),
+                    "supports_images": (item.get("supports_images")
+                                        if isinstance(item.get("supports_images"), bool)
+                                        else None),
+                    "model_category": str(item.get("model_category") or ""),
                 }
                 continue
             if not current.get("context_window") and item.get("context_window"):
@@ -1021,6 +1051,13 @@ def _merge_models(sets):
                 current["benefit"] = True
             if not current.get("desc") and item.get("desc"):
                 current["desc"] = item["desc"]
+            if item.get("supports_images") is True:
+                current["supports_images"] = True
+            elif (item.get("supports_images") is False
+                  and current.get("supports_images") is None):
+                current["supports_images"] = False
+            if not current.get("model_category") and item.get("model_category"):
+                current["model_category"] = item["model_category"]
     return list(merged.values())
 
 
@@ -1058,6 +1095,7 @@ def _fetch_agent_models(acct, timeout):
                or item.get("model_alias") or params.get("model_id") or "")
         if not mid:
             continue
+        supports = params.get("supports_images", item.get("supports_images"))
         out.append({
             "id": str(mid),
             "name": str(mid),
@@ -1065,6 +1103,9 @@ def _fetch_agent_models(acct, timeout):
             "max_tokens": int(params.get("max_tokens") or 0),
             "desc": str(params.get("model_desc") or ""),
             "benefit": False,
+            "supports_images": (supports if isinstance(supports, bool) else None),
+            "model_category": str(params.get("model_category")
+                                  or item.get("model_category") or ""),
         })
     return out
 
@@ -1084,6 +1125,10 @@ def _fetch_builtin_models(acct, timeout):
             "max_tokens": int(item.get("max_tokens") or 0),
             "desc": str(item.get("model_desc") or ""),
             "benefit": False,
+            "supports_images": (item.get("supports_images")
+                                if isinstance(item.get("supports_images"), bool)
+                                else None),
+            "model_category": str(item.get("model_category") or ""),
         })
     return out
 
@@ -1114,6 +1159,10 @@ def _fetch_benefit_models(acct, timeout, auto_claim=True):
             "max_tokens": int(item.get("max_tokens") or 0),
             "desc": str(item.get("model_desc") or ""),
             "benefit": True,
+            "supports_images": (item.get("supports_images")
+                                if isinstance(item.get("supports_images"), bool)
+                                else None),
+            "model_category": str(item.get("model_category") or ""),
         })
     return out
 
@@ -1150,7 +1199,8 @@ def fetch_models(acct, timeout=20.0, auto_claim=True):
             return acct.models
         merged = _merge_models([("seed", [
             {"id": mid, "name": mid,
-             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS}}
+             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS},
+             "supports_images": _known_vision(mid)}
             for mid in SEED_MODELS])])
     acct.models = merged
     acct.model_benefit = {str(m["id"]).lower(): bool(m.get("benefit"))
@@ -1194,7 +1244,8 @@ def model_entries(config):
     if not merged:
         merged = _merge_models([("seed", [
             {"id": mid, "name": mid,
-             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS}}
+             "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS},
+             "supports_images": _known_vision(mid)}
             for mid in SEED_MODELS])])
     now = int(time.time())
     out = []
@@ -1213,6 +1264,31 @@ def model_entries(config):
             entry["max_tokens"] = item["max_tokens"]
         if item.get("benefit"):
             entry["benefit"] = True
+        supports = item.get("supports_images")
+        if not isinstance(supports, bool):
+            supports = _known_vision(item["id"])
+        vision = bool(supports)
+        inputs = ["text"] + (["image"] if vision else [])
+        # Same convention set WorkBuddy emits: clients read different spellings
+        # for vision support, and DSH specifically needs input modalities.
+        entry["capabilities"] = {"vision": vision}
+        entry["supports_vision"] = vision
+        entry["supports_images"] = vision
+        entry["vision"] = vision
+        entry["multimodal"] = vision
+        entry["abilities"] = {"vision": vision}
+        entry["input_modalities"] = inputs
+        entry["output_modalities"] = ["text"]
+        entry["modalities"] = {"input": inputs, "output": ["text"]}
+        entry["architecture"] = {
+            "input_modalities": inputs,
+            "output_modalities": ["text"],
+            "modality": "+".join(inputs) + "->text",
+        }
+        if item.get("desc"):
+            entry["description"] = item["desc"]
+        if item.get("model_category"):
+            entry["category"] = item["model_category"]
         out.append(entry)
     return out
 

@@ -59,11 +59,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.0.3
+docker pull ghcr.io/ayeaaaa/mix2api:v1.0.4
 docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.0.3
+  ghcr.io/ayeaaaa/mix2api:v1.0.4
 ```
 
 ### 方式二：本地构建
@@ -109,7 +109,7 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 - 签到：`/v1/ops/delivery|claim|confirm`；看板「签到 / 全员签到」可手动触发，「设置 → CodeArts 接入」的「每天自动签到」默认开启，跟随国内版签到时段（默认 09:00 / 21:00），只跑已启用且未冷却的账号，当天成功后不重复。
 - 积分：`snap-manager/v1/statistics/plugin` 查询剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表积分列显示 `0.00`、估算价格显示 `—`。
 - 代理：CodeArts 账号可绑定「账号代理槽」，出站请求与 WorkBuddy 共用 `wb_upstream_pool`（连接复用、代理认证、`no_proxy`、失效连接重试）；槽位停用/删除回退直连，首次 OAuth 换 token 仍直连。
-- 图片：视觉模型（Qwen3-VL、Kimi-VL 等）支持 OpenAI `image_url` 内容分片；Responses 的 `input_image` 和 Anthropic 的 `image` 块会归一化为 `image_url` 后发给 CodeArts。data URL 已实测，远程 URL 原样透传（能否抓取取决于上游）。
+- 图片：`/v1/models` 按 CodeArts 上游的 `supports_images` 宣告视觉能力，并输出 WorkBuddy 同款 `capabilities.vision` / `input_modalities` 等字段。当前 `Qwen3-VL-235B`、`kimi-k2.6-vl` 为 true；`GLM-5.2`、`kimi-k3`、`deepseek-v4.1-flash` 等为 false，不会向客户端误报可读图。视觉模型支持 OpenAI `image_url`、Responses `input_image`、Anthropic `image` 块；data URL 已实测，远程 URL 原样透传（能否抓取取决于上游）。
 - 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；代理槽按 HTTP/HTTPS 代理实现。
 
 ## 安全

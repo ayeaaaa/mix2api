@@ -208,13 +208,21 @@ try:
     models = C.fetch_models(acct)
     ids = [m["id"] for m in models]
     check("agent/builtin/benefit merged", set(ids) ==
-          {"GLM-5.2", "GLM-4.7", "deepseek-v4-pro-0813"}, ids)
+          {"GLM-5.2", "GLM-4.7", "Qwen3-VL-235B",
+           "deepseek-v4-pro-0813"}, ids)
     check("benefit marked", acct.is_benefit("deepseek-v4-pro-0813") is True)
     check("normal not benefit", acct.is_benefit("GLM-5.2") is False)
     entries = C.model_entries(C.load_config(ACCOUNTS))
     check("entries owned_by", entries[0]["owned_by"] == "codearts")
     check("entries benefit flag",
           any(e.get("benefit") for e in entries if e["id"] == "deepseek-v4-pro-0813"))
+    entry_by_id = {e["id"]: e for e in entries}
+    check("entries vision flag",
+          entry_by_id["Qwen3-VL-235B"]["capabilities"]["vision"] is True,
+          entry_by_id.get("Qwen3-VL-235B"))
+    check("entries text not vision",
+          entry_by_id["GLM-5.2"]["capabilities"]["vision"] is False,
+          entry_by_id.get("GLM-5.2"))
     check("models meta source", C.models_meta(C.load_config(ACCOUNTS))["source"] == "codearts")
 
     print("== credits ==")
