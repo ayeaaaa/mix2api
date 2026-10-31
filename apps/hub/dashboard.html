@@ -1791,6 +1791,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '回收密钥': 'Recover key',
     '导入密钥': 'Import key',
     '固定国内版出口': 'China exit only',
+    '固定 CodeArts 出口': 'CodeArts exit only',
     '固定国际版出口': 'Global exit only',
     '国内版': 'China',
     '顶部页签显示': 'Top tab visibility',
@@ -6951,6 +6952,7 @@ async function initRealm(){
   const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
   if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
   window.updateUI();
+  if(window.VIEW_REALM === 'codearts') loadCodeartsOverview(true);
 }
 
 async function refreshModelCatalog(btn){
@@ -14257,7 +14259,8 @@ function renderDeletedKeyRows(){
   if(!DELETED_KEY_ROWS.length){ box.innerHTML = ''; return; }
   const rows = DELETED_KEY_ROWS.map(k => {
     const realmLbl = (k.realm === 'intl') ? '固定国际版出口'
-      : ((k.realm === 'cn') ? '固定国内版出口' : '跟随面板切换');
+      : ((k.realm === 'cn') ? '固定国内版出口'
+        : ((k.realm === 'codearts') ? '固定 CodeArts 出口' : '跟随面板切换'));
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
       + '<span>' + esc(realmLbl) + '</span>'
@@ -14285,7 +14288,10 @@ function renderKeyRows(){
   }
   box.innerHTML = API_KEY_ROWS.map((row, i) => {
     if(row._editing){
-      const options = REALM_CHOICES.map(([val, lbl]) =>
+      const realmChoices = REALM_CHOICES.concat(
+        (window.REALM_OPTIONS || []).includes('codearts')
+          ? [['codearts', '固定 CodeArts 出口']] : []);
+      const options = realmChoices.map(([val, lbl]) =>
         '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
       ).join('');
       return '<div class="key-card" style="border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'

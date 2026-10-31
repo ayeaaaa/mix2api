@@ -193,6 +193,7 @@ docker run -d --name wb-proxy-watchtower --restart unless-stopped \
 - 账号、token 续期、冷却、签到、并发仍由 codearts2api 执行；wb-hub 只保存它的地址和 Key，不保存华为云凭据。
 - CodeArts 没有可查询的积分余额：看板不显示积分，显示 `—`，以华为云控制台为准。
 - CodeArts 出口不参与 WorkBuddy 的积分/额度护栏，也不参与 `国际版 → 国内版` 的跨出口回退。
+- API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；CodeArts 账号由 codearts2api 自己的池轮转，不能按 Key 指定。
 - CodeArts 出口没有 wb-hub 的 web_search / web_fetch 代跑；客户端自带工具照常透传。
 - `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
 

@@ -549,10 +549,27 @@ def overview(config, force=False):
 def invalidate_overview():
     with _overview_lock:
         _overview_cache.clear()
+    with _health_lock:
+        _health_cache.clear()
 
 
-def health(config):
-    """轻量探活：/healthz 返回 200 即视为在线。不抛异常。"""
+_health_lock = threading.Lock()
+_health_cache = {}
+_HEALTH_TTL = 5.0
+
+
+def health(config, force=False):
+    """轻量探活：/healthz 返回 200 即视为在线。不抛异常。
+
+    5 秒缓存 + 最多 2 秒超时：`/health` 每次都被启动器和监控轮询，不能因为
+    CodeArts 远端黑洞把整个健康检查拖到 5 秒。
+    """
+    key = _cache_key(config)
+    now = time.time()
+    with _health_lock:
+        cached = _health_cache.get(key)
+        if cached and not force and now < cached[0]:
+            return dict(cached[1])
     started = time.time()
     base = str(config.get("base_url") or "").rstrip("/")
     try:
@@ -560,15 +577,18 @@ def health(config):
             base + "/healthz",
             headers={"Authorization": "Bearer %s" % (config.get("api_key") or "")})
         resp = _opener().open(req, timeout=min(
-            5.0, float(config.get("timeout_seconds") or 5.0)))
+            2.0, float(config.get("timeout_seconds") or 2.0)))
         try:
             ok = 200 <= resp.status < 300
         finally:
             resp.close()
-        return {"ok": ok, "latency_ms": int((time.time() - started) * 1000)}
+        result = {"ok": ok, "latency_ms": int((time.time() - started) * 1000)}
     except Exception as exc:
-        return {"ok": False, "latency_ms": int((time.time() - started) * 1000),
-                "error": _sanitize(getattr(exc, "reason", None) or exc, config)}
+        result = {"ok": False, "latency_ms": int((time.time() - started) * 1000),
+                  "error": _sanitize(getattr(exc, "reason", None) or exc, config)}
+    with _health_lock:
+        _health_cache[key] = (now + _HEALTH_TTL, result)
+    return dict(result)
 
 
 def _admin(config, path, payload=None):

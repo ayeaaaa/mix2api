@@ -21096,7 +21096,7 @@ class Handler(BaseHTTPRequestHandler):
         uid = str(payload.get("uid") or "").strip()
         try:
             if path == "/codearts/test":
-                health = wb_codearts.health(cfg)
+                health = wb_codearts.health(cfg, force=True)
                 if not health.get("ok"):
                     return self._json(502, {"ok": False, "health": health})
                 data = wb_codearts.overview(cfg, force=True)
@@ -22952,7 +22952,8 @@ class Handler(BaseHTTPRequestHandler):
         """打开 CodeArts 的 SSE 上游；返回 (response, account, model)。"""
         cfg = wb_codearts.load_config(ACCOUNTS_DIR)
         if not wb_codearts.configured_config(cfg):
-            raise wb_codearts.CodeArtsUnavailable(
+            # 本地配置问题，按 400 回：502 会让人以为上游坏了。
+            raise wb_codearts.CodeArtsBadRequest(
                 "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。")
         body = wb_codearts.build_chat_body(payload, session_key)
         upstream = wb_codearts.open_chat(cfg, body)
