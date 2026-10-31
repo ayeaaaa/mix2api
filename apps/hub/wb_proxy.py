@@ -383,7 +383,8 @@ CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
 # Management paths that happen to live under /v1 must not be treated as API:
 # /v1/usage reports account-level spend and is gated by the panel session.
 MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
-                            "/tasks", "/scheduler", "/panel", "/logs")
+                            "/tasks", "/scheduler", "/panel", "/logs",
+                            "/codearts")
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]
@@ -10262,6 +10263,7 @@ def runtime_settings_view():
         "models_only_available": wb_settings.models_only_available(ACCOUNTS_DIR),
         "identity": wb_settings.identity_config(ACCOUNTS_DIR),
         "identity_version_defaults": wb_identity.default_versions(),
+        "codearts": wb_codearts.masked_config(ACCOUNTS_DIR),
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "daily_chat_web_timeout":
             wb_settings.daily_chat_web_timeout(ACCOUNTS_DIR,
@@ -18956,6 +18958,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/agents"):
             return True
+        if path.startswith("/codearts"):
+            return True
         return False
     def _strip_pinned_prefix_only(self):
         """Strip /u/<ref> from self.path; returns False for a malformed ref."""
@@ -19030,6 +19034,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_health()
         if path == "/realm":
             return self._get_realm()
+        if path == "/codearts/overview":
+            return self._get_codearts_overview()
+        if path == "/codearts/accounts":
+            return self._get_codearts_accounts()
         if path == "/v1/balance-summary":
             return self._get_v1_balance_summary()
         if path in ("/v1/models", "/models"):
@@ -19163,6 +19171,17 @@ class Handler(BaseHTTPRequestHandler):
         # are actually servable (issue #667).
         info.update(pool_readiness())
         info["api_key_required"] = auth_required()
+        try:
+            cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+            codearts = {"configured": wb_codearts.configured_config(cfg),
+                        "base_url": cfg.get("base_url") or ""}
+            if codearts["configured"]:
+                codearts.update(wb_codearts.health(cfg))
+            info["codearts"] = codearts
+        except Exception as exc:
+            # CodeArts 只是子字段：它掉线不能把整体 /health 变红。
+            info["codearts"] = {"configured": False, "ok": False,
+                                "error": str(exc)[:200]}
         if self._key_ok():
             info.update({
                 "uid": rep.uid if rep else None,
@@ -20522,6 +20541,21 @@ class Handler(BaseHTTPRequestHandler):
             wb_settings.set_quota_scan_models(ACCOUNTS_DIR, raw_models)
             reply["quota_scan_models_saved"] = len(
                 wb_settings.quota_scan_models(ACCOUNTS_DIR))
+        if "codearts" in payload:
+            raw = payload.get("codearts")
+            if not isinstance(raw, dict):
+                return self._error(400, "codearts must be an object",
+                                   "invalid_request_error")
+            try:
+                wb_codearts.save_config(ACCOUNTS_DIR, raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            wb_codearts.invalidate_models()
+            wb_codearts.invalidate_overview()
+            reply["codearts"] = wb_codearts.masked_config(ACCOUNTS_DIR)
+            if reconcile_codearts_realm():
+                reply["warning"] = ("CodeArts 出口已停用，默认出口已切回国际版；"
+                                    "绑定 CodeArts 的 Key 需要改绑后才能继续使用。")
         new_key = payload.get("api_key")
         if new_key is not None:
             new_key = str(new_key).strip()
@@ -20999,8 +21033,112 @@ class Handler(BaseHTTPRequestHandler):
                     new == wb_settings.DEFAULT_PANEL_PASSWORD,
             })
         return self._error(404, "not found", "invalid_request_error")
+    def _get_codearts_overview(self):
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        if not wb_codearts.configured_config(cfg):
+            return self._error(
+                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
+                "invalid_request_error")
+        try:
+            data = wb_codearts.overview(cfg)
+        except wb_codearts.CodeArtsError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        out = dict(data)
+        health = wb_codearts.health(cfg)
+        out["online"] = health["ok"]
+        out["health"] = health
+        out["base_url"] = cfg["base_url"]
+        return self._json(200, out)
+
+    def _get_codearts_accounts(self):
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        if not wb_codearts.configured_config(cfg):
+            return self._error(
+                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
+                "invalid_request_error")
+        try:
+            data = wb_codearts.overview(cfg)
+        except wb_codearts.CodeArtsError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        return self._json(200, {
+            "provider": "codearts",
+            "accounts": data.get("accounts") or [],
+            "stats": data.get("stats") or {},
+            "models": data.get("models") or [],
+            "base_url": cfg["base_url"],
+        })
+
+    def _codearts_admin_error(self, exc):
+        if isinstance(exc, wb_codearts.CodeArtsNotFound):
+            return self._error(
+                409, "codearts2api 版本过旧，没有删除账号接口；请升级 apps/codearts 后重建容器。",
+                "invalid_request_error")
+        if isinstance(exc, wb_codearts.CodeArtsBadRequest):
+            return self._error(400, str(exc), "invalid_request_error")
+        return self._error(502, str(exc), "invalid_request_error")
+
+    def _handle_codearts(self, path, payload):
+        """`/codearts/*` 管理代理：只接受面板会话。"""
+        if not self._panel_ok():
+            return self._error(401, "panel password required",
+                               "invalid_request_error")
+        if not isinstance(payload, dict):
+            return self._error(400, "expected a JSON object",
+                               "invalid_request_error")
+        cfg = wb_codearts.load_config(ACCOUNTS_DIR)
+        if not wb_codearts.configured_config(cfg):
+            return self._error(
+                503, "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。",
+                "invalid_request_error")
+        uid = str(payload.get("uid") or "").strip()
+        try:
+            if path == "/codearts/test":
+                health = wb_codearts.health(cfg)
+                if not health.get("ok"):
+                    return self._json(502, {"ok": False, "health": health})
+                data = wb_codearts.overview(cfg, force=True)
+                return self._json(200, {
+                    "ok": True, "health": health,
+                    "stats": data.get("stats") or {},
+                    "models": len(data.get("models") or []),
+                })
+            if path == "/codearts/accounts/oauth/start":
+                return self._json(200, wb_codearts.oauth_start(cfg))
+            if path == "/codearts/accounts/oauth/poll":
+                return self._json(200, wb_codearts.oauth_poll(
+                    cfg, payload.get("session_id")))
+            if path == "/codearts/accounts/oauth/callback":
+                return self._json(200, wb_codearts.oauth_callback(
+                    cfg, payload.get("session_id"),
+                    payload.get("callback_url")))
+            if path == "/codearts/keepalive":
+                result = wb_codearts.keepalive(cfg)
+                wb_codearts.invalidate_overview()
+                return self._json(200, result)
+            if not uid:
+                return self._error(400, "uid required", "invalid_request_error")
+            if path == "/codearts/accounts/enable":
+                result = wb_codearts.enable(cfg, uid)
+            elif path == "/codearts/accounts/disable":
+                result = wb_codearts.disable(cfg, uid, payload.get("reason") or "")
+            elif path == "/codearts/accounts/delete":
+                result = wb_codearts.remove(cfg, uid)
+            elif path == "/codearts/accounts/clear-cooldown":
+                result = wb_codearts.clear_cooldown(cfg, uid)
+            elif path == "/codearts/accounts/checkin":
+                result = wb_codearts.checkin(cfg, uid)
+            else:
+                return self._error(404, "unknown codearts endpoint",
+                                   "invalid_request_error")
+            wb_codearts.invalidate_overview()
+            return self._json(200, result)
+        except wb_codearts.CodeArtsError as exc:
+            return self._codearts_admin_error(exc)
+
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""
+        if path.startswith("/codearts"):
+            return self._handle_codearts(path, payload)
         if POOL is None:
             return self._error(503, "account pool unavailable")
         if path == "/accounts/import" and isinstance(payload, list):
@@ -22604,6 +22742,7 @@ class Handler(BaseHTTPRequestHandler):
             or path.startswith("/tasks")
             or path.startswith("/scheduler")
             or path.startswith("/logs")
+            or path.startswith("/codearts")
         )
         if not is_account_route and not is_messages_route and path not in (
                 "/v1/chat/completions", "/chat/completions",

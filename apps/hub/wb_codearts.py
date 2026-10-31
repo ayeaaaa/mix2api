@@ -512,3 +512,102 @@ def configured_config(config):
     return bool(config and config.get("base_url") and config.get("api_key")
                 and config.get("enabled"))
 
+
+# ---------------------------------------------------------------------------
+# 管理 API（账号 CRUD / OAuth / 签到 / 保活）
+# ---------------------------------------------------------------------------
+
+_overview_lock = threading.Lock()
+_overview_cache = {}
+_OVERVIEW_TTL = 5.0
+
+
+def overview(config, force=False):
+    """codearts2api 的账号总览；5 秒缓存，看板轮询不会打爆上游。"""
+    key = _cache_key(config)
+    now = time.time()
+    with _overview_lock:
+        cached = _overview_cache.get(key)
+        if cached and not force and now < cached[0]:
+            return dict(cached[1])
+    data = _json(config, "GET", "/admin/api/overview")
+    if not isinstance(data, dict):
+        raise CodeArtsError("CodeArts 返回了无法识别的 overview")
+    with _overview_lock:
+        _overview_cache[key] = (now + _OVERVIEW_TTL, data)
+    return dict(data)
+
+
+def invalidate_overview():
+    with _overview_lock:
+        _overview_cache.clear()
+
+
+def health(config):
+    """轻量探活：/healthz 返回 200 即视为在线。不抛异常。"""
+    started = time.time()
+    base = str(config.get("base_url") or "").rstrip("/")
+    try:
+        req = urllib.request.Request(
+            base + "/healthz",
+            headers={"Authorization": "Bearer %s" % (config.get("api_key") or "")})
+        resp = _opener().open(req, timeout=min(
+            5.0, float(config.get("timeout_seconds") or 5.0)))
+        try:
+            ok = 200 <= resp.status < 300
+        finally:
+            resp.close()
+        return {"ok": ok, "latency_ms": int((time.time() - started) * 1000)}
+    except Exception as exc:
+        return {"ok": False, "latency_ms": int((time.time() - started) * 1000),
+                "error": _sanitize(getattr(exc, "reason", None) or exc, config)}
+
+
+def _admin(config, path, payload=None):
+    return _json(config, "POST", path, payload if payload is not None else {})
+
+
+def oauth_start(config):
+    return _admin(config, "/admin/api/oauth/start", {})
+
+
+def oauth_poll(config, session_id):
+    return _admin(config, "/admin/api/oauth/poll",
+                  {"session_id": str(session_id or "")})
+
+
+def oauth_callback(config, session_id, callback_url):
+    return _admin(config, "/admin/api/oauth/import-callback",
+                  {"session_id": str(session_id or ""),
+                   "callback_url": str(callback_url or "")})
+
+
+def enable(config, uid):
+    return _admin(config, "/admin/api/accounts/enable", {"uid": str(uid or "")})
+
+
+def disable(config, uid, reason=""):
+    payload = {"uid": str(uid or "")}
+    if reason:
+        payload["reason"] = str(reason)
+    return _admin(config, "/admin/api/accounts/disable", payload)
+
+
+def remove(config, uid):
+    return _admin(config, "/admin/api/accounts/delete", {"uid": str(uid or "")})
+
+
+def clear_cooldown(config, uid):
+    return _admin(config, "/admin/api/accounts/clear-cooldown",
+                  {"uid": str(uid or "")})
+
+
+def checkin(config, uid=""):
+    payload = {"uid": str(uid)} if uid else {}
+    return _admin(config, "/admin/api/checkin", payload)
+
+
+def keepalive(config):
+    return _admin(config, "/admin/api/keepalive", {})
+
+
