@@ -10,8 +10,8 @@
 #
 #  Usage:
 #     ./start-wb-proxy-lan.sh                 # random/persisted key
-#     ./start-wb-proxy-lan.sh 8788            # custom port
-#     ./start-wb-proxy-lan.sh 8788 MyApiKey   # custom port + key
+#     ./start-wb-proxy-lan.sh 58675            # custom port
+#     ./start-wb-proxy-lan.sh 58675 MyApiKey   # custom port + key
 #
 #  On macOS you can also double-click start-wb-proxy-lan.command.
 #
@@ -21,7 +21,7 @@
 
 set -u
 
-PORT="${1:-8788}"
+PORT="${1:-58675}"
 KEY="${2:-}"
 
 SOURCE="${BASH_SOURCE[0]}"

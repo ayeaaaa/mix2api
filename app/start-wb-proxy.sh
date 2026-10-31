@@ -3,7 +3,7 @@
 #  WorkBuddy proxy - macOS / Linux launcher (single machine)
 #
 #  Usage:
-#     ./start-wb-proxy.sh              # default port 8788
+#     ./start-wb-proxy.sh              # default port 58675
 #     ./start-wb-proxy.sh 9000         # custom port
 #
 #  On macOS you can also double-click start-wb-proxy.command.
@@ -14,7 +14,7 @@
 
 set -u
 
-PORT="${1:-8788}"
+PORT="${1:-58675}"
 
 # --- resolve the directory this script lives in --------------------
 # Works when double-clicked, run as ./script, or reached via a symlink.

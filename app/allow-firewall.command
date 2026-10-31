@@ -15,7 +15,7 @@
 
 set -u
 
-PORT="${1:-8788}"
+PORT="${1:-58675}"
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOCKETFILTERFW="/usr/libexec/ApplicationFirewall/socketfilterfw"
 

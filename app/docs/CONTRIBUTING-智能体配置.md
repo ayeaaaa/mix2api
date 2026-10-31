@@ -59,8 +59,8 @@ wb-proxy/
 `apply` 回调接收到的 `ctx` 字典包含以下字段：
 ```python
 ctx = {
-    "base_url": "http://127.0.0.1:8788",         # 用户指定的网关 Base URL
-    "base_url_v1": "http://127.0.0.1:8788/v1",   # 保证以 /v1 结尾的 URL
+    "base_url": "http://127.0.0.1:58675",         # 用户指定的网关 Base URL
+    "base_url_v1": "http://127.0.0.1:58675/v1",   # 保证以 /v1 结尾的 URL
     "api_key": "sk-...",                         # 用户选定的 API Key
     "model": "deepseek-v4.1-flash",              # 选定的默认模型 ID（可选，可能为 None）
     "models": [                                  # 网关支持的模型列表（字典数组）
@@ -205,7 +205,7 @@ python tests/run_all.py
 {
   "claude-code": {
     "applied_at": "2026-04-08 15:30:00",
-    "base_url": "http://127.0.0.1:8788",
+    "base_url": "http://127.0.0.1:58675",
     "model": "deepseek-v4.1-flash",
     "files": [
       {
@@ -240,7 +240,7 @@ python tests/run_all.py
       "config_paths": ["/home/user/.claude/settings.json"],
       "applied": {
         "at": "2026-04-08 15:30:00",
-        "base_url": "http://127.0.0.1:8788",
+        "base_url": "http://127.0.0.1:58675",
         "model": "deepseek-v4.1-flash",
         "files": 1,
         "external_change": false
@@ -250,7 +250,7 @@ python tests/run_all.py
   "models": [{"id": "deepseek-v4.1-flash", "context_window": 131072}, ...],
   "keys": [{"id": "key_xxx", "name": "国际版 Key", "masked": "sk-1234***"}, ...],
   "global_key_set": true,
-  "gateway": {"base_url": "http://127.0.0.1:8788/v1"}
+  "gateway": {"base_url": "http://127.0.0.1:58675/v1"}
 }
 ```
 

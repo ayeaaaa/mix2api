@@ -30,14 +30,14 @@ class DeployModeTests(unittest.TestCase):
         self.assertIn("WB_DEPLOY_MODE 只能是 local / lan / public", self.script)
 
     def test_loopback_modes_bind_the_host_port_to_localhost(self):
-        self.assertIn('PORT_BINDING="127.0.0.1:8788:8788"', self.script)
-        self.assertIn('PORT_BINDING="8788:8788"', self.script)
+        self.assertIn('PORT_BINDING="127.0.0.1:58675:58675"', self.script)
+        self.assertIn('PORT_BINDING="58675:58675"', self.script)
         # 容器内仍要监听 0.0.0.0，否则 Docker 的端口转发连不进来。
         self.assertIn("- HOST=0.0.0.0", self.script)
 
     def test_generated_compose_uses_the_binding(self):
         self.assertIn('      - "${PORT_BINDING}"', self.script)
-        self.assertNotIn('      - "8788:8788"', self.script)
+        self.assertNotIn('      - "58675:58675"', self.script)
 
     def test_upgrade_does_not_rewrite_an_existing_compose(self):
         self.assertIn("已有部署不会自动改写端口映射", self.script)

@@ -11,7 +11,7 @@ docker compose up -d --build
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
-| `mix2api` | `8788` | 统一入口、看板、三个出口（含 CodeArts 原生客户端） |
+| `mix2api` | `58675` | 统一入口、看板、三个出口（含 CodeArts 原生客户端） |
 
 数据目录（compose 挂载）：
 
@@ -37,7 +37,7 @@ CodeArts 账号文件字段与 Go 版兼容；`state.json` 里的停用/冷却�
 
 ## 2. 首次配置
 
-1. 打开 `http://<host>:8788/`，用默认面板密码 `admin` 登录，立刻在「设置」里改掉。
+1. 打开 `http://<host>:58675/`，用默认面板密码 `admin` 登录，立刻在「设置」里改掉。
 2. 进「设置 → CodeArts 接入」：
    - 勾选「启用 CodeArts 出口」；
    - 单账号并发默认 5，按需要调整；
@@ -55,7 +55,7 @@ CodeArts 账号文件字段与 Go 版兼容；`state.json` 里的停用/冷却�
 
 ```bash
 cd app
-python3 wb_proxy.py --port 8788
+python3 wb_proxy.py --port 58675
 ```
 
 没有第二个进程。CodeArts 账号文件在 `app/accounts/codearts/`。
@@ -64,14 +64,14 @@ python3 wb_proxy.py --port 8788
 
 ```bash
 # 健康
-curl -s http://127.0.0.1:8788/health | python -m json.tool
+curl -s http://127.0.0.1:58675/health | python -m json.tool
 
 # 模型目录（把 KEY 换成看板里的 Key）
-curl -s http://127.0.0.1:8788/v1/models?realm=codearts \
+curl -s http://127.0.0.1:58675/v1/models?realm=codearts \
   -H "Authorization: Bearer $KEY" | python -m json.tool
 
 # 一条非流式对话
-curl -s http://127.0.0.1:8788/v1/chat/completions \
+curl -s http://127.0.0.1:58675/v1/chat/completions \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"model":"GLM-5.2","messages":[{"role":"user","content":"你好"}]}'
 ```

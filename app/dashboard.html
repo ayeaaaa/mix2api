@@ -1825,9 +1825,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
     '全员签到': 'Check in all',
     '保活': 'Keep alive',
-    '打开 codearts2api 控制台': 'Open the codearts2api console',
     '刷新': 'Refresh',
-    '账号、token 续期、冷却与签到由 codearts2api 执行；这里只做增删启停。': 'Accounts, token renewal, cooldowns and check-in run in codearts2api; this panel only adds, removes, enables and disables them.',
     '授权链接': 'Authorization link',
     '打开授权页': 'Open authorization page',
     '我已授权': 'I have authorized',
@@ -4150,7 +4148,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <div id="tabCodearts" class="realm-card" onclick="switchViewRealm('codearts')" style="display:none">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="realm-badge-codearts">CodeArts (华为云)</span>
-        <span id="tabCodeartsHost" class="mono" style="font-size:11px;color:var(--dim)">codearts2api</span>
+        <span id="tabCodeartsHost" class="mono" style="font-size:11px;color:var(--dim)">华为云</span>
         <span id="tabCodeartsDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
         <span id="tabCodeartsViewBadge" class="badge s mini" style="display:none">当前视图</span>
         <span id="tabCodeartsOffline" class="badge bad mini" style="display:none">离线</span>
@@ -4297,7 +4295,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div>
   <!-- 拆分模式下三个区块的落点（页头之后、原顺序）；合并模式搬走之后这里就空着 -->
   <span id="accountsHomeAnchor" hidden></span>
-  <!-- CodeArts 视图：账号池由 codearts2api 持有，这里只做代理与展示。 -->
+  <!-- CodeArts 视图：账号池由本进程直接管理。 -->
   <section id="codeartsAccountsSection" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <h2 style="margin:0">CodeArts 账号<em id="codeartsAcctCount"></em></h2>
@@ -6458,7 +6456,7 @@ function updateUI(){
   const ep = document.getElementById("activeEndpoint");
   if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2"
     : (isCnGw ? "https://copilot.tencent.com/v2"
-              : ((window.CODEARTS_OVERVIEW || {}).base_url || "codearts2api"));
+              : ((window.CODEARTS_OVERVIEW || {}).base_url || "华为云 CodeArts"));
 
   const gwOptions = (window.REALM_OPTIONS && window.REALM_OPTIONS.length)
     ? window.REALM_OPTIONS : ["intl", "cn"];
@@ -6671,7 +6669,7 @@ function renderCodeartsCards(r){
   const healthy = (st.healthy != null) ? st.healthy : "—";
   const total = (st.total != null) ? st.total : 0;
   box.innerHTML =
-    card("健康账号", healthy + "/" + total, "由 codearts2api 管理")
+    card("健康账号", healthy + "/" + total, "由本进程直接管理")
     + card("模型", (r.models || []).length, "CodeArts 目录")
     + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
     + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
@@ -7215,10 +7213,10 @@ function renderModelsSourceLine(meta){
   const isApi = (meta.source === 'remote' || meta.source === 'endpoint');
   const at = fmtCatalogStamp(meta.fetched_at);
   el.title = tip;
-  if(meta.source === 'codearts2api'){
+  if(meta.source === 'codearts'){
     el.style.cssText = CATALOG_BANNER_BASE
       + 'background:var(--accent2-soft);border:1px solid rgba(94,140,79,.28);color:var(--accent2)';
-    el.title = 'CodeArts 模型目录来自 codearts2api 的 /v1/models；缓存过期后自动重取，失败时回退到上次成功的目录。';
+    el.title = 'CodeArts 模型目录来自本进程的 agent-center / builtin / 福利三路发现；缓存过期后自动重取，失败时回退到上次成功的目录。';
     el.innerHTML = '<b>✓ 当前为 CodeArts 模型目录</b>'
       + '<span style="color:var(--dim)">刷新时间 ' + esc(at || '—')
       + (meta.stale ? ' · 上游暂时不可达，显示上次成功的目录' : '')

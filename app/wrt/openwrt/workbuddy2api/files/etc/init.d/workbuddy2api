@@ -16,7 +16,7 @@ start_service() {
 	local host port accounts_dir usage_dir api_key panel_password stats_ttl
 	config_load workbuddy2api
 	config_get host main host '0.0.0.0'
-	config_get port main port '8788'
+	config_get port main port '58675'
 	config_get accounts_dir main accounts_dir '/etc/workbuddy2api/accounts'
 	config_get usage_dir main usage_dir '/etc/workbuddy2api/usage'
 	config_get api_key main api_key ''

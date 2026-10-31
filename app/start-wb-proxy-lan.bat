@@ -23,7 +23,7 @@ rem  pythonw exists we fall back to the visible-window launcher.
 rem ===========================================================
 
 set "PORT=%~1"
-if "%PORT%"=="" set "PORT=8788"
+if "%PORT%"=="" set "PORT=58675"
 set "KEY=%~2"
 set "HERE=%~dp0"
 set "SCRIPT=%HERE%wb_proxy.py"

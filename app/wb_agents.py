@@ -13,7 +13,7 @@ gateway over the network:
 
     python wb_agents.py list                    # what is installed here
     python wb_agents.py apply --client codex \
-        --base-url http://gateway:8788/v1 --key sk-...
+        --base-url http://gateway:58675/v1 --key sk-...
     python wb_agents.py restore --client codex
 
 Only the Python standard library is required. The YAML/TOML editing is a
@@ -1633,7 +1633,7 @@ def main(argv=None):
     apply_p.add_argument("--client", required=True,
                          help="one of: " + ", ".join(sorted(CLIENTS)))
     apply_p.add_argument("--base-url", required=True, dest="base_url",
-                         help="gateway URL, e.g. http://gateway:8788/v1")
+                         help="gateway URL, e.g. http://gateway:58675/v1")
     apply_p.add_argument("--key", default=None,
                          help="gateway API key "
                               "(default: $WB_PROXY_API_KEY, then a prompt)")

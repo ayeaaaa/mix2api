@@ -8,10 +8,10 @@ services:
     restart: unless-stopped
     user: "${PUID:-0}:${PGID:-0}"
     ports:
-      - "8788:8788"
+      - "58675:58675"
     environment:
       - HOST=0.0.0.0
-      - PORT=8788
+      - PORT=58675
       - TZ=Asia/Shanghai
     volumes:
       - ./accounts:/app/accounts

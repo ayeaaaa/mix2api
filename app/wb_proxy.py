@@ -8,7 +8,7 @@ login is needed. Exposes:
     POST /v1/chat/completions     (stream=true and stream=false)
     GET  /health
 Only the Python standard library is required.
-    python3 wb_proxy.py                    # bind 127.0.0.1:8788
+    python3 wb_proxy.py                    # bind 127.0.0.1:58675
     python3 wb_proxy.py --port 9000
     python3 wb_proxy.py --api-key sk-local # require a bearer token
 Launchers: start-wb-proxy.bat / start-wb-proxy-lan.bat on Windows,
@@ -438,7 +438,7 @@ def _prune_login_attempts(now=None, window=60):
             del _login_attempts[ip]
 # --------------------------------------------------- 面板登录限流的来源判定
 # 限流按「客户端 IP」分桶（每 IP 5 次失败 / 60 秒），但反代部署下 socket 对端
-# 永远不是真实客户端：路由器上 nginx 把 ai.home 转给 127.0.0.1:8788，所有请求
+# 永远不是真实客户端：路由器上 nginx 把 ai.home 转给 127.0.0.1:58675，所有请求
 # 的对端都是 127.0.0.1。若照旧拿对端地址当键，任意一个人连错 5 次密码，就会把
 # 所有经反代的用户、连同跑在同一台机器上的缓存预热器一起锁死 60 秒——实测里
 # 预热器被 429 打掉后直接打印"登录失败（http=429），跳过本轮"，缓存转冷，
@@ -21127,7 +21127,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     port = int(self.server.server_address[1])
                 except Exception:
-                    port = 8788
+                    port = 58675
                 return self._json(200, wb_codearts.oauth_start(cfg, port))
             if path == "/codearts/accounts/oauth/poll":
                 return self._json(200, wb_codearts.oauth_poll(
@@ -23411,7 +23411,7 @@ def _parse_cli_args():
     ap = argparse.ArgumentParser(description="WorkBuddy (workbuddy.ai) -> OpenAI-compatible proxy")
     ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
     ap.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or "8788"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or "58675"))
     ap.add_argument("--lan", action="store_true",
                     help="listen on every interface so other devices on the LAN can "
                          "reach it (implies --host 0.0.0.0 and forces an api key)")

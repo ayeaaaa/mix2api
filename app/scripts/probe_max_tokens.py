@@ -8,7 +8,7 @@ accounts/output_probes.json，/v1/models 会标注 output_clamp。
 
 用法：
   python scripts/probe_max_tokens.py --model deepseek-v4.1-flash
-  python scripts/probe_max_tokens.py --model m1 m2 --base-url http://127.0.0.1:8788
+  python scripts/probe_max_tokens.py --model m1 m2 --base-url http://127.0.0.1:58675
   python scripts/probe_max_tokens.py --model m1 --dry-run
 
 金钥预设读 accounts/settings.json 的 launcher key；也可用 --api-key 指定。
@@ -33,7 +33,7 @@ def main(argv=None):
                         help="one or more model ids to probe")
     parser.add_argument("--base-url",
                         default=os.environ.get("WB_PROBE_BASE")
-                        or "http://127.0.0.1:8788")
+                        or "http://127.0.0.1:58675")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--accounts-dir",
                         default=os.environ.get("ACCOUNTS_DIR")

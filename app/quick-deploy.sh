@@ -6,7 +6,7 @@
 #   首次部署: curl -fsSL https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/main/quick-deploy.sh | bash
 #   快速更新: 再次运行相同的命令即可完成平滑无感升级（账号配置绝不丢失）
 #   部署模式: WB_DEPLOY_MODE=local|lan|public（默认 lan）
-#             local/public 只把 8788 绑到 127.0.0.1，公网机请再套 Nginx/Caddy/Tunnel
+#             local/public 只把 58675 绑到 127.0.0.1，公网机请再套 Nginx/Caddy/Tunnel
 #             示例: curl -fsSL .../quick-deploy.sh | WB_DEPLOY_MODE=public bash
 # ==============================================================================
 
@@ -23,7 +23,7 @@ echo -e "${GREEN}   WorkBuddy2API-Hub Docker 一键部署与更新脚本${NC}"
 echo -e "${BLUE}======================================================${NC}\n"
 
 # 0. 部署模式
-#    本机 / 公网机器默认不要直接暴露 8788；容器内仍监听 0.0.0.0，
+#    本机 / 公网机器默认不要直接暴露 58675；容器内仍监听 0.0.0.0，
 #    由 Docker 的 host 端绑定决定谁能连进来。
 DEPLOY_MODE="${WB_DEPLOY_MODE:-lan}"
 case "${DEPLOY_MODE}" in
@@ -34,9 +34,9 @@ case "${DEPLOY_MODE}" in
         ;;
 esac
 if [ "${DEPLOY_MODE}" = "lan" ]; then
-    PORT_BINDING="8788:8788"
+    PORT_BINDING="58675:58675"
 else
-    PORT_BINDING="127.0.0.1:8788:8788"
+    PORT_BINDING="127.0.0.1:58675:58675"
 fi
 echo -e "${BLUE}[信息] 部署模式: ${DEPLOY_MODE}（端口映射 ${PORT_BINDING}）${NC}"
 
@@ -91,7 +91,7 @@ services:
       - "${PORT_BINDING}"
     environment:
       - HOST=0.0.0.0
-      - PORT=8788
+      - PORT=58675
       # - API_KEY=your_secret_key
       - TZ=Asia/Shanghai
     volumes:
@@ -116,10 +116,10 @@ else
     SHOW_HOST="127.0.0.1"
 fi
 echo -e "\n${BLUE}------------------------------------------------------${NC}"
-echo -e "${GREEN}Web 控制看板:${NC} http://${SHOW_HOST}:8788"
-echo -e "${GREEN}OpenAI 接口:${NC}  http://${SHOW_HOST}:8788/v1"
+echo -e "${GREEN}Web 控制看板:${NC} http://${SHOW_HOST}:58675"
+echo -e "${GREEN}OpenAI 接口:${NC}  http://${SHOW_HOST}:58675/v1"
 if [ "${DEPLOY_MODE}" = "public" ]; then
-    echo -e "${YELLOW}公网部署:${NC} 8788 只绑在本机回环地址，请用 Nginx / Caddy / Cloudflare Tunnel 反代并加 TLS，不要直接把 8788 开到公网。"
+    echo -e "${YELLOW}公网部署:${NC} 58675 只绑在本机回环地址，请用 Nginx / Caddy / Cloudflare Tunnel 反代并加 TLS，不要直接把 58675 开到公网。"
 fi
 echo -e "${BLUE}------------------------------------------------------${NC}"
 echo -e "${YELLOW}查看初始 API Key:${NC}  $COMPOSE_CMD logs wb-proxy | grep -i 'api key'"

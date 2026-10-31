@@ -31,7 +31,7 @@ cd deploy
 docker compose up -d --build
 ```
 
-打开 `http://127.0.0.1:8788/`：
+打开 `http://127.0.0.1:58675/`：
 
 1. 用面板密码登录（默认 `admin`，首次登录后立刻改）。
 2. 进「设置 → CodeArts 接入」，勾选「启用 CodeArts 出口」并保存。不需要填 Base URL 或 API Key。
@@ -53,7 +53,7 @@ make logs    # 跟踪日志
 
 ```bash
 cd app
-python3 wb_proxy.py --port 8788
+python3 wb_proxy.py --port 58675
 ```
 
 CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accounts/` 下。两者互不干扰。

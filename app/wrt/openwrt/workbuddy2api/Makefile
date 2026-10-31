@@ -49,7 +49,7 @@ endef
 define Package/workbuddy2api/description
   把腾讯 WorkBuddy（国际版 workbuddy.ai / 国内版 codebuddy.cn）包装成
   OpenAI 兼容 API 的多账号网关：/v1/chat/completions 与 /v1/responses，
-  自带看板（8788 端口）做账号管理、用量统计、定价估算与每日自动任务。
+  自带看板（58675 端口）做账号管理、用量统计、定价估算与每日自动任务。
 
   纯 Python 标准库实现（上游不引入任何 pip 依赖）。OpenWrt 把 ssl、sqlite3
   与完整编码表拆成了独立包，所以依赖里显式带上 python3-openssl /
@@ -60,7 +60,7 @@ define Package/workbuddy2api/description
     1) uci set workbuddy2api.main.panel_password='你的面板密码'
        uci commit workbuddy2api
     2) /etc/init.d/workbuddy2api enable && /etc/init.d/workbuddy2api start
-    3) 浏览器打开 http://<路由器IP>:8788/ 登录，点「添加账号 (OAuth)」授权
+    3) 浏览器打开 http://<路由器IP>:58675/ 登录，点「添加账号 (OAuth)」授权
 
   配置 /etc/config/workbuddy2api（含面板密码与可选固定 API Key，权限 600）；
   账号凭据与用量 /etc/workbuddy2api/（已加入 sysupgrade 保留列表）。

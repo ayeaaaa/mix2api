@@ -5,7 +5,7 @@
 
 config workbuddy2api 'main'
 	option host '0.0.0.0'
-	option port '8788'
+	option port '58675'
 
 	# 数据目录：账号凭据（含 OAuth token，敏感）与用量日志
 	option accounts_dir '/etc/workbuddy2api/accounts'

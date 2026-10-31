@@ -4,10 +4,10 @@ services:
     container_name: mix2api
     restart: unless-stopped
     ports:
-      - "8788:8788"
+      - "58675:58675"
     environment:
       - HOST=0.0.0.0
-      - PORT=8788
+      - PORT=58675
       - TZ=Asia/Shanghai
     volumes:
       - ../data/accounts:/app/accounts

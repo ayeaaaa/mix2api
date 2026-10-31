@@ -7,10 +7,10 @@ services:
     container_name: wb-proxy
     restart: unless-stopped
     ports:
-      - "8788:8788"
+      - "58675:58675"
     environment:
       - HOST=0.0.0.0
-      - PORT=8788
+      - PORT=58675
       # - API_KEY=your_secret_key
       - TZ=Asia/Shanghai
     volumes:
