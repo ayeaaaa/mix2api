@@ -2075,6 +2075,7 @@ def checkin_account(acct, timeout=30.0):
               "campaigns": results}
     acct.checkin = {"ok": result["ok"], "message": message,
                     "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    acct.pool.save_state()
     return result
 
 
