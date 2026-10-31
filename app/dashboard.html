@@ -6680,10 +6680,14 @@ function renderCodeartsCards(r){
   const total = (st.total != null) ? st.total : 0;
   const credits = (st.credits != null) ? st.credits : null;
   const creditsTotal = (st.credits_total != null) ? st.credits_total : null;
+  const creditsUsed = (st.credits_used != null) ? st.credits_used : null;
+  const creditSub = (creditsTotal != null)
+    ? ("剩余 / 总 " + fmtCredits(creditsTotal)
+       + (creditsUsed != null ? " · 已用 " + fmtCredits(creditsUsed) : ""))
+    : "CodeArts 积分";
   box.innerHTML =
     card("健康账号", healthy + "/" + total, "由本进程直接管理")
-    + card("积分", fmtCredits(credits),
-           creditsTotal != null ? ("剩余 / 总 " + fmtCredits(creditsTotal)) : "CodeArts 积分")
+    + card("积分", fmtCredits(credits), creditSub)
     + card("模型", (r.models || []).length, "CodeArts 目录")
     + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
     + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
@@ -6709,7 +6713,10 @@ function renderCodeartsAccounts(r){
     if(a.disabled) status = '<span class="badge bad mini">已停用</span>';
     else if(a.cooling) status = '<span class="badge warn mini">冷却中</span>';
     const token = escapeHtml((a.token_remaining || "—") + (a.expires_at ? " · " + a.expires_at : ""));
-    const credits = (a.credits && a.credits.remain != null) ? fmtCredits(a.credits.remain) : "—";
+    const credits = (a.credits && a.credits.remain != null)
+      ? (fmtCredits(a.credits.remain)
+         + (a.credits.used ? '<div style="font-size:11px;color:var(--dim)">已用 ' + fmtCredits(a.credits.used) + '</div>' : ''))
+      : "—";
     const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
       + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
     let checkin = "—";
