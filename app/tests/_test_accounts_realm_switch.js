@@ -99,7 +99,7 @@ dom.installDom({
 // 两种布局要搬的节点：账号页页头、账号页里的区块、网关页的合并锚点。
 const byId = id => document.getElementById(id);
 const pageAccounts = byId('pageAccounts');
-const pageGateway = byId('pageGateway');
+const pageGateway = byId('pageOverview') || byId('pageGateway');
 const header = byId('accountsHeader');
 const anchor = byId('accountsSectionsAnchor');
 const realmSwitch = byId('accountsRealmSwitch');

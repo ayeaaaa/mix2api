@@ -19036,7 +19036,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_codearts_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
-        if path in ("/", "/dashboard", "/ui"):
+        if path in ("/", "/dashboard", "/ui", "/next", "/next/"):
             return self._get_dashboard()
         if path == "/panel/status":
             return self._get_panel_status()

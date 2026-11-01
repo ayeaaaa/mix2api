@@ -221,8 +221,8 @@ def start_server():
     raise SystemExit("gateway did not answer on port %d" % PORT)
 
 
-def login(page):
-    page.goto(BASE + "/", timeout=20000)
+def login(page, path="/"):
+    page.goto(BASE + path, timeout=20000)
     page.wait_for_timeout(1200)
     if page.locator("#panelPwdInput").count():
         page.fill("#panelPwdInput", PASSWORD)
@@ -534,7 +534,86 @@ def run_checks(filter_name):
             path=os.path.join(SHOTS, "desktop-gateway.png"), full_page=True
         )
         dpage.close()
+
+        if "next" in filter_name or filter_name == "":
+            run_next_checks(browser)
         browser.close()
+
+
+def run_next_checks(browser):
+    """新面板 /next：壳、底部导航、更多抽屉和桌面/手机宽度。"""
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    login(page, "/next")
+    page.wait_for_timeout(800)
+    info = page.evaluate(
+        """
+        (() => {
+          const q = s => document.querySelector(s);
+          const r = s => { const e = q(s); return e ? e.getBoundingClientRect().toJSON() : null; };
+          return {
+            ui: document.documentElement.getAttribute('data-ui'),
+            sidebar: r('#nextSidebar'),
+            bottom: r('#nextBottomNav'),
+            bottomDisplay: getComputedStyle(q('#nextBottomNav')).display,
+            scrollWidth: document.documentElement.scrollWidth,
+          };
+        })()
+        """
+    )
+    check("next-phone-shell", info["ui"] == "next", info)
+    check("next-phone-sidebar-hidden", info["sidebar"]["right"] <= 1, info["sidebar"])
+    check("next-phone-bottom-nav", info["bottomDisplay"] == "flex", info["bottomDisplay"])
+    check("next-phone-no-h-overflow", info["scrollWidth"] <= 391, info["scrollWidth"])
+    page.screenshot(path=os.path.join(SHOTS, "next-phone.png"), full_page=False)
+
+    page.click('#nextBottomNav [data-next-tab="accounts"]')
+    page.wait_for_timeout(700)
+    active = page.evaluate(
+        "Array.from(document.querySelectorAll('.main-page.active')).map(e => e.id)"
+    )
+    check("next-phone-accounts", active == ["pageAccounts"], active)
+
+    page.click("#nextMoreBtn")
+    page.wait_for_timeout(400)
+    opened = page.evaluate("document.querySelector('#nextMoreSheet').classList.contains('open')")
+    check("next-phone-more-open", opened, opened)
+    page.click('#nextMoreSheet [data-next-tab="settings"]')
+    page.wait_for_timeout(600)
+    active = page.evaluate(
+        "Array.from(document.querySelectorAll('.main-page.active')).map(e => e.id)"
+    )
+    closed = page.evaluate("!document.querySelector('#nextMoreSheet').classList.contains('open')")
+    check("next-phone-settings", active == ["pageSettings"], active)
+    check("next-phone-more-closed", closed, closed)
+    page.screenshot(path=os.path.join(SHOTS, "next-phone-settings.png"), full_page=False)
+    page.close()
+
+    dpage = browser.new_page(viewport={"width": 1280, "height": 800})
+    login(dpage, "/next")
+    dpage.wait_for_timeout(800)
+    dinfo = dpage.evaluate(
+        """
+        (() => {
+          const q = s => document.querySelector(s);
+          const r = s => { const e = q(s); return e ? e.getBoundingClientRect().toJSON() : null; };
+          return {
+            ui: document.documentElement.getAttribute('data-ui'),
+            sidebar: r('#nextSidebar'),
+            topbar: r('#nextTopbar'),
+            bottom: getComputedStyle(q('#nextBottomNav')).display,
+            active: Array.from(document.querySelectorAll('.main-page.active')).map(e => e.id),
+            scrollWidth: document.documentElement.scrollWidth,
+          };
+        })()
+        """
+    )
+    check("next-desktop-shell", dinfo["ui"] == "next", dinfo)
+    check("next-desktop-sidebar", dinfo["sidebar"]["width"] == 236, dinfo["sidebar"])
+    check("next-desktop-overview", dinfo["active"] == ["pageOverview"], dinfo["active"])
+    check("next-desktop-bottom-hidden", dinfo["bottom"] == "none", dinfo["bottom"])
+    check("next-desktop-no-h-overflow", dinfo["scrollWidth"] <= 1281, dinfo["scrollWidth"])
+    dpage.screenshot(path=os.path.join(SHOTS, "next-desktop.png"), full_page=False)
+    dpage.close()
 
 
 def main():
