@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """华为云 CodeArts（盘古助手/码道）原生客户端与账号池。
 
-这是单进程版本：wb-hub 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
+这是单进程版本：mix2api 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
 聊天 SSE 与签到，不再依赖独立的 codearts2api 服务。
 
 协议来源：codearts2api 的 Go 实现与 `docs/reverse-engineering.md`。关键点：
@@ -358,7 +358,7 @@ def _fmt_duration(seconds):
 # ---------------------------------------------------------------------------
 
 class CodeArtsAccount(object):
-    """一个华为云 CodeArts 账号；也是 wb-hub 回程处理器需要的账号表面。"""
+    """一个华为云 CodeArts 账号；也是 mix2api 回程处理器需要的账号表面。"""
 
     uid = ""
     realm = "codearts"
@@ -1605,9 +1605,9 @@ def _chat_headers(acct, chat_id, session_id, benefit):
 
 
 class CodeArtsStream(object):
-    """把华为云 SSE 包成 wb-hub 回程处理器能吃的行迭代器。
+    """把华为云 SSE 包成 mix2api 回程处理器能吃的行迭代器。
 
-    wb-hub 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
+    mix2api 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
     chunk（choices[].delta / finish_reason / usage）。这里把 CodeArts 的
     `text` 全文快照、`output` 终态和顶层 `delta` 都归一成标准 chunk。
     """

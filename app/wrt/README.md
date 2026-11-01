@@ -1,9 +1,7 @@
 # wrt/ — OpenWrt 打包配方
 
-这里放 WorkBuddy2API-Hub 的 OpenWrt 安装包配方。配方本身来自
-[#190](https://github.com/ardeyouxipianyi/workbuddy2api-hub/issues/190) 引用的
-`aodianjun/workbuddy2api-hub/wrt/`，逐项审计后并入本仓库，**只保留打包与运行
-需要的东西**（审计结论见文末）。
+这里放 mix2api 的 OpenWrt 安装包配方，只保留打包与运行需要的东西。
+包名、服务名和 UCI 配置名沿用 `workbuddy2api`，以便已有安装直接升级、不丢配置。
 
 ## 内容
 

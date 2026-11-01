@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WorkBuddy 用量看板</title>
+<title>mix2api 控制台</title>
 <!-- 首帧判定：必须留在 <head>、在任何页面内容之前同步执行。
      没有面板会话令牌（无痕 / 首次访问 / 已登出）→ 不动 markup 上的 display:flex，
      登录闸门随首帧一起出现，看板骨架不会被先画出来再盖住。
@@ -1586,6 +1586,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     'WorkBuddy 独立桌面客户端 (WB)': 'WorkBuddy standalone desktop client (WB)',
     'WorkBuddy 用量看板': 'WorkBuddy Usage Dashboard',
     'WorkBuddy 网关': 'WorkBuddy Gateway',
+    'mix2api 控制台': 'mix2api Console',
+    'mix2api 仓库': 'mix2api repo',
     '[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...': '[task_runner] Starting the fully automatic task claiming, event reporting and reward claiming pipeline...',
     '] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。': ']? The secret will be erased and cannot be recovered; the usage it already produced in the dashboard keeps this name.',
     '] 已保存': '] saved',
@@ -2964,6 +2966,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按 OpenRouter 公佈的模型價折算，覆蓋該帳號在所選區間內的請求；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按該行（模型·區域·帳號）的 token 消耗折算；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "WorkBuddy 网关看板": "WorkBuddy 閘道看板",
+    "mix2api 控制台": "mix2api 控制台",
+    "mix2api 仓库": "mix2api 倉庫",
     "[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...": "[task_runner] 正在啟動全自動任務接取、事件上報與獎勵領取流水...",
     "] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。": "] 嗎？金鑰會被抹掉且無法恢復；看板裡它已經產生的歷史用量仍會保留這個名字。",
     "] 已保存": "] 已儲存",
@@ -4491,7 +4495,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
 <body>
 <header>
   <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关</h1>
+    <h1><span class="dot" id="statusDot"></span>mix2api</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
         <span id="navGatewayLabel">网关</span>
@@ -4515,8 +4519,8 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         运行日志
       </button>
     </nav>
-    <a class="gh-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer"
-       title="查看 GitHub 项目仓库" aria-label="GitHub 项目仓库">
+    <a class="gh-link" href="https://github.com/ayeaaaa/mix2api" target="_blank" rel="noopener noreferrer"
+       title="查看 mix2api 项目仓库" aria-label="mix2api 项目仓库">
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
       </svg>
@@ -4600,7 +4604,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
      align-items:center;justify-content:center;padding:20px;background:var(--bg)">
   <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
               border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(15,23,42,.12)">
-    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy 网关</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">mix2api</div>
     <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
     <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
            onkeydown="if(event.key==='Enter') submitPanelLogin()"
@@ -4662,9 +4666,9 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </button>
     </nav>
     <div class="next-sidebar-foot">
-      <a class="next-side-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer">
+      <a class="next-side-link" href="https://github.com/ayeaaaa/mix2api" target="_blank" rel="noopener noreferrer">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        GitHub
+        mix2api 仓库
       </a>
       <button type="button" class="next-side-link" onclick="toggleConsoleWindow()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3 3-3 3M12.5 15H17"/></svg>
