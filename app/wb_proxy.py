@@ -22617,7 +22617,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             chat_obj = aggregate_stream(upstream, model, None)
             # The upstream may report its own internal model alias; keep the
-            # public id (including a YYLS/ namespace) on the response.
+            # public model id on the response.
             chat_obj["model"] = model
             result = chat_to_messages(chat_obj)
             wall = int((time.time() - t_start) * 1000)

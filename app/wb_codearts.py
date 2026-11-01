@@ -1882,7 +1882,7 @@ def _client_chat(acct, body, session_key):
                     or "image input" in text and "not support" in text):
                 raise CodeArtsBadRequest(
                     "模型 %s 不支持图片输入；可用视觉模型："
-                    "YYLS/Qwen3-VL-235B、YYLS/kimi-k2.6-vl" % model,
+                    "Qwen3-VL-235B、kimi-k2.6-vl" % model,
                     status=400)
             if _is_concurrency_message(str(exc)):
                 last_error = exc
