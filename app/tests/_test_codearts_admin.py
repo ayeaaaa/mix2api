@@ -168,6 +168,10 @@ try:
     check("account test", status == 200 and body.get("ok") is True,
           (status, body))
 
+    status, body = call("POST", "/codearts/credits/refresh", {}, token=token)
+    check("credits refresh", status == 200
+          and body.get("refreshed", 0) >= 1, (status, body))
+
     status, body = call("POST", "/codearts/accounts/enable", {}, token=token)
     check("missing uid -> 400", status == 400, (status, body))
 

@@ -305,6 +305,31 @@ try:
               {"type": "image_url",
                "image_url": {"url": "data:image/png;base64,CCC"}},
           ], source_body)
+    detail_body = C.build_chat_body({
+        "model": "Qwen3-VL-235B",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url",
+             "image_url": {"url": "https://example.com/a.png",
+                           "detail": "high"}},
+        ]}],
+    }, "sess-detail")
+    check("remote image detail preserved",
+          detail_body["messages"][0]["content"] == [
+              {"type": "text", "text": "look"},
+              {"type": "image_url",
+               "image_url": {"url": "https://example.com/a.png",
+                             "detail": "high"}},
+          ], detail_body)
+    tool_parts = C._flatten_content([
+        {"type": "text", "text": "tool output"},
+        {"type": "image_url",
+         "image_url": {"url": "data:image/png;base64,DDD"}},
+    ])
+    check("tool result image preserved",
+          isinstance(tool_parts, list)
+          and any(p.get("type") == "image_url" for p in tool_parts),
+          tool_parts)
     stream, _, _ = C.open_chat(C.load_config(ACCOUNTS), image_body, "sess-image")
     b"".join(stream)
     stream.close()
@@ -321,6 +346,7 @@ try:
         "stop": ["\n"], "frequency_penalty": 0.1,
         "presence_penalty": 0.2, "seed": 42,
         "response_format": {"type": "json_object"},
+        "top_k": 20, "parallel_tool_calls": False,
     }, "sess-params")
     check("stop preserved", params_body.get("stop") == ["\n"], params_body)
     check("penalties preserved",
@@ -330,6 +356,9 @@ try:
     check("response_format preserved",
           params_body.get("response_format") == {"type": "json_object"},
           params_body)
+    check("top_k preserved", params_body.get("top_k") == 20, params_body)
+    check("parallel_tool_calls preserved",
+          params_body.get("parallel_tool_calls") is False, params_body)
 
     print("== reasoning effort ==")
     effort_body = C.build_chat_body({
@@ -364,6 +393,41 @@ try:
         check("glm flash rejects medium", False)
     except C.CodeArtsBadRequest as exc:
         check("glm flash rejects medium", "low" in str(exc), str(exc))
+    thinking_on = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled"},
+    }, "sess-thinking-on")
+    check("thinking enabled maps to high",
+          thinking_on.get("reasoning_effort") == "high", thinking_on)
+    thinking_off = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "disabled"},
+    }, "sess-thinking-off")
+    check("thinking disabled maps to none",
+          thinking_off.get("reasoning_effort") == "none", thinking_off)
+    enable_off = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "enable_thinking": False,
+    }, "sess-enable-off")
+    check("enable_thinking false maps to none",
+          enable_off.get("reasoning_effort") == "none", enable_off)
+    camel = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoningEffort": "max",
+    }, "sess-camel")
+    check("camel reasoningEffort normalized",
+          camel.get("reasoning_effort") == "max", camel)
+    always = C.build_chat_body({
+        "model": "glm-5.3-flash",
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "disabled"},
+    }, "sess-always")
+    check("always-thinking falls back to low",
+          always.get("reasoning_effort") == "low", always)
 
     print("== named tool choice ==")
     tool_body = C.build_chat_body({

@@ -21203,6 +21203,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, result)
             if path == "/codearts/models/refresh":
                 return self._json(200, wb_codearts.refresh_models(cfg))
+            if path == "/codearts/credits/refresh":
+                return self._json(200, wb_codearts.refresh_credits(cfg))
             if path == "/codearts/accounts/checkin":
                 # uid 可空：空 = 全员签到。
                 result = wb_codearts.checkin(cfg, uid)

@@ -138,6 +138,27 @@ def split_model_id(model):
 def qualify_model_id(model):
     return MODEL_NAMESPACE + str(model)
 
+
+def _requested_effort(payload):
+    """Resolve the client's reasoning level under every common spelling."""
+    if not isinstance(payload, dict):
+        return ""
+    effort = payload.get("reasoning_effort")
+    if effort is None:
+        effort = payload.get("reasoningEffort")
+    if effort is not None:
+        return str(effort).strip().lower()
+    thinking = payload.get("thinking")
+    if isinstance(thinking, dict):
+        kind = str(thinking.get("type") or "").strip().lower()
+        if kind == "disabled":
+            return "none"
+        if kind == "enabled":
+            return "high"
+    if "enable_thinking" in payload:
+        return "high" if payload.get("enable_thinking") else "none"
+    return ""
+
 _LOCK = threading.RLock()
 
 
@@ -1497,8 +1518,10 @@ def _flatten_content(content):
                        or piece.get("mime_type") or "image/png")
             url = "data:%s;base64,%s" % (mime, piece["data"])
         if url:
-            parts.append({"type": "image_url",
-                          "image_url": {"url": url}})
+            image = {"url": url}
+            if isinstance(raw, dict) and raw.get("detail"):
+                image["detail"] = str(raw["detail"])
+            parts.append({"type": "image_url", "image_url": image})
     if any(part.get("type") == "image_url" for part in parts):
         return parts
     return "".join(str(part.get("text") or "") for part in parts)
@@ -1518,23 +1541,26 @@ def build_chat_body(payload, session_key=None):
         # Verified against the CodeArts upstream: it accepts these and applies
         # them, but the earlier narrow allow-list silently dropped them.
         "stop", "frequency_penalty", "presence_penalty", "seed",
-        "response_format",
+        "response_format", "top_k", "parallel_tool_calls",
     }
     body = {str(k): v for k, v in payload.items() if str(k) in allowed}
     bare_model, _namespaced = split_model_id(payload.get("model") or "GLM-5.2")
     body["model"] = str(bare_model or "GLM-5.2")
-    effort = body.get("reasoning_effort")
+    effort_text = _requested_effort(payload)
     allowed_efforts = REASONING_EFFORTS.get(body["model"].lower())
-    if effort is not None and allowed_efforts:
-        effort_text = str(effort).strip().lower()
-        if effort_text and effort_text not in allowed_efforts:
-            raise CodeArtsBadRequest(
-                "reasoning_effort must be one of %s for %s"
-                % ("/".join(allowed_efforts), body["model"]))
-        if effort_text:
-            body["reasoning_effort"] = effort_text
-        else:
-            body.pop("reasoning_effort", None)
+    if effort_text:
+        if allowed_efforts and effort_text not in allowed_efforts:
+            if effort_text == "none" and "none" not in allowed_efforts:
+                # Always-thinking models cannot disable reasoning; use their
+                # first accepted level instead of failing the whole request.
+                effort_text = allowed_efforts[0]
+            else:
+                raise CodeArtsBadRequest(
+                    "reasoning_effort must be one of %s for %s"
+                    % ("/".join(allowed_efforts), body["model"]))
+        body["reasoning_effort"] = effort_text
+    else:
+        body.pop("reasoning_effort", None)
     messages = normalize_roles(payload.get("messages") or [])
     messages = [m for m in messages if isinstance(m, dict)]
     flattened = []
@@ -2459,6 +2485,28 @@ def set_tasks_enabled(config, uid, enabled):
         raise CodeArtsNotFound("account not found")
     return {"ok": True, "uid": uid,
             "tasks_enabled": bool(pool.get(uid).tasks_enabled)}
+
+
+def refresh_credits(config):
+    pool = pool_for(config["accounts_dir"])
+    refreshed = 0
+    errors = []
+    for acct in list(pool.accounts):
+        if acct.disabled:
+            continue
+        try:
+            _ensure_token(acct)
+            ensure_account_info(acct, force=True, timeout=15.0)
+            refreshed += 1
+        except CodeArtsError as exc:
+            errors.append("%s: %s" % (acct.nickname, str(exc)[:160]))
+    invalidate_overview()
+    return {
+        "ok": not errors,
+        "refreshed": refreshed,
+        "errors": errors[:3],
+        "message": "已刷新 %d 个账号的积分" % refreshed,
+    }
 
 
 def test_account(config, uid):

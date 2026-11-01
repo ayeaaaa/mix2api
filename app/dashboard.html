@@ -4935,6 +4935,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button onclick="saveCodeartsSettings(this)">保存 CodeArts 设置</button>
         <button class="sec" onclick="testCodeartsConnection(this)">测试连接</button>
+        <button class="sec" onclick="refreshCodeartsCredits(this)">刷新积分</button>
         <span id="setCodeartsHint" style="font-size:12px;color:var(--dim)"></span>
       </div>
     </section>
@@ -6766,6 +6767,7 @@ function renderCodeartsAccounts(r){
     }else{
       actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uid + '\')">停用</button>');
     }
+    actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uid + '\')">重新登录</button>');
     actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uid + '\')">清冷却</button>');
     actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uid + '\')">测试</button>');
     actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'tasks\',\'' + uid + '\',' + (!a.tasks_enabled) + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
@@ -6802,6 +6804,13 @@ async function codeartsAccountAction(action, uid, extra){
   }catch(e){
     toast("操作失败: " + e.message, "bad");
   }
+}
+
+function codeartsRelogin(uid){
+  openCodeartsOauthModal();
+  setTimeout(function(){
+    setCodeartsOauthStatus("请用账号 " + uid + " 完成授权；同 UID 会更新现有账号。", null);
+  }, 50);
 }
 
 function codeartsEditNote(uid){
@@ -6967,6 +6976,19 @@ function renderCodeartsSettings(cfg){
   if(hint){
     hint.textContent = (cfg.accounts || 0) + " 个账号，"
       + (cfg.healthy || 0) + " 个健康；账号在「账号」页的 CodeArts 视图管理。";
+  }
+}
+
+async function refreshCodeartsCredits(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/codearts/credits/refresh", {});
+    toast((r && r.message) || "积分已刷新", (r && r.ok === false) ? "warn" : "ok");
+    await loadCodeartsOverview(true);
+  }catch(e){
+    toast("刷新积分失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
   }
 }
 

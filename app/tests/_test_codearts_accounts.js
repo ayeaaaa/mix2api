@@ -17,6 +17,8 @@ assert.ok(script.includes('/codearts/accounts/proxy'), '缺少出口绑定端点
 assert.ok(script.includes("codeartsAccountAction(\\'test\\'"), '缺少单账号测试入口');
 assert.ok(script.includes("codeartsAccountAction(\\'tasks\\'"), '缺少任务开关入口');
 assert.ok(/function codeartsEditNote/.test(script), '缺少备注编辑入口');
+assert.ok(/function codeartsRelogin/.test(script), '缺少单账号重新登录入口');
+assert.ok(/function refreshCodeartsCredits/.test(script), '缺少刷新积分入口');
 assert.ok(script.includes("codeartsAccountAction(\\'delete\\'"),
           '缺少删除操作入口');
 assert.ok(/confirm\("删除 CodeArts 账号/.test(script), '删除应有二次确认');
@@ -47,6 +49,7 @@ try {
             codeartsAccountAction: codeartsAccountAction,
             codeartsCheckinAll: codeartsCheckinAll,
             codeartsSetProxy: codeartsSetProxy,
+            refreshCodeartsCredits: refreshCodeartsCredits,
             saveCodeartsSettings: saveCodeartsSettings,
             setSlots: function(v){ PROXY_SLOTS = v; }};
   `)();
@@ -80,6 +83,8 @@ assert.ok(box.innerHTML.includes("codeartsAccountAction('enable','u2')"),
   '停用账号应显示启用按钮');
 assert.ok(box.innerHTML.includes("codeartsAccountAction('disable','u1')"),
   '正常账号应显示停用按钮');
+assert.ok(box.innerHTML.includes("codeartsRelogin('u1')"),
+  '应显示重新登录按钮');
 assert.ok(box.innerHTML.includes("codeartsAccountAction('delete','u1')"),
   '应显示删除按钮');
 assert.ok(box.innerHTML.includes('codeartsSetProxy'), '应显示出口选择器');
@@ -130,6 +135,11 @@ assert.ok(box.innerHTML.includes('备注一'), '账号表应显示备注');
   const tested = POSTS.find(p => p.url.indexOf('/codearts/accounts/test') >= 0);
   assert.ok(tested, '测试应 POST /codearts/accounts/test');
   assert.equal(tested.body.uid, 'u1', '测试应带上 uid');
+
+  POSTS = [];
+  await api.refreshCodeartsCredits(null);
+  const credits = POSTS.find(p => p.url.indexOf('/codearts/credits/refresh') >= 0);
+  assert.ok(credits, '刷新积分应 POST /codearts/credits/refresh');
 
   POSTS = [];
   await api.codeartsCheckinAll();
