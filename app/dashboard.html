@@ -13406,7 +13406,15 @@ async function savePanelPassword(btn){
       pwdState.style.color = usingDefault ? 'var(--warn)' : 'var(--accent2)';
     }
   } catch(e) {
-    toast('修改失败: ' + e.message, 'bad');
+    if(isAuthError(e)) return;  // 会话真失效：闸门已经出来了，不再叠一条 toast
+    const msg = String((e && e.message) || '');
+    if(msg.indexOf('current password is wrong') >= 0){
+      toast('当前密码不正确，密码未修改', 'bad');
+    } else if(msg.indexOf('new password must be at least 4') >= 0){
+      toast('新密码至少 4 位', 'bad');
+    } else {
+      toast('修改失败: ' + msg, 'bad');
+    }
   } finally {
     btn.disabled = false;
   }

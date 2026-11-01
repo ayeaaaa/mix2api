@@ -422,5 +422,59 @@ class BalanceSummaryTests(BoundaryCase):
         self.assertEqual(body["accounts_with_credit_data"], 0)
 
 
+class PanelPasswordTests(unittest.TestCase):
+    """Changing the panel password must not look like a lost session.
+
+    A wrong "current password" is a validation error on a still-valid session.
+    Returning 401 made the dashboard drop its token and show the login gate,
+    so the user was logged out for a typo and the password stayed unchanged.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="panel-password-")
+        self.addCleanup(self._tmp.cleanup)
+        self.directory = self._tmp.name
+        wb_settings.set_panel_password(self.directory, "oldpass")
+
+    def dispatch(self, body, token):
+        raw = json.dumps(body).encode("utf-8")
+        request = DispatchRequest(
+            "/panel/password",
+            headers={"X-Panel-Token": token, "Content-Length": str(len(raw))},
+            command="POST",
+            body=raw,
+        )
+        with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory):
+            return request.dispatch()
+
+    def test_wrong_current_password_is_a_validation_error(self):
+        token = proxy.PANEL.create()
+        status, payload, _raw = self.dispatch(
+            {"current": "wrong", "new": "newpass"}, token)
+        self.assertEqual(status, 400)
+        self.assertIn("current password is wrong", payload["error"]["message"])
+        # The session survives: the user only mistyped one field.
+        self.assertTrue(proxy.PANEL.valid(token))
+        self.assertTrue(wb_settings.verify_panel_password(self.directory, "oldpass"))
+
+    def test_correct_current_password_changes_and_rotates(self):
+        token = proxy.PANEL.create()
+        status, payload, _raw = self.dispatch(
+            {"current": "oldpass", "new": "newpass"}, token)
+        self.assertEqual(status, 200)
+        self.assertTrue(wb_settings.verify_panel_password(self.directory, "newpass"))
+        self.assertTrue(proxy.PANEL.valid(payload["token"]))
+        self.assertFalse(proxy.PANEL.valid(token))
+
+    def test_short_new_password_keeps_the_old_one(self):
+        token = proxy.PANEL.create()
+        status, payload, _raw = self.dispatch(
+            {"current": "oldpass", "new": "123"}, token)
+        self.assertEqual(status, 400)
+        self.assertIn("at least 4", payload["error"]["message"])
+        self.assertTrue(proxy.PANEL.valid(token))
+        self.assertTrue(wb_settings.verify_panel_password(self.directory, "oldpass"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

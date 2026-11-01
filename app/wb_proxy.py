@@ -21040,7 +21040,12 @@ class Handler(BaseHTTPRequestHandler):
                 log("panel      : crypto failure verifying current password: %s" % exc)
                 return self._error(500, str(exc), "server_error")
             if not valid:
-                return self._error(401, "current password is wrong", "invalid_request_error")
+                # 400, not 401: the panel session is still valid; only the
+                # "current password" field the user typed is wrong. A 401 here
+                # made the dashboard treat it as an expired session, drop the
+                # token and show the login gate - the password was never
+                # changed, and the user was logged out for a typo.
+                return self._error(400, "current password is wrong", "invalid_request_error")
             if len(new) < 4:
                 return self._error(400, "new password must be at least 4 characters", "invalid_request_error")
             try:
