@@ -58,7 +58,7 @@ assert.ok(html.slice(headEnd).indexOf('const PANEL_STORE =') === -1,
 
 /* ---- 3. 首帧判定的行为：无令牌不隐藏 / 有令牌先隐藏 / 读存储抛错不算崩 -- */
 
-function runFirstPaint(tokenOrThrow) {
+function runFirstPaint(tokenOrThrow, rememberedToken) {
   const added = [];
   const sessionStorage = {
     getItem: (key) => {
@@ -66,8 +66,15 @@ function runFirstPaint(tokenOrThrow) {
       return tokenOrThrow && key === storeMatch[1] ? tokenOrThrow : null;
     },
   };
+  const localStorage = {
+    getItem: (key) => {
+      if (tokenOrThrow === 'throw') throw new Error('storage disabled');
+      return rememberedToken && key === storeMatch[1] ? rememberedToken : null;
+    },
+  };
   const sandbox = {
     sessionStorage,
+    localStorage,
     document: {documentElement: {classList: {add: (name) => added.push(name)}}},
   };
   vm.createContext(sandbox);
@@ -78,9 +85,11 @@ function runFirstPaint(tokenOrThrow) {
 assert.deepStrictEqual(runFirstPaint(null), [],
   '没有面板令牌时不能隐藏闸门（无痕 / 首次访问必须直接看到登录框）');
 assert.deepStrictEqual(runFirstPaint('panel-token'), ['wb-panel-session'],
-  '有面板令牌时先隐藏闸门，避免已登录用户反而闪一下登录框');
+  '标签页令牌应隐藏闸门，避免已登录用户反而闪一下登录框');
+assert.deepStrictEqual(runFirstPaint(null, 'remembered-token'), ['wb-panel-session'],
+  '保持登录的 localStorage 令牌也必须隐藏闸门');
 assert.deepStrictEqual(runFirstPaint('throw'), [],
-  '读 sessionStorage 抛错（隐私模式）时按「没有令牌」处理，不能把页面弄崩');
+  '读存储抛错（隐私模式）时按「没有令牌」处理，不能把页面弄崩');
 
 /* ---- 4. 页面行为：两个开关闸门的函数都要摘掉那个类 -------------------- */
 
@@ -93,6 +102,18 @@ const stalledFetch = (url) => (String(url).indexOf('/panel/status') !== -1
 const page = loadDashboard({fetch: stalledFetch});
 const root = page.document.documentElement;
 const gate = page.document.getElementById('panelGate');
+
+/* 保持登录：勾选写 localStorage、不勾选写 sessionStorage，退出两者都清。 */
+assert.ok(page.localStorage && page.sessionStorage, '测试环境应提供两种 storage');
+page.panelStoreToken('persist-token', true);
+assert.strictEqual(page.localStorage.getItem(tokenKey), 'persist-token');
+assert.strictEqual(page.sessionStorage.getItem(tokenKey), null);
+page.panelStoreToken('tab-token', false);
+assert.strictEqual(page.sessionStorage.getItem(tokenKey), 'tab-token');
+assert.strictEqual(page.localStorage.getItem(tokenKey), null);
+page.panelClearToken();
+assert.strictEqual(page.localStorage.getItem(tokenKey), null);
+assert.strictEqual(page.sessionStorage.getItem(tokenKey), null);
 
 root.classList.add('wb-panel-session');
 page.panelNeedsLogin();
