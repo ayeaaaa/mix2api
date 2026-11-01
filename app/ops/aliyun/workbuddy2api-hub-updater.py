@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Install one verified WorkBuddy2API-Hub stable release, then health-check it.
+"""Install one verified mix2api stable release, then health-check it.
 
 This process is started by a root-owned systemd path unit. The gateway can only
 write a tiny version request under /run; it cannot run commands as root or
@@ -249,7 +249,7 @@ def _release(repo, tag):
     assets = data.get("assets")
     if not isinstance(assets, list):
         raise UpdateError("发布包清单无效")
-    wanted_zip = "workbuddy2api-hub-%s.zip" % tag
+    wanted_zip = "mix2api-%s-deploy.zip" % tag.lstrip("v")
     found = {}
     base = "https://github.com/%s/releases/download/%s/" % (repo, tag)
     for item in assets:
@@ -304,7 +304,7 @@ def _extract_package(archive_path, target_version, target_tag, stage_root):
         except (UnicodeError, ValueError, KeyError) as exc:
             raise UpdateError("更新包清单格式无效") from exc
         if (not isinstance(manifest, dict) or manifest.get("schema") != 1
-                or manifest.get("name") != "workbuddy2api-hub"
+                or manifest.get("name") != "mix2api"
                 or manifest.get("version") != target_version
                 or manifest.get("tag") != target_tag
                 or manifest.get("root") != "wb-proxy"):
@@ -708,7 +708,7 @@ def _do_update(request_data):
     try:
         _set_status("downloading", target_version, "正在读取稳定版发布信息")
         zip_url, sums_url = _release(repo, tag)
-        archive_name = "workbuddy2api-hub-%s.zip" % tag
+        archive_name = "mix2api-%s-deploy.zip" % tag.lstrip("v")
         sums = _fetch(sums_url, CHECKSUM_LIMIT)
         expected = _expected_hash(sums, archive_name)
         archive_path = os.path.join(stage_root, archive_name)

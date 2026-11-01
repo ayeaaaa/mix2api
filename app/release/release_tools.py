@@ -15,8 +15,8 @@ repository-wide glob: that list is also the contract #29's updater consumes
 ("replace exactly these files, delete exactly these stale managed files"), so
 an accidental new file in the checkout can never end up in a release.
 
-    python release/release_tools.py portable --version 1.6.17 --tag v1.6.17 \
-        --out dist/workbuddy2api-hub-v1.6.17.zip
+    python release/release_tools.py portable --version 1.0.9 --tag v1.0.9 \
+        --out dist/mix2api-1.0.9-deploy.zip
 """
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def build_portable(version, tag, out_path, source=ROOT, runtime_dir=None,
 
     manifest = {
         "schema": SCHEMA,
-        "name": "workbuddy2api-hub",
+        "name": "mix2api",
         "version": version,
         "tag": tag,
         # Everything below `files` lives under this folder, so an updater can
@@ -235,7 +235,7 @@ def compose_body(existing, block):
 
 def asset_names(version, release):
     return (
-        "workbuddy2api-hub-v%s.zip" % version,
+        "mix2api-%s-deploy.zip" % version,
         "workbuddy2api_%s-%s_all.ipk" % (version, release),
         "workbuddy2api-%s-r%s.apk" % (version, release),
     )
