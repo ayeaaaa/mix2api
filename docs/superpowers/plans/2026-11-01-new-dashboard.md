@@ -315,11 +315,11 @@ git commit -m "feat(ui): adapt analytics automation agents and logs"
 
 **Interfaces:**
 - Consumes: 现有 `pageSettings` 的 section 结构与 `initPageNav`。
-- Produces: 设置页顶部 5 组快捷筛选（基础 / API / 账号与调度 / 模型与定价 / 系统），点击滚动到对应 section；不删除任何 section。
+- Produces: 设置页顶部 6 组子页签（基础 / API 与出口 / 模型与定价 / 自动化 / 稳定性 / 日志与系统），一次只显示一组 section；不删除任何 section。
 
 - [ ] **Step 1: 写失败测试**
 
-断言 `#pageSettings` 含 `data-settings-group` 容器，且 `settingsGroupTargets()` 返回至少 5 组；断言原有 `#settings` 关键 section 标题仍存在。
+断言 `#pageSettings` 含 `data-settings-group` 容器，且 `NEXT_SETTINGS_GROUPS` 提供 6 组；断言原有 `#pageSettings` 关键 section 标题仍存在。
 
 - [ ] **Step 2: 运行确认失败**
 
@@ -328,7 +328,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 加分组条**
 
-在设置页头部加横向分组条；用 JS 按 section 标题关键字归类；点击调用 `scrollToPageSection`。分组条在手机横向滚动。
+在设置页头部加横向分组条；用 JS 按 section 标题前缀归类；点击只显示当前组的 section，并更新标题/说明与 URL `group` 参数。分组条在手机横向滚动。
 
 - [ ] **Step 4: 隐藏冲突项**
 

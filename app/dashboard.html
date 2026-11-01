@@ -4179,6 +4179,10 @@ html[data-ui="next"] .next-settings-group{
 }
 html[data-ui="next"] .next-settings-group:hover{color:var(--fg)}
 html[data-ui="next"] .next-settings-group.active{background:var(--panel);color:var(--fg);box-shadow:var(--shadow-sm)}
+html[data-ui="next"] .next-settings-head{margin:0 0 14px}
+html[data-ui="next"] .next-settings-head h2{margin:0 0 4px;font-size:18px;font-weight:750;letter-spacing:-.025em}
+html[data-ui="next"] .next-settings-head p{margin:0;font-size:12px;color:var(--dim)}
+html[data-ui="next"] #pageSettings section[hidden]{display:none!important}
 html[data-ui="next"] #pageSettings .page-sidebar{display:none!important}
 html[data-ui="next"] #pageSettings .page-nav-body{display:block!important}
 
@@ -5359,7 +5363,12 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <button type="button" class="next-settings-group" data-settings-group="api" onclick="nextSettingsGroup('api', this)">API 与出口</button>
       <button type="button" class="next-settings-group" data-settings-group="model" onclick="nextSettingsGroup('model', this)">模型与定价</button>
       <button type="button" class="next-settings-group" data-settings-group="automation" onclick="nextSettingsGroup('automation', this)">自动化</button>
-      <button type="button" class="next-settings-group" data-settings-group="system" onclick="nextSettingsGroup('system', this)">系统</button>
+      <button type="button" class="next-settings-group" data-settings-group="stability" onclick="nextSettingsGroup('stability', this)">稳定性</button>
+      <button type="button" class="next-settings-group" data-settings-group="system" onclick="nextSettingsGroup('system', this)">日志与系统</button>
+    </div>
+    <div class="next-settings-head">
+      <h2 id="nextSettingsTitle">基础</h2>
+      <p id="nextSettingsDesc">面板密码、语言、窗口和隐私声明。</p>
     </div>
     <div style="margin-bottom:16px">
       <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">网关设置</h2>
@@ -19421,12 +19430,12 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     var sep = document.getElementById('setAccountsSeparate');
     if(sep){
       var sec = sep.closest ? sep.closest('section') : null;
-      if(sec) sec.hidden = true;
+      if(sec){ sec.setAttribute('data-next-hidden', '1'); sec.hidden = true; }
     }
     var pages = document.getElementById('setPagesList');
     if(pages){
       var sec2 = pages.closest ? pages.closest('section') : null;
-      if(sec2) sec2.hidden = true;
+      if(sec2){ sec2.setAttribute('data-next-hidden', '1'); sec2.hidden = true; }
     }
   }
 
@@ -19472,7 +19481,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     if(realmName) realmName.textContent = realm;
     var gatewayRealm = document.getElementById('nextGatewayRealm');
     if(gatewayRealm) gatewayRealm.textContent = realm;
-    if(tab === 'settings') nextHideConflictingSettings();
+    if(tab === 'settings'){ nextHideConflictingSettings(); nextSettingsApplySaved(); }
     nextHideLegacyHeaders();
   }
 
@@ -19502,30 +19511,100 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     document.body.classList.toggle('next-sidebar-open', on);
   }
 
+  var NEXT_SETTINGS_GROUP_ORDER = ['basic', 'api', 'model', 'automation', 'stability', 'system'];
   var NEXT_SETTINGS_GROUPS = {
-    basic: ['面板访问密码', '界面语言', '面板窗口限高'],
-    api: ['API Key', 'CodeArts 接入', '账号代理槽', '账号限额'],
-    model: ['模型价格估算', 'Anthropic Messages', '思考等级挡位映射', '按 API Key 过滤模型', '只列出可用模型', '免费额度耗尽回退'],
-    automation: ['自动切换出站身份', '国际版每日活跃打卡', '全局提示词', '本地网络工具', '剩余用量优先调度', '跨出口回退', '模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '更稳的会话粘滞键', '日志落库'],
-    system: ['更新', '版本回退', '运行信息']
+    basic: {
+      title: '基础',
+      desc: '面板密码、界面语言、窗口限制和隐私声明。',
+      items: ['面板访问密码', '界面语言', '顶部页签显示', '账号独立成一个页签', '面板窗口限高', '数据用途声明']
+    },
+    api: {
+      title: 'API 与出口',
+      desc: 'API Key、CodeArts、代理槽、账号限额和出站身份。',
+      items: ['API Key', 'CodeArts 接入', '账号代理槽', '账号限额', '自动切换出站身份', '出站身份版本号', '跨出口回退']
+    },
+    model: {
+      title: '模型与定价',
+      desc: '价格估算、Anthropic 适配、思考档位和模型过滤。',
+      items: ['模型价格估算', '启用 Anthropic Messages', '思考等级挡位映射', '按 API Key 过滤模型列表', '只列出可用模型', '免费额度耗尽回退积分版']
+    },
+    automation: {
+      title: '自动化',
+      desc: '每日活跃、全局提示词、本地网络工具和剩余用量调度。',
+      items: ['国际版每日活跃打卡', '全局提示词', '本地网络工具', '剩余用量优先调度']
+    },
+    stability: {
+      title: '稳定性',
+      desc: '额度探针、退避、超时、并发上限和会话粘滞。',
+      items: ['模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '更稳的会话粘滞键']
+    },
+    system: {
+      title: '日志与系统',
+      desc: '日志落库、更新、版本回退和运行信息。',
+      items: ['日志落库', '更新', '版本回退', '运行信息']
+    }
   };
 
-  function nextSettingsGroup(key, btn){
-    var words = NEXT_SETTINGS_GROUPS[key] || [];
-    var target = null;
-    Array.prototype.some.call(document.querySelectorAll('#pageSettings section'), function(sec){
-      var h = sec.querySelector('h2');
-      var text = h ? (h.textContent || '') : '';
-      var hit = words.some(function(w){ return text.indexOf(w) >= 0; });
-      if(hit){ target = sec; return true; }
-      return false;
+  function nextSettingsSectionGroup(sec){
+    var h = sec.querySelector('h2');
+    var text = h ? (h.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    var lower = text.toLowerCase();
+    for(var i = 0; i < NEXT_SETTINGS_GROUP_ORDER.length; i++){
+      var key = NEXT_SETTINGS_GROUP_ORDER[i];
+      var items = NEXT_SETTINGS_GROUPS[key].items;
+      for(var j = 0; j < items.length; j++){
+        if(lower.indexOf(items[j].toLowerCase()) === 0) return key;
+      }
+    }
+    return 'system';
+  }
+
+  function nextSettingsApplySaved(){
+    var key = '';
+    try {
+      var q = new URLSearchParams(location.search).get('group');
+      if(q && NEXT_SETTINGS_GROUPS[q]) key = q;
+      if(!key){
+        var s = localStorage.getItem('wb-next-settings-group');
+        if(s && NEXT_SETTINGS_GROUPS[s]) key = s;
+      }
+    } catch(e){}
+    if(!key) key = 'basic';
+    nextSettingsGroup(key, null, { noScroll: true, noUrl: true });
+  }
+
+  function nextSettingsGroup(key, btn, opts){
+    opts = opts || {};
+    if(!NEXT_SETTINGS_GROUPS[key]) key = 'basic';
+    var page = document.getElementById('pageSettings');
+    if(!page) return;
+    nextHideConflictingSettings();
+    var sections = page.querySelectorAll('section');
+    Array.prototype.forEach.call(sections, function(sec){
+      var group = nextSettingsSectionGroup(sec);
+      var permanentlyHidden = sec.getAttribute('data-next-hidden') === '1';
+      sec.hidden = permanentlyHidden || group !== key;
     });
-    if(!target) return;
-    var top = target.getBoundingClientRect().top + window.pageYOffset - 82;
-    window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     Array.prototype.forEach.call(document.querySelectorAll('#nextSettingsGroups .next-settings-group'), function(b){
-      b.classList.toggle('active', b === btn);
+      b.classList.toggle('active', b.getAttribute('data-settings-group') === key);
     });
+    var def = NEXT_SETTINGS_GROUPS[key];
+    var title = document.getElementById('nextSettingsTitle');
+    var desc = document.getElementById('nextSettingsDesc');
+    if(title) title.textContent = def.title;
+    if(desc) desc.textContent = def.desc;
+    try { localStorage.setItem('wb-next-settings-group', key); } catch(e){}
+    if(!opts.noUrl){
+      try {
+        var url = new URL(window.location.href);
+        url.searchParams.set('tab', 'settings');
+        url.searchParams.set('group', key);
+        history.replaceState(null, '', url.toString());
+      } catch(e){}
+    }
+    if(!opts.noScroll){
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }
 
   window.nextCurrentTab = nextCurrentTab;

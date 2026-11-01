@@ -81,9 +81,12 @@ assert.ok(/schedSection\.appendChild\(sched\)/.test(html),
   '新壳应把调度器状态条移进自动化页');
 assert.ok(/next-settings-group/.test(html) && /data-settings-group="basic"/.test(html),
   '设置页应有分组条');
-for(const key of ['basic', 'api', 'model', 'automation', 'system']){
+for(const key of ['basic', 'api', 'model', 'automation', 'stability', 'system']){
   assert.ok(html.includes('data-settings-group="' + key + '"'), '设置分组缺少 ' + key);
 }
+assert.ok(/id="nextSettingsTitle"/.test(html) && /id="nextSettingsDesc"/.test(html),
+  '设置分组缺少标题/说明');
+assert.ok(/function nextSettingsApplySaved/.test(html), '缺少设置分组恢复函数');
 
 /* ---- 7. 样式边界 ---- */
 assert.ok(/html\[data-ui="next"\]/.test(html), '新样式必须限定在 data-ui=next 下');
