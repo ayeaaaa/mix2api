@@ -4085,6 +4085,10 @@ html[data-ui="next"] .next-nav-item svg{width:17px;height:17px;flex:0 0 17px;opa
 html[data-ui="next"] .next-nav-item:hover{background:var(--panel2);color:var(--fg)}
 html[data-ui="next"] .next-nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:650}
 html[data-ui="next"] .next-nav-item.active svg{opacity:1}
+html[data-ui="next"] .next-nav-item.next-disabled,
+html[data-ui="next"] .next-more-item.next-disabled,
+html[data-ui="next"] .next-bottom-item.next-disabled{opacity:.45;cursor:not-allowed}
+html[data-ui="next"] .next-nav-item.next-disabled:hover{background:transparent;color:var(--dim)}
 html[data-ui="next"] .next-sidebar-foot{
   margin-top:auto;padding:10px 4px 2px;border-top:1px solid var(--line);
   display:flex;flex-direction:column;gap:1px;
@@ -4178,6 +4182,19 @@ html[data-ui="next"] .next-section-head{padding:14px 18px 10px;border-bottom:1px
 html[data-ui="next"] .next-section-head h2{margin:0;font-size:14px;font-weight:700;letter-spacing:-.01em}
 html[data-ui="next"] .next-section-head p{margin:3px 0 0;font-size:10.5px;color:var(--dim)}
 html[data-ui="next"] .next-scheduler-section #schedulerBar{border-top:0;padding:12px 18px}
+html[data-ui="next"] .next-sched-toggle{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);white-space:nowrap}
+html[data-ui="next"] .next-switch{
+  appearance:none;border:0;background:var(--line-hover);width:38px;height:22px;border-radius:999px;
+  padding:2px;cursor:pointer;position:relative;transition:background .18s ease;flex:0 0 38px;
+}
+html[data-ui="next"] .next-switch[aria-checked="true"]{background:var(--accent)}
+html[data-ui="next"] .next-switch:disabled{opacity:.5;cursor:wait}
+html[data-ui="next"] .next-switch-knob{
+  display:block;width:18px;height:18px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 3px rgba(16,24,40,.25);transition:transform .18s ease;
+}
+html[data-ui="next"] .next-switch[aria-checked="true"] .next-switch-knob{transform:translateX(16px)}
+html[data-ui="next"] .next-scheduler-section #btnToggleSched{display:none!important}
 html[data-ui="next"] .next-settings-groups{
   display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:0 0 16px;
   padding:4px;background:var(--panel2);border:1px solid var(--line);border-radius:11px;
@@ -19499,6 +19516,14 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     }
   }
 
+  function nextUpdateSchedSwitch(){
+    var sw = document.getElementById('nextSchedSwitch');
+    var txt = document.getElementById('schedStatusText');
+    if(!sw) return;
+    var on = txt ? (txt.textContent || '').indexOf('运行中') >= 0 : true;
+    sw.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+
   function nextSyncChrome(tab){
     if(!NEXT) return;
     tab = tab || nextCurrentTab() || 'overview';
@@ -19536,12 +19561,35 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
       var caVisible = !!(caCard && getComputedStyle(caCard).display !== 'none');
       caBtn.hidden = !caVisible;
     }
+    var agentsOff = false;
+    try { agentsOff = (typeof AGENTS_AVAILABLE !== 'undefined' && !AGENTS_AVAILABLE); } catch(e){}
+    Array.prototype.forEach.call(document.querySelectorAll('[data-next-tab="agents"]'), function(el){
+      el.classList.toggle('next-disabled', agentsOff);
+      if(agentsOff){
+        el.setAttribute('title', '智能体配置只在网关本机、用 127.0.0.1 打开面板时可用');
+        el.setAttribute('data-disabled', '1');
+      } else {
+        el.removeAttribute('title');
+        el.removeAttribute('data-disabled');
+      }
+    });
     if(tab === 'settings'){ nextHideConflictingSettings(); nextSettingsApplySaved(); }
     nextHideLegacyHeaders();
     nextApplyHiddenPages();
+    nextUpdateSchedSwitch();
   }
 
   function nextGo(tab){
+    var agentsOff = false;
+    try { agentsOff = (typeof AGENTS_AVAILABLE !== 'undefined' && !AGENTS_AVAILABLE); } catch(e){}
+    if(tab === 'agents' && agentsOff){
+      nextOpenMore(false);
+      nextOpenSidebar(false);
+      if(typeof toast === 'function'){
+        toast('智能体配置只在网关本机、用 127.0.0.1 打开面板时可用；当前是远程或容器访问。', 'warn');
+      }
+      return;
+    }
     if(tab === 'accounts' && typeof applyAccountsTabLayout === 'function'){
       applyAccountsTabLayout(true);
     }
@@ -19697,7 +19745,9 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     schedSection.className = 'next-scheduler-section';
     var schedHead = document.createElement('div');
     schedHead.className = 'next-section-head';
-    schedHead.innerHTML = '<div><h2>后台调度器</h2><p>定时签到、保活和任务巡检</p></div>';
+    schedHead.innerHTML = '<div><h2>后台调度器</h2><p>定时签到、活跃、保活和任务巡检；关闭后不再自动执行，手动按钮仍可用。</p></div>'
+      + '<div class="next-sched-toggle"><span>自动执行</span>'
+      + '<button type="button" id="nextSchedSwitch" class="next-switch" role="switch" aria-checked="true" onclick="toggleScheduler(this)" title="暂停或恢复后台调度器"><span class="next-switch-knob"></span></button></div>';
     schedSection.appendChild(schedHead);
     schedSection.appendChild(sched);
     tasksPage.insertBefore(schedSection, tasksPage.firstChild);
@@ -19728,6 +19778,18 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     window.applyHiddenPages = function(){
       var result = originalHiddenPages.apply(this, arguments);
       nextApplyHiddenPages();
+      return result;
+    };
+  }
+  if(typeof window.loadSchedulerStatus === 'function' && !window.__NEXT_SCHED_WRAPPED__){
+    window.__NEXT_SCHED_WRAPPED__ = true;
+    var originalSchedulerStatus = window.loadSchedulerStatus;
+    window.loadSchedulerStatus = function(){
+      var result = originalSchedulerStatus.apply(this, arguments);
+      if(result && typeof result.then === 'function'){
+        return result.then(function(value){ nextUpdateSchedSwitch(); return value; });
+      }
+      nextUpdateSchedSwitch();
       return result;
     };
   }

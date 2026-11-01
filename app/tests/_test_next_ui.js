@@ -83,6 +83,10 @@ assert.ok(/nextGatewayRealmSwitch/.test(html), '网关页应有出口切换控�
 assert.ok(/function nextApplyHiddenPages/.test(html) && /__NEXT_HIDDEN_WRAPPED__/.test(html),
   '顶部页签显示应同步到新壳导航');
 assert.ok(/page-nav-top/.test(html), '页面区块导航应保留回到顶部入口');
+assert.ok(/nextSchedSwitch/.test(html) && /next-switch/.test(html),
+  '自动化页应有明确的后台调度开关');
+assert.ok(/AGENTS_AVAILABLE/.test(html) && /next-disabled/.test(html),
+  '智能体不可用时应显示禁用态而不是静默跳转');
 assert.ok(/next-settings-group/.test(html) && /data-settings-group="basic"/.test(html),
   '设置页应有分组条');
 for(const key of ['basic', 'api', 'model', 'automation', 'stability', 'system']){
