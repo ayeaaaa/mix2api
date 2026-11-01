@@ -91,11 +91,9 @@ try:
     wb_proxy.POOL = FakePool()
     wb_proxy.CURRENT_REALM = "intl"
     wb_settings.set_enable_anthropic_messages(ACCOUNTS, True)
-    wb_settings.set_api_keys(ACCOUNTS, [
-        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
-        {"key": "hub-key-any", "name": "any", "realm": ""},
-        {"key": "hub-key-intl", "name": "intl", "realm": "intl"},
-    ])
+    wb_settings.set_api_keys(ACCOUNTS, [{
+        "key": "hub-key-1234", "name": "test", "realm": "codearts",
+    }])
     wb_proxy.API_KEY = None
     C.save_config(ACCOUNTS, {"enabled": True, "benefit_auto_claim": True})
     auth = {
@@ -137,46 +135,6 @@ try:
     obj = json.loads(raw)
     check("nonstream text", obj["choices"][0]["message"]["content"] == "你好",
           obj)
-
-    print("== YYLS namespace ==")
-    status, raw = post("/v1/chat/completions",
-                       {"model": "YYLS/GLM-5.2",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": False}, "hub-key-any")
-    check("namespace status", status == 200, (status, raw[:300]))
-    check("namespace strips upstream",
-          state.last_body.get("model") == "GLM-5.2", state.last_body)
-    if status == 200:
-        check("namespace response model",
-              json.loads(raw).get("model") == "YYLS/GLM-5.2",
-              json.loads(raw).get("model"))
-    status, raw = post("/v1/chat/completions",
-                       {"model": "YYLS/GLM-5.2",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": True}, "hub-key-any")
-    check("namespace stream status", status == 200, (status, raw[:300]))
-    check("namespace stream model", '"model": "YYLS/GLM-5.2"' in raw,
-          raw[:300])
-    status, raw = post("/v1/responses",
-                       {"model": "YYLS/GLM-5.2",
-                        "input": [{"role": "user",
-                                   "content": [{"type": "input_text",
-                                                "text": "hi"}]}],
-                        "stream": False}, "hub-key-any")
-    check("namespace responses status", status == 200, (status, raw[:300]))
-    if status == 200:
-        check("namespace responses model",
-              json.loads(raw).get("model") == "YYLS/GLM-5.2",
-              json.loads(raw).get("model"))
-    status, raw = post("/v1/messages",
-                       {"model": "YYLS/GLM-5.2", "max_tokens": 64,
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": False}, "hub-key-any")
-    check("namespace messages status", status == 200, (status, raw[:300]))
-    if status == 200:
-        check("namespace messages model",
-              json.loads(raw).get("model") == "YYLS/GLM-5.2",
-              json.loads(raw).get("model"))
 
     print("== benefit header ==")
     state.require_benefit_header = True
@@ -234,13 +192,6 @@ try:
     check("all unpriced",
           all(r.get("cost_policy") == "codearts:unpriced" for r in rows),
           [r.get("cost_policy") for r in rows])
-
-    status, raw = post("/v1/chat/completions",
-                       {"model": "YYLS/GLM-5.2",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": False}, "hub-key-intl")
-    check("namespace rejects conflicting key realm", status == 400,
-          (status, raw[:300]))
 
     print("== unpriced ==")
     cost = wb_pricing.cost_for_row({

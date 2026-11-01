@@ -104,12 +104,6 @@ DEFAULTS = {
     "auto_checkin": True,
 }
 
-#: External namespace for CodeArts models. WorkBuddy and CodeArts share many
-#: bare ids (GLM-5.2, kimi-k3...), so /v1/models exposes CodeArts entries as
-#: YYLS/<id>; requests with that prefix route here and the prefix is stripped
-#: before the upstream call.
-MODEL_NAMESPACE = "YYLS/"
-
 #: Verified with the upstream validation error: reasoning_effort must be one of
 #: none/low/medium/high/xhigh/max. `minimal` is accepted but not in that list;
 #: `auto` is rejected.
@@ -125,18 +119,6 @@ REASONING_EFFORTS = {
     # Always-thinking model: upstream explicitly says only low/high/max.
     "glm-5.3-flash": ["low", "high", "max"],
 }
-
-
-def split_model_id(model):
-    """Return (bare_id, was_namespaced) for an external model id."""
-    text = str(model or "")
-    if text.lower().startswith(MODEL_NAMESPACE.lower()):
-        return text[len(MODEL_NAMESPACE):], True
-    return text, False
-
-
-def qualify_model_id(model):
-    return MODEL_NAMESPACE + str(model)
 
 
 def _requested_effort(payload):
@@ -1055,8 +1037,7 @@ def signed_post(acct, url, payload, headers=None, timeout=30.0, agent_type=""):
 # ---------------------------------------------------------------------------
 
 def _canonical_model(acct, model):
-    mid, _namespaced = split_model_id(model)
-    mid = str(mid or "").strip()
+    mid = str(model or "").strip()
     if not mid:
         return mid
     lower = mid.lower()
@@ -1544,8 +1525,7 @@ def build_chat_body(payload, session_key=None):
         "response_format", "top_k", "parallel_tool_calls",
     }
     body = {str(k): v for k, v in payload.items() if str(k) in allowed}
-    bare_model, _namespaced = split_model_id(payload.get("model") or "GLM-5.2")
-    body["model"] = str(bare_model or "GLM-5.2")
+    body["model"] = str(payload.get("model") or "GLM-5.2")
     effort_text = _requested_effort(payload)
     allowed_efforts = REASONING_EFFORTS.get(body["model"].lower())
     if effort_text:

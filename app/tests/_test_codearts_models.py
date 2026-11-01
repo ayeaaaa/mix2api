@@ -61,10 +61,9 @@ threading.Thread(target=hub.serve_forever, daemon=True).start()
 HUB = "http://127.0.0.1:%d" % hub.server_address[1]
 
 try:
-    wb_settings.set_api_keys(ACCOUNTS, [
-        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
-        {"key": "hub-key-any", "name": "any", "realm": ""},
-    ])
+    wb_settings.set_api_keys(ACCOUNTS, [{
+        "key": "hub-key-1234", "name": "test", "realm": "codearts",
+    }])
     wb_proxy.API_KEY = None
     C.save_config(ACCOUNTS, {"enabled": True})
     C.invalidate_models()
@@ -73,10 +72,10 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("seed status", status == 200, (status, payload))
     check("seed has GLM-5.2",
-          any(m["id"] == "YYLS/GLM-5.2" for m in payload["data"]), payload)
+          any(m["id"] == "GLM-5.2" for m in payload["data"]), payload)
     check("seed benefit flag",
           any(m.get("benefit") for m in payload["data"]
-              if m["id"] == "YYLS/deepseek-v4-pro-0813"), payload)
+              if m["id"] == "deepseek-v4-pro-0813"), payload)
 
     # 加一个账号
     auth = {
@@ -93,50 +92,50 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("status 200", status == 200, (status, payload))
     ids = [m["id"] for m in payload["data"]]
-    check("ids", set(ids) == {"YYLS/GLM-5.2", "YYLS/GLM-4.7",
-                              "YYLS/Qwen3-VL-235B",
-                              "YYLS/deepseek-v4.1-flash",
-                              "YYLS/glm-5.3-flash",
-                              "YYLS/deepseek-v4-pro-0813"}, ids)
+    check("ids", set(ids) == {"GLM-5.2", "GLM-4.7",
+                              "Qwen3-VL-235B",
+                              "deepseek-v4.1-flash",
+                              "glm-5.3-flash",
+                              "deepseek-v4-pro-0813"}, ids)
     check("owned_by", payload["data"][0]["owned_by"] == "codearts")
     check("provider", payload["data"][0]["provider"] == "codearts")
     by_id = {m["id"]: m for m in payload["data"]}
     check("vision model flagged",
-          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("capabilities", {})
-          .get("vision") is True, by_id.get("YYLS/Qwen3-VL-235B"))
+          (by_id.get("Qwen3-VL-235B") or {}).get("capabilities", {})
+          .get("vision") is True, by_id.get("Qwen3-VL-235B"))
     check("vision modalities",
-          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("input_modalities")
-          == ["text", "image"], by_id.get("YYLS/Qwen3-VL-235B"))
+          (by_id.get("Qwen3-VL-235B") or {}).get("input_modalities")
+          == ["text", "image"], by_id.get("Qwen3-VL-235B"))
     check("text model not flagged",
-          (by_id.get("YYLS/GLM-5.2") or {}).get("capabilities", {})
-          .get("vision") is False, by_id.get("YYLS/GLM-5.2"))
+          (by_id.get("GLM-5.2") or {}).get("capabilities", {})
+          .get("vision") is False, by_id.get("GLM-5.2"))
     check("context/max output aliases",
-          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("context_length") == 131072
-          and (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("max_output_tokens") == 8192,
-          by_id.get("YYLS/Qwen3-VL-235B"))
+          (by_id.get("Qwen3-VL-235B") or {}).get("context_length") == 131072
+          and (by_id.get("Qwen3-VL-235B") or {}).get("max_output_tokens") == 8192,
+          by_id.get("Qwen3-VL-235B"))
     check("tool capability advertised",
-          (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("capabilities", {})
+          (by_id.get("Qwen3-VL-235B") or {}).get("capabilities", {})
           .get("tool_calls") is True
-          and (by_id.get("YYLS/Qwen3-VL-235B") or {}).get("supports_tool_calls") is True,
-          by_id.get("YYLS/Qwen3-VL-235B"))
+          and (by_id.get("Qwen3-VL-235B") or {}).get("supports_tool_calls") is True,
+          by_id.get("Qwen3-VL-235B"))
     check("deepseek reasoning efforts",
-          (by_id.get("YYLS/deepseek-v4.1-flash") or {})
+          (by_id.get("deepseek-v4.1-flash") or {})
           .get("reasoning_efforts") == ["none", "low", "medium", "high",
                                         "xhigh", "max"],
-          by_id.get("YYLS/deepseek-v4.1-flash"))
+          by_id.get("deepseek-v4.1-flash"))
     check("glm reasoning efforts",
-          (by_id.get("YYLS/GLM-5.2") or {}).get("reasoning_efforts")
+          (by_id.get("GLM-5.2") or {}).get("reasoning_efforts")
           == ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          by_id.get("YYLS/GLM-5.2"))
+          by_id.get("GLM-5.2"))
     check("glm flash reasoning efforts",
-          (by_id.get("YYLS/glm-5.3-flash") or {}).get("reasoning_efforts")
+          (by_id.get("glm-5.3-flash") or {}).get("reasoning_efforts")
           == ["low", "high", "max"]
-          and (by_id.get("YYLS/glm-5.3-flash") or {})
+          and (by_id.get("glm-5.3-flash") or {})
           .get("reasoning_can_disable") is False,
-          by_id.get("YYLS/glm-5.3-flash"))
+          by_id.get("glm-5.3-flash"))
     check("catalog source", payload["catalog"]["source"] == "codearts")
     check("benefit flag", any(m.get("benefit") for m in payload["data"]
-                              if m["id"] == "YYLS/deepseek-v4-pro-0813"), payload)
+                              if m["id"] == "deepseek-v4-pro-0813"), payload)
 
     # Key 模型限制
     wb_settings.set_filter_models_by_key(ACCOUNTS, True)
@@ -148,26 +147,9 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("filtered status", status == 200, (status, payload))
     check("filtered ids", [m["id"] for m in payload["data"]] ==
-          ["YYLS/GLM-5.2", "YYLS/GLM-4.7", "YYLS/glm-5.3-flash"],
+          ["GLM-5.2", "GLM-4.7", "glm-5.3-flash"],
           payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
-    wb_settings.set_api_keys(ACCOUNTS, [
-        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
-        {"key": "hub-key-any", "name": "any", "realm": ""},
-    ])
-
-    print("== all realm ==")
-    original_fetch = wb_proxy.fetch_models
-    wb_proxy.fetch_models = lambda realm=None: [("GLM-5.2", {})]
-    try:
-        status, payload = get(HUB + "/v1/models?realm=all", "hub-key-any")
-    finally:
-        wb_proxy.fetch_models = original_fetch
-    check("all status", status == 200, (status, payload))
-    all_ids = [m["id"] for m in payload["data"]]
-    check("all has workbuddy", "GLM-5.2" in all_ids, all_ids)
-    check("all has codearts",
-          any(i.startswith("YYLS/") for i in all_ids), all_ids)
 
     # 未启用 -> 503
     C.save_config(ACCOUNTS, {"enabled": False})

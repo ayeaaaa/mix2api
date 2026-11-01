@@ -192,15 +192,7 @@ def port_owner_hint(port):
         return "netstat -ano | findstr :%d" % port
     return "lsof -nP -iTCP:%d -sTCP:LISTEN" % port
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
-def model_namespace_realm(model_id):
-    """'codearts' when the model id carries the YYLS/ namespace."""
-    _bare, namespaced = wb_codearts.split_model_id(model_id)
-    return "codearts" if namespaced else ""
-
-
 def detect_model_realm(model_id):
-    if model_namespace_realm(model_id):
-        return "codearts"
     if not model_id:
         return CURRENT_REALM
     m = str(model_id).lower()
@@ -18879,10 +18871,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = self.key_entry
         if not entry:
             return ""
-        bare, namespaced = wb_codearts.split_model_id(model)
         if wb_settings.key_allows_model(entry, model):
-            return ""
-        if namespaced and wb_settings.key_allows_model(entry, bare):
             return ""
         return key_model_message(entry, model)
 
@@ -18900,20 +18889,6 @@ class Handler(BaseHTTPRequestHandler):
         return ("API Key「%s」的账号限制不允许账号 %s。"
                 "请在看板「设置」页修改这个 Key 的允许账号，或改用允许该账号的 Key。"
                 % ((entry or {}).get("name") or "未命名", account.uid))
-
-    def _namespace_conflict(self, realm, explicit):
-        """Refuse YYLS/ when the key or an explicit exit points elsewhere."""
-        if not realm:
-            return ""
-        bound = self._key_realm()
-        if bound and bound != realm:
-            return ("模型带 %s/ 命名空间，但当前 API Key 绑定的是 %s 出口；"
-                    "请改用 %s 出口的 Key，或取消 Key 的出口绑定。"
-                    % (wb_codearts.MODEL_NAMESPACE.rstrip("/"), bound, realm))
-        if explicit and explicit != realm:
-            return ("模型带 %s/ 命名空间，但请求显式指定了 %s 出口；两者冲突。"
-                    % (wb_codearts.MODEL_NAMESPACE.rstrip("/"), explicit))
-        return ""
 
     def _request_realm(self, explicit=None):
         """Pick the upstream exit for this request.
@@ -19241,20 +19216,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"current": CURRENT_REALM, "options": options})
 
     def _codearts_model_data(self):
-        """CodeArts entries in the public YYLS/ namespace, key-filtered."""
+        """CodeArts model entries, key-filtered."""
         cfg = wb_codearts.load_config(ACCOUNTS_DIR)
         if not wb_codearts.configured_config(cfg):
             return None, None
         data = wb_codearts.model_entries(cfg)
-        for entry in data:
-            bare = str(entry.get("id") or "")
-            entry["upstream_id"] = bare
-            entry["id"] = wb_codearts.qualify_model_id(bare)
         if wb_settings.filter_models_by_key(ACCOUNTS_DIR) and self.key_entry:
             data = [m for m in data
-                    if (wb_settings.key_allows_model(self.key_entry, m.get("id"))
-                        or wb_settings.key_allows_model(
-                            self.key_entry, m.get("upstream_id")))]
+                    if wb_settings.key_allows_model(self.key_entry, m.get("id"))]
         return data, cfg
 
     def _get_codearts_models(self):
@@ -19325,13 +19294,6 @@ class Handler(BaseHTTPRequestHandler):
                     "required": "standard",
                     "at": gate_at,
                 }
-        if req_realm == "all" and pinned is None:
-            try:
-                codearts_data, _codearts_cfg = self._codearts_model_data()
-            except Exception:
-                codearts_data = None
-            if codearts_data:
-                data.extend(codearts_data)
         payload = {"object": "list", "data": data,
                    "realm": req_realm or CURRENT_REALM}
         # 来源说明（面板展示用）：这批清单是上游 API 实时取的，还是读的
@@ -22218,17 +22180,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         try:
             explicit_realm = self._request_realm()
-            ns_realm = model_namespace_realm(chat_req.get("model"))
-            if ns_realm:
-                conflict = self._namespace_conflict(ns_realm, explicit_realm)
-                if conflict:
-                    record_error(model, 400, conflict[:200],
-                                 elapsed_ms=int((time.time() - t_start) * 1000),
-                                 realm=ns_realm, key=self._key_id())
-                    return self._error(400, conflict, "invalid_request_error")
-                req_realm = ns_realm
-            else:
-                req_realm = explicit_realm or CURRENT_REALM
+            req_realm = explicit_realm or CURRENT_REALM
             blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
             if blocked:
                 return self._error(400, blocked, "invalid_request_error")
@@ -22576,18 +22528,7 @@ class Handler(BaseHTTPRequestHandler):
                key_label(self._key_id()) or "-"))
         try:
             explicit_realm = self._request_realm()
-            ns_realm = model_namespace_realm(chat_req.get("model"))
-            if ns_realm:
-                conflict = self._namespace_conflict(ns_realm, explicit_realm)
-                if conflict:
-                    record_error(model, 400, conflict[:200],
-                                 elapsed_ms=int((time.time() - t_start) * 1000),
-                                 realm=ns_realm, key=self._key_id())
-                    return self._anthropic_error(400, conflict,
-                                                 "invalid_request_error")
-                req_realm = ns_realm
-            else:
-                req_realm = explicit_realm or CURRENT_REALM
+            req_realm = explicit_realm or CURRENT_REALM
             blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
             if blocked:
                 return self._anthropic_error(400, blocked, "invalid_request_error")
@@ -22974,17 +22915,7 @@ class Handler(BaseHTTPRequestHandler):
         model = payload.get("model") or "hy4-preview"
         t_start = time.time()
         explicit_realm = self._request_realm()
-        ns_realm = model_namespace_realm(payload.get("model"))
-        if ns_realm:
-            conflict = self._namespace_conflict(ns_realm, explicit_realm)
-            if conflict:
-                record_error(payload.get("model"), 400, conflict[:200],
-                             elapsed_ms=int((time.time() - t_start) * 1000),
-                             realm=ns_realm, key=self._key_id())
-                return self._error(400, conflict, "invalid_request_error")
-            req_realm = ns_realm
-        else:
-            req_realm = explicit_realm or CURRENT_REALM
+        req_realm = explicit_realm or CURRENT_REALM
         if req_realm == "codearts":
             # CodeArts 不走 WorkBuddy 的 build_upstream_body / 账号池：请求体、
             # 超时、错误映射都由 wb_codearts 负责，回程复用下面的处理器。
