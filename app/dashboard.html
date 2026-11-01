@@ -4159,6 +4159,16 @@ html[data-ui="next"] #pageLogs > div:first-child > div:first-child{display:none!
 html[data-ui="next"] #pageAnalytics .pagehead .pagetitle,
 html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:none!important}
 html[data-ui="next"] .next-page-intro-actions{display:flex;align-items:center;gap:8px}
+html[data-ui="next"] .next-realm-switch{
+  display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);
+  border-radius:10px;background:var(--panel2);
+}
+html[data-ui="next"] .next-realm-switch button{
+  appearance:none;border:0;background:transparent;color:var(--dim);font:inherit;font-size:11px;
+  font-weight:600;padding:5px 9px;border-radius:7px;cursor:pointer;white-space:nowrap;
+}
+html[data-ui="next"] .next-realm-switch button:hover{color:var(--fg)}
+html[data-ui="next"] .next-realm-switch button.active{background:var(--panel);color:var(--fg);box-shadow:var(--shadow-sm)}
 html[data-ui="next"] .next-table-scroll{overflow-x:auto;border-radius:12px;border:1px solid var(--line)}
 html[data-ui="next"] .next-scheduler-section{
   background:var(--panel);border:1px solid var(--line);border-radius:14px;
@@ -4317,9 +4327,16 @@ html[data-ui="next"] .main-page.page-nav-on > .page-sidebar{
   box-shadow:none!important;top:auto!important;
 }
 html[data-ui="next"] .page-sidebar-head,
-html[data-ui="next"] .page-sidebar-title,
-html[data-ui="next"] .page-nav-top{display:none!important}
-html[data-ui="next"] .page-nav{display:flex!important;flex-direction:row!important;gap:4px!important;overflow-x:auto!important;padding:0!important}
+html[data-ui="next"] .page-sidebar-title{display:none!important}
+html[data-ui="next"] .page-nav{display:flex!important;flex-direction:row!important;gap:4px!important;overflow-x:auto!important;padding:0!important;order:1;flex:1;min-width:0}
+html[data-ui="next"] .page-nav-top{
+  display:inline-flex!important;align-items:center!important;order:2;flex:0 0 auto;
+  width:auto!important;max-width:max-content!important;min-width:0!important;
+  border:1px solid var(--line)!important;background:var(--panel)!important;color:var(--dim)!important;
+  border-radius:999px!important;padding:5px 9px!important;font-size:10px!important;cursor:pointer!important;
+  white-space:nowrap!important;margin-left:auto!important;
+}
+html[data-ui="next"] .page-nav-top:hover{color:var(--fg)!important;border-color:var(--line-hover)!important}
 html[data-ui="next"] .page-nav-item{
   border:1px solid transparent!important;background:transparent!important;color:var(--dim)!important;
   border-radius:999px!important;padding:5px 10px!important;font-size:11px!important;text-align:left!important;
@@ -4794,7 +4811,11 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         <p>当前出口的模型目录、能力、思考档位与在售倍率。</p>
       </div>
       <div class="next-page-intro-actions">
-        <span class="next-pill"><span class="next-status-dot"></span><span id="nextGatewayRealm">当前出口</span></span>
+        <div class="next-realm-switch" id="nextGatewayRealmSwitch">
+          <button type="button" data-realm="intl" onclick="switchViewRealm('intl')">国际版</button>
+          <button type="button" data-realm="cn" onclick="switchViewRealm('cn')">国内版</button>
+          <button type="button" data-realm="codearts" id="nextGatewayRealmCodearts" onclick="switchViewRealm('codearts')">CodeArts</button>
+        </div>
       </div>
     </div>
 
@@ -12608,6 +12629,15 @@ function navPageRows(){
    i18n 观察者翻译，切语言时也跟着 restore/walk 走，不用在这里额外重建一次。
    没被 walk 过的节点（界面一直是中文）没有 __wbSrc，textContent 本身就是原文。 */
 function navPageLabel(row){
+  // 新壳的导航文案与旧顶栏不同（任务与福利 → 自动化，数据看板 → 用量…），
+  // 设置里的「顶部页签显示」要跟着新壳走，不能把旧标签又露出来。
+  if(window.__NEXT_UI__){
+    const nextLabels = {
+      gateway: '网关', accounts: '账号', tasks: '自动化', analytics: '用量',
+      agents: '智能体', settings: '设置', logs: '日志'
+    };
+    if(nextLabels[row.key]) return nextLabels[row.key];
+  }
   const btn = row.btn;
   const node = btn ? btn.firstChild : null;
   const source = (node && node.nodeType === 3 && node.__wbSrc != null)
@@ -19432,11 +19462,6 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
       var sec = sep.closest ? sep.closest('section') : null;
       if(sec){ sec.setAttribute('data-next-hidden', '1'); sec.hidden = true; }
     }
-    var pages = document.getElementById('setPagesList');
-    if(pages){
-      var sec2 = pages.closest ? pages.closest('section') : null;
-      if(sec2){ sec2.setAttribute('data-next-hidden', '1'); sec2.hidden = true; }
-    }
   }
 
   function nextHideLegacyHeaders(){
@@ -19452,6 +19477,26 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
         }
       }
     });
+  }
+
+  function nextApplyHiddenPages(){
+    var hidden = [];
+    try {
+      if(typeof _hiddenPages !== 'undefined' && Array.isArray(_hiddenPages)) hidden = _hiddenPages;
+    } catch(e){}
+    var order = ['overview', 'gateway', 'accounts', 'analytics', 'tasks', 'agents', 'settings', 'logs'];
+    var firstVisible = '';
+    order.forEach(function(key){
+      var off = hidden.indexOf(key) >= 0;
+      if(!off && !firstVisible) firstVisible = key;
+      Array.prototype.forEach.call(document.querySelectorAll('[data-next-tab="' + key + '"]'), function(el){
+        el.hidden = off;
+      });
+    });
+    var cur = nextCurrentTab();
+    if(cur && hidden.indexOf(cur) >= 0 && firstVisible && firstVisible !== cur){
+      if(typeof switchMainTab === 'function') switchMainTab(firstVisible);
+    }
   }
 
   function nextSyncChrome(tab){
@@ -19477,12 +19522,23 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     });
 
     var realm = nextRealmLabel();
+    var realmKey = window.VIEW_REALM || 'intl';
     var realmName = document.getElementById('nextRealmName');
     if(realmName) realmName.textContent = realm;
     var gatewayRealm = document.getElementById('nextGatewayRealm');
     if(gatewayRealm) gatewayRealm.textContent = realm;
+    Array.prototype.forEach.call(document.querySelectorAll('#nextGatewayRealmSwitch [data-realm]'), function(btn){
+      btn.classList.toggle('active', btn.getAttribute('data-realm') === realmKey);
+    });
+    var caBtn = document.getElementById('nextGatewayRealmCodearts');
+    var caCard = document.getElementById('tabCodearts');
+    if(caBtn){
+      var caVisible = !!(caCard && getComputedStyle(caCard).display !== 'none');
+      caBtn.hidden = !caVisible;
+    }
     if(tab === 'settings'){ nextHideConflictingSettings(); nextSettingsApplySaved(); }
     nextHideLegacyHeaders();
+    nextApplyHiddenPages();
   }
 
   function nextGo(tab){
@@ -19663,6 +19719,15 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     window.switchViewRealm = function(){
       var result = originalRealm.apply(this, arguments);
       nextSyncChrome(nextCurrentTab());
+      return result;
+    };
+  }
+  if(typeof window.applyHiddenPages === 'function' && !window.__NEXT_HIDDEN_WRAPPED__){
+    window.__NEXT_HIDDEN_WRAPPED__ = true;
+    var originalHiddenPages = window.applyHiddenPages;
+    window.applyHiddenPages = function(){
+      var result = originalHiddenPages.apply(this, arguments);
+      nextApplyHiddenPages();
       return result;
     };
   }

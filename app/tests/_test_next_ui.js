@@ -79,6 +79,10 @@ assert.ok(/oldGatewayBtn\.classList\.toggle\('active', tab === 'overview'\)/.tes
 /* ---- 6. 调度器与设置分组 ---- */
 assert.ok(/schedSection\.appendChild\(sched\)/.test(html),
   '新壳应把调度器状态条移进自动化页');
+assert.ok(/nextGatewayRealmSwitch/.test(html), '网关页应有出口切换控件');
+assert.ok(/function nextApplyHiddenPages/.test(html) && /__NEXT_HIDDEN_WRAPPED__/.test(html),
+  '顶部页签显示应同步到新壳导航');
+assert.ok(/page-nav-top/.test(html), '页面区块导航应保留回到顶部入口');
 assert.ok(/next-settings-group/.test(html) && /data-settings-group="basic"/.test(html),
   '设置页应有分组条');
 for(const key of ['basic', 'api', 'model', 'automation', 'stability', 'system']){
