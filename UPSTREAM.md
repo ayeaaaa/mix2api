@@ -4,7 +4,7 @@
 
 | 目录 | 上游 | 基线 commit | 基线版本 |
 |---|---|---|---|
-| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `736d08e` | v1.9.2 |
+| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `937c179` | v1.10.4 |
 | `reference/codearts2api/` | https://github.com/HITZY2002/codearts2api | `8d1e43d` | — |
 
 ## 本仓库相对上游的改动
@@ -24,7 +24,7 @@
 
 ## 已回移的上游修复（v1.10.x）
 
-上游 `workbuddy2api-hub` 在 v1.9.2 之后发布了 v1.10.0 / v1.10.1。以下修复已按本仓库的 CodeArts 实现回移，未整体替换上游文件：
+上游 `workbuddy2api-hub` 在 v1.9.2 之后发布了 v1.10.0 – v1.10.4。以下修复已按本仓库的 CodeArts 实现回移，未整体替换上游文件：
 
 - `x-ot-session-id` / `user-session-id` / `x-ot-trace-id`：按账号稳定会话，修掉 CodeArts 会话名额被历史请求占满后的排队与 `TM.00001041`。
 - CodeArts 的 Key 账号白名单与模型限制：`open_chat()` / `CodeArtsPool.pick()` 接受 `allowed_accounts`，禁止模型在进入上游前直接返回 400。
@@ -34,8 +34,11 @@
 - 面板单请求体上限：设置页可调 1–256 MB，立即生效；413 提示同步更新。
 - 面板细节：Key 选择器显示账号备注、活动状态区分「无本地记录」、删除重复的「上游响应头超时」卡片、活动流跨天补日期。
 - 429 绝对恢复时刻：`X-RateLimit-Reset` / `X-RateLimit-Reset-At` 与正文 `reset_at` 已接入模型 429 出口（登录限流与 CodeArts 透传出口尚未覆盖）。
+- v1.10.2–v1.10.4：CodeArts OAuth 回调认领 `state` 作为 `ticket_id`；非流式聚合在 `finally` 关闭上游，修掉背靠背请求提前释放账号；`pricing/pricing.json` 快照与 `wb_catalog.py` / `wb_tasks.py` 对齐上游 v1.10.4；成长中心新增任务、Buddy 开盲盒与小程序链式任务已随 `wb_tasks.py` 进入本仓库。
 
 `codearts2api` 的 `8d1e43d` 基线已包含每日签到与新手活动积分，本仓库现有实现已对齐；该上游没有新的后续 commit。
+
+本仓库的 `wb_scheduler.py` 仍保留 CodeArts 独立保活/签到巡检；`wb_codearts.py` 保留单进程 CodeArts 实现与本地视觉支持，只回移上游的协议修复，不做整文件替换。
 
 ## 同步上游
 

@@ -10338,7 +10338,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.0",
+        "version": "1.1.1",
         "project": "mix2api",
         "update_repository": wb_updates.REPOSITORY,
         "max_payload_mb": wb_settings.max_payload_mb(ACCOUNTS_DIR),
@@ -18536,7 +18536,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.1.0"
+    server_version = "mix2api/1.1.1"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -23497,6 +23497,11 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, str(exc), elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account.uid, realm=realm, key=self._key_id())
             return self._error(502, f"upstream stream error: {exc}")
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
         if egress_on and egress_key:
             wb_egress.note_success(egress_key)
         wall = int((time.time() - t_start) * 1000)

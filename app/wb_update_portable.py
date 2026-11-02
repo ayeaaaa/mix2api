@@ -641,7 +641,7 @@ def wait_health(port, timeout=45, expect_version=None):
     A 200 alone does not prove the new code is running: a supervisor that
     restarts the gateway quickly can answer the probe with the *old* process
     before the files are replaced. The version comes from the `Server` header
-    (`mix2api/1.1.0 Python/3.11.17`); the /health body carries no version.
+    (`mix2api/1.1.1 Python/3.11.17`); the /health body carries no version.
     """
     want = str(expect_version or "").strip()
     deadline = time.time() + timeout
@@ -661,7 +661,7 @@ def wait_health(port, timeout=45, expect_version=None):
 
 
 def _header_version(headers):
-    """`1.1.0` out of a `Server: mix2api/1.1.0 Python/3.11` header."""
+    """`1.1.1` out of a `Server: mix2api/1.1.1 Python/3.11` header."""
     try:
         server = str(headers.get("Server") or "")
     except AttributeError:

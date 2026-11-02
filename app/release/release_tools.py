@@ -15,8 +15,8 @@ repository-wide glob: that list is also the contract #29's updater consumes
 ("replace exactly these files, delete exactly these stale managed files"), so
 an accidental new file in the checkout can never end up in a release.
 
-    python release/release_tools.py portable --version 1.1.0 --tag v1.1.0 \
-        --out dist/mix2api-1.1.0-deploy.zip
+    python release/release_tools.py portable --version 1.1.1 --tag v1.1.1 \
+        --out dist/mix2api-1.1.1-deploy.zip
 """
 from __future__ import annotations
 
