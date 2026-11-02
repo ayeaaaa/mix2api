@@ -29,7 +29,11 @@ const PANEL_REMEMBER_KEY = 'wb-proxy-panel-remember';
    标记必须在首帧前落到 <html> 上，否则新壳会先闪一下旧布局。 */
 (function(){
   var p = (typeof location !== 'undefined' && location.pathname) || '';
-  var next = (p === '/next' || p === '/next/' || p === '/next.html');
+  // 新面板已经是默认；/classic 保留旧壳一个版本，方便回退。
+  // 空 pathname 出现在测试沙箱 / 直接打开文件的场景，按旧壳处理，避免把
+  // 没有完整 URL 的调用方误判成新面板。
+  var classic = (!p || p === '/classic' || p === '/classic/');
+  var next = !classic;
   if(typeof window !== 'undefined') window.__NEXT_UI__ = next;
   if(next && typeof document !== 'undefined' && document.documentElement){
     document.documentElement.setAttribute('data-ui', 'next');

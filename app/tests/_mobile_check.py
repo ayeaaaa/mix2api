@@ -221,7 +221,7 @@ def start_server():
     raise SystemExit("gateway did not answer on port %d" % PORT)
 
 
-def login(page, path="/"):
+def login(page, path="/classic"):
     page.goto(BASE + path, timeout=20000)
     page.wait_for_timeout(1200)
     if page.locator("#panelPwdInput").count():
@@ -543,7 +543,7 @@ def run_checks(filter_name):
 def run_next_checks(browser):
     """新面板 /next：壳、底部导航、更多抽屉和桌面/手机宽度。"""
     page = browser.new_page(viewport={"width": 390, "height": 844})
-    login(page, "/next")
+    login(page, "/")
     page.wait_for_timeout(800)
     info = page.evaluate(
         """
@@ -589,7 +589,7 @@ def run_next_checks(browser):
     page.close()
 
     dpage = browser.new_page(viewport={"width": 1280, "height": 800})
-    login(dpage, "/next")
+    login(dpage, "/")
     dpage.wait_for_timeout(800)
     dinfo = dpage.evaluate(
         """

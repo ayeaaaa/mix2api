@@ -15,10 +15,10 @@ const html = dashboardHtml();
 const proxy = fs.readFileSync(path.join(__dirname, '..', 'wb_proxy.py'), 'utf8');
 
 /* ---- 1. 路由与首帧标记 ---- */
-assert.ok(/path in \("\/", "\/dashboard", "\/ui", "\/next", "\/next\/"\)/.test(proxy),
-  'wb_proxy.py 的 do_GET 应把 /next 指到看板');
-assert.ok(/p === '\/next'/.test(html) && /data-ui/.test(html),
-  '首帧脚本应按 /next 路径给 <html> 打 data-ui 标记');
+assert.ok(/path in \("\/", "\/dashboard", "\/ui", "\/next", "\/next\/", "\/classic", "\/classic\/"\)/.test(proxy),
+  'wb_proxy.py 的 do_GET 应把 /、/next、/classic 指到看板');
+assert.ok(/p === '\/classic'/.test(html) && /var next = !classic/.test(html) && /data-ui/.test(html),
+  '首帧脚本应默认新面板、仅 /classic 保留旧壳');
 assert.ok(/window\.__NEXT_UI__ = next/.test(html), '首帧脚本应暴露 window.__NEXT_UI__');
 
 /* ---- 2. 新壳骨架 ---- */

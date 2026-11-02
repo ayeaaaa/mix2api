@@ -10338,7 +10338,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.0.9",
+        "version": "1.1.0",
         "project": "mix2api",
         "update_repository": wb_updates.REPOSITORY,
         "max_payload_mb": wb_settings.max_payload_mb(ACCOUNTS_DIR),
@@ -18536,7 +18536,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.0.9"
+    server_version = "mix2api/1.1.0"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -19144,7 +19144,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_codearts_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
-        if path in ("/", "/dashboard", "/ui", "/next", "/next/"):
+        if path in ("/", "/dashboard", "/ui", "/next", "/next/", "/classic", "/classic/"):
             return self._get_dashboard()
         if path == "/panel/status":
             return self._get_panel_status()
