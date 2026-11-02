@@ -1,4 +1,5 @@
-"""Tests for gateway_hint 413 and GPT max_tokens clamping."""
+"""Tests for gateway_hint 413, GPT max_tokens clamping and 429 reset headers."""
+import time
 import unittest
 import sys
 import os
@@ -9,7 +10,7 @@ class GatewayFixesTest(unittest.TestCase):
     def test_gateway_hint_413(self):
         hint = wb_proxy.gateway_hint(413, "payload too large (20375735 bytes > 16777216 limit)")
         self.assertIn("WB_MAX_PAYLOAD_BYTES", hint)
-        self.assertIn("raise it and restart", hint)
+        self.assertIn("panel settings", hint)
 
     def test_gpt_max_tokens_clamping(self):
         body = {"model": "gpt-6-luna", "messages": [], "max_tokens": 1}
@@ -23,6 +24,13 @@ class GatewayFixesTest(unittest.TestCase):
         body_ok = {"model": "gpt-6.1-sol", "messages": [], "max_tokens": 32}
         upstream_ok = wb_proxy.build_upstream_body(body_ok)
         self.assertEqual(upstream_ok["max_tokens"], 32)
+
+    def test_rate_limit_headers_carry_an_absolute_instant(self):
+        reset = int(time.time()) + 60
+        headers = dict(wb_proxy.rate_limit_headers(reset))
+        self.assertEqual(headers["X-RateLimit-Reset"], str(reset))
+        self.assertTrue(headers["X-RateLimit-Reset-At"].endswith("Z"))
+        self.assertEqual(wb_proxy.rate_limit_headers(None), [])
 
 if __name__ == "__main__":
     unittest.main()

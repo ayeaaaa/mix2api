@@ -10341,6 +10341,11 @@ def runtime_settings_view():
         "version": "1.0.9",
         "project": "mix2api",
         "update_repository": wb_updates.REPOSITORY,
+        "max_payload_mb": wb_settings.max_payload_mb(ACCOUNTS_DIR),
+        "max_payload_bytes_effective": (
+            wb_settings.max_payload_mb(ACCOUNTS_DIR) * 1024 * 1024
+            if wb_settings.max_payload_mb(ACCOUNTS_DIR) is not None
+            else MAX_PAYLOAD_BYTES),
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -12633,7 +12638,39 @@ def normalize_tools(obj):
                 item["function"] = fn
             norm.append(item)
     if norm:
-        obj["tools"] = norm
+        # The upstream Go validator only accepts function names matching
+        # ^[A-Za-z0-9_-]{1,64}$. Entries that cannot satisfy that must be dropped
+        # rather than forwarded: a bare server-side declaration such as
+        # {"type": "web_search"} normalizes to {"type": "function"} with no
+        # "function" object at all, and the upstream then rejects the whole
+        # request by path tools[N].function.name (code 11133).
+        #
+        # Names are dropped, never rewritten: renaming would desynchronize the
+        # tool_calls names the model emits from the ones the client knows.
+        valid = []
+        seen = set()
+        dropped = []
+        for item in norm:
+            fn = item.get("function")
+            if not isinstance(fn, dict):
+                dropped.append("<no function>")
+                continue
+            name = str(fn.get("name") or "").strip()
+            if not re.match(r"^[A-Za-z0-9_-]{1,64}$", name):
+                dropped.append(name or "<empty>")
+                continue
+            if name in seen:
+                dropped.append(name + " <dup>")
+                continue
+            seen.add(name)
+            valid.append(item)
+        if dropped:
+            log("normalize_tools: dropped %d unusable tool(s): %s"
+                % (len(dropped), ", ".join(dropped[:6])))
+        if valid:
+            obj["tools"] = valid
+        else:
+            obj.pop("tools", None)
     else:
         obj.pop("tools", None)
 # ---------------------------------------------------------------------------
@@ -13747,10 +13784,17 @@ class RateLimited(Exception):
     """Upstream throttled this model (429 / code 6004). Distinct from a dead
     pool: the credential is fine, only the model is cooling down for a while."""
 
-    def __init__(self, http_error=None, detail="", wait=60, message=""):
+    def __init__(self, http_error=None, detail="", wait=60, message="", reset_at=None):
         self.http_error = http_error
         self.detail = detail or ""
         self.wait = max(1, int(wait or 60))
+        # Absolute reset instant (epoch seconds), when the caller knows it.
+        # `wait` is "how long from now"; only reset_at survives a task being
+        # handed to another process or a client re-reading a log line.
+        try:
+            self.reset_at = float(reset_at) if reset_at else None
+        except (TypeError, ValueError):
+            self.reset_at = None
         # 429s answered without an upstream call (the pool is parked by the
         # daily token guard) carry their own text instead of the upstream
         # wording.
@@ -13775,8 +13819,8 @@ def gateway_hint(status, message):
     text = str(message or "")
     lower = text.lower()
     if status == 413 and "payload too large" in lower:
-        return ("single request body exceeds the gateway cap "
-                "(WB_MAX_PAYLOAD_BYTES, default 16MB); raise it and restart wb-proxy")
+        return ("single request body exceeds the gateway cap; reduce the request or "
+                "increase the limit in panel settings (or WB_MAX_PAYLOAD_BYTES before startup)")
     if status == 503 and "concurrent chat limit" in lower:
         return "gateway is busy at its concurrency limit; retry shortly"
     if ("11133" in lower or "model_param_invalid" in lower
@@ -14482,6 +14526,52 @@ def parse_rate_limit_reset(detail):
         return base - offset
     except Exception:
         return None
+
+
+#: Refuse to advertise a reset beyond 2100-01-01: such an epoch is far more
+#: likely to be a malformed body or a replayed stale response than a real wait.
+RATE_LIMIT_RESET_MAX = 4102444800
+
+
+def _usable_reset_epoch(reset_at, now=None):
+    """Clamp a candidate reset instant to one we can safely advertise, or None."""
+    if not reset_at:
+        return None
+    try:
+        value = float(reset_at)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (0 < value <= RATE_LIMIT_RESET_MAX):
+        return None
+    if now is None:
+        now = time.time()
+    epoch = int(value)
+    if epoch < value:
+        epoch += 1
+    if epoch <= int(now):
+        return None
+    return epoch
+
+
+def rate_limit_reset_at(exc):
+    """Absolute reset epoch for a 429, or None when no usable instant is known."""
+    epoch = _usable_reset_epoch(getattr(exc, "reset_at", None))
+    if epoch is not None:
+        return epoch
+    return _usable_reset_epoch(parse_rate_limit_reset(getattr(exc, "detail", "") or ""))
+
+
+def _iso_utc(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def rate_limit_headers(reset_at):
+    """Extra 429 headers: epoch + ISO-8601 UTC. Empty when no instant is usable."""
+    epoch = _usable_reset_epoch(reset_at)
+    if epoch is None:
+        return []
+    return [("X-RateLimit-Reset", str(epoch)),
+            ("X-RateLimit-Reset-At", _iso_utc(epoch))]
 
 
 def upstream_timeouts():
@@ -15209,7 +15299,8 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             raise exc
         if last_429 is not None:
             exc = RateLimited(last_429, last_429_detail,
-                              wait=retry_after_seconds(model, realm))
+                              wait=retry_after_seconds(model, realm),
+                              reset_at=parse_rate_limit_reset(last_429_detail))
             exc.account_uid = last_uid
             raise exc
         if last_403_detail:
@@ -18719,18 +18810,25 @@ class Handler(BaseHTTPRequestHandler):
         # checked on the way in), so drain it exactly like _error does.
         self._handle_expect_continue()
         self._discard_body()
-        body = json.dumps({
-            "error": {
-                "message": text + detail,
-                "type": "rate_limit_error",
-                "code": 429,
-                "retry_after": wait,
-            }
-        }, ensure_ascii=False).encode("utf-8")
+        reset_at = rate_limit_reset_at(exc) or _usable_reset_epoch(time.time() + wait)
+        iso = _iso_utc(reset_at) if reset_at else ""
+        if iso:
+            text += " (resets at %s)" % iso
+        error = {
+            "message": text + detail,
+            "type": "rate_limit_error",
+            "code": 429,
+            "retry_after": wait,
+        }
+        if reset_at:
+            error["reset_at"] = reset_at
+        body = json.dumps({"error": error}, ensure_ascii=False).encode("utf-8")
         self.send_response(429)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Retry-After", str(wait))
+        for name, value in rate_limit_headers(reset_at):
+            self.send_header(name, value)
         if cors_origin_allowed(self.path):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -18744,12 +18842,20 @@ class Handler(BaseHTTPRequestHandler):
             text += " - " + str(exc.detail)[:200]
         self._handle_expect_continue()
         self._discard_body()
-        body = json.dumps(anthropic_error_obj(429, text, "rate_limit_error"),
-                          ensure_ascii=False).encode("utf-8")
+        reset_at = rate_limit_reset_at(exc) or _usable_reset_epoch(time.time() + wait)
+        iso = _iso_utc(reset_at) if reset_at else ""
+        if iso:
+            text += " (resets at %s)" % iso
+        payload = anthropic_error_obj(429, text, "rate_limit_error")
+        if reset_at:
+            payload["error"]["reset_at"] = reset_at
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(429)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Retry-After", str(wait))
+        for name, value in rate_limit_headers(reset_at):
+            self.send_header(name, value)
         if cors_origin_allowed(self.path):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -19793,8 +19899,10 @@ class Handler(BaseHTTPRequestHandler):
                 break
             total += size
             if total > max_bytes:
-                # Keep draining so the connection stays aligned, then refuse.
-                self._drain_chunked_body()
+                # The current chunk has not been read. Close rather than trying
+                # to parse its data as another chunk header or draining forever.
+                self.close_connection = True
+                self._body_consumed = True
                 raise BodyTooLarge(total)
             remaining = size
             while remaining > 0:
@@ -19847,11 +19955,15 @@ class Handler(BaseHTTPRequestHandler):
         return {}
     def _payload_or_error(self, allow_list=False):
         """Read the body, replying with the right error and returning None."""
+        configured_mb = wb_settings.max_payload_mb(ACCOUNTS_DIR)
+        limit = configured_mb * 1024 * 1024 if configured_mb is not None else MAX_PAYLOAD_BYTES
         try:
-            return self._read_payload(allow_list=allow_list)
+            return self._read_payload(max_bytes=limit, allow_list=allow_list)
         except BodyTooLarge as exc:
+            self.close_connection = True
+            self._body_consumed = True
             message = ("payload too large (%d bytes > %d limit)"
-                       % (exc.length, MAX_PAYLOAD_BYTES))
+                       % (exc.length, limit))
             if self._anthropic_route():
                 self._anthropic_error(413, message, "invalid_request_error")
             else:
@@ -20503,6 +20615,12 @@ class Handler(BaseHTTPRequestHandler):
             # The panel's hint promises this takes effect now: a lower value
             # has to drop the extra folders immediately, not at the next update.
             reply["pruned_backups"] = wb_update_request.apply_keep_backups(stored)
+        if "max_payload_mb" in payload:
+            try:
+                reply["max_payload_mb"] = wb_settings.set_max_payload_mb(
+                    ACCOUNTS_DIR, payload["max_payload_mb"])
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
         if "upstream" in payload:
             raw = payload.get("upstream")
             if not isinstance(raw, dict):
@@ -23022,8 +23140,14 @@ class Handler(BaseHTTPRequestHandler):
             # 本地配置问题，按 400 回：502 会让人以为上游坏了。
             raise wb_codearts.CodeArtsBadRequest(
                 "CodeArts 出口未启用：请到设置页打开「启用 CodeArts 出口」。")
+        blocked = (self._banned_model_error(payload.get("model"))
+                   or self._key_model_error(payload.get("model")))
+        if blocked:
+            raise wb_codearts.CodeArtsBadRequest(blocked)
         body = wb_codearts.build_chat_body(payload, session_key)
-        stream, account, model = wb_codearts.open_chat(cfg, body, session_key)
+        stream, account, model = wb_codearts.open_chat(
+            cfg, body, session_key,
+            allowed_accounts=self._key_allowed_accounts())
         return stream, account, model
 
     def _codearts_error(self, model, exc, t_start, realm):

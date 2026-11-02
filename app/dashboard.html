@@ -1656,6 +1656,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '人工映射表 OVERRIDES': 'Manual mapping table OVERRIDES',
     '今日': 'Today',
     '今日已签到': 'Checked in today',
+    '无本地记录': 'No local record',
     '今日数据 (Today)': 'Today',
     '今日未签到': 'Not checked in today',
     '今日次数已用尽': 'No attempts left today',
@@ -2227,6 +2228,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 '已启用：会话键包含首条回复': 'On: the key includes the first reply',
 '已关闭：会话键只用前两条消息': 'Off: the key uses the first two messages',
     '上游响应头超时': 'Upstream response-header timeout',
+    '单请求体上限': 'Single request body limit',
     '单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。': 'How long one attempt may wait for the upstream to send response headers (seconds). Nothing is sent to the client before those headers arrive, so this is exactly how long the client can end up waiting: set it above the client\'s first-byte budget and the client disconnects first (seen as a 499, or a first byte that never comes) while the gateway keeps retrying on the next account under the same limit. Default 120.',
     '调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。': 'The cost of lowering it: a normal request the upstream genuinely takes a long time to compute is failed early and retried on another account, spending one more unit of quota. Prefer a value no higher than the client\'s first-byte budget.',
     '请输入不小于 1 的整数秒': 'Enter a whole number of seconds, at least 1',
@@ -3002,6 +3004,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。": "為每個 Key 繫結專屬出口。客戶端使用該 Key 請求將固定走對應區域，實現雙出口併發。",
     "人工映射表 OVERRIDES": "人工對映表 OVERRIDES",
     "今日已签到": "今日已簽到",
+    "无本地记录": "無本地記錄",
     "今日数据 (Today)": "今日資料 (Today)",
     "今日未签到": "今日未簽到",
     "从 Web 控制台同步最新昵称（改名后免重登）": "從 Web 控制檯同步最新暱稱（改名後免重登）",
@@ -3413,6 +3416,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已启用：出口级瞬时失败退避": "已啟用：出口級瞬時失敗退避",
     "已关闭出口级瞬时失败退避": "已關閉出口級瞬時失敗退避",
     "上游响应头超时": "上游回應標頭逾時",
+    "单请求体上限": "單請求體上限",
     "单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。": "單次嘗試等上游回傳回應標頭的上限（秒）。拿到回應標頭之前閘道不會向客戶端發出任何位元組，所以這個值就是客戶端要空等的時長：設得比客戶端首位元組預算還大時，客戶端會先斷開（表現為 499 / 首位元組遲遲不返回），而閘道仍會按這個上限繼續換帳號重試。預設 120。",
     "调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。": "調小的代價：上游偶爾確實算得慢的正常請求會被提前判失敗、換帳號重試，多消耗一次額度。建議不高於客戶端的首位元組預算。",
     "请输入不小于 1 的整数秒": "請輸入不小於 1 的整數秒",
@@ -6305,6 +6309,13 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </section>
 
       <section>
+        <h2>单请求体上限</h2>
+        <div style="font-size:12px;color:var(--dim);margin:8px 0">超限时可临时调高后重试压缩请求；调高会增加并发请求的内存占用。保存后立即生效。</div>
+        <input id="setMaxPayloadMB" type="number" min="1" max="256" step="1" style="width:90px"> MB
+        <button onclick="saveMaxPayload(this)">保存</button>
+      </section>
+
+      <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">更稳的会话粘滞键 <span class="help-mark" role="button" tabindex="0" aria-label="功能说明" onclick="toggleHelpDetail('affinityStableKeyHelp', event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleHelpDetail('affinityStableKeyHelp', event);}">!</span> <em id="setAffinityStableKeyState"></em></h2>
@@ -6320,27 +6331,6 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
               启用更稳的会话键
             </label>
             <button onclick="saveAffinityStableKey(this)">保存</button>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
-            <h2 style="margin:0">上游响应头超时 <em id="setHeaderTimeoutState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。
-            </div>
-            <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setHeaderTimeout" type="number" min="1" step="1" style="width:90px">
-              秒
-            </label>
-            <button onclick="saveHeaderTimeout(this)">保存</button>
           </div>
         </div>
       </section>
@@ -9525,7 +9515,7 @@ function activityStatusOf(a){
   // 国内版：加油站
   const event = ACTIVITY_TODAY.byUid[uid];
   const gasDone = a && a.lastCheckin;
-  let gas = {kind: 'none', label: '加油站', state: '未领', at: '', message: ''};
+  let gas = {kind: 'none', label: '加油站', state: '无本地记录', at: '', message: ''};
   if(event && event.task === 'checkin'){
     gas = {kind: event.ok ? 'ok' : 'failed', label: '加油站',
            state: event.ok ? '已领' : '失败',
@@ -9537,7 +9527,7 @@ function activityStatusOf(a){
 
   // 国内版：成长计划连登打卡
   const streakDone = a && a.lastActivityReport;
-  let streak = {kind: 'none', label: '成长连登', state: '未打卡', at: '', message: ''};
+  let streak = {kind: 'none', label: '成长连登', state: '无本地记录', at: '', message: ''};
   if(streakDone && String(streakDone).startsWith(todayStamp())){
     streak = {kind: 'done', label: '成长连登', state: '已打卡', at: String(streakDone), message: '连登活跃已上报'};
   }
@@ -9581,10 +9571,10 @@ function activityStatusChip(a){
   return '<div style="display:inline-flex;flex-direction:column;gap:4px;align-items:center">'
     + '<span class="' + mainStatus.cls + '" style="cursor:pointer;white-space:nowrap" title="' + esc(gasTip) + '"'
     + ' onclick="openActivityHistory(&quot;' + uidAttr + '&quot;)">'
-    + esc('Buddy 加油站 · ' + (status.gas.kind === 'none' ? '未领' : status.gas.state)) + '</span>'
+    + esc('Buddy 加油站 · ' + status.gas.state) + '</span>'
     + '<span class="' + stkCls + '" style="cursor:pointer;white-space:nowrap" title="' + esc(stkTip) + '"'
     + ' onclick="openActivityHistory(&quot;' + uidAttr + '&quot;)">'
-    + esc('成长计划 · ' + (status.streak.kind === 'done' ? '已签到' : '未签到')) + '</span>'
+    + esc('成长计划 · ' + (status.streak.kind === 'done' ? '已签到' : '无本地记录')) + '</span>'
     + '</div>'
     + '<span style="display:none">' + esc(mainStatus.text) + '</span>';
 }
@@ -13303,6 +13293,8 @@ async function loadSettings(showToast){
       await loadQuotaScanCatalog();
       renderQuotaScanModels();
       renderQuotaScanState(data);
+      const maxPayload = document.getElementById('setMaxPayloadMB');
+      if(maxPayload) maxPayload.value = data.max_payload_mb || Math.ceil((data.max_payload_bytes_effective || 16777216) / 1048576);
       // 上游响应头超时：没改过时后端给的就是默认 120，所以「等于 120」按默认态
       // 显示，只有被改过才标出实际秒数。
       const headerTimeout = (data.upstream || {}).header_timeout_seconds;
@@ -14534,6 +14526,18 @@ async function saveUsageKeep(btn){
     if(btn) btn.disabled = false;
   }
 }
+async function saveMaxPayload(btn){
+  const el = document.getElementById('setMaxPayloadMB');
+  const value = Number(el && el.value);
+  if(!Number.isInteger(value) || value < 1 || value > 256){ toast('请输入 1 到 256 的整数 MB', 'bad'); return; }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {max_payload_mb: value});
+    toast('单请求体上限已保存', 'ok');
+    loadSettings();
+  } catch(e) { toast('保存失败: ' + e.message, 'bad'); }
+  finally { if(btn) btn.disabled = false; }
+}
 /* 上游响应头超时。后端只接受 >=1 的整数秒，所以先把输入收成整数再发：空值、
    小数、非数字就地拦下，而不是送上去换一个 400 回来。 */
 async function saveHeaderTimeout(btn){
@@ -15353,7 +15357,8 @@ async function renderKeyPickers(i){
     accountList.innerHTML = accts.map(a => {
       const uid = String((a && a.uid) || '');
       if(!uid) return '';
-      const label = (a.nickname || uid.slice(0, 8)) + ' · ' + uid.slice(0, 8) + (a.realm ? ' · ' + a.realm : '');
+      const note = String(a.note || '').trim();
+      const label = (a.nickname || uid.slice(0, 8)) + (note ? ' · ' + note : '') + ' · ' + uid.slice(0, 8) + (a.realm ? ' · ' + a.realm : '');
       const checked = (row.accounts || []).indexOf(uid) >= 0 ? ' checked' : '';
       return '<label class="key-pick-row" data-search="' + esc((label + ' ' + uid).toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(uid) + '"' + checked + ' onchange="toggleKeyAccount(' + i + ',this)">' + esc(label) + '</label>';
     }).join('') || '<div style="font-size:12px;color:var(--warn);padding:4px">账号列表为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
@@ -18006,6 +18011,17 @@ function nicknameOf(uid){
   const acc = ((state.analytics || {}).accounts || []).find(x => x.uid === uid);
   return acc ? (acc.nickname || acc.uid.slice(0, 8)) : (uid || '').slice(0, 8);
 }
+/* 「实时活动流」原先只截 HH:MM:SS：昨天 22:11 和今天 22:11 看起来一模一样。
+   同一天仍只显示时分秒，跨天补上月日。 */
+function recentStamp(iso){
+  const s = (iso || '').replace('T', ' ');
+  const time = s.slice(11, 19);
+  if (!time) return '—';
+  const now = new Date();
+  const pad = v => String(v).padStart(2, '0');
+  const today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+  return s.slice(0, 10) === today ? time : s.slice(5, 16);
+}
 async function loadRecent(){
   try{
     const r = await api('/usage/recent?limit=12');
@@ -18015,7 +18031,7 @@ async function loadRecent(){
       const ok = x.outcome === 'completed';
       const nm = nicknameOf(x.account);
       return `<div class="recent-item">
-        <span class="t">${(x.iso || '').slice(11, 19)}</span>
+        <span class="t">${recentStamp(x.iso)}</span>
         <span class="m"><b>${x.model || ''}</b> → ${nm.length > 16 ? nm.slice(0, 16) + '…' : nm}${ok ? '' : ' <span class="err">[' + (x.outcome || '失败') + ']</span>'}</span>
         <span class="r"><b>${fmtCompact(x.total_tokens || 0)}</b> tok · ${((x.elapsed_ms || 0) / 1000).toFixed(1)}s</span>
       </div>`;
@@ -19701,7 +19717,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     stability: {
       title: '稳定性',
       desc: '额度探针、退避、超时、并发上限和会话粘滞。',
-      items: ['模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '更稳的会话粘滞键']
+      items: ['模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '单请求体上限', '更稳的会话粘滞键']
     },
     system: {
       title: '日志与系统',

@@ -458,6 +458,38 @@ try:
     state.chat_error = None
     state.chat_error_remaining = -1
 
+    print("== session header ==")
+
+    def _chat_headers_of(session_key):
+        body = C.build_chat_body({"model": "GLM-5.2",
+                                  "messages": [{"role": "user", "content": "hi"}],
+                                  "stream": False}, session_key)
+        stream, _acct, _model = C.open_chat(C.load_config(ACCOUNTS), body, session_key)
+        b"".join(stream)
+        stream.close()
+        for req in reversed(state.requests):
+            if req["path"].endswith("/chat/completions"):
+                return req["headers"]
+        return {}
+
+    ot_first = _chat_headers_of("sess-ot-1")
+    ot_second = _chat_headers_of("sess-ot-2")
+    ot_id = ot_first.get("x-ot-session-id") or ""
+    check("session header sent", bool(ot_id), ot_first)
+    check("session header is 32 hex",
+          len(ot_id) == 32 and all(c in "0123456789abcdef" for c in ot_id), ot_id)
+    check("session header stable per account",
+          ot_id == (ot_second.get("x-ot-session-id") or ""),
+          (ot_id, ot_second.get("x-ot-session-id")))
+    check("user-session-id mirrors it",
+          ot_first.get("user-session-id") == ot_id, ot_first.get("user-session-id"))
+    check("trace id differs per request",
+          ot_first.get("x-ot-trace-id") != ot_second.get("x-ot-trace-id"),
+          (ot_first.get("x-ot-trace-id"), ot_second.get("x-ot-trace-id")))
+    check("chat id still per conversation",
+          ot_first.get("chat-id") != ot_second.get("chat-id"),
+          (ot_first.get("chat-id"), ot_second.get("chat-id")))
+
     print("== text snapshot stream ==")
     state.chat_mode = "text"
     body = C.build_chat_body({"model": "GLM-5.2",
@@ -467,7 +499,11 @@ try:
     raw = b"".join(stream)
     stream.close()
     text = raw.decode("utf-8", "replace")
-    check("text stream content", "你好" in text, text[:300])
+    chunks = [json.loads(line[6:]) for line in text.splitlines()
+              if line.startswith('data: {')]
+    joined = ''.join(((chunk.get('choices') or [{}])[0].get('delta') or {}).get('content') or ''
+                     for chunk in chunks if chunk.get('choices'))
+    check("text stream content", joined == "你好", joined)
     check("text stream no done content", '"content": "[DONE]"' not in text, text[:300])
     state.chat_mode = "delta"
 
@@ -564,10 +600,12 @@ try:
     cont = C.oauth_callback(
         C.load_config(ACCOUNTS), started2["session_id"],
         "http://127.0.0.1:8788/oauth/callback?secret=s1&redirect="
-        + __import__("urllib.parse").parse.quote("https://codearts.huaweicloud.com/portal/x?ticket_id="
+        + __import__("urllib.parse").parse.quote(C.PORTAL_HOST + "/x?ticket_id="
                                                   + started2["session_id"], safe=""))
     check("oauth continue", cont["status"] == "continue", cont)
-    check("oauth next_url", cont["next_url"].startswith("https://"), cont)
+    check("oauth next_url", cont["next_url"].startswith(C.PORTAL_HOST), cont)
+    check("oauth rejects foreign redirect", not C._safe_oauth_redirect("https://evil.invalid/"))
+    check("oauth rejects embedded credentials", not C._safe_oauth_redirect("https://codearts.huaweicloud.com@evil.invalid/"))
 
     print("== oauth without identity ==")
     import base64
