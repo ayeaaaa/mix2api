@@ -87,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
           OVERVIEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' wb_proxy.py | head -n1 || true)
-          SERVER=$(grep -oP 'server_version\s*=\s*"wb-proxy/\K[^"]+' wb_proxy.py | head -n1 || true)
+          SERVER=$(grep -oP 'server_version\s*=\s*"(?:wb-proxy|mix2api)/\K[^"]+' wb_proxy.py | head -n1 || true)
           echo "source: overview=$OVERVIEW server=$SERVER tag=$TAG"
           if [ -z "$OVERVIEW" ] || [ "$OVERVIEW" != "$SERVER" ]; then
             echo "::error::source version strings disagree ($OVERVIEW vs $SERVER)"

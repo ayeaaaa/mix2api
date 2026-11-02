@@ -395,7 +395,7 @@ def _current_version():
             text = fh.read(2 * 1024 * 1024)
     except OSError as exc:
         raise UpdateError("无法读取当前网关版本") from exc
-    match = re.search(r'server_version\s*=\s*"wb-proxy/([^\"]+)"', text)
+    match = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^\"]+)"', text)
     if not match:
         raise UpdateError("无法识别当前网关版本")
     return match.group(1)

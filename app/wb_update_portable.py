@@ -223,7 +223,7 @@ def validate_stage(stage, version, root_name):
     proxy = os.path.join(stage, root_name, "wb_proxy.py")
     with open(proxy, encoding="utf-8") as fh:
         text = fh.read()
-    match = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
+    match = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^"]+)"', text)
     if not match or match.group(1) != version:
         raise UpdateError("更新包里的 wb_proxy.py 版本不一致")
     if not os.path.isfile(os.path.join(stage, root_name, HELPER_NAME)):
@@ -382,7 +382,7 @@ def _served_version(path):
             text = fh.read()
     except OSError:
         return ""
-    match = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
+    match = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^"]+)"', text)
     return match.group(1) if match else ""
 
 
@@ -641,7 +641,7 @@ def wait_health(port, timeout=45, expect_version=None):
     A 200 alone does not prove the new code is running: a supervisor that
     restarts the gateway quickly can answer the probe with the *old* process
     before the files are replaced. The version comes from the `Server` header
-    (`wb-proxy/1.7.24 Python/3.11.17`); the /health body carries no version.
+    (`mix2api/1.0.9 Python/3.11.17`); the /health body carries no version.
     """
     want = str(expect_version or "").strip()
     deadline = time.time() + timeout
@@ -661,12 +661,12 @@ def wait_health(port, timeout=45, expect_version=None):
 
 
 def _header_version(headers):
-    """`1.7.24` out of a `Server: wb-proxy/1.7.24 Python/3.11` header."""
+    """`1.0.9` out of a `Server: mix2api/1.0.9 Python/3.11` header."""
     try:
         server = str(headers.get("Server") or "")
     except AttributeError:
         return ""
-    match = re.search(r"wb-proxy/([0-9][^\s]*)", server)
+    match = re.search(r"(?:wb-proxy|mix2api)/([0-9][^\s]*)", server)
     return match.group(1) if match else ""
 
 

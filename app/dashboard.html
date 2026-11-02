@@ -2057,6 +2057,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '当前是默认密码 admin，建议到「设置」里修改': 'The password is still the default admin; change it in Settings',
     '当前浅色': 'currently light',
     '当前深色': 'currently dark',
+    '项目': 'Project',
+    '更新源': 'Update source',
     '当前版本': 'Current version',
     '当前版本暂无模型请求或性能数据': 'No model requests or performance data for the current version yet',
     '当前禁用': 'Currently disabled',
@@ -3189,6 +3191,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "当前没有禁用的账号或模型。": "目前沒有禁用的帳號或模型。",
     "当前浅色": "目前淺色",
     "当前深色": "目前深色",
+    "项目": "專案",
+    "更新源": "更新來源",
     "当前版本": "目前版本",
     "当前版本暂无模型请求或性能数据": "目前版本暫無模型請求或效能資料",
     "当前版本模型库与能力清单": "目前版本模型庫與能力清單",
@@ -6456,7 +6460,9 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         <h2>运行信息</h2>
       <table>
         <tbody>
+          <tr><td>项目</td><td class="mono" id="setProject">mix2api</td></tr>
           <tr><td>当前版本</td><td class="mono" id="setVersion">-</td></tr>
+          <tr><td>更新源</td><td class="mono" id="setUpdateRepo">-</td></tr>
           <tr><td>账号存储目录</td><td class="mono" id="setAccountsDir">-</td></tr>
           <tr><td>用量日志目录</td><td class="mono" id="setUsageDir">-</td></tr>
           <tr><td>设置文件</td><td class="mono" id="setFile">-</td></tr>
@@ -13351,7 +13357,9 @@ async function loadSettings(showToast){
     renderCodeartsSettings(data.codearts);
     updateUI();
     const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
+    set('setProject', data.project);
     set('setVersion', data.version);
+    set('setUpdateRepo', data.update_repository);
     set('setAccountsDir', data.accounts_dir);
     set('setUsageDir', data.usage_dir);
     set('setFile', data.settings_file);

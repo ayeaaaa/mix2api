@@ -67,7 +67,7 @@ def source_version(source=ROOT):
     import re
     with open(os.path.join(source, "wb_proxy.py"), encoding="utf-8") as fh:
         text = fh.read()
-    server = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
+    server = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^"]+)"', text)
     if not server:
         raise SystemExit("wb_proxy.py 里找不到 server_version")
     return server.group(1)
