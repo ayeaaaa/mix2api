@@ -49,11 +49,12 @@ assert.ok(/id="accountsRealmCn"[^>]*onclick="switchViewRealm\('cn'\)"/.test(html
   '「国内版」按钮应接上 switchViewRealm(\'cn\')');
 assert.ok(/id="accountsRealmCodearts"[^>]*onclick="switchViewRealm\('codearts'\)"/.test(html),
   '「CodeArts」按钮应接上 switchViewRealm(\'codearts\')');
-// 两组按钮（网关页卡片 + 账号页控件）都必须走同一个入口，否则两边会各记一份状态
-assert.equal(html.split("onclick=\"switchViewRealm('intl')\"").length, 1 + 2,
-  '切 intl 的入口应恰好两个：网关页卡片 + 账号页控件');
-assert.equal(html.split("onclick=\"switchViewRealm('cn')\"").length, 1 + 2,
-  '切 cn 的入口应恰好两个：网关页卡片 + 账号页控件');
+// 三组按钮（网关页卡片 + 账号页控件 + 新壳网关页控件）都必须走同一个入口，
+// 否则各记一份状态。
+assert.equal(html.split("onclick=\"switchViewRealm('intl')\"").length, 1 + 3,
+  '切 intl 的入口应恰好三个：网关页卡片 + 账号页控件 + 新壳网关控件');
+assert.equal(html.split("onclick=\"switchViewRealm('cn')\"").length, 1 + 3,
+  '切 cn 的入口应恰好三个：网关页卡片 + 账号页控件 + 新壳网关控件');
 
 // 高亮与 aria 由 updateUI 一处写，两边不能各写一份
 assert.ok(/rsIntl\.classList\.toggle\("active", isIntlView\)/.test(script),
@@ -99,7 +100,7 @@ dom.installDom({
 // 两种布局要搬的节点：账号页页头、账号页里的区块、网关页的合并锚点。
 const byId = id => document.getElementById(id);
 const pageAccounts = byId('pageAccounts');
-const pageGateway = byId('pageGateway');
+const pageGateway = byId('pageOverview') || byId('pageGateway');
 const header = byId('accountsHeader');
 const anchor = byId('accountsSectionsAnchor');
 const realmSwitch = byId('accountsRealmSwitch');

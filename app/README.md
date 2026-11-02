@@ -1,8 +1,7 @@
-# WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
+# mix2api — 国际版、国内版、CodeArts 多出口网关
 
-> **mix2api 单进程分支**：CodeArts 已并入本进程。部署请使用仓库根目录的
-> `deploy/docker-compose.yml`（本地构建），不要拉上游 GHCR 镜像——上游镜像
-> 不包含 CodeArts 原生客户端。
+> **mix2api 单进程版**：CodeArts 已并入本进程。部署请使用仓库根目录的
+> `deploy/docker-compose.yml`（本地构建）或本仓库发布的镜像。
 
 > [!IMPORTANT]
 > **项目进入低频维护（2026-10-23） / Low-frequency maintenance**
@@ -26,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.9.2-2496ED?style=flat-square" alt="Version 1.9.2"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.1.0-2496ED?style=flat-square" alt="Version 1.1.0"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -98,10 +97,10 @@ This project is for protocol research and personal use only. Prefer the official
 
 ```bash
 # 官方源（可直连 GitHub 环境）：
-curl -fsSL https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/main/quick-deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ayeaaaa/mix2api/main/app/quick-deploy.sh | bash
 
 # 国内网络 / NAS 加速（Connection reset 时用）：
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/main/quick-deploy.sh | sudo bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ayeaaaa/mix2api/main/app/quick-deploy.sh | sudo bash
 ```
 
 NAS（如飞牛 fnOS）普通用户没有 Docker 权限时，把结尾的 `bash` 换成 `sudo bash`。再次运行同一条命令即平滑升级，账号与用量数据不受影响。
@@ -109,7 +108,7 @@ NAS（如飞牛 fnOS）普通用户没有 Docker 权限时，把结尾的 `bash`
 **部署模式**：默认 `lan`（`58675:58675`，局域网内可访问）。部署到公网服务器、或只想本机能连时，把环境变量放在管道后的 `bash` 前面：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/main/quick-deploy.sh | WB_DEPLOY_MODE=public bash
+curl -fsSL https://raw.githubusercontent.com/ayeaaaa/mix2api/main/app/quick-deploy.sh | WB_DEPLOY_MODE=public bash
 ```
 
 - `local` / `public` 只把宿主端口绑到 `127.0.0.1`，容器内仍是 `HOST=0.0.0.0`（Docker 转发需要）；
@@ -123,7 +122,7 @@ curl -fsSL https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/m
 ```yaml
 services:
   wb-proxy:
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest   # 或 ardeyouxipianyi/workbuddy2api-hub:latest
+    image: ghcr.io/ayeaaaa/mix2api:latest
     container_name: wb-proxy
     restart: unless-stopped
     ports:
@@ -142,7 +141,7 @@ services:
 
 **无 systemd 部署的面板一键更新**：容器 / LXC / 便携版没有 systemd 时，面板默认不能安装更新。部署方可以注册一个外部执行者：
 
-1. 让网关能写请求：挂载一个目录（例如 `/run/workbuddy2api-hub-updater`），设置 `WB_UPDATE_INSTALL_ENABLED=1`、`WB_UPDATE_REQUEST_DIR=<目录>`，并设置 `WB_UPDATE_EXECUTOR=external`（或在该目录放一个 `executor.json`）。
+1. 让网关能写请求：挂载一个目录（例如 `/run/mix2api-updater`），设置 `WB_UPDATE_INSTALL_ENABLED=1`、`WB_UPDATE_REQUEST_DIR=<目录>`，并设置 `WB_UPDATE_EXECUTOR=external`（或在该目录放一个 `executor.json`）。
 2. 执行者监听 `<目录>/request.json`，读取 `action` / `tag` / `version` / `pid` / `port` / `root`，执行下载 → 校验 `SHA256SUMS` → 备份 → 停进程 → 替换 → 等 supervisor 拉起 → 探针 `/health`；失败回滚。`action` 缺省为 `install`，`rollback` 表示用本地备份恢复旧版本（不下载）。参考实现：`wb_update_external.py --request-dir <目录>`（需要 supervisor 在网关退出后自动拉起）。
 3. 执行者写 `<目录>/status.json`，`state` 使用 `queued` / `downloading` / `verifying` / `backing_up` / `stopping` / `applying` / `restoring` / `restarting` / `succeeded` / `restored` / `rolled_back` / `failed`，面板沿用现有状态机。
 
@@ -165,10 +164,10 @@ docker run -d --name wb-proxy-watchtower --restart unless-stopped \
   ```bash
   docker run -d --name wb-proxy --restart unless-stopped -p 58675:58675 \
     -v $(pwd)/accounts:/app/accounts -v $(pwd)/usage:/app/usage \
-    ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
+    ghcr.io/ayeaaaa/mix2api:latest
   ```
 - **鉴权**：容器以 `--lan` 启动，无显式 `API_KEY` 时自动生成 Key 写入 `./accounts/settings.json` 并打印在日志里：`docker compose logs wb-proxy | grep -i "api key"`；
-- **镜像名要带 registry**：写成 `ardeyouxipianyi/workbuddy2api-hub` 会去 Docker Hub 找并报 `pull access denied`，正确写法是 `ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest`（GHCR 公开包，拉取无需登录）；
+- **镜像名要带 registry**：写成 `ayeaaaa/mix2api` 会去 Docker Hub 找并报 `pull access denied`，正确写法是 `ghcr.io/ayeaaaa/mix2api:latest`（GHCR 公开包，拉取无需登录）；
 - **目录权限**：默认以 root（`0:0`）运行；想以宿主用户跑就设 `PUID` / `PGID`（或 `--user $(id -u):$(id -g)`），并确保两个挂载目录对该 uid 可写；
 - **健康检查**：镜像自带 `HEALTHCHECK`（每 30s 探一次 `/health`），`docker ps` 的 STATUS 列会显示 healthy / unhealthy；
 - **源码构建**：`docker compose -f docker-compose.build.yml up -d --build`。
@@ -194,7 +193,7 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 
 **首次配置**
 
-1. 打开 wb-hub 看板 →「设置 → CodeArts 接入」，勾选「启用 CodeArts 出口」并保存。不需要 Base URL 或 API Key。
+1. 打开 mix2api 看板 →「设置 → CodeArts 接入」，勾选「启用 CodeArts 出口」并保存。不需要 Base URL 或 API Key。
 2. 切到 CodeArts 视图，点「+ 添加账号 (OAuth)」完成华为云授权。
 3. 在「设置 → API Key 与出口绑定」里新建 Key，出口选 `CodeArts`，或留空跟随顶部默认出口。
 
@@ -204,7 +203,7 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 - CodeArts 积分余额通过 `snap-manager/v1/statistics/plugin` 查询，看板显示剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表的积分列显示 `0.00`、估算价格显示 `—`。
 - CodeArts 出口不参与 WorkBuddy 的积分/额度护栏，也不参与 `国际版 → 国内版` 的跨出口回退。
 - API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；CodeArts 账号由本进程的 CodeArts 池轮转，不能按 Key 指定。
-- CodeArts 出口没有 wb-hub 的 web_search / web_fetch 代跑；客户端自带工具照常透传。
+- CodeArts 出口没有 WorkBuddy 出口的 web_search / web_fetch 代跑；客户端自带工具照常透传。
 - `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
 
 ### 7. 测试
@@ -214,7 +213,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 243 个套件：181 个 Python + 62 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 245 个套件：182 个 Python + 63 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -464,7 +463,7 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 **Claude Code / Anthropic SDK（实验性 Anthropic Messages 适配，默认禁用）**
 
-> ⚠️ **积分风险：默认拒绝调用。** 网关对外接受 Anthropic Messages，但对内将请求转换为 WorkBuddy 的 `/v2/chat/completions`；`cache_control` 被忽略。已有 [#367](https://github.com/ardeyouxipianyi/workbuddy2api-hub/issues/367) 报告长会话缓存命中率仅约 11%，单次消耗超过 100 积分。该问题的因果机制仍待定位，故暂时默认禁用整个 Anthropic Messages 入口，而不假装完全兼容。禁用时 `/v1/messages`、`/messages` 及对应 `count_tokens` 入口返回 Anthropic 格式的 HTTP 400（`invalid_request_error`），请求不会转发至上游。
+> ⚠️ **积分风险：默认拒绝调用。** 网关对外接受 Anthropic Messages，但对内将请求转换为 WorkBuddy 的 `/v2/chat/completions`；`cache_control` 被忽略。已有社区报告长会话缓存命中率仅约 11%，单次消耗超过 100 积分。该问题的因果机制仍待定位，故暂时默认禁用整个 Anthropic Messages 入口，而不假装完全兼容。禁用时 `/v1/messages`、`/messages` 及对应 `count_tokens` 入口返回 Anthropic 格式的 HTTP 400（`invalid_request_error`），请求不会转发至上游。
 
 只有确认理解风险后，才在**网关服务端**显式设置 `WB_ENABLE_ANTHROPIC_MESSAGES=1` 并重启。Docker Compose 可在 `wb-proxy.environment` 中加入 `- WB_ENABLE_ANTHROPIC_MESSAGES=1`；其他环境则在启动网关前设置此环境变量。客户端配置示例：
 
@@ -637,9 +636,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 - **[Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)**：成长任务全链路逆向、设备指纹稳定派生（`derive_id`）、整点排程调度（`Scheduler`）、指纹脱敏与 `reasoning_content` 回填；
 - **[CangShui/workbuddy-cliproxy-fix](https://github.com/CangShui/workbuddy-cliproxy-fix)**：早期客户端代理修复与接口差异参考；
 - **[lovingfish/workbuddy-cliproxy](https://github.com/lovingfish/workbuddy-cliproxy)** 与 **[mmqz/cpa-multi-plugins](https://github.com/mmqz/cpa-multi-plugins)**：网关通信与多插件管理原型参考；
-- **[ardeyouxipianyi/workbuddy2api](https://github.com/ardeyouxipianyi/workbuddy2api)**：国内版分发包逆向分析与出站 User-Agent 规范参考；
 - **[linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)**：国内版连登管家（补签保连登、7d/14d/28d 档位兑换、抽奖闭环）、对话活跃上报的事件形状与「必须带 `userId`、每号每天一次」的风控口径、企业版门控（企业号无个人成长体系），以及新手礼包 / 活动补偿接口；
-- **[aodianjun/workbuddy2api-hub](https://github.com/aodianjun/workbuddy2api-hub)**：OpenWrt 打包配方（`.ipk` / `.apk` 构建脚本、包 Makefile、init.d 与 uci 配置、面板缓存预热器），审计后并入 `wrt/`。
+- 国内版出站身份与 OpenWrt 打包配方的完整归属见 [`UPSTREAM.md`](../UPSTREAM.md)。
 
 PR 贡献者（v1.4.5 之前的改动未进上方更新记录，这里一并列出）：
 

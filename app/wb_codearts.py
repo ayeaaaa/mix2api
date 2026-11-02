@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """华为云 CodeArts（盘古助手/码道）原生客户端与账号池。
 
-这是单进程版本：wb-hub 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
+这是单进程版本：mix2api 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
 聊天 SSE 与签到，不再依赖独立的 codearts2api 服务。
 
 协议来源：codearts2api 的 Go 实现与 `docs/reverse-engineering.md`。关键点：
@@ -358,7 +358,7 @@ def _fmt_duration(seconds):
 # ---------------------------------------------------------------------------
 
 class CodeArtsAccount(object):
-    """一个华为云 CodeArts 账号；也是 wb-hub 回程处理器需要的账号表面。"""
+    """一个华为云 CodeArts 账号；也是 mix2api 回程处理器需要的账号表面。"""
 
     uid = ""
     realm = "codearts"
@@ -743,7 +743,7 @@ class CodeArtsPool(object):
         return True
 
     # ---- 调度 ----
-    def pick(self, model="", session_key=None, exclude=None):
+    def pick(self, model="", session_key=None, exclude=None, allowed_accounts=None):
         """按「能服务该模型 + 健康 + 并发未满」选一个账号。"""
         exclude = set(exclude or ())
         now = time.time()
@@ -752,13 +752,15 @@ class CodeArtsPool(object):
         # 会话粘性：同一段对话优先回到上次的账号。
         if session_key:
             uid = self._affinity.get(session_key)
-            if uid and uid not in exclude:
+            if uid and uid not in exclude and (allowed_accounts is None or uid in allowed_accounts):
                 acct = self.get(uid)
                 if acct and acct.healthy(now) and acct.has_model(model) \
                         and acct.active_concurrent < acct.max_concurrent:
                     return acct
         candidates = [a for a in accounts
-                      if a.uid not in exclude and a.healthy(now)
+                      if a.uid not in exclude
+                      and (allowed_accounts is None or a.uid in allowed_accounts)
+                      and a.healthy(now)
                       and a.active_concurrent < a.max_concurrent]
         capable = [a for a in candidates if a.has_model(model)]
         pool = capable or candidates
@@ -1445,6 +1447,19 @@ def _derive_chat_id(session_key, messages):
     return secrets.token_hex(16)
 
 
+def _ot_session_id(acct):
+    """账号级稳定的会话 id：同一账号永远同一个，重启 / 续期都不变。"""
+    import hashlib
+    raw = "codearts-ot-session:" + str(getattr(acct, "uid", "") or "")
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _ot_session_enabled():
+    """默认发送会话头；WB_CODEARTS_OT_SESSION=0 时退回旧行为（便于对照）。"""
+    value = os.environ.get("WB_CODEARTS_OT_SESSION", "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
 def _flatten_content(content):
     """Normalize text/image content parts for CodeArts.
 
@@ -1605,9 +1620,9 @@ def _chat_headers(acct, chat_id, session_id, benefit):
 
 
 class CodeArtsStream(object):
-    """把华为云 SSE 包成 wb-hub 回程处理器能吃的行迭代器。
+    """把华为云 SSE 包成 mix2api 回程处理器能吃的行迭代器。
 
-    wb-hub 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
+    mix2api 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
     chunk（choices[].delta / finish_reason / usage）。这里把 CodeArts 的
     `text` 全文快照、`output` 终态和顶层 `delta` 都归一成标准 chunk。
     """
@@ -1699,11 +1714,11 @@ class CodeArtsStream(object):
         return self._chunk({"content": delta}) if delta else b""
 
     def __iter__(self):
-        if self._pending:
-            line, self._pending = self._pending, b""
-            yield line
         while not self._done:
-            line = self.raw.readline()
+            if self._pending:
+                line, self._pending = self._pending, b""
+            else:
+                line = self.raw.readline()
             if not line:
                 break
             stripped = line.strip()
@@ -1838,6 +1853,14 @@ def _client_chat(acct, body, session_key):
     # 与 Go 版一致：Chat-Id / Session-Id 在签名之后才加，不进入 SignedHeaders。
     headers["Chat-Id"] = chat_id
     headers["Session-Id"] = session_id
+    if _ot_session_enabled():
+        # 网关按 x-ot-session-id 统计每账号的并发会话：不发这个头时每个请求都是
+        # 一个新会话，会话结束后还占位约 60 秒，3 个名额很快被自己的历史请求占满。
+        # Chat-Id / Session-Id 不参与这个计数。三个头都在签名之后追加，不进 SignedHeaders。
+        ot_session = _ot_session_id(acct)
+        headers["x-ot-session-id"] = ot_session
+        headers["user-session-id"] = ot_session
+        headers["x-ot-trace-id"] = secrets.token_hex(16)
     timeout = float(acct.pool.config.get("stream_timeout_seconds")
                     or DEFAULTS["stream_timeout_seconds"])
     last_error = None
@@ -1897,7 +1920,7 @@ def _client_chat(acct, body, session_key):
     raise last_error or CodeArtsUpstreamError("CodeArts 并发会话已满")
 
 
-def open_chat(config, body, session_key=None):
+def open_chat(config, body, session_key=None, allowed_accounts=None):
     """选账号、续期、发现模型并打开 SSE；返回 (stream, account, model)。"""
     if not config.get("enabled"):
         raise CodeArtsBadRequest(
@@ -1908,7 +1931,8 @@ def open_chat(config, body, session_key=None):
     last_error = None
     attempts = max(2, len(pool.accounts) + 1)
     for _ in range(attempts):
-        acct = pool.pick(model, session_key=session_key, exclude=exclude)
+        acct = pool.pick(model, session_key=session_key, exclude=exclude,
+                         allowed_accounts=allowed_accounts)
         if acct is None:
             break
         if not pool.acquire(acct):
@@ -2197,6 +2221,17 @@ def _loopback_host(host):
     return str(host or "").lower() in ("127.0.0.1", "localhost", "::1")
 
 
+def _safe_oauth_redirect(url):
+    try:
+        target = urllib.parse.urlsplit(str(url or ""))
+        portal = urllib.parse.urlsplit(PORTAL_HOST)
+        return (target.scheme in ("http", "https") and target.scheme == portal.scheme
+                and target.hostname == portal.hostname and target.port == portal.port
+                and not target.username and not target.password)
+    except ValueError:
+        return False
+
+
 def oauth_callback(config, session_id, callback_url):
     session = _find_session(session_id=session_id)
     if session is None:
@@ -2215,6 +2250,8 @@ def oauth_callback(config, session_id, callback_url):
         _exchange_session(config, session, code)
         return session.public()
     if secret and redirect:
+        if not _safe_oauth_redirect(redirect):
+            raise CodeArtsBadRequest("授权跳转地址不属于 CodeArts 门户")
         session.secret = secret
         session.ticket_fallback = True
         session.message = "回调已接收，继续等待授权结果…"
@@ -2232,7 +2269,10 @@ def oauth_callback_get(config, query):
         if isinstance(raw, list):
             return raw[0] if raw else ""
         return raw or ""
-    session = _find_session(ticket_id=value("ticket_id"), secret=value("secret"))
+    ticket_id, callback_secret = value("ticket_id"), value("secret")
+    if not ticket_id and not callback_secret:
+        return 400, "<h3>回调缺少会话标识，请回到看板粘贴完整回调地址。</h3>"
+    session = _find_session(ticket_id=ticket_id, secret=callback_secret)
     if session is None:
         return 400, "<h3>登录会话不存在或已过期，请回到看板重新发起。</h3>"
     code = value("code")
@@ -2243,16 +2283,20 @@ def oauth_callback_get(config, query):
             _exchange_session(config, session, code)
             return 200, "<h3>CodeArts 登录成功，可以关闭此页面。</h3>"
         if secret and redirect:
+            if not _safe_oauth_redirect(redirect):
+                raise CodeArtsBadRequest("授权跳转地址不属于 CodeArts 门户")
             session.secret = secret
             session.ticket_fallback = True
             session.message = "回调已接收，继续等待授权结果…"
+            import html as html_module
             html = ('<meta http-equiv="refresh" content="0;url=%s">'
-                    '<h3>正在继续华为云授权…</h3>' % redirect)
+                    '<h3>正在继续华为云授权…</h3>' % html_module.escape(redirect, quote=True))
             return 200, html
     except CodeArtsError as exc:
         session.status = "error"
         session.message = str(exc)
-        return 400, "<h3>登录失败：%s</h3>" % exc
+        import html as html_module
+        return 400, "<h3>登录失败：%s</h3>" % html_module.escape(str(exc))
     return 400, "<h3>回调地址缺少 code 或 secret。</h3>"
 
 

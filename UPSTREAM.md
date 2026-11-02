@@ -22,6 +22,21 @@
 - 仅保留源码与测试作为协议参考；本仓库的 Python 实现按它的 `signer.go`、`dpop.go`、`client.go`、`sse.go`、`models.go`、`checkin.go`、`pool.go`、`oauth.go` 移植。
 - 不再构建、不再部署；根目录 compose 只有 `hub` 一个服务。
 
+## 已回移的上游修复（v1.10.x）
+
+上游 `workbuddy2api-hub` 在 v1.9.2 之后发布了 v1.10.0 / v1.10.1。以下修复已按本仓库的 CodeArts 实现回移，未整体替换上游文件：
+
+- `x-ot-session-id` / `user-session-id` / `x-ot-trace-id`：按账号稳定会话，修掉 CodeArts 会话名额被历史请求占满后的排队与 `TM.00001041`。
+- CodeArts 的 Key 账号白名单与模型限制：`open_chat()` / `CodeArtsPool.pick()` 接受 `allowed_accounts`，禁止模型在进入上游前直接返回 400。
+- CodeArts SSE 首个事件保留：`CodeArtsStream.__iter__` 不再在 `_done` 后丢掉 `_pending` 的首帧。
+- OAuth 回调校验：`redirect` 必须属于 CodeArts 门户，拒绝带凭据的跳转；回调 HTML 做转义。
+- 工具名校验：`normalize_tools` 丢弃上游不接受的 `function.name`（空、非法字符、超长、重名），修掉 400 / code 11133。
+- 面板单请求体上限：设置页可调 1–256 MB，立即生效；413 提示同步更新。
+- 面板细节：Key 选择器显示账号备注、活动状态区分「无本地记录」、删除重复的「上游响应头超时」卡片、活动流跨天补日期。
+- 429 绝对恢复时刻：`X-RateLimit-Reset` / `X-RateLimit-Reset-At` 与正文 `reset_at` 已接入模型 429 出口（登录限流与 CodeArts 透传出口尚未覆盖）。
+
+`codearts2api` 的 `8d1e43d` 基线已包含每日签到与新手活动积分，本仓库现有实现已对齐；该上游没有新的后续 commit。
+
 ## 同步上游
 
 1. 拉上游最新 tag/commit，先跑上游自己的测试。

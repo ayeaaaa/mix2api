@@ -159,7 +159,7 @@ fi
 [ -f "$APP_SRC/wb_proxy.py" ] || {
 	echo "错误: $APP_SRC 里没有 wb_proxy.py（--app-src 应指向含 wb_*.py 的仓库根）" >&2; exit 1; }
 [ -f "$APP_SRC/dashboard.html" ] || { echo "错误: $APP_SRC 里没有 dashboard.html" >&2; exit 1; }
-DETECTED_VER="$(sed -n 's/.*server_version = "wb-proxy\/\([0-9.]*\)".*/\1/p' "$APP_SRC/wb_proxy.py" | head -n1)"
+DETECTED_VER="$(sed -n 's/.*server_version = "\(wb-proxy\|mix2api\)\/\([0-9.]*\)".*/\2/p' "$APP_SRC/wb_proxy.py" | head -n1)"
 MAKE_VER="$(mk_var "$REPO/openwrt/workbuddy2api/Makefile" PKG_VERSION)"
 [ -n "$DETECTED_VER" ] || {
 	echo "错误: 从 $APP_SRC/wb_proxy.py 解析不出 server_version" >&2; exit 1; }

@@ -57,14 +57,14 @@ def new_files(version):
 
 class ChecksumTests(unittest.TestCase):
     def test_parse_checksums(self):
-        text = "%s  workbuddy2api-hub-v2.0.0.zip\n%s *other.ipk\n" % ("a" * 64, "b" * 64)
+        text = "%s  mix2api-2.0.0-deploy.zip\n%s *other.ipk\n" % ("a" * 64, "b" * 64)
         parsed = U.parse_checksums(text)
-        self.assertEqual(parsed["workbuddy2api-hub-v2.0.0.zip"], "a" * 64)
+        self.assertEqual(parsed["mix2api-2.0.0-deploy.zip"], "a" * 64)
         self.assertEqual(parsed["other.ipk"], "b" * 64)
 
     def test_asset_urls(self):
         zip_url, sha_url, name = U.asset_urls("o/r", "v2.0.0", "2.0.0")
-        self.assertEqual(name, "workbuddy2api-hub-v2.0.0.zip")
+        self.assertEqual(name, "mix2api-2.0.0-deploy.zip")
         self.assertEqual(zip_url, "https://github.com/o/r/releases/download/v2.0.0/" + name)
         self.assertEqual(sha_url, "https://github.com/o/r/releases/download/v2.0.0/SHA256SUMS")
 
