@@ -114,6 +114,18 @@ try:
     glm = next(m for m in payload["data"] if m["id"] == "GLM-5.2")
     check("reasoning metadata", glm.get("supports_reasoning") is True
           and "high" in glm.get("reasoning_efforts", []), glm)
+    check("flat credit rate", glm.get("credits") == "0.7", glm)
+    peak_now = time.mktime(time.strptime("2026-11-03 10:00:00",
+                                         "%Y-%m-%d %H:%M:%S"))
+    off_now = time.mktime(time.strptime("2026-11-03 22:00:00",
+                                        "%Y-%m-%d %H:%M:%S"))
+    peak = C.codearts_credit_info("DeepSeek-V4.1-Flash", peak_now)
+    off = C.codearts_credit_info("DeepSeek-V4.1-Flash", off_now)
+    check("deepseek peak rate", peak[0] == "0.18" and peak[2] == "0.18"
+          and peak[3] == "0.09", peak)
+    check("deepseek offpeak rate", off[0] == "0.09" and off[2] == "0.18"
+          and off[3] == "0.09", off)
+    check("deepseek rate note", "高峰" in peak[1] and "错峰" in peak[1], peak)
 
     # Key 模型限制
     wb_settings.set_filter_models_by_key(ACCOUNTS, True)

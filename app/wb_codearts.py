@@ -78,11 +78,53 @@ SEED_BENEFIT_MODELS = (
     "deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "glm-5.3-flash",
 )
 SEED_KNOWN_MODELS = (
-    "GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
+    "GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.3",
+    "GLM-5.1", "GLM-4.7",
+    "Kimi-K3.1-Pro", "Kimi-K3",
+    "DeepSeek-V4.1-Flash", "DeepSeek-V4.1-Flash-1017",
     "OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash",
     "Qwen3-VL-235B", "Qwen3.5-397B-A17B-VL", "Qwen3.6-27B-VL",
 )
 SEED_MODELS = tuple(SEED_KNOWN_MODELS) + tuple(SEED_BENEFIT_MODELS)
+
+#: CodeArts 官方积分消耗系数。值为「每 1 token 的积分倍率」，
+#: 与 WorkBuddy 的 credits 字段同口径，只用于面板展示与估算。
+CODEARTS_CREDITS = {
+    "kimi-k3.1-pro": "1.63",
+    "glm-5.3-flash": "0.08",
+    "kimi-k3": "2.38",
+    "glm-5.3": "0.79",
+    "glm-5.2": "0.7",
+    "openpangu-2.0-flash": "0.32",
+    "glm-5.2-arkts-spark": "0.7",
+    "openpangu-2.0-pro": "0.7",
+}
+
+#: 分时计价的模型：(高峰倍率, 错峰倍率)。高峰 08:00–20:59，
+#: 错峰 21:00–次日 07:59，按本机时区计算。
+CODEARTS_PEAK_CREDITS = {
+    "deepseek-v4.1-flash": ("0.18", "0.09"),
+    "deepseek-v4.1-flash-1017": ("0.18", "0.12"),
+}
+
+
+def codearts_credit_info(mid, now=None):
+    """Return (current_rate, note, peak_rate, offpeak_rate) for a model.
+
+    The note is empty for flat-rate models. Peak/off-peak rates are returned
+    separately so API consumers can show the full schedule without parsing
+    the note.
+    """
+    key = str(mid or "").strip().lower()
+    peak = CODEARTS_PEAK_CREDITS.get(key)
+    if peak:
+        hour = time.localtime(now if now is not None else time.time()).tm_hour
+        is_peak = 8 <= hour <= 20
+        rate = peak[0] if is_peak else peak[1]
+        note = "高峰 %sx / 错峰 %sx" % peak
+        return rate, note, peak[0], peak[1]
+    rate = CODEARTS_CREDITS.get(key, "")
+    return rate, "", rate, rate
 
 #: 模型目录缓存 1 小时；失败时保留上一轮。
 CATALOG_TTL = 3600.0
@@ -1384,6 +1426,13 @@ def model_entries(config):
             entry["max_output"] = out_tokens
         if item.get("benefit"):
             entry["benefit"] = True
+        rate, rate_note, peak_rate, offpeak_rate = codearts_credit_info(item["id"])
+        if rate:
+            entry["credits"] = rate
+            entry["credits_peak"] = peak_rate
+            entry["credits_offpeak"] = offpeak_rate
+            if rate_note:
+                entry["credits_note"] = rate_note
         supports = item.get("supports_images")
         if not isinstance(supports, bool):
             supports = _known_vision(item["id"])
