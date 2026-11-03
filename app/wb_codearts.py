@@ -87,6 +87,15 @@ SEED_KNOWN_MODELS = (
 )
 SEED_MODELS = tuple(SEED_KNOWN_MODELS) + tuple(SEED_BENEFIT_MODELS)
 
+#: 华为云控制台列出的 CodeArts 对话模型。即使账号目录只发现了一部分，
+#: 模型清单也始终带上这份官方列表，保证面板能显示官方倍率。
+CODEARTS_OFFICIAL_MODELS = (
+    "Kimi-K3.1-Pro", "GLM-5.3-Flash", "Kimi-K3",
+    "DeepSeek-V4.1-Flash", "DeepSeek-V4.1-Flash-1017",
+    "GLM-5.3", "GLM-5.2", "OpenPangu-2.0-Flash",
+    "GLM-5.2-ArkTS-SPARK", "OpenPangu-2.0-Pro",
+)
+
 #: CodeArts 官方积分消耗系数。值为「每 1 token 的积分倍率」，
 #: 与 WorkBuddy 的 credits 字段同口径，只用于面板展示与估算。
 CODEARTS_CREDITS = {
@@ -1343,7 +1352,13 @@ def fetch_models(acct, timeout=20.0, auto_claim=True):
                 errors.append("%s: %s" % (name, exc))
             except Exception as exc:
                 errors.append("%s: %s" % (name, exc))
-    merged = _merge_models(sets)
+    official = [
+        {"id": mid, "name": mid,
+         "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS},
+         "supports_images": _known_vision(mid)}
+        for mid in CODEARTS_OFFICIAL_MODELS
+    ]
+    merged = _merge_models(sets + [("official", official)])
     if not merged:
         # 全失败：保留旧目录；没有旧目录就用种子。
         if acct.models:
@@ -1391,7 +1406,13 @@ def model_entries(config):
             pass
         if acct.models:
             sets.append(("account", acct.models))
-    merged = _merge_models(sets)
+    official = [
+        {"id": mid, "name": mid,
+         "benefit": mid.lower() in {m.lower() for m in SEED_BENEFIT_MODELS},
+         "supports_images": _known_vision(mid)}
+        for mid in tuple(CODEARTS_OFFICIAL_MODELS) + tuple(SEED_BENEFIT_MODELS)
+    ]
+    merged = _merge_models(sets + [("official", official)])
     if not merged:
         merged = _merge_models([("seed", [
             {"id": mid, "name": mid,
