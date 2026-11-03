@@ -243,8 +243,9 @@ assert.ok(/header\{padding:16px var\(--page-pad\)/.test(html), 'header 应使用
 assert.ok(/main\{padding:20px var\(--page-pad\)/.test(html), 'main 应使用页面留白变量');
 
 // 各页面区块数：导航就是照这些区块生成的，每个主页面都要有多个区块才有侧栏可跳。
-// 新面板把总览与网关拆开：总览保留出口卡/汇总/最近请求，网关只放模型清单，
-// 所以两者各自只有一个 section，不再强行要求两块。
+// 网关页现在只剩「最近请求」与「网关模型清单」两块：账号列表与「当前禁用」被
+// issue #176 拆到了「账号」页，成长任务与日常福利则被上游搬到了「任务与福利」页
+// （所以这里的下界从上游的 4 跟着落到 2——仍然是「够撑起侧栏」，不是「只增不减」）。
 const regions = {};
 const pageMarkers = [...html.matchAll(/<div id="page(\w+)" class="main-page">/g)];
 pageMarkers.forEach((m, i) => {
@@ -252,8 +253,8 @@ pageMarkers.forEach((m, i) => {
   const end = i + 1 < pageMarkers.length ? pageMarkers[i + 1].index : html.length;
   regions[m[1].toLowerCase()] = (html.slice(start, end).match(/<section/g) || []).length;
 });
-assert.ok(regions.overview >= 1, 'overview 应至少有最近请求区块，实际 ' + regions.overview);
-assert.ok(regions.gateway >= 1, 'gateway 应至少有模型清单区块，实际 ' + regions.gateway);
+assert.ok((regions.overview || 0) + (regions.gateway || 0) >= 2,
+  'overview + gateway 应有多个区块，实际 ' + ((regions.overview || 0) + (regions.gateway || 0)));
 assert.ok(regions.accounts >= 3, 'accounts 应有多个区块，实际 ' + regions.accounts);
 assert.ok(regions.analytics >= 3, 'analytics 应有多个区块，实际 ' + regions.analytics);
 assert.ok(regions.settings >= 9, 'settings 应有多个区块，实际 ' + regions.settings);

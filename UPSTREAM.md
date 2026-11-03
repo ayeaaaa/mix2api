@@ -4,7 +4,7 @@
 
 | 目录 | 上游 | 基线 commit | 基线版本 |
 |---|---|---|---|
-| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `937c179` | v1.10.4 |
+| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `077fb2f` | v1.10.9 |
 | `reference/codearts2api/` | https://github.com/HITZY2002/codearts2api | `8d1e43d` | — |
 
 ## 本仓库相对上游的改动
@@ -22,9 +22,11 @@
 - 仅保留源码与测试作为协议参考；本仓库的 Python 实现按它的 `signer.go`、`dpop.go`、`client.go`、`sse.go`、`models.go`、`checkin.go`、`pool.go`、`oauth.go` 移植。
 - 不再构建、不再部署；根目录 compose 只有 `hub` 一个服务。
 
-## 已回移的上游修复（v1.10.x）
+## 已同步的上游版本（v1.10.x）
 
-上游 `workbuddy2api-hub` 在 v1.9.2 之后发布了 v1.10.0 – v1.10.4。以下修复已按本仓库的 CodeArts 实现回移，未整体替换上游文件：
+本仓库已整体同步到上游 `077fb2f` / v1.10.9，保留 mix2api 自己的品牌、面板、发布体系和本地默认配置。上游的媒体生成模块（`wb_media.py` / `wb_media_client.py` / `wb_media_tasks.py`）、CodeArts 新签到活动、设置并发保护、目录/价格快照以及 v1.10.5–v1.10.9 的修复均已进入本仓库。
+
+以下为 v1.10.0 – v1.10.4 的 CodeArts 修复记录（保留作历史说明）：
 
 - `x-ot-session-id` / `user-session-id` / `x-ot-trace-id`：按账号稳定会话，修掉 CodeArts 会话名额被历史请求占满后的排队与 `TM.00001041`。
 - CodeArts 的 Key 账号白名单与模型限制：`open_chat()` / `CodeArtsPool.pick()` 接受 `allowed_accounts`，禁止模型在进入上游前直接返回 400。

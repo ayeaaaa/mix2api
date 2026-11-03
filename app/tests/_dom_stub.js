@@ -354,7 +354,7 @@ function installDom(options) {
     host: '127.0.0.1:8787',
     hostname: '127.0.0.1',
     port: '8787',
-    pathname: '/classic',
+    pathname: '/',
     search: '',
     hash: '',
     reload: NOOP,

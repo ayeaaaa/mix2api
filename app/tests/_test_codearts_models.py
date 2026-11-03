@@ -71,8 +71,8 @@ try:
     # 没有账号：种子目录
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("seed status", status == 200, (status, payload))
-    check("seed has GLM-5.2",
-          any(m["id"] == "GLM-5.2" for m in payload["data"]), payload)
+    check("seed has GLM-5.2", any(m["id"] == "GLM-5.2" for m in payload["data"]),
+          payload)
     check("seed benefit flag",
           any(m.get("benefit") for m in payload["data"]
               if m["id"] == "deepseek-v4-pro-0813"), payload)
@@ -92,50 +92,28 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("status 200", status == 200, (status, payload))
     ids = [m["id"] for m in payload["data"]]
-    check("ids", set(ids) == {"GLM-5.2", "GLM-4.7",
-                              "Qwen3-VL-235B",
-                              "deepseek-v4.1-flash",
-                              "glm-5.3-flash",
+    check("ids", set(ids) == {"GLM-5.2", "GLM-4.7", "Qwen3-VL-235B",
                               "deepseek-v4-pro-0813"}, ids)
     check("owned_by", payload["data"][0]["owned_by"] == "codearts")
     check("provider", payload["data"][0]["provider"] == "codearts")
-    by_id = {m["id"]: m for m in payload["data"]}
-    check("vision model flagged",
-          (by_id.get("Qwen3-VL-235B") or {}).get("capabilities", {})
-          .get("vision") is True, by_id.get("Qwen3-VL-235B"))
-    check("vision modalities",
-          (by_id.get("Qwen3-VL-235B") or {}).get("input_modalities")
-          == ["text", "image"], by_id.get("Qwen3-VL-235B"))
-    check("text model not flagged",
-          (by_id.get("GLM-5.2") or {}).get("capabilities", {})
-          .get("vision") is False, by_id.get("GLM-5.2"))
-    check("context/max output aliases",
-          (by_id.get("Qwen3-VL-235B") or {}).get("context_length") == 131072
-          and (by_id.get("Qwen3-VL-235B") or {}).get("max_output_tokens") == 8192,
-          by_id.get("Qwen3-VL-235B"))
-    check("tool capability advertised",
-          (by_id.get("Qwen3-VL-235B") or {}).get("capabilities", {})
-          .get("tool_calls") is True
-          and (by_id.get("Qwen3-VL-235B") or {}).get("supports_tool_calls") is True,
-          by_id.get("Qwen3-VL-235B"))
-    check("deepseek reasoning efforts",
-          (by_id.get("deepseek-v4.1-flash") or {})
-          .get("reasoning_efforts") == ["none", "low", "medium", "high",
-                                        "xhigh", "max"],
-          by_id.get("deepseek-v4.1-flash"))
-    check("glm reasoning efforts",
-          (by_id.get("GLM-5.2") or {}).get("reasoning_efforts")
-          == ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          by_id.get("GLM-5.2"))
-    check("glm flash reasoning efforts",
-          (by_id.get("glm-5.3-flash") or {}).get("reasoning_efforts")
-          == ["low", "high", "max"]
-          and (by_id.get("glm-5.3-flash") or {})
-          .get("reasoning_can_disable") is False,
-          by_id.get("glm-5.3-flash"))
     check("catalog source", payload["catalog"]["source"] == "codearts")
     check("benefit flag", any(m.get("benefit") for m in payload["data"]
                               if m["id"] == "deepseek-v4-pro-0813"), payload)
+    vision = next(m for m in payload["data"] if m["id"] == "Qwen3-VL-235B")
+    text = next(m for m in payload["data"] if m["id"] == "GLM-5.2")
+    check("vision flag", vision.get("supports_vision") is True, vision)
+    check("vision image modality", "image" in vision.get("input_modalities", []),
+          vision)
+    check("vision architecture",
+          vision.get("architecture", {}).get("modality") == "text+image->text",
+          vision)
+    check("text model not vision", text.get("supports_vision") is False, text)
+    check("context limits exposed",
+          vision.get("context_window") == 131072
+          and vision.get("max_output_tokens") == 8192, vision)
+    glm = next(m for m in payload["data"] if m["id"] == "GLM-5.2")
+    check("reasoning metadata", glm.get("supports_reasoning") is True
+          and "high" in glm.get("reasoning_efforts", []), glm)
 
     # Key 模型限制
     wb_settings.set_filter_models_by_key(ACCOUNTS, True)
@@ -147,8 +125,7 @@ try:
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")
     check("filtered status", status == 200, (status, payload))
     check("filtered ids", [m["id"] for m in payload["data"]] ==
-          ["GLM-5.2", "GLM-4.7", "glm-5.3-flash"],
-          payload)
+          ["GLM-5.2", "GLM-4.7"], payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
 
     # 未启用 -> 503

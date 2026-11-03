@@ -56,6 +56,7 @@ const fireDocument = (name, ev) => {
   return handler(ev);
 };
 
+global.getComputedStyle = () => ({display: 'block'});
 global.document = {
   getElementById: element,
   querySelector: () => null,

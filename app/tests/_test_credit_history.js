@@ -29,6 +29,7 @@ const element = id => {
   return elements.get(id);
 };
 const TBODY = element('creditHistoryBody');
+global.getComputedStyle = () => ({display: 'block'});
 global.document = {
   getElementById: element,
   querySelector: sel => (sel === '#creditHistoryTable tbody' ? TBODY : null),

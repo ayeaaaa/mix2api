@@ -397,11 +397,22 @@ class Scheduler:
                    daily_chat_only=False):
         self.last_run_time = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log(f"开始执行任务 ({trigger_reason})...")
+
+        refreshed_count = 0
+        checkin_count = 0
+        report_count = 0
+        travel_count = 0
+        daily_chat_count = 0
+        daily_chat_targets = []
         cycle_hour = time.localtime().tm_hour
         run_checkin = (not daily_chat_only
                        and (force or cycle_hour in self.checkin_hours))
+        run_travel = (not daily_chat_only
+                      and (force or cycle_hour in self.travel_hours))
         run_keepalive = (not daily_chat_only
                          and (force or cycle_hour in self.keepalive_hours))
+        run_cat = (not daily_chat_only
+                   and (force or cycle_hour in self.cat_hours))
         if not self.pool:
             self.log("账号池不可用，跳过本次巡检")
             return
@@ -411,17 +422,6 @@ class Scheduler:
                 or self._codearts_keepalive_pending(run_keepalive)):
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
-
-        refreshed_count = 0
-        checkin_count = 0
-        report_count = 0
-        travel_count = 0
-        daily_chat_count = 0
-        daily_chat_targets = []
-        run_travel = (not daily_chat_only
-                      and (force or cycle_hour in self.travel_hours))
-        run_cat = (not daily_chat_only
-                   and (force or cycle_hour in self.cat_hours))
         # 时段永远存在（面板留空时是「今天随机抽的两个」），所以国际版活跃只按
         # 时段触发；启动后的第一次巡检额外补跑一次当天还没活跃的账号。
         catchup = self._consume_startup_catchup()
@@ -556,7 +556,7 @@ class Scheduler:
             cfg = wb_codearts.load_config(directory)
             if not cfg.get("enabled"):
                 return False
-            pool = wb_codearts.pool_for(directory)
+            pool = wb_codearts.pool_for(directory, trigger_auto=False)
         except Exception:
             return False
         return any((not acct.disabled)
@@ -564,7 +564,7 @@ class Scheduler:
                    for acct in pool.accounts)
 
     def _run_codearts_keepalive(self, run_keepalive):
-        """Refresh CodeArts tokens on the same 22:00 sweep as WorkBuddy."""
+        """Refresh CodeArts tokens on the same sweep as WorkBuddy."""
         if not run_keepalive:
             return 0
         directory = getattr(self.pool, "dir", "") or ""
@@ -594,21 +594,22 @@ class Scheduler:
         try:
             import wb_codearts
             cfg = wb_codearts.load_config(directory)
-            if not cfg.get("enabled") or not cfg.get("auto_checkin", True):
+            if not cfg.get("enabled") or not cfg.get("credits_auto_claim", False):
                 return False
-            pool = wb_codearts.pool_for(directory)
+            pool = wb_codearts.pool_for(directory, trigger_auto=False)
         except Exception:
             return False
-        return any(acct.tasks_enabled for acct in pool.accounts)
+        return any(not acct.disabled and getattr(acct, "tasks_enabled", True)
+                   for acct in pool.accounts)
 
     def _run_codearts_checkin(self, run_checkin):
         """Daily CodeArts check-in for enabled accounts.
 
-        Follows the same check-in hours as the WorkBuddy China realm (09:00 /
-        21:00 by default). A successful check-in is recorded in the account's
-        state, so the second slot and a manual force-run skip it; a failed
-        attempt stays retryable. Cooling accounts are skipped because a chat
-        cooldown usually means the upstream is unhappy with this account.
+        Follows the same check-in hours as the WorkBuddy China realm. A
+        successful check-in is recorded in the account's state, so the second
+        slot and a manual force-run skip it; a failed attempt stays retryable.
+        Cooling accounts are skipped because a chat cooldown usually means the
+        upstream is unhappy with this account.
         """
         if not run_checkin:
             return 0
@@ -621,10 +622,10 @@ class Scheduler:
         except Exception as exc:
             self.log(f"CodeArts 自动签到读取配置失败: {exc}")
             return 0
-        if not cfg.get("enabled") or not cfg.get("auto_checkin", True):
+        if not cfg.get("enabled") or not cfg.get("credits_auto_claim", False):
             return 0
         try:
-            pool = wb_codearts.pool_for(directory)
+            pool = wb_codearts.pool_for(directory, trigger_auto=False)
         except Exception as exc:
             self.log(f"CodeArts 自动签到读取账号失败: {exc}")
             return 0
@@ -633,7 +634,7 @@ class Scheduler:
         now = time.time()
         for acct in list(pool.accounts):
             uid8 = (acct.uid or "?")[:8]
-            if not acct.tasks_enabled:
+            if acct.disabled or not getattr(acct, "tasks_enabled", True):
                 continue
             if acct.cool_until > now:
                 self.log(f"跳过 CodeArts 账号 [{uid8}]：冷却中")
@@ -641,7 +642,7 @@ class Scheduler:
             if acct.checked_in_today(now):
                 continue
             try:
-                res = wb_codearts.checkin(cfg, acct.uid, trigger="scheduler")
+                res = wb_codearts.checkin(cfg, acct.uid)
             except Exception as exc:
                 self.log(f"! CodeArts 账号 [{uid8}] 自动签到失败: {exc}")
                 continue
@@ -871,19 +872,9 @@ class Scheduler:
         travel = _hhmm(self.travel_hours)
         keepalive = _hhmm(self.keepalive_hours)
         cat = _hhmm(self.cat_hours)
-        ca_auto = False
-        try:
-            import wb_codearts
-            ca_cfg = wb_codearts.load_config(getattr(self.pool, "dir", "") or "")
-            ca_auto = bool(ca_cfg.get("enabled")
-                           and ca_cfg.get("auto_checkin", True))
-        except Exception:
-            ca_auto = False
         mode_cn = ("整点排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · "
                    "Token保活 %s · 夜猫 %s) + 模型额度窗口探针"
                    % (checkin, travel, keepalive, cat))
-        if ca_auto:
-            mode_cn += " + CodeArts 自动签到"
         mode_intl = ("账号 Token 自动保活与凭证常驻 (每日 %s 集中巡检) "
                      "+ 模型额度窗口探针" % keepalive)
         return {
@@ -891,7 +882,6 @@ class Scheduler:
             "mode": mode_cn,
             "mode_cn": mode_cn,
             "mode_intl": mode_intl,
-            "codearts_checkin": ca_auto,
             "last_run_time": self.last_run_time or "尚未运行",
             "next_run_time": self.next_run_time or "待调度",
             "windows": windows,

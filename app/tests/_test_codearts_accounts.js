@@ -14,11 +14,6 @@ assert.ok(html.includes('id="codeartsAccounts"'), '缺少 CodeArts 账号表');
 assert.ok(/renderCodeartsAccounts/.test(script), '缺少账号表渲染函数');
 assert.ok(/codeartsSlotSelectHtml/.test(script), '缺少 CodeArts 出口选择器');
 assert.ok(script.includes('/codearts/accounts/proxy'), '缺少出口绑定端点');
-assert.ok(script.includes("codeartsAccountAction(\\'test\\'"), '缺少单账号测试入口');
-assert.ok(script.includes("codeartsAccountAction(\\'tasks\\'"), '缺少任务开关入口');
-assert.ok(/function codeartsEditNote/.test(script), '缺少备注编辑入口');
-assert.ok(/function codeartsRelogin/.test(script), '缺少单账号重新登录入口');
-assert.ok(/function refreshCodeartsCredits/.test(script), '缺少刷新积分入口');
 assert.ok(script.includes("codeartsAccountAction(\\'delete\\'"),
           '缺少删除操作入口');
 assert.ok(/confirm\("删除 CodeArts 账号/.test(script), '删除应有二次确认');
@@ -50,7 +45,6 @@ try {
             codeartsCheckinAll: codeartsCheckinAll,
             codeartsSetProxy: codeartsSetProxy,
             refreshCodeartsCredits: refreshCodeartsCredits,
-            saveCodeartsSettings: saveCodeartsSettings,
             setSlots: function(v){ PROXY_SLOTS = v; }};
   `)();
 } catch (e) {
@@ -85,12 +79,18 @@ assert.ok(box.innerHTML.includes("codeartsAccountAction('disable','u1')"),
   '正常账号应显示停用按钮');
 assert.ok(box.innerHTML.includes("codeartsRelogin('u1')"),
   '应显示重新登录按钮');
+assert.ok(box.innerHTML.includes("codeartsAccountAction('test','u1')"),
+  '应显示单账号测试按钮');
+assert.ok(box.innerHTML.includes("codeartsAccountAction('tasks','u1',false)"),
+  '应显示任务开关按钮');
+assert.ok(box.innerHTML.includes("codeartsEditNote('u1')"),
+  '应显示备注按钮');
 assert.ok(box.innerHTML.includes("codeartsAccountAction('delete','u1')"),
   '应显示删除按钮');
+assert.ok(box.innerHTML.includes('备注一'), '账号表应显示备注');
 assert.ok(box.innerHTML.includes('codeartsSetProxy'), '应显示出口选择器');
 assert.ok(box.innerHTML.includes('slot-1'), '出口选择器应包含已绑定槽位');
 assert.ok(box.innerHTML.includes('美国 住宅'), '出口选择器应显示槽位名称');
-assert.ok(box.innerHTML.includes('备注一'), '账号表应显示备注');
 
 // UID 来自服务端/上游，不能直接拼进 inline onclick 的 JS 字符串。HTML 转义
 // 不处理单引号，所以这里必须用只允许安全字符的 id 形态。
@@ -104,7 +104,7 @@ api.renderCodeartsAccounts({
 const evilHtml = box.innerHTML;
 assert.ok(!/onclick="[^"]*x' onmouseover/.test(evilHtml),
   'UID 中的单引号不能进入 inline onclick 的 JS 字符串');
-assert.ok(evilHtml.includes("codeartsAccountAction('test','xonmouseoveralert1')"),
+assert.ok(evilHtml.includes("codeartsAccountAction('delete','xonmouseoveralert1')"),
   'UID 应按安全字符集收敛后再拼进处理器');
 
 (async () => {
@@ -121,30 +121,17 @@ assert.ok(evilHtml.includes("codeartsAccountAction('test','xonmouseoveralert1')"
   assert.equal(bind.body.slot_id, 'slot-1', '出口绑定应带上 slot_id');
 
   POSTS = [];
-  const auto = document.getElementById('setCodeartsAutoCheckin');
-  assert.ok(auto, 'CodeArts 设置缺少自动签到开关');
-  auto.checked = false;
-  await api.saveCodeartsSettings(null);
-  const off = POSTS.find(p => p.url.indexOf('/settings/save') >= 0);
-  assert.ok(off, '保存 CodeArts 设置应 POST /settings/save');
-  assert.equal(off.body.codearts.auto_checkin, false,
-    '关闭自动签到应写入 auto_checkin=false');
-  auto.checked = true;
-  await api.saveCodeartsSettings(null);
-  const on = POSTS.filter(p => p.url.indexOf('/settings/save') >= 0).pop();
-  assert.equal(on.body.codearts.auto_checkin, true,
-    '开启自动签到应写入 auto_checkin=true');
-
-  POSTS = [];
   await api.codeartsAccountAction('tasks', 'u1', false);
   const tasks = POSTS.find(p => p.url.indexOf('/codearts/accounts/tasks') >= 0);
   assert.ok(tasks, '任务开关应 POST /codearts/accounts/tasks');
   assert.equal(tasks.body.enabled, false, '任务开关应带上 enabled');
+
   POSTS = [];
   await api.codeartsAccountAction('note', 'u1', 'hello');
   const note = POSTS.find(p => p.url.indexOf('/codearts/accounts/note') >= 0);
   assert.ok(note, '备注应 POST /codearts/accounts/note');
   assert.equal(note.body.note, 'hello', '备注应带上 note');
+
   POSTS = [];
   await api.codeartsAccountAction('test', 'u1');
   const tested = POSTS.find(p => p.url.indexOf('/codearts/accounts/test') >= 0);

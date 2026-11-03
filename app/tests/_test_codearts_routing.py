@@ -136,6 +136,12 @@ try:
     check("nonstream text", obj["choices"][0]["message"]["content"] == "你好",
           obj)
 
+    state.chat_mode = "text"
+    status, raw = post("/v1/chat/completions", dict(chat, stream=False), "hub-key-1234")
+    check("first snapshot survives aggregation", status == 200 and
+          json.loads(raw)["choices"][0]["message"]["content"] == "你好", (status, raw))
+    state.chat_mode = "delta"
+
     print("== benefit header ==")
     state.require_benefit_header = True
     status, raw = post("/v1/chat/completions",
@@ -202,22 +208,35 @@ try:
           and cost["cny"] == 0.0
           and cost["source"] == "codearts:unpriced", cost)
 
-    print("== errors ==")
-    state.embedded_error = {"error_code": "not_multimodal",
-                            "error_msg": "The request model is not multimodal"}
-    status, raw = post("/v1/chat/completions", {
-        "model": "GLM-5.2",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": "look"},
-            {"type": "image_url",
-             "image_url": {"url": "data:image/png;base64,AAA"}},
-        ]}],
-        "stream": False,
-    }, "hub-key-1234")
-    check("non-vision image -> 400", status == 400, (status, raw[:300]))
-    check("non-vision image message", "不支持图片" in raw, raw[:300])
-    state.embedded_error = None
+    print("== key restrictions ==")
+    image_chat = dict(chat, model="Qwen3-VL-235B",
+                      messages=[{"role": "user", "content": [
+        {"type": "text", "text": "describe"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}])
+    before = len(state.requests)
+    status, raw = post("/v1/chat/completions", image_chat, "hub-key-1234")
+    check("image forwarded to upstream", status == 200
+          and len(state.requests) == before + 1, (status, raw))
+    content = ((state.last_body or {}).get("messages") or [{}])[0].get("content")
+    check("image content preserved", isinstance(content, list)
+          and any(isinstance(p, dict) and p.get("type") == "image_url"
+                  and (p.get("image_url") or {}).get("url")
+                  == "data:image/png;base64,abc" for p in content), content)
+    wb_settings.set_api_keys(ACCOUNTS, [
+        {"key": "model-limit", "name": "model", "realm": "codearts", "models": ["other-model"]},
+        {"key": "account-limit", "name": "account", "realm": "codearts", "accounts": ["other-uid"]},
+        {"key": "allowed-account", "name": "allowed", "realm": "codearts", "accounts": ["u1"]},
+        {"key": "hub-key-1234", "name": "test", "realm": "codearts"},
+    ])
+    before = len(state.requests)
+    status, raw = post("/v1/chat/completions", chat, "model-limit")
+    check("model restriction enforced", status == 400 and len(state.requests) == before, (status, raw))
+    status, raw = post("/v1/chat/completions", chat, "account-limit")
+    check("account restriction enforced", status != 200 and len(state.requests) == before, (status, raw))
+    status, raw = post("/v1/chat/completions", chat, "allowed-account")
+    check("allowed account works", status == 200, (status, raw[:300]))
 
+    print("== errors ==")
     state.chat_error = (400, {"error_msg": "bad request"})
     status, raw = post("/v1/chat/completions", chat, "hub-key-1234")
     check("400 passthrough", status == 400, (status, raw[:300]))

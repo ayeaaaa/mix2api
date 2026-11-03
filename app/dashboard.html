@@ -17,27 +17,23 @@
 const PANEL_STORE = 'wb-proxy-panel-token';
 const PANEL_REMEMBER_KEY = 'wb-proxy-panel-remember';
 (function(){
-  try{
-    // 「保持登录」把令牌放在 localStorage；不勾选时仍用 sessionStorage，
-    // 关掉浏览器就失效。首帧两者都认，避免已登录用户先看到闸门闪一下。
-    if(localStorage.getItem(PANEL_STORE) || sessionStorage.getItem(PANEL_STORE)){
-      document.documentElement.classList.add('wb-panel-session');
-    }
-  }catch(e){}
+  var panelToken = '';
+  try { panelToken = sessionStorage.getItem(PANEL_STORE) || ''; } catch(e){}
+  try { panelToken = panelToken || localStorage.getItem(PANEL_STORE) || ''; } catch(e){}
+  if(panelToken) document.documentElement.classList.add('wb-panel-session');
 })();
-/* 新面板开关：/next 先与旧面板并行，验收后把默认值翻过来。
-   标记必须在首帧前落到 <html> 上，否则新壳会先闪一下旧布局。 */
+/* 新面板默认；/classic 保留旧壳，方便回退。 */
 (function(){
-  var p = (typeof location !== 'undefined' && location.pathname) || '';
-  // 新面板已经是默认；/classic 保留旧壳一个版本，方便回退。
-  // 空 pathname 出现在测试沙箱 / 直接打开文件的场景，按旧壳处理，避免把
-  // 没有完整 URL 的调用方误判成新面板。
-  var classic = (!p || p === '/classic' || p === '/classic/');
-  var next = !classic;
+  var next = true;
+  try {
+    var p = (typeof location !== 'undefined' && location.pathname) || '';
+    if(p === '/classic' || p === '/classic/') next = false;
+    var ui = new URLSearchParams(location.search).get('ui');
+    if(ui === 'classic') next = false;
+    if(ui === 'next') next = true;
+  } catch(e){}
   if(typeof window !== 'undefined') window.__NEXT_UI__ = next;
-  if(next && typeof document !== 'undefined' && document.documentElement){
-    document.documentElement.setAttribute('data-ui', 'next');
-  }
+  if(next && typeof document !== 'undefined' && document.documentElement) document.documentElement.setAttribute('data-ui', 'next');
 })();
 </script>
 <style>
@@ -173,11 +169,14 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 /* 网关模型清单：固定列布局 + 百分比列宽 → 占满整行、消除右侧空位；
    单元格 nowrap 防止长模型 ID / 思考档位换行，超长用省略号兜底。 */
 #modelsTable{table-layout:fixed}
+#modelsTable{min-width:980px}
 #modelsTable th,#modelsTable td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 消费倍率列可能同时放「倍率」和「Pro Only」两枚胶囊；固定列宽下
    nowrap 会把第二枚裁掉，允许换行只让这一类行变高（#527）。 */
 #modelsTable td.rate-cell{white-space:normal;line-height:1.8}
-#modelsTable td[data-label="思考档位"]{white-space:nowrap}
+#modelsTable td[data-label="思考档位"],
+#modelsTable td[data-label="名称"],
+#modelsTable td[data-label="模型类型"]{white-space:normal;line-height:1.4;word-break:break-word}
 /* 采样参数：放不下时 chips 折行显示完整，不截断 */
 #modelsTable td[data-label="默认采样参数"]{white-space:normal}
 /* 模型 ID 前的「一键配置」勾选框。勾选只决定一键配置写进客户端的模型清单，
@@ -659,6 +658,14 @@ a:hover{text-decoration:underline}
 /* 内容包在 .page-nav-body 里，grid 就只有两项，1 / -1 才真的跨满整个内容区
    （否则它只跨第 1 行，首行被撑成侧栏高度）；区块间距也仍只由 section 自己
    的 margin 决定，不会被行间距再叠一次。 */
+/* 设置页二级分类胶囊导航 */
+.settings-cat-bar{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;padding:8px 0 12px;margin-bottom:14px;border-bottom:1px solid var(--line);position:sticky;top:var(--page-nav-top,84px);z-index:5;background:var(--header-bg);backdrop-filter:blur(10px)}
+.settings-cat-bar::-webkit-scrollbar{display:none}
+.settings-cat-btn{flex-shrink:0;appearance:none;border:1px solid var(--line);background:var(--panel2);color:var(--dim);padding:5px 12px;border-radius:20px;font:inherit;font-size:12px;font-weight:500;line-height:1.4;cursor:pointer;transition:all .15s ease;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.settings-cat-btn:hover{color:var(--fg);border-color:var(--line-hover);background:var(--panel)}
+.settings-cat-btn.active{background:var(--accent);border-color:transparent;color:#fff;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,.15)}
+.settings-cat-btn .cat-count{font-size:10px;opacity:.8;padding:1px 5px;border-radius:10px;background:rgba(0,0,0,.12)}
+.settings-cat-btn.active .cat-count{background:rgba(255,255,255,.25)}
 .main-page.page-nav-on > .page-sidebar{grid-column:1;grid-row:1 / -1;position:sticky;
   top:var(--page-nav-top,84px);z-index:6;background:var(--panel);border:1px solid var(--line);
   border-radius:14px;padding:10px;box-shadow:var(--shadow);
@@ -712,6 +719,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   /* 窄屏下导航是横向滚动的胶囊行，回到顶部钉在左端不跟着滚 */
   button.page-nav-top{width:auto;flex:0 0 auto;margin-bottom:0;padding:7px 12px;border-radius:999px;
     white-space:nowrap}
+  #pageSettings.page-nav-on > .page-sidebar{display:none}
 }
 .range-btn{background:transparent;border:none;color:var(--dim);padding:4px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease}
 .range-btn:hover{color:var(--fg)}
@@ -1278,6 +1286,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   padding:5px 9px;color:var(--fg);font:inherit;font-size:12px;line-height:1.35;
   text-align:left;cursor:pointer;transition:border-color .14s ease,background .14s ease,box-shadow .14s ease}
 .cs-trigger:hover{border-color:var(--line-hover);background:var(--panel3)}
+/* 媒体设置行：自定义下拉的触发器默认比数字输入框矮一截（28 vs 39），底对齐时
+   两列的小标签会差 11px。统一成 38px 后四条标签落在同一条线上。 */
+#mediaSettingsRow .cs-trigger,
+#mediaSettingsRow input[type="number"]{height:38px;box-sizing:border-box}
 .cs-trigger:focus-visible{outline:none;border-color:var(--accent);
   box-shadow:0 0 0 3px var(--accent-soft)}
 .cs-wrap.cs-open .cs-trigger{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -1314,7 +1326,430 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 @media (prefers-reduced-motion:reduce){
   .cs-panel,.cs-arrow,.cs-trigger{transition:none}
 }
+
 </style>
+<style id="wb-alibaba-console" media="not all">
+/* ============================================================
+   Alibaba Cloud console skin (first pass)
+   - cool neutral surfaces, orange only for primary/active
+   - one navigation level: top tabs; the in-page sidebar is hidden
+   - flat cards and quieter tables, no warm gradients/shadows
+   ============================================================ */
+:root{
+  --serif: var(--sans);
+  --radius-card: 10px;
+  --radius-control: 7px;
+  --radius-pill: 999px;
+}
+body{background:var(--bg);font-family:var(--sans);font-size:13px}
+header{
+  min-height:56px;height:56px;padding:0 var(--page-pad);
+  background:var(--panel);border-bottom:1px solid var(--line);
+  box-shadow:none;backdrop-filter:none;position:sticky;
+}
+.header-left{gap:24px;flex-wrap:nowrap}
+h1{font-size:16px;font-weight:600;letter-spacing:0}
+h1 .dot{width:7px;height:7px;box-shadow:none}
+h2,h3,.main-page h2{font-family:var(--sans);letter-spacing:0}
+.main-nav{
+  display:flex;height:56px;padding:0;gap:0;background:transparent;
+  border:0;border-radius:0;
+}
+.main-nav-btn{
+  height:56px;padding:0 16px;border:0!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;
+  color:var(--dim);font-size:13px;font-weight:500;position:relative;
+}
+.main-nav-btn:hover{color:var(--fg);background:transparent!important}
+.main-nav-btn.active{color:var(--accent)!important;font-weight:600;background:transparent!important}
+.main-nav-btn.active::after{
+  content:"";position:absolute;left:16px;right:16px;bottom:0;height:2px;
+  background:var(--accent);border-radius:2px 2px 0 0;
+}
+.header-right{gap:8px}
+.gh-link,.hdr-icon-btn,.theme-btn{
+  border:0!important;background:transparent!important;box-shadow:none!important;
+  width:32px;height:32px;border-radius:7px!important;
+}
+.gh-link:hover,.hdr-icon-btn:hover,.theme-btn:hover{background:var(--panel2)!important}
+main{max-width:1680px;padding:24px 32px 56px}
+
+/* One navigation level: hide the generated in-page sidebar. The section
+   anchors still exist and all existing JS keeps working. */
+.main-page.page-nav-on.active{display:block;grid-template-columns:none}
+.main-page.page-nav-on.active>.page-sidebar{display:none!important}
+.main-page.page-nav-on.active>*{grid-column:auto}
+.page-nav-body{min-width:0;width:100%}
+
+section,.gw-summary,.realm-card,.card,.modal{border-radius:10px!important;box-shadow:none!important}
+section{padding:16px 20px;border-color:var(--line);margin-bottom:16px}
+#pageAnalytics section.panel,#pageAnalytics .panel{border-radius:10px!important}
+
+.realm-cards-grid{gap:12px!important;margin-bottom:16px!important}
+.realm-card{
+  min-height:104px;padding:16px 18px;background:var(--panel);
+  border:1px solid var(--line);box-shadow:none!important;transition:border-color .15s ease;
+}
+.realm-card:hover{transform:none;border-color:var(--line-hover);box-shadow:none!important}
+.realm-card.active{
+  border-color:var(--accent)!important;background:var(--accent-soft)!important;
+  box-shadow:none!important;
+}
+.realm-card.active#tabCn{
+  border-color:var(--think)!important;background:var(--think-soft)!important;
+  box-shadow:none!important;
+}
+.realm-card.gateway-ctrl{background:var(--panel2)!important;border-color:var(--line)!important}
+.gw-summary{overflow:hidden;border-color:var(--line)}
+#cards .card{padding:14px 20px}
+#cards .card .k{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--dim)}
+#cards .card .v{font-size:24px;font-weight:600;letter-spacing:-.3px}
+#cards .card .v-num{font-size:17px;font-weight:600}
+#schedulerBar{background:var(--panel2);font-size:11.5px;padding:9px 20px}
+
+button{
+  border-radius:7px;border:1px solid var(--accent);background:var(--accent);
+  color:#fff;box-shadow:none;font-size:12.5px;font-weight:500;padding:6px 12px;
+  transition:background-color .15s ease,border-color .15s ease,color .15s ease;
+}
+button:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+button.sec{background:var(--panel);border-color:var(--line);color:var(--fg)}
+button.sec:hover{background:var(--panel2);border-color:var(--line-hover)}
+button.mini{padding:4px 9px;font-size:11px}
+button.danger{background:var(--bad-soft);border-color:transparent;color:var(--bad)}
+button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+.toggle-realm-btn{
+  background:var(--panel);border-color:var(--line);color:var(--fg);
+  box-shadow:none;border-radius:7px;
+}
+.toggle-realm-btn:hover{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.id-btn.active{background:var(--accent);color:#fff;box-shadow:none}
+.id-btn-group{border-radius:6px}
+.realm-switch button.active#accountsRealmCn{color:var(--think);border-color:var(--think)}
+
+input,select,textarea{border-radius:7px;border-color:var(--line);background:var(--panel)}
+input:focus,select:focus,textarea:focus{
+  outline:none;border-color:var(--accent)!important;
+  box-shadow:0 0 0 3px var(--accent-soft)!important;
+}
+
+/* Tables: calm header, tabular numbers, no card-in-card look. */
+table{font-size:12.5px}
+th{
+  height:38px;padding:8px 12px;border-bottom:1px solid var(--line);
+  background:var(--panel2)!important;color:var(--dim);font-size:11.5px;font-weight:600;
+}
+td{padding:8px 12px;border-bottom:1px solid var(--line)}
+tbody tr:hover{background:var(--panel2)}
+.table-wrap{border-radius:8px}
+table.account-cards .acct-actions button.mini{box-shadow:none}
+table.account-cards td.acct-actions{
+  background:var(--panel)!important;box-shadow:none!important;
+  border-left:1px solid var(--line);
+}
+table.account-cards tbody tr:hover td.acct-actions{background:var(--panel2)!important}
+table.account-cards th:last-child{background:var(--panel2)!important;box-shadow:none!important}
+/* Account row actions: keep two compact rows inside the sticky cell. The
+   "出站身份：" label is redundant (the WB/VSC/CLI title explains it). */
+table.account-cards .acct-actions-row{flex-wrap:wrap;gap:3px}
+table.account-cards .acct-actions .id-btn-label{display:none}
+table.account-cards .acct-actions button.mini{padding:3px 7px;font-size:10.5px}
+table.account-cards .acct-actions .id-btn{padding:2px 5px;font-size:10px}
+
+.badge,.cool-pill,.badge-effort{border-color:transparent!important;box-shadow:none;font-weight:500}
+.badge{border-radius:999px;padding:1px 7px;font-size:10.5px;background:var(--panel2);color:var(--dim)}
+.badge.ok{color:var(--accent2);background:var(--accent2-soft)}
+.badge.s{color:var(--think);background:var(--think-soft)}
+.badge.warn{color:var(--warn);background:var(--warn-soft)}
+.badge.bad{color:var(--bad);background:var(--bad-soft)}
+.badge.off{color:var(--dim);background:var(--panel2)}
+.cool-pill{color:var(--warn);background:var(--warn-soft)}
+.badge-effort{color:var(--think);background:var(--think-soft)}
+.realm-badge-intl{color:var(--think);background:var(--think-soft);border-color:transparent}
+.realm-badge-cn{color:var(--accent);background:var(--accent-soft);border-color:transparent}
+.realm-badge-codearts{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.credit-main b{color:var(--accent2)}
+
+/* Keep the panel usable at tablet/mobile widths after removing the sidebar. */
+@media (max-width:1100px){
+  header{height:auto;min-height:56px;padding:8px 16px;gap:8px}
+  .header-left{width:100%;gap:10px;flex-wrap:wrap}
+  .main-nav{order:9;width:100%;height:auto;overflow-x:auto;border-top:1px solid var(--line);padding-top:2px}
+  .main-nav-btn{height:42px;padding:0 10px;white-space:nowrap}
+  .main-nav-btn.active::after{left:10px;right:10px}
+  main{padding:18px 16px 48px}
+}
+/* Phone shell: brand and tools on row 1, scrollable tabs on row 2. */
+@media (max-width:860px){
+  header{
+    display:grid;grid-template-columns:1fr auto;
+    grid-template-areas:"brand tools" "nav nav";
+    height:auto;min-height:0;padding:8px 12px;gap:4px 8px;
+  }
+  .header-left{display:contents}
+  .header-left h1{grid-area:brand;align-self:center;font-size:15px}
+  .header-right{display:flex!important;grid-area:tools;justify-self:end;align-items:center;gap:4px}
+  .header-left .gh-link,.header-left .hdr-icon-btn{display:none}
+  .main-nav{
+    grid-area:nav;width:100%;height:44px;padding:0;
+    border-top:1px solid var(--line);overflow-x:auto;overflow-y:hidden;
+  }
+  .main-nav-btn{height:42px;padding:0 11px;font-size:12.5px}
+  .main-nav-btn.active::after{left:11px;right:11px}
+}
+@media (max-width:860px){
+  .realm-cards-grid{grid-template-columns:1fr!important}
+  section{padding:14px;border-radius:10px}
+  .main-page.page-nav-on.active{display:block}
+}
+</style>
+<style id="wb-console-v2" media="not all">
+/* Console grid: 216px navigation + one fluid workspace, 16px gutters. */
+.main-page>div:first-child:not(.page-sidebar):not(.page-nav-body),.main-page>.page-nav-body>div:first-child:not(.console-contextbar){}
+:root{
+  --console-nav-w:216px;--console-top-h:52px;--console-ground:#f5f7fa;
+  --console-ink:#1d2129;--console-muted:#4e5969;--console-edge:#e3e8ef;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+html[data-theme-style="claude"]{--radius-card:6px;--radius-control:4px}
+header{height:var(--console-top-h);min-height:var(--console-top-h);padding:0 20px;position:sticky;top:0;
+  background:var(--panel);border-bottom:1px solid var(--line);box-shadow:none;z-index:60}
+.header-left{gap:18px!important;flex-wrap:nowrap!important;min-width:0}
+.console-product{display:flex;align-items:center;gap:9px;flex:none}
+.console-mark{position:relative;display:inline-flex;align-items:flex-end;gap:2px;width:23px;height:23px;padding:3px;background:var(--accent);border-radius:4px}
+.console-mark i{display:block;width:4px;background:#fff;border-radius:1px 1px 0 0;transform:skewY(-24deg)}
+.console-mark i:nth-child(1){height:7px}.console-mark i:nth-child(2){height:12px}.console-mark i:nth-child(3){height:16px}
+.console-wordmark{font-size:15px;font-weight:650;line-height:1.1;letter-spacing:-.2px;white-space:nowrap;color:var(--fg)}
+.console-wordmark span{display:block;margin-top:3px;font-size:8px;font-weight:600;letter-spacing:1.8px;color:var(--dim)}
+.console-service{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:12px;white-space:nowrap}
+.console-service .dot{width:6px;height:6px;margin:0;box-shadow:none}
+.console-port{padding-left:7px;border-left:1px solid var(--line);font-variant-numeric:tabular-nums}
+.header-right{gap:5px}.header-right .meta{font-size:11px}
+.console-mobile-menu{display:none;background:transparent;border:0;color:var(--fg);width:36px;height:36px;padding:0;font-size:19px}
+.console-shell{display:grid;grid-template-columns:var(--console-nav-w) minmax(0,1fr);align-items:start;min-height:calc(100vh - var(--console-top-h))}
+.console-sidebar{position:sticky;top:var(--console-top-h);z-index:40;height:calc(100vh - var(--console-top-h));
+  display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden}
+.console-nav-head{display:flex;align-items:center;justify-content:space-between;height:46px;padding:0 16px;flex:none;color:var(--dim);font-size:12px}
+.console-collapse{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;background:transparent;border:0;color:var(--dim);font-size:18px}
+.console-collapse:hover{background:var(--panel2);color:var(--fg)}
+.console-sidebar .main-nav{display:block;width:auto;height:auto;padding:0 8px 14px;background:transparent;border:0;overflow:visible}
+.console-nav-group{padding:9px 0 5px}
+.console-nav-caption{height:26px;padding:0 10px;color:var(--dim);font-size:11px;line-height:26px;white-space:nowrap}
+.console-sidebar .main-nav-btn,.console-nav-link{position:relative;display:flex;align-items:center;width:100%;height:36px;padding:0 12px 0 22px;
+  border:0!important;border-radius:4px!important;background:transparent!important;color:var(--console-muted);box-shadow:none!important;
+  font-size:13px;font-weight:400;line-height:36px;text-align:left;justify-content:flex-start;white-space:nowrap}
+.console-sidebar .main-nav-btn::before,.console-nav-link::before{content:"";position:absolute;left:10px;top:50%;width:4px;height:4px;border:1px solid currentColor;border-radius:1px;opacity:.65;transform:translateY(-50%)}
+.console-sidebar .main-nav-btn:hover,.console-nav-link:hover{background:var(--panel2)!important;color:var(--fg)}
+.console-sidebar .main-nav-btn.active{background:var(--accent-soft)!important;color:var(--accent)!important;font-weight:600}
+.console-sidebar .main-nav-btn.active::after{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--accent);border-radius:0 2px 2px 0}
+.console-sidebar .main-nav-btn.active::before,.console-nav-link.active::before{background:currentColor;opacity:1}
+.console-nav-link.active{color:var(--accent);background:var(--accent-soft);font-weight:600}
+/* 概览 / 模型管理 / 请求记录 是互斥视图：进入一个时，其它区块整块收起。 */
+.console-view-hidden{display:none!important}
+.console-sidebar-foot{display:flex;align-items:center;gap:6px;margin:auto 14px 14px;padding-top:13px;border-top:1px solid var(--line);color:var(--dim);font-size:11px;white-space:nowrap}
+.console-side-dot{width:5px;height:5px;border-radius:50%;background:var(--accent2)}
+.console-sidebar-foot .mono{margin-left:auto;font-size:10px}
+.console-scrim{display:none}
+main{max-width:none;width:100%;min-width:0;padding:0 24px 48px;background:var(--bg)}
+.console-contextbar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;margin:0 -24px 20px;padding:0 24px;
+  background:var(--panel);border-bottom:1px solid var(--line);color:var(--dim);font-size:12px}
+.console-context-root{color:var(--dim)}.console-context-sep{margin:0 10px;color:var(--dim-light)}
+#consoleCurrentPage{color:var(--fg)}
+.console-context-actions{display:flex;align-items:center;gap:12px;font-size:11px}
+.main-page{min-width:0}.main-page>.page-nav-body{min-width:0}
+.main-page>div:first-child:not(.page-sidebar):not(.page-nav-body),.main-page>.page-nav-body>div:first-child:not(.console-contextbar){}
+.main-page h2{font-family:var(--sans);letter-spacing:0}
+.main-page h2[style*="font-size:17px"]{font-size:20px!important;font-weight:600!important;line-height:1.4}
+section,.gw-summary,.realm-card,.card,.modal,#pageAnalytics section.panel,#pageAnalytics .panel{border-radius:6px!important;box-shadow:none!important;border-color:var(--line)}
+section{padding:16px 18px;margin-bottom:16px}
+section h2{font-size:13px;text-transform:none;letter-spacing:0;color:var(--fg)}
+.realm-cards-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))!important;gap:12px!important}
+.realm-card{min-height:104px;padding:14px 16px;background:var(--panel)}
+.realm-card.active,.realm-card.active#tabCn{border-color:var(--accent)!important;background:var(--panel)!important;box-shadow:inset 0 2px 0 var(--accent)!important}
+.realm-card.gateway-ctrl{background:var(--panel2)!important}
+#cards{min-height:88px}#cards .card{padding:14px 20px}#cards .card .v{font-size:25px;font-weight:600}
+#schedulerBar{padding:9px 18px;background:var(--panel2)}
+button,.btn,input,select,textarea{border-radius:4px}
+button{min-height:30px;padding:5px 13px;font-size:12px;font-weight:500}
+button.sec{background:var(--panel);border-color:var(--line-hover);color:var(--fg)}
+button.mini{min-height:26px;padding:3px 9px;font-size:11px}
+button:disabled{opacity:.55;cursor:not-allowed}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),select,textarea{min-height:32px}
+.badge,.badge-effort,.cool-pill{border-radius:3px!important;font-size:11px!important;padding:1px 6px}
+.table-wrap{border-radius:4px}
+th{background:var(--panel2)!important;font-size:12px;font-weight:500;border-radius:0!important}
+th,td{padding:9px 11px}td{border-color:var(--line)}
+/* 最近请求的耗时列：值很短（4.04 s），挤一点就折成两行，读起来像两个数字。 */
+#recent td[data-label="耗时"],#recent td[data-label="首字"]{white-space:nowrap}
+/* Filter bars are pure presentation: they never change bulk-action scope. */
+.console-filterbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0;padding:10px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:4px}
+.console-filterbar input,.console-filterbar select{width:auto;min-width:150px;background:var(--panel)!important;border:1px solid var(--line-hover);padding:5px 10px;color:var(--fg);font:inherit}
+.console-filterbar .console-search{width:260px;max-width:100%}
+.console-filter-count{margin-left:auto;color:var(--dim);font-size:12px;white-space:nowrap}
+.console-filter-empty{display:flex;align-items:center;justify-content:center;gap:12px;min-height:72px;color:var(--dim);font-size:13px}
+.console-insights{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,1fr);gap:16px;margin:16px 0}
+.console-insight{min-width:0;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.console-insight-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.console-insight-head h2{margin:0;font-size:13px;font-weight:600;color:var(--fg)}
+.console-insight-note{font-size:11px;color:var(--dim)}
+#consoleUsageChart{display:block;width:100%;height:168px}
+.console-health-row{display:grid;grid-template-columns:54px 1fr auto;align-items:center;gap:10px;min-height:42px;font-size:12px}
+.console-health-track,.console-share-track{height:5px;background:var(--panel3);border-radius:3px;overflow:hidden}
+.console-health-fill,.console-share-fill{display:block;height:100%;background:var(--accent2);border-radius:3px}
+.console-health-row:nth-child(2) .console-health-fill{background:var(--accent)}
+.console-health-row strong{font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
+.console-share-row{display:grid;grid-template-columns:minmax(90px,1fr) minmax(80px,1.2fr) auto;gap:10px;align-items:center;min-height:29px;font-size:11px}
+.console-share-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.console-share-value{font-variant-numeric:tabular-nums;color:var(--dim);white-space:nowrap}
+.console-share-fill{background:var(--accent)}
+/* Analytics: one divided KPI strip and compact evidence panels. */
+#pageAnalytics{background:transparent;font-size:13px}
+#pageAnalytics .wrap{max-width:none;margin:0;padding:0}
+#pageAnalytics .pagehead{margin-bottom:16px}
+#pageAnalytics h1.pagetitle{font-family:var(--sans);font-size:20px;font-weight:600;letter-spacing:0}
+#pageAnalytics .pagesub{font-size:12px}
+#pageAnalytics .kpis{grid-template-columns:repeat(6,minmax(0,1fr));gap:0;margin-bottom:16px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+#pageAnalytics .kpi{padding:12px 14px;border:0;border-right:1px solid var(--line);border-radius:0;box-shadow:none;overflow:hidden}
+#pageAnalytics .kpi:last-child{border-right:0}
+#pageAnalytics .kpi:hover{box-shadow:none;border-color:var(--line)}
+#pageAnalytics .kpi .k{font-size:12px;font-weight:500;letter-spacing:0}
+#pageAnalytics .kpi .k .ic{display:none}
+#pageAnalytics .kpi .v{font-size:23px;font-weight:600;margin-top:6px}
+#pageAnalytics .kpi .s{font-size:11px;margin-top:5px}
+#pageAnalytics .kpi .accentbar{display:none}
+#pageAnalytics .kpi.big .spark{height:26px;margin-top:7px}
+#pageAnalytics .ringwrap{padding:2px 0}
+#pageAnalytics .ring{width:58px;height:58px}
+#pageAnalytics .ring .hole{inset:6px}
+#pageAnalytics .ring .hole b{font-size:14px}
+#pageAnalytics .ring .hole span{display:none}
+#pageAnalytics .maingrid{grid-template-columns:minmax(0,1.8fr) minmax(280px,1fr);gap:16px;align-items:stretch}
+#pageAnalytics .maingrid>section.panel{display:flex;flex-direction:column}
+#pageAnalytics .maingrid>section.panel .pbody{flex:1}
+#pageAnalytics .chartbox{min-height:176px}
+#pageAnalytics section.panel{padding:0;margin-bottom:16px;overflow:hidden}
+#pageAnalytics .phead{padding:13px 16px;border-bottom:1px solid var(--line);min-height:48px}
+#pageAnalytics .phead h2{font-size:13px}
+#pageAnalytics .pbody{padding:12px 16px}
+#pageAnalytics .chartbox{min-height:176px}
+#pageAnalytics .seg,#pageAnalytics .chiprow,#pageAnalytics .dimtabs{border-radius:4px;padding:2px;background:var(--panel2)}
+#pageAnalytics .seg button,#pageAnalytics .chiprow button,#pageAnalytics .dimtabs button{border-radius:3px;min-height:27px;box-shadow:none!important}
+#pageAnalytics .seg button.on,#pageAnalytics .chiprow button.on,#pageAnalytics .dimtabs button.on{color:var(--accent);border-color:var(--line);box-shadow:none}
+#pageAnalytics .folds{gap:8px}
+#pageAnalytics .fold,#pageAnalytics .fold summary{border-radius:5px}
+/* Settings and resource forms use full-width rows instead of floating mini-cards. */
+#pageSettings section,#pageAgents section{margin-bottom:12px}
+#pageSettings section>div[style*="flex"],#pageAgents section>div[style*="flex"]{row-gap:12px}
+.modal{border-radius:8px!important}
+/* A collapsed rail keeps every destination available through tooltips. */
+body.console-collapsed{--console-nav-w:52px}
+body.console-collapsed .console-nav-head{justify-content:center;padding:0}
+body.console-collapsed .console-nav-head>span,body.console-collapsed .console-nav-caption,
+body.console-collapsed .console-sidebar .main-nav-btn,body.console-collapsed .console-nav-link{font-size:0}
+body.console-collapsed .console-sidebar .main-nav-btn,body.console-collapsed .console-nav-link{padding:0;justify-content:center}
+body.console-collapsed .console-sidebar .main-nav-btn::before,body.console-collapsed .console-nav-link::before{left:50%;width:7px;height:7px;transform:translate(-50%,-50%)}
+body.console-collapsed .console-sidebar-foot{justify-content:center;margin: auto 0 14px;padding:12px 0 0}
+body.console-collapsed .console-sidebar-foot span:not(.console-side-dot){display:none}
+@media (min-width:1500px){:root{--console-nav-w:224px}main{padding-left:28px;padding-right:28px}.console-contextbar{margin-left:-28px;margin-right:-28px;padding-left:28px;padding-right:28px}}
+@media (max-width:1240px){
+  .realm-cards-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  #pageAnalytics .kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #pageAnalytics .kpi:nth-child(3){border-right:0}
+  #pageAnalytics .kpi:nth-child(-n+3){border-bottom:1px solid var(--line)}
+  #pageAnalytics .maingrid{grid-template-columns:minmax(0,1.45fr) minmax(250px,1fr)}
+}
+@media (max-width:1000px){
+  :root{--console-nav-w:184px}
+  main{padding-left:16px;padding-right:16px}.console-contextbar{margin-left:-16px;margin-right:-16px;padding-left:16px;padding-right:16px}
+  .console-insights,#pageAnalytics .maingrid{grid-template-columns:1fr}
+  .console-service{display:none}
+  .console-sidebar .main-nav-btn,.console-nav-link{padding-left:20px}
+}
+@media (max-width:760px){
+  :root{--console-top-h:56px;--console-nav-w:216px}
+  header{height:auto;min-height:56px;padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:sticky}
+  .header-left{order:1;flex:1 1 auto!important;gap:10px!important;min-width:0}
+  .header-right{order:2;flex:0 0 auto!important;display:flex!important;gap:2px;align-items:center}
+  .console-mobile-menu{display:flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px}
+  .console-product{min-width:0}
+  .console-wordmark{font-size:14px}.console-wordmark span{font-size:7px;letter-spacing:1.4px}
+  .console-mark{width:21px;height:21px}.console-service{display:none}
+  .header-left .gh-link,.header-left .hdr-icon-btn{display:none}
+  .header-right .meta{display:none}.lang-btn{min-width:30px}
+  .console-shell{display:block;min-height:calc(100vh - 56px)}
+  .console-sidebar{position:fixed;left:0;top:56px;bottom:0;z-index:90;width:240px;height:auto;transform:translateX(-100%);transition:transform .18s ease;box-shadow:none}
+  body.console-nav-open .console-sidebar{transform:translateX(0)}
+  .console-scrim{position:fixed;inset:56px 0 0;z-index:80;background:rgba(15,23,42,.35)}
+  body.console-nav-open .console-scrim{display:block}
+  .console-collapse{display:none}.console-nav-head{height:40px}
+  .console-sidebar .main-nav-btn,.console-nav-link{height:42px;line-height:42px;font-size:14px}
+  body.console-collapsed .console-sidebar .main-nav-btn,body.console-collapsed .console-nav-link{font-size:14px;padding:0 12px 0 22px;justify-content:flex-start}
+  body.console-collapsed .console-nav-caption{display:block}
+  body.console-collapsed .console-sidebar .main-nav-btn::before,body.console-collapsed .console-nav-link::before{left:10px;width:4px;height:4px;transform:translateY(-50%)}
+  body.console-collapsed .console-sidebar-foot{justify-content:flex-start;margin:auto 14px 14px;padding:13px 0 0}
+  body.console-collapsed .console-sidebar-foot span:not(.console-side-dot){display:inline}
+  main{padding:0 12px 36px}
+  .console-contextbar{min-height:44px;margin:0 -12px 16px;padding:0 12px;flex-wrap:wrap;gap:4px}
+  .console-context-root,.console-context-sep{display:none}
+  #consoleCurrentPage{font-size:13px;font-weight:600}
+  .console-context-actions{gap:7px;margin-left:auto}.console-context-actions #consoleRefreshState{display:none}
+  .realm-cards-grid{grid-template-columns:1fr!important}
+  .realm-card{min-height:96px}
+  #cards{grid-template-columns:1fr}#cards .card{padding:12px 16px}
+  .console-insights{gap:12px;margin:12px 0}.console-insight{padding:14px}
+  .console-filterbar{align-items:stretch;padding:10px;gap:8px}
+  .console-filterbar .console-search{width:100%;min-width:0}
+  .console-filterbar select{flex:1;min-width:120px}
+  .console-filter-count{margin-left:0;align-self:center}
+  .console-filterbar button{min-height:34px}
+  section{padding:14px 12px}
+  #pageAnalytics .pagehead{align-items:flex-start}
+  #pageAnalytics h1.pagetitle{display:block;font-size:20px}
+  #pageAnalytics .pagesub{display:block;margin-top:4px}
+  #pageAnalytics .seg{width:100%;overflow-x:auto}
+  #pageAnalytics .seg button{flex:1;padding:5px 8px}
+  #pageAnalytics .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #pageAnalytics .kpi:nth-child(3){border-right:1px solid var(--line)}
+  #pageAnalytics .kpi:nth-child(2n){border-right:0}
+  #pageAnalytics .kpi:nth-child(-n+4){border-bottom:1px solid var(--line)}
+  #pageAnalytics .kpi{padding:11px 12px}
+  #pageAnalytics .kpi .v{font-size:21px}
+  #pageAnalytics .kpi .k{font-size:11px}
+  #pageAnalytics .phead{padding:11px 12px;flex-wrap:wrap}
+  #pageAnalytics .pbody{padding:10px 12px}
+  #pageAnalytics .recent-list{max-height:240px}
+  .main-page h2[style*="font-size:17px"]{font-size:19px!important}
+}
+@media (prefers-reduced-motion:reduce){.console-sidebar{transition:none}}
+</style>
+<style>
+html:not([data-console-layout="on"]) .console-product,
+html:not([data-console-layout="on"]) .console-service,
+html:not([data-console-layout="on"]) .console-mobile-menu,
+html:not([data-console-layout="on"]) .console-sidebar,
+html:not([data-console-layout="on"]) .console-scrim,
+html:not([data-console-layout="on"]) .console-contextbar,
+html:not([data-console-layout="on"]) .console-insights,
+html:not([data-console-layout="on"]) .console-filterbar {display:none!important}
+html:not([data-console-layout="on"]) .header-left .console-nav-group {display:contents}
+html:not([data-console-layout="on"]) .header-left .console-nav-caption,
+html:not([data-console-layout="on"]) .header-left .console-nav-link {display:none!important}
+html:not([data-console-layout="on"]) #btnNavGateway {order:1}
+html:not([data-console-layout="on"]) #btnNavAccounts {order:2}
+html:not([data-console-layout="on"]) #btnNavTasks {order:3}
+html:not([data-console-layout="on"]) #btnNavMedia {order:4}
+html:not([data-console-layout="on"]) #btnNavAnalytics {order:5}
+html:not([data-console-layout="on"]) #btnNavAgents {order:6}
+html:not([data-console-layout="on"]) #btnNavSettings {order:7}
+html:not([data-console-layout="on"]) #btnNavLogs {order:8}
+html[data-console-layout="on"] #classicTitle {display:none}
+</style>
+<script>
+try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1') {
+  document.documentElement.setAttribute('data-console-layout','on');
+  document.getElementById('wb-console-v2').media = 'all';
+} } catch(e){}
+</script>
 <script>
 /* Runs before <body> is parsed, so the page the user last had is the
    first one painted. Kept inline and dependency-free on purpose: an
@@ -1497,7 +1932,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['overview','gateway','accounts','tasks','analytics','agents','settings','logs'];
+  var TABS = ['overview','gateway','accounts','tasks','media','analytics','agents','settings','logs'];
   var fallback = window.__NEXT_UI__ ? 'overview' : 'gateway';
   var pick = null;
   try {
@@ -1515,6 +1950,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       if(btn) btn.classList.toggle('active', t === pick);
     });
     window.initThemeSystem();
+    if(typeof initConsoleLayout === 'function') initConsoleLayout();
+    if(typeof initConsoleShell === 'function') initConsoleShell();
     if(window.applyStyle) window.applyStyle(getStyle());
   });
 })();
@@ -1527,6 +1964,60 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   var ATTRS = ['title', 'placeholder', 'aria-label', 'data-label', 'alt'];
   var SKIP = {SCRIPT: 1, STYLE: 1, TEXTAREA: 1, NOSCRIPT: 1};
   var DICT = {
+    '媒体': 'Media',
+    '媒体生成': 'Media generation',
+    '生图 / 生视频的开关在「设置」页；这里看模型约束和最近任务。每次生成都会真实扣账号积分。': 'The image / video switches live on the Settings page; this page shows model limits and recent tasks. Every generation really spends account credits.',
+    '可用媒体模型': 'Available media models',
+    '该区目录里带媒体标签的模型，以及各自的时长与分辨率约束。只读，不发上游。': 'Media-tagged models in this realm\'s catalogue, with their duration and resolution limits. Read-only; no upstream request.',
+    '最近任务': 'Recent tasks',
+    '生视频是异步任务：提交后在这里看进度、失败原因与产物。每个 API Key 只看得到自己提交的任务。': 'Video generation is asynchronous: submission returns immediately, progress, failure reasons and artifacts show up here. Each API key only sees its own tasks.',
+    '媒体能力（生图 / 生视频）': 'Media (image / video generation)',
+    '默认关闭。开启后网关才提供': 'Off by default. Only when enabled does the gateway serve',
+    '；关闭时这些路由': '; when disabled these routes',
+    '根本不存在': 'do not exist at all',
+    '每张图约 5.71 积分、每条 5 秒视频约 57–129 积分，直接从账号积分扣，不经 token 计费。': 'About 5.71 credits per image and 57-129 per 5-second video, deducted from account credits directly — not billed per token.',
+    '开启生图 / 生视频路由': 'Enable image / video routes',
+    '媒体出口': 'Media exit',
+    '出站身份': 'Outbound identity',
+    '桌面身份': 'Desktop',
+    'CLI 身份': 'CLI',
+    '每分钟生图上限': 'Images per minute',
+    '视频时长上限（秒）': 'Video length cap (seconds)',
+    '每 Key 每日积分上限': 'Daily credits per key',
+    '生视频并发': 'Concurrent videos',
+    '生视频并发超过上限时新任务<b>先排队</b>（不提交上游、不扣积分），并行任务会尽量分到不同账号上。': 'When the concurrent-video cap is reached, new tasks queue locally (not submitted upstream, no credits spent). Parallel tasks are spread across different accounts.',
+    '每 Key 每日积分上限填 0 表示不限。视频时长会与模型目录里的上限取小值。出站身份决定冒充哪种客户端发请求，桌面账号一般不用改。': 'A daily credit cap of 0 means unlimited. The video length cap is combined with each model\'s own limit, whichever is smaller. The outbound identity decides which client the request imitates; desktop accounts usually need no change.',
+    '能力': 'Capability',
+    '比例': 'Aspect',
+    'prompt 上限': 'Prompt limit',
+    '文生图': 'Text-to-image',
+    '改图': 'Image edit',
+    '文生视频': 'Text-to-video',
+    '图生视频': 'Image-to-video',
+    '排队中': 'Queued',
+    '生成中': 'Generating',
+    '已完成': 'Completed',
+    '失败': 'Failed',
+    '该区目录里没有媒体模型——账号可能没有生图 / 生视频权限。': 'No media models in this realm\'s catalogue — the account may lack image / video permission.',
+    '还没有任务。生视频提交成功后会出现在这里。': 'No tasks yet. A video task shows up here once its submission succeeds.',
+    '花费': 'Credits',
+    '提交时间': 'Submitted',
+    '下载': 'Download',
+    '取消': 'Cancel',
+    '已开启：媒体路由可用': 'Enabled: media routes are live',
+    '已关闭：媒体路由不再存在': 'Disabled: media routes no longer exist',
+    '已取消（本地轮询已停止）': 'Cancelled (local polling stopped)',
+    '取消请求已发送': 'Cancel request sent',
+    '取消失败: ': 'Cancel failed: ',
+    '缺少任务 id': 'Missing task id',
+    '字符': 'chars',
+    '该区目录里没有媒体模型': 'No media models in this realm',
+    '排队 ': 'queued ',
+    ' 条 · 进行中 ': ' · in progress ',
+    ' 条 · 共持有 ': ' · held ',
+    '失败的任务请展开看原因：「invalid_request」没扣积分可以改参数重试，「upstream_error / task_lost」可能已经扣过费。': 'Hover a failed task for its reason: "invalid_request" spent nothing and can be retried with fixed parameters; "upstream_error / task_lost" may already have been charged.',
+    '媒体路由可用': 'media routes are live',
+    '媒体路由不再存在': 'media routes no longer exist',
     '添加 API Key 账号': 'Add an API Key account',
     '粘贴 CodeBuddy API 管理页签发的静态 Key': 'Paste the static key issued by the CodeBuddy API console',
     '前缀。': 'prefix.',
@@ -1567,7 +2058,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '+ 添加槽位': '+ Add slot',
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
     '「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。': 'Settings is where this switch lives, so it cannot be unticked - there would be no way back.',
-    '取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。': 'Unticking a tab takes it out of the top bar; tick it again to bring it back. The list is built from the tabs the panel actually has, so a page added or removed upstream shows up here on its own. The choice is stored on this gateway, so it survives a different browser and a restart. Settings stays: it is where this switch lives.',
+    '取消勾选可隐藏对应功能入口，勾选后恢复；偏好保存在本网关。「设置」入口固定保留。': 'Untick a feature to hide its navigation entry; tick it again to restore it. Preferences are stored on this gateway. Settings always remains available.',
     '添加': 'Add',
     '0 个 Key': '0 keys',
     '0 个 Key 生效': '0 keys active',
@@ -1692,7 +2183,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '候选：': 'Candidates:',
     '停用': 'Disable',
     '全维度统计输入/输出/推理 Token、缓存节省效益与各账号各模型用量': 'Full statistics on input/output/reasoning tokens, cache savings and per-account, per-model usage',
-    '全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡': 'Fully automatic batch claiming, event reporting and claiming of the official growth credits (+1450), plus the cat daily routine and check-in',
+    '全自动批量接取、事件上报点亮并领取官方成长积分，以及猫猫日常与打卡': 'Fully automatic batch claiming, event reporting and claiming of the official growth credits, plus the cat daily routine and check-in',
     '全部': 'All',
     '全部任务': 'All tasks',
     '全部停用': 'Disable all',
@@ -1731,6 +2222,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '秒': 'seconds',
     '分钟取一次价': 'minutes per price fetch',
     '切换失败:': 'Switch failed:',
+    '控制台布局': 'Console layout',
+    '新导航布局': 'New navigation layout',
+    '返回原布局': 'Return to previous layout',
     '切换颜色主题': 'Switch color theme',
     '切换默认出口为【国内版】': 'Switch the default exit to China',
     '切换默认出口为【国际版】': 'Switch the default exit to Global',
@@ -1820,7 +2314,40 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '固定 CodeArts 出口': 'CodeArts exit only',
     '固定国际版出口': 'Global exit only',
     '国内版': 'China',
-    '顶部页签显示': 'Top tab visibility',
+    '功能菜单显示': 'Navigation visibility',
+    '运行概览': 'Overview',
+    '账号管理': 'Accounts',
+    '模型管理': 'Models',
+    '请求记录': 'Requests',
+    '智能体接入': 'Agent connections',
+    '网关设置': 'Gateway settings',
+    // 控制台外壳：左侧菜单分组、顶栏与概览页新增的标签。
+    '控制台': 'Console',
+    '工作台': 'Workspace',
+    '资源管理': 'Resources',
+    '监控与统计': 'Monitoring',
+    '配置中心': 'Configuration',
+    '本地网关': 'Local gateway',
+    'API 服务运行中': 'API service running',
+    '自动刷新': 'Auto refresh',
+    '刷新数据': 'Refresh',
+    '当前页请求': 'Requests on this page',
+    '请求 Token 分布': 'Token distribution',
+    '账号健康度': 'Account health',
+    '搜索账号': 'Search accounts',
+    '搜索最近请求': 'Search recent requests',
+    '搜索模型清单': 'Search the model catalogue',
+    '全部状态': 'All states',
+    '需关注': 'Needs attention',
+    '本地停用': 'Disabled locally',
+    '清除筛选': 'Clear filters',
+    '当前页全部记录': 'All records on this page',
+    '当前页没有符合筛选条件的请求': 'No request on this page matches the filter',
+    '没有符合当前条件的账号': 'No account matches the current filter',
+    '没有符合当前条件的模型': 'No model matches the current filter',
+    '暂无模型用量分布': 'No model usage yet',
+    '筛选仅影响显示，批量操作仍按原账号范围执行': 'Filtering only changes what is shown; bulk actions still act on the original account scope',
+    '按启用状态、凭证有效期、限流、熔断与本地限额护栏计算，与账号列表的「启用」计数口径不同：启用但凭证失效或被护栏挡住的账号，在这里算不可用。': 'Computed from the enabled flag, credential expiry, rate limiting, circuit breaking and the local limit guards - a different rule from the "enabled" count in the account table: an account that is enabled but has an expired credential or is held back by a guard counts as unavailable here.',
     '（国内版）': '(China)',
     '国内版 (China)': 'China',
     '国内版 (China) · copilot.tencent.com': 'China · copilot.tencent.com',
@@ -2425,7 +2952,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '每日积分限额': 'Daily credit limit',
     '临期积分优先': 'Expiring credits first',
     '读取签到记录失败:': 'Failed to read the activity log:',
-    '账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。': 'When the soonest-expiring credit package of an account (one that still has credits and would really lapse) is within this many days, dispatch prefers the accounts with expiring credits - they get a larger share, and the closer to expiry the bigger - but never all of it in one account (accounts expiring on or around the same day carry equal weight); when none of them is usable (cooling down, over a daily limit), the other accounts serve as usual. 0 turns it off; the day counts come from the most recent credit refresh of each account.',
+    '账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——份额同时看两件事：离到期越近越大，包里剩的积分越多也越大（对数压缩，剩 30 分不会变成 30 倍）；但不会全压在一个账号上，到期日与剩余量都相同的账号彼此等权轮流。这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。': 'When the soonest-expiring credit package of an account (one that still has credits and would really lapse) is within this many days, dispatch prefers the accounts with expiring credits - their share grows both as expiry approaches and as the package holds more unspent credits (log-scaled, so 30 credits is not a 30x share) - but never all of it in one account: accounts with the same expiry and the same remainder rotate evenly. When none of them is usable (cooling down, over a daily limit), the other accounts serve as usual. 0 turns it off; the day counts come from the most recent credit refresh of each account.',
     '启用临期优先': 'Enable expiring-credits first',
     '已开启临期积分优先': 'Expiring-credits priority on',
     '已关闭临期积分优先': 'Expiring-credits priority off',
@@ -2966,6 +3493,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "+ 添加账号 (OAuth)": "+ 新增帳號 (OAuth)",
     "「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。": "「設定」是頁面顯示開關自己的入口，收起來就放不回去了，固定保留。",
     "取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。": "取消勾選就把該頁籤從頂部收起來，勾回來即恢復；清單按頂部現有的頁籤現場生成，上游增刪頁面這裡自動跟上；偏好存在本閘道，換瀏覽器、重啟服務都記得。「設定」是這一頁自己的入口，固定保留。",
+    "控制台布局": "控制台版面",
+    "新导航布局": "新導覽版面",
+    "返回原布局": "返回原版面",
+    "取消勾选可隐藏对应功能入口，勾选后恢复；偏好保存在本网关。「设置」入口固定保留。": "取消勾選可隱藏對應功能入口，勾選後恢復；偏好儲存在本閘道。「設定」入口固定保留。",
     "添加": "新增",
     "API Key 不能为空": "API Key 不能為空",
     "API Key 与出口绑定": "API Key 與出口繫結",
@@ -3025,7 +3556,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "全局 ": "全域性 ",
     "全局默认": "全域性預設",
     "全维度统计输入/输出/推理 Token、缓存节省效益与各账号各模型用量": "全維度統計輸入/輸出/推理 Token、快取節省效益與各帳號各模型用量",
-    "全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡": "全自動批次接取、事件上報點亮並領取官方成長積分 (+1450分)，以及貓貓日常與打卡",
+    "全自动批量接取、事件上报点亮并领取官方成长积分，以及猫猫日常与打卡": "全自動批次接取、事件上報點亮並領取官方成長積分，以及貓貓日常與打卡",
     "全部启用": "全部啟用",
     "全部启用 · 状态健康": "全部啟用 · 狀態健康",
     "全部国内账号 (批量)": "全部國內帳號 (批次)",
@@ -3406,7 +3937,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "账号已成功启用": "帳號已成功啟用",
     "账号当日消耗的 token 达到该值后暂停接单，请求自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示不限（不限额）；与「保留积分」各自独立，任一命中都会暂停接单。": "帳號當日消耗的 token 達到該值後暫停接單，請求自動切到其他帳號；本地時間 0 點後自動恢復。填 0 表示不限（不限額）；與「保留積分」各自獨立，任一命中都會暫停接單。",
     "账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示关闭（默认）。": "帳號當日消費的積分達到該值後，只允許請求免費模型（目錄中標記為 x0.00 的模型），需要花費積分的模型自動切到其他帳號；本地時間 0 點後自動恢復。填 0 表示關閉（預設）。",
-    "账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。": "帳號「最早到期的積分包」（還有剩餘、且到期會真正作廢的那些）距今不超過該天數時，分派優先使用臨期積分的帳號——分到的流量更多、越接近到期份額越大，但不會全壓在一個帳號上（到期日相同或相近的帳號彼此等權）；這些帳號暫時都不可用（冷卻、達日限額等）時，其他帳號照常頂上。填 0 表示關閉；天數取自各帳號最近一次重新整理的積分資料。",
+    "账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——份额同时看两件事：离到期越近越大，包里剩的积分越多也越大（对数压缩，剩 30 分不会变成 30 倍）；但不会全压在一个账号上，到期日与剩余量都相同的账号彼此等权轮流。这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。": "帳號「最早到期的積分包」（還有剩餘、且到期會真正作廢的那些）距今不超過該天數時，分派優先使用臨期積分的帳號——份額同時看兩件事：離到期越近越大，包裡剩的積分越多也越大（對數壓縮，剩 30 分不會變成 30 倍）；但不會全壓在一個帳號上，到期日與剩餘量都相同的帳號彼此等權輪流。這些帳號暫時都不可用（冷卻、達日限額等）時，其他帳號照常頂上。填 0 表示關閉；天數取自各帳號最近一次重新整理的積分資料。",
     "剩余用量优先调度": "剩餘用量優先排程",
     "出口级瞬时失败退避": "出口級瞬時失敗退避",
     "启用出口级退避": "啟用出口級退避",
@@ -3468,7 +3999,13 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "请先粘贴密钥": "請先貼上金鑰",
     "校验中…": "校驗中…",
     "面板手动停用，该账号不参与轮询": "面板手動停用，該帳號不參與輪詢",
-    "顶部页签显示": "頂部頁籤顯示",
+    "功能菜单显示": "功能選單顯示",
+    "运行概览": "執行概覽",
+    "账号管理": "帳號管理",
+    "模型管理": "模型管理",
+    "请求记录": "請求記錄",
+    "智能体接入": "智能體接入",
+    "网关设置": "閘道設定",
     "面板窗口限高": "面板視窗限高",
     "每个窗口（区块）超过这个高度时在窗口内部滚动，不再把整页拉长；滚动时标题行固定在窗口顶部。单位像素；填 0 表示不限。": "每個視窗（區塊）超過這個高度時在視窗內部捲動，不再把整頁拉長；捲動時標題列固定在視窗頂部。單位像素；填 0 表示不限。",
     "窗口最高高度（像素，0 = 不限）": "視窗最高高度（像素，0 = 不限）",
@@ -4158,6 +4695,7 @@ html[data-ui="next"] .next-icon-btn svg{width:16px;height:16px}
 html[data-ui="next"] .next-menu-btn{display:none}
 html[data-ui="next"] .theme-style-group,
 html[data-ui="next"] .theme-style-group + .theme-sep{display:none!important}
+html[data-ui="next"] #settingsCatBar{display:none!important}
 html[data-ui="next"] #nextContent{flex:1;min-width:0;min-height:0}
 html[data-ui="next"] #nextContent > main{
   padding:24px;max-width:1600px;margin:0 auto;width:100%;
@@ -4502,35 +5040,24 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
   html[data-ui="next"] .next-page-intro h2{font-size:20px}
   html[data-ui="next"] #pageAnalytics .kpis{grid-template-columns:1fr!important}
 }
+
+html:not([data-ui="next"]) #nextSidebar, html:not([data-ui="next"]) #nextTopbar, html:not([data-ui="next"]) #nextBottomNav, html:not([data-ui="next"]) #nextMoreSheet, html:not([data-ui="next"]) #nextSidebarBackdrop, html:not([data-ui="next"]) .next-page-intro {display:none!important}
+html[data-ui="next"] .console-shell {display:contents!important}
+html[data-ui="next"] .console-sidebar, html[data-ui="next"] .console-scrim, html[data-ui="next"] .console-contextbar, html[data-ui="next"] #consoleLayoutOption {display:none!important}
+html[data-ui="next"] [data-next-tab][hidden] {display:none!important}
+html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:1600px;margin:0 auto;width:100%}
 </style>
 </head>
 <body>
 <header>
   <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <h1><span class="dot" id="statusDot"></span>mix2api</h1>
-    <nav class="main-nav">
-      <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
-        <span id="navGatewayLabel">网关</span>
-      </button>
-      <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
-        账号
-      </button>
-      <button class="main-nav-btn" id="btnNavTasks" onclick="switchMainTab('tasks')">
-        任务与福利
-      </button>
-      <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
-        数据看板
-      </button>
-      <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
-        智能体配置
-      </button>
-      <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
-        设置
-      </button>
-      <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
-        运行日志
-      </button>
-    </nav>
+    <h1 id="classicTitle"><span class="dot" id="statusDot"></span>mix2api</h1>
+    <button type="button" class="console-mobile-menu" id="btnConsoleNav" onclick="toggleConsoleNav()" aria-label="打开功能导航" aria-controls="consoleSidebar" aria-expanded="false">☰</button>
+    <div class="console-product">
+      <span class="console-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="console-wordmark">mix2api<span>API HUB</span></span>
+    </div>
+    <div class="console-service"><span id="consoleStatusSlot"></span><span>本地网关</span><span class="console-port" id="consolePort">8788</span></div>
     <a class="gh-link" href="https://github.com/ayeaaaa/mix2api" target="_blank" rel="noopener noreferrer"
        title="查看 mix2api 项目仓库" aria-label="mix2api 项目仓库">
       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -4565,6 +5092,9 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
           <button type="button" class="theme-option" data-theme-style-option="material" onclick="selectStyle('material', event)" role="menuitem">Material</button>
           <button type="button" class="theme-option" data-theme-style-option="miuix" onclick="selectStyle('miuix', event)" role="menuitem">MiuiX</button>
         </div>
+        <div class="theme-sep" role="separator"></div>
+        <button type="button" class="theme-option" id="nextLayoutOption" onclick="toggleNextLayout()" role="menuitem">新导航布局</button>
+        <button type="button" class="theme-option" id="consoleLayoutOption" onclick="toggleConsoleLayout(event)" role="menuitemcheckbox" aria-checked="false">控制台布局</button>
         <div class="theme-sep" role="separator"></div>
         <button type="button" class="theme-option" id="themeOptLight" onclick="selectTheme('light', event)" role="menuitem">
           <svg class="theme-opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -4622,9 +5152,10 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
            onkeydown="if(event.key==='Enter') submitPanelLogin()"
            style="width:100%;background:var(--panel2);border:1px solid var(--line);
                   border-radius:8px;padding:9px 12px;color:var(--fg);font:inherit">
-    <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);margin:10px 0 2px;cursor:pointer">
-      <input id="panelRemember" type="checkbox" checked style="width:15px;height:15px" onchange="panelRememberChanged(this)">
-      保持登录（7 天）
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin:10px 0 0">
+      <input id="panelRemember" type="checkbox" style="width:15px;height:15px"
+             onchange="panelRememberChanged(this)">
+      保持登录
     </label>
     <div id="panelLoginMsg" style="font-size:12px;color:var(--bad);min-height:17px;margin:8px 0 12px;word-break:break-word;line-height:1.4"></div>
     <button onclick="submitPanelLogin()" style="width:100%;padding:9px 12px;font-size:13px">进入面板</button>
@@ -4668,6 +5199,10 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="7" width="14" height="11" rx="3"/><path d="M9 7V5.5A2.5 2.5 0 0 1 11.5 3h1A2.5 2.5 0 0 1 15 5.5V7M9 12h.01M15 12h.01M9.5 15.5h5"/></svg>
         <span>智能体</span>
       </button>
+      <button type="button" class="next-nav-item" data-next-tab="media" onclick="nextGo('media')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 5l2 5h4l2-5M10 14l2 2 2-2"/></svg>
+        <span>媒体</span>
+      </button>
       <button type="button" class="next-nav-item" data-next-tab="settings" onclick="nextGo('settings')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg>
         <span>设置</span>
@@ -4710,10 +5245,59 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </div>
     <div id="nextContent">
+<div class="console-scrim" id="consoleScrim" onclick="setConsoleNavOpen(false)" aria-hidden="true"></div>
+<div class="console-shell">
+<aside class="console-sidebar" id="consoleSidebar" aria-label="功能导航">
+  <div class="console-nav-head">
+    <span>控制台</span>
+    <button type="button" class="console-collapse" id="btnConsoleCollapse" onclick="toggleConsoleCollapse()" aria-label="收起功能导航" title="收起功能导航" aria-expanded="true">«</button>
+  </div>
+  <nav class="main-nav">
+    <div class="console-nav-group">
+      <div class="console-nav-caption">工作台</div>
+      <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')"><span id="navGatewayLabel">网关</span></button>
+    </div>
+    <div class="console-nav-group">
+      <div class="console-nav-caption">资源管理</div>
+      <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
+        账号
+      </button>
+      <button type="button" class="console-nav-link" id="btnNavModels" onclick="openModelCatalog()">模型管理</button>
+      <button class="main-nav-btn" id="btnNavTasks" onclick="switchMainTab('tasks')">
+        任务与福利
+      </button>
+    </div>
+    <div class="console-nav-group">
+      <div class="console-nav-caption">监控与统计</div>
+      <button class="main-nav-btn" id="btnNavMedia" onclick="switchMainTab('media')">媒体</button>
+      <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
+        数据看板
+      </button>
+      <button type="button" class="console-nav-link" id="btnNavRequests" onclick="openRecentRequests()">请求记录</button>
+      <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
+        运行日志
+      </button>
+    </div>
+    <div class="console-nav-group">
+      <div class="console-nav-caption">配置中心</div>
+      <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
+        智能体配置
+      </button>
+      <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
+        设置
+      </button>
+    </div>
+  </nav>
+  <div class="console-sidebar-foot"><span class="console-side-dot"></span><span>API 服务运行中</span><span class="mono" id="consoleFootPort">8788</span></div>
+</aside>
 <main>
+  <div class="console-contextbar">
+    <div><span class="console-context-root">WorkBuddy API Hub</span><span class="console-context-sep">/</span><span id="consoleCurrentPage">运行概览</span></div>
+    <div class="console-context-actions"><span id="consoleRefreshState">自动刷新</span><button type="button" class="sec mini" onclick="refresh()" title="立即刷新当前数据">刷新数据</button></div>
+  </div>
   <div id="pageOverview" class="main-page">
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
-  <div style="margin-bottom:16px">
+  <div id="gatewayPageHead" style="margin-bottom:16px">
     <h2 id="gatewayPageTitle" style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">网关与账号</h2>
     <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。</div>
   </div>
@@ -4811,6 +5395,19 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     <div class="cards" id="codeartsCards"></div>
   </div>
 
+  <div class="console-insights" id="consoleInsights">
+    <div class="console-insight">
+      <div class="console-insight-head"><h2>请求 Token 分布</h2><span class="console-insight-note" id="consoleUsageNote">当前页请求</span></div>
+      <canvas id="consoleUsageChart" height="168" aria-label="当前页请求的 Token 用量图" role="img"></canvas>
+      <div id="consoleModelShare" style="margin-top:8px"></div>
+    </div>
+    <div class="console-insight">
+      <div class="console-insight-head"><h2>账号健康度</h2><span class="console-insight-note" id="consoleHealthSummary">—</span></div>
+      <div id="consoleAccountHealth"></div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)">按启用状态、凭证有效期、限流、熔断与本地限额护栏计算，与账号列表的「启用」计数口径不同：启用但凭证失效或被护栏挡住的账号，在这里算不可用。</div>
+    </div>
+  </div>
+
   <!-- 合并模式（设置里「账号独立成一个页签」关闭，默认）时，账号页的三个区块搬到
        这里，位置与拆分前一致：控制栏之后、最近请求之前。拆分模式下这里是空的。 -->
   <span id="accountsSectionsAnchor" hidden></span>
@@ -4818,7 +5415,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
   <!-- 融合后的：模型性能与用量矩阵 -->
   
 
-  <section>
+  <section id="recentRequestsSection">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <h2 style="margin:0">最近请求<em id="recentRealmTag" style="color:var(--dim);font-weight:500"></em><em id="recentCount"></em></h2>
       <div style="display:inline-flex;align-items:center;gap:8px">
@@ -4832,6 +5429,14 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </div>
     <div id="recent" class="table-wrap"></div>
+    <div class="console-filterbar" aria-label="最近请求筛选">
+      <input id="recentModelFilter" class="console-search" type="search" placeholder="搜索模型、账号或 API Key" aria-label="搜索最近请求" oninput="RECENT_FILTERS.query=this.value;renderRecentView()">
+      <select id="recentOutcomeFilter" aria-label="请求结果" onchange="RECENT_FILTERS.outcome=this.value;renderRecentView()">
+        <option value="">全部结果</option><option value="completed">完成</option><option value="failed">失败</option><option value="client_aborted">客户端取消</option><option value="upstream_aborted">上游中断</option>
+      </select>
+      <span class="console-filter-count" id="recentFilterCount">当前页全部记录</span>
+      <button type="button" class="sec mini" onclick="clearRecentFilters()">清除筛选</button>
+    </div>
     <div id="recentPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);flex-wrap:wrap;gap:8px">
       <div id="recentPageInfo">第 1 / 1 页 · 共 0 条记录</div>
       <div style="display:inline-flex;gap:5px;align-items:center">
@@ -4860,7 +5465,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     </div>
 
   <!-- 版本模型库与能力清单 -->
-  <section>
+  <section id="gatewayModelsSection">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <h2 style="margin:0">网关模型清单<em id="modelsRealmTag" style="color:var(--dim);font-weight:500"></em><em id="availModelCount"></em><span id="modelPickActions" class="page-nav-exclude" style="font-weight:400;margin-left:10px;white-space:nowrap"><button class="sec mini" onclick="applyModelPickAction('all')" title="把当前清单里的模型全部勾上（与「从未改过勾选」的默认态等价）">全选</button><button class="sec mini" onclick="applyModelPickAction('none')" title="取消全部勾选：DSH 等读取模型清单的客户端会被拦下，不会写出一份空清单">全不选</button><button class="sec mini" onclick="applyModelPickAction('invert')" title="按当前勾选状态取反：只想排除个别模型时比逐个点快">反选</button></span></h2>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -4874,6 +5479,11 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     <!-- 勾选语义（静态说明）：复选框只决定「一键配置」把哪些模型写进 DSH 等
          客户端，不改网关路由（未勾选的模型在网关侧照常可用）。选择是全局一份，
          不按版本视图分开；服务端没存过时按「全部勾选」画（= 升级前行为）。 -->
+    <div class="console-filterbar" aria-label="模型清单筛选">
+      <input id="modelCatalogFilter" class="console-search" type="search" placeholder="搜索模型 ID、名称或能力" aria-label="搜索模型清单" oninput="MODEL_CATALOG_FILTER=this.value;renderAvailableModels()">
+      <span class="console-filter-count" id="modelCatalogFilterCount"></span>
+      <button type="button" class="sec mini" onclick="clearModelCatalogFilter()">清除筛选</button>
+    </div>
     <div id="modelPickHint" style="font-size:12px;color:var(--dim);margin:0 0 10px;line-height:1.6"
          title="勾选结果存在网关设置里，对所有版本视图生效；未勾选只影响一键配置写入客户端的模型清单，网关本身照常提供这些模型。">只有勾选的模型才会写入 DSH 等客户端（一键配置）；默认全部勾选，可用表头「全选 / 全不选 / 反选」批量调整，改完请重新一键配置并重启客户端。</div>
     <!-- 清单来源横幅：API 获取 → 绿色状态条（附刷新时间）；非 API（项目默认
@@ -4931,6 +5541,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     <div class="toolbar">
       <button onclick="openCodeartsOauthModal()">+ 添加账号 (OAuth)</button>
       <button class="sec" onclick="codeartsCheckinAll(this)">全员签到</button>
+      <button class="sec" onclick="refreshCodeartsCredits(this)">刷新积分</button>
       <button class="sec" onclick="codeartsKeepalive(this)">保活</button>
       <button class="sec" onclick="loadCodeartsOverview(true)">刷新</button>
     </div>
@@ -4946,6 +5557,15 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     </h2>
     <div id="accountsBody" class="collapse">
       <div class="collapse-inner">
+    <div class="console-filterbar" aria-label="账号列表筛选">
+      <input id="accountSearchFilter" class="console-search" type="search" placeholder="搜索昵称、备注或 UID" aria-label="搜索账号" oninput="ACCOUNT_FILTERS.query=this.value;renderAccounts()">
+      <select id="accountStatusFilter" aria-label="账号状态" onchange="ACCOUNT_FILTERS.status=this.value;renderAccounts()">
+        <option value="">全部状态</option><option value="healthy">可用</option><option value="attention">需关注</option><option value="disabled">本地停用</option>
+      </select>
+      <span class="console-filter-count" id="accountFilterCount">全部账号</span>
+      <button type="button" class="sec mini" onclick="clearAccountFilters()">清除筛选</button>
+      <span style="font-size:11px;color:var(--dim)">筛选仅影响显示，批量操作仍按原账号范围执行</span>
+    </div>
     <div class="toolbar">
     <button onclick="openLoginModal()">添加</button>
     <!-- 静态 API Key 是另一条并行入口：CodeBuddy 的登录页不支持企业微信扫码，
@@ -5082,7 +5702,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div>
         <h2 style="margin:0">国内版任务与福利</h2>
-        <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分 (+1450分)，以及猫猫日常与打卡</div>
+        <div style="font-size:12px;color:var(--dim)">全自动批量接取、事件上报点亮并领取官方成长积分，以及猫猫日常与打卡</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <select id="growthAcctSelect" onchange="switchGrowthAccount(this.value)" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--fg);font-family:inherit">
@@ -5099,10 +5719,9 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     </div>
 
     <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(185px,1fr))">
-      <div class="card accent2" title="活动 Season: 10 (第 10 期)&#10;活动开始时间: 2026-09-30 00:00:00&#10;活动截止时间: 2026-10-15 23:59:59">
+      <div class="card accent2" title="Buddy 加油站每日签到活动">
         <div class="k">本期 Buddy 加油站活动</div>
         <div class="v" id="cnTodayCheckinState" style="font-size:17px;letter-spacing:-.2px">-</div>
-        <div style="font-size:11px;color:var(--dim);margin-top:4px">第 10 期 (至 10-15 23:59 止)</div>
       </div>
       <div class="card" title="WorkBuddy 成长计划连续登录活跃天数；达到 7/14/28 天可兑换连登奖励">
         <div class="k">当前连续登录天数</div>
@@ -5154,6 +5773,85 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
   <!-- 账号页（issue #176）：账号多起来之后，网关页的卡片与最近请求被一长串账号
        挤到下面，所以账号列表与「当前禁用总览」单独成一个菜单，签到/活跃记录也
        放在这里——它回答的正是「这个账号昨天到底签成了没有」。 -->
+  <div id="pageMedia" class="main-page">
+    <div style="margin-bottom:16px">
+      <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">媒体生成</h2>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">生图 / 生视频的开关在「设置」页；这里看模型约束和最近任务。每次生成都会真实扣账号积分。</div>
+    </div>
+
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">可用媒体模型 <em id="mediaModelsState"></em></h2>
+          <div style="font-size:12px;color:var(--dim)">该区目录里带媒体标签的模型，以及各自的时长与分辨率约束。只读，不发上游。</div>
+        </div>
+        <button class="sec mini" onclick="loadMediaModels(true)">重新读取</button>
+      </div>
+      <div id="mediaModelsList" class="table-wrap"></div>
+    </section>
+
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">最近任务 <em id="mediaTasksState"></em></h2>
+          <div style="font-size:12px;color:var(--dim)">生视频是异步任务：提交后在这里看进度、失败原因与产物。每个 API Key 只看得到自己提交的任务。</div>
+        </div>
+        <button class="sec mini" onclick="loadMediaTasks(true)">刷新</button>
+      </div>
+      <div id="mediaTasksList" class="table-wrap"></div>
+    </section>
+    <section>
+      <div style="margin-bottom:14px">
+        <h2 style="margin:0">媒体能力（生图 / 生视频） <em id="setMediaState"></em></h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          默认关闭。开启后网关才提供 <code>/v1/images/*</code> 与 <code>/v1/videos/*</code>；关闭时这些路由<b>根本不存在</b>（404）。
+          每张图约 5.71 积分、每条 5 秒视频约 57–129 积分，直接从账号积分扣，不经 token 计费。
+        </div>
+      </div>
+      <div id="mediaSettingsRow" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:58px">
+          <input id="setMediaEnabled" type="checkbox" style="width:16px;height:16px">
+          开启生图 / 生视频路由
+        </label>
+        <div style="min-width:150px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">媒体出口</div>
+          <select id="setMediaRealm" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+            <option value="cn">国内版</option>
+            <option value="intl">国际版</option>
+          </select>
+        </div>
+        <div style="min-width:150px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">出站身份</div>
+          <select id="setMediaIdentity" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+            <option value="desktop">桌面身份</option>
+            <option value="cli">CLI 身份</option>
+          </select>
+        </div>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">每分钟生图上限</div>
+          <input id="setMediaImageRate" type="number" min="1" max="60" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">视频时长上限（秒）</div>
+          <input id="setMediaVideoSeconds" type="number" min="1" max="60" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">生视频并发</div>
+          <input id="setMediaVideoConcurrency" type="number" min="1" max="8" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:150px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">每 Key 每日积分上限</div>
+          <input id="setMediaDailyCredits" type="number" min="0" max="100000" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <button onclick="saveMediaConfig(this)" style="height:38px;margin-top:20px">保存</button>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">
+        每 Key 每日积分上限填 0 表示不限。视频时长会与模型目录里的上限取小值。出站身份决定冒充哪种客户端发请求，桌面账号一般不用改。
+        生视频并发超过上限时新任务<b>先排队</b>（不提交上游、不扣积分），并行任务会尽量分到不同账号上。
+      </div>
+    </section>
+  </div>
+
   <div id="pageAnalytics" class="main-page">
     <div class="wrap">
 <!-- ====================== 页头 + 范围 ====================== -->
@@ -5435,10 +6133,20 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">网关设置</h2>
       <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、API Key 与出口绑定、代理槽与限额、价格估算、出站身份与本地网络工具。</div>
     </div>
+    <!-- 二级分类胶囊导航 -->
+    <div id="settingsCatBar" class="settings-cat-bar">
+      <button type="button" class="settings-cat-btn active" data-cat="all" onclick="filterSettingsCategory('all')">全部 <span class="cat-count">36</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="access" onclick="filterSettingsCategory('access')">🔑 访问与密钥 <span class="cat-count">6</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="models" onclick="filterSettingsCategory('models')">🤖 模型与调度 <span class="cat-count">10</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="limits" onclick="filterSettingsCategory('limits')">🛡️ 限额与并发 <span class="cat-count">4</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="network" onclick="filterSettingsCategory('network')">🌐 出口与网络 <span class="cat-count">7</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="tasks" onclick="filterSettingsCategory('tasks')">⏰ 自动化 <span class="cat-count">3</span></button>
+      <button type="button" class="settings-cat-btn" data-cat="system" onclick="filterSettingsCategory('system')">🛠️ 计费与运维 <span class="cat-count">6</span></button>
+    </div>
 
     <!-- 左侧导航由 initPageNav() 扫描本页的 section 自动生成，
          增删区块无需同步改动这里。 -->
-    <section>
+    <section data-cat="access">
       <h2>面板访问密码 <em id="setPwdState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">用于打开本看板。默认密码为 <b>admin</b>，建议立即修改。</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
@@ -5456,7 +6164,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </section>
 
-    <section>
+    <section data-cat="access">
       <h2>界面语言 <em id="setUiLanguageState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
         这里设置的是这台网关的实例默认语言；右上角语言按钮只覆盖当前浏览器，换端口、主机名或清掉站点数据后会回退到这个默认值。
@@ -5475,15 +6183,15 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </section>
 
-    <section>
+    <section data-cat="access">
       <h2>顶部页签显示 <em id="setPagesState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
-        取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。
+        取消勾选可隐藏对应功能入口，勾选后恢复；偏好保存在本网关。「设置」入口固定保留。
       </div>
       <div id="setPagesList" style="display:flex;flex-wrap:wrap;gap:8px 20px"></div>
     </section>
 
-    <section>
+    <section data-cat="access">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
           <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
@@ -5501,7 +6209,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </section>
 
-    <section>
+    <section data-cat="access">
       <h2>面板窗口限高 <em id="setWinMaxHeightState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
         每个窗口（区块）超过这个高度时在窗口内部滚动，不再把整页拉长；滚动时标题行固定在窗口顶部。单位像素；填 0 表示不限。
@@ -5514,7 +6222,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       </div>
     </section>
 
-    <section>
+    <section data-cat="access">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
           <h2 style="margin:0">API Key <em id="setKeyState"></em></h2>
@@ -5530,7 +6238,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <div id="deletedKeySection"></div>
     </section>
 
-    <section>
+    <section data-cat="network">
       <h2>CodeArts 接入 <em id="setCodeartsState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
         第三个出口直接连华为云 CodeArts：OAuth 登录、token 续期、模型发现、
@@ -5542,8 +6250,8 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
           启用 CodeArts 出口
         </label>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px"
-               title="跟随国内版签到时段（09:00 / 21:00）；只对已启用账号执行">
-          <input id="setCodeartsAutoCheckin" type="checkbox" style="width:16px;height:16px" checked>
+               title="跟随国内版签到时段；只对已启用账号执行">
+          <input id="setCodeartsAutoCheckin" type="checkbox" style="width:16px;height:16px">
           每天自动签到
         </label>
         <div>
@@ -5570,12 +6278,11 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button onclick="saveCodeartsSettings(this)">保存 CodeArts 设置</button>
         <button class="sec" onclick="testCodeartsConnection(this)">测试连接</button>
-        <button class="sec" onclick="refreshCodeartsCredits(this)">刷新积分</button>
         <span id="setCodeartsHint" style="font-size:12px;color:var(--dim)"></span>
       </div>
     </section>
 
-    <section>
+    <section data-cat="network">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
           <h2 style="margin:0">账号代理槽 <em id="slotState"></em></h2>
@@ -5593,7 +6300,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <div id="slotDiscover"></div>
     </section>
 
-    <section>
+    <section data-cat="limits">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
           <h2 style="margin:0">账号限额 <em id="setLimitsState"></em></h2>
@@ -5670,7 +6377,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
               <td class="limit-name">
                 <div style="font-weight:600;color:var(--fg)">临期积分优先 <em id="setExpiringWindowState"></em></div>
                 <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。
+                  账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——份额同时看两件事：离到期越近越大，包里剩的积分越多也越大（对数压缩，剩 30 分不会变成 30 倍）；但不会全压在一个账号上，到期日与剩余量都相同的账号彼此等权轮流。这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。
                 </div>
                 <label class="switch" style="margin-top:8px">
                   <input id="setExpiringWindowToggle" type="checkbox" onchange="toggleExpiringWindow(this)">
@@ -5694,7 +6401,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     </section>
 
 
-      <section>
+      <section data-cat="system">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">模型价格估算 <em id="setPricingEnabledState"></em></h2>
@@ -5740,7 +6447,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">启用 Anthropic Messages 接口 (Claude) <em id="setAnthropicMessagesState"></em></h2>
@@ -5761,7 +6468,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">思考等级挡位映射 <em id="setReasoningEffortMapState"></em></h2>
@@ -5779,7 +6486,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">按 API Key 过滤模型列表 <em id="setFilterModelsByKeyState"></em></h2>
@@ -5797,7 +6504,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">只列出可用模型 <em id="setModelsOnlyAvailableState"></em></h2>
@@ -5815,7 +6522,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">免费额度耗尽回退积分版 <em id="setCreditFallbackState"></em></h2>
@@ -5836,7 +6543,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="network">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">自动切换出站身份 <em id="setAutoSwitchState"></em></h2>
@@ -5869,7 +6576,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="network">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">数据用途声明 <em id="setPrivateDataState"></em></h2>
@@ -5891,7 +6598,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="network">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">出站身份版本号 <em id="setIdentityVersionsState"></em></h2>
@@ -5944,7 +6651,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="tasks">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">国际版每日活跃打卡 <em id="setDailyChatWebState"></em></h2>
@@ -6087,7 +6794,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="tasks">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">全局提示词 <em id="setGlobalPromptState"></em></h2>
@@ -6110,7 +6817,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="tasks">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">本地网络工具 <em id="setLocalWebToolsState"></em></h2>
@@ -6131,7 +6838,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">剩余用量优先调度 <em id="setRemainingPriorityState"></em></h2>
@@ -6152,7 +6859,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="network">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">跨出口回退（国际版 → 国内版） <em id="setRealmFallbackState"></em></h2>
@@ -6173,7 +6880,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">模型额度窗口探针 <em id="setWindowProbeState"></em></h2>
@@ -6194,7 +6901,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="network">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">出口级瞬时失败退避 <em id="setEgressBackoffState"></em></h2>
@@ -6212,7 +6919,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">模型额度定时主动查询 <em id="setQuotaScanState"></em></h2>
@@ -6237,7 +6944,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         <div id="quotaScanState" style="margin-top:12px"></div>
       </section>
 
-      <section>
+      <section data-cat="system">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">用量聚合保留窗口 <em id="setUsageKeepState"></em></h2>
@@ -6264,7 +6971,13 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
           </div>
         </div>
       </section>
-      <section>
+      <section data-cat="limits">
+        <h2>单请求体上限</h2>
+        <div style="font-size:12px;color:var(--dim);margin:8px 0">超限时可临时调高后重试压缩请求；调高会增加并发请求的内存占用。保存后立即生效。</div>
+        <input id="setMaxPayloadMB" type="number" min="1" max="256" step="1" style="width:90px"> MB
+        <button onclick="saveMaxPayload(this)">保存</button>
+      </section>
+      <section data-cat="limits">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">上游响应头超时 <em id="setHeaderTimeoutState"></em></h2>
@@ -6285,7 +6998,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="limits">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">账号级并发上限 <em id="setAccountConcurrentState"></em></h2>
@@ -6312,14 +7025,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
-        <h2>单请求体上限</h2>
-        <div style="font-size:12px;color:var(--dim);margin:8px 0">超限时可临时调高后重试压缩请求；调高会增加并发请求的内存占用。保存后立即生效。</div>
-        <input id="setMaxPayloadMB" type="number" min="1" max="256" step="1" style="width:90px"> MB
-        <button onclick="saveMaxPayload(this)">保存</button>
-      </section>
-
-      <section>
+      <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">更稳的会话粘滞键 <span class="help-mark" role="button" tabindex="0" aria-label="功能说明" onclick="toggleHelpDetail('affinityStableKeyHelp', event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleHelpDetail('affinityStableKeyHelp', event);}">!</span> <em id="setAffinityStableKeyState"></em></h2>
@@ -6339,7 +7045,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="system">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">日志落库 <em id="setLogDbState"></em></h2>
@@ -6376,7 +7082,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="system">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">更新 <em id="setUpdateState"></em></h2>
@@ -6427,7 +7133,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         </div>
       </section>
 
-      <section>
+      <section data-cat="system">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="margin:0">版本回退 <em id="setRollbackState"></em></h2>
@@ -6450,7 +7156,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
         <div id="setRollbackHint" style="font-size:12px;color:var(--dim);margin-top:8px"></div>
       </section>
 
-      <section>
+      <section data-cat="system">
         <h2>运行信息</h2>
       <table>
         <tbody>
@@ -6469,6 +7175,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     </section>
 
   </div>
+
 
   <div id="pageAgents" class="main-page">
     <div style="margin-bottom:16px">
@@ -6596,6 +7303,7 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
 
   <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
 </main>
+</div><!-- /console-shell -->
     </div><!-- /nextContent -->
   </div><!-- /nextMain -->
 </div><!-- /nextShell -->
@@ -6634,6 +7342,10 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
       <button type="button" class="next-more-item" data-next-tab="agents" onclick="nextGo('agents')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="7" width="14" height="11" rx="3"/><path d="M9 7V5.5A2.5 2.5 0 0 1 11.5 3h1A2.5 2.5 0 0 1 15 5.5V7M9 12h.01M15 12h.01M9.5 15.5h5"/></svg>
         <span>智能体</span>
+      </button>
+      <button type="button" class="next-more-item" data-next-tab="media" onclick="nextGo('media')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 5l2 5h4l2-5M10 14l2 2 2-2"/></svg>
+        <span>媒体</span>
       </button>
       <button type="button" class="next-more-item" data-next-tab="settings" onclick="nextGo('settings')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg>
@@ -7419,13 +8131,8 @@ function renderCodeartsAccounts(r){
     + '<th>账号</th><th>状态</th><th>Token</th><th>出口</th><th>积分</th><th>并发</th><th>签到</th><th>操作</th>'
     + '</tr></thead><tbody>';
   accounts.forEach(function(a){
-    const uidRaw = String(a.uid || "");
-    const uid = escapeHtml(uidRaw);
-    // Inline onclick handlers are JavaScript string context, not HTML: escapeHtml()
-    // does not escape single quotes and cannot make a value safe there. Keep the
-    // same conservative id charset the WorkBuddy account rows use; CodeArts UIDs
-    // are UUID/hex, so this never changes a legitimate id.
-    const uidAttr = esc(uidRaw.replace(/[^\w.@-]/g, ''));
+    const uid = escapeHtml(a.uid || "");
+    const uidSafe = esc(String(a.uid || "").replace(/[^\w.@-]/g, ""));
     const name = escapeHtml(a.nickname || a.user_name || a.uid || "");
     const note = a.note
       ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.note) + '</div>'
@@ -7445,17 +8152,17 @@ function renderCodeartsAccounts(r){
     else if(a.checkin && a.checkin.message) checkin = escapeHtml(a.checkin.message);
     const actions = [];
     if(a.disabled){
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'enable\',\'' + uidAttr + '\')">启用</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'enable\',\'' + uidSafe + '\')">启用</button>');
     }else{
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uidAttr + '\')">停用</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uidSafe + '\')">停用</button>');
     }
-    actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uidAttr + '\')">重新登录</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uidAttr + '\')">清冷却</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uidAttr + '\')">测试</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'tasks\',\'' + uidAttr + '\',' + (!a.tasks_enabled) + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
-    actions.push('<button class="sec mini" onclick="codeartsEditNote(\'' + uidAttr + '\')">备注</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'checkin\',\'' + uidAttr + '\')">签到</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'delete\',\'' + uidAttr + '\')">删除</button>');
+    actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uidSafe + '\')">重新登录</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uidSafe + '\')">清冷却</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uidSafe + '\')">测试</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'tasks\',\'' + uidSafe + '\',' + (!a.tasks_enabled) + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
+    actions.push('<button class="sec mini" onclick="codeartsEditNote(\'' + uidSafe + '\')">备注</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'checkin\',\'' + uidSafe + '\')">签到</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'delete\',\'' + uidSafe + '\')">删除</button>');
     html += '<tr><td><b>' + name + '</b>' + note + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
       + '<td>' + status + (a.reason ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.reason) + '</div>' : '') + '</td>'
       + '<td class="mono" style="font-size:11px">' + token + '</td>'
@@ -7501,6 +8208,19 @@ function codeartsEditNote(uid){
   const note = prompt("备注", acct.note || "");
   if(note === null) return;
   codeartsAccountAction("note", uid, note);
+}
+
+async function refreshCodeartsCredits(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/codearts/credits/refresh", {});
+    toast((r && r.message) || "已刷新积分", "ok");
+    await loadCodeartsOverview(true);
+  }catch(e){
+    toast("刷新积分失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
 
 async function codeartsCheckinAll(btn){
@@ -7640,7 +8360,7 @@ function renderCodeartsSettings(cfg){
   const enabled = document.getElementById("setCodeartsEnabled");
   if(enabled) enabled.checked = cfg.enabled === true;
   const auto = document.getElementById("setCodeartsAutoCheckin");
-  if(auto) auto.checked = cfg.auto_checkin !== false;
+  if(auto) auto.checked = cfg.credits_auto_claim === true;
   const conc = document.getElementById("setCodeartsMaxConcurrent");
   if(conc) conc.value = cfg.max_concurrent || 1;
   const timeout = document.getElementById("setCodeartsTimeout");
@@ -7661,24 +8381,11 @@ function renderCodeartsSettings(cfg){
   }
 }
 
-async function refreshCodeartsCredits(btn){
-  if(btn) btn.disabled = true;
-  try{
-    const r = await postJSON("/codearts/credits/refresh", {});
-    toast((r && r.message) || "积分已刷新", (r && r.ok === false) ? "warn" : "ok");
-    await loadCodeartsOverview(true);
-  }catch(e){
-    toast("刷新积分失败: " + e.message, "bad");
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
-
 async function saveCodeartsSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
   const payload = {
     enabled: !!(document.getElementById("setCodeartsEnabled") || {}).checked,
-    auto_checkin: !!(document.getElementById("setCodeartsAutoCheckin") || {}).checked,
+    credits_auto_claim: !!(document.getElementById("setCodeartsAutoCheckin") || {}).checked,
     max_concurrent: parseInt(val("setCodeartsMaxConcurrent"), 10) || 1,
     timeout_seconds: parseFloat(val("setCodeartsTimeout")) || 30,
     stream_timeout_seconds: parseFloat(val("setCodeartsStreamTimeout")) || 600,
@@ -7821,12 +8528,16 @@ function currentModelSelection(){
 function isModelPicked(id){
   return !MODEL_SELECTION_CONFIGURED || AGENT_MODEL_SELECTION.has(id);
 }
-// 批量动作与「把全选态展开成集合」用的全量 id：以表格里画出来的为准
-// （清单会被排序/过滤），表格还没渲染时退回当前视图的目录。
+// 批量动作始终针对当前目录全量 id，不受纯展示筛选隐藏的行影响。
 function allModelPickIds(){
-  const boxes = Array.from(document.querySelectorAll('#modelsTable input.model-pick'));
-  if(boxes.length) return boxes.map(b => (b.dataset ? b.dataset.modelId : '')).filter(Boolean);
   return (MODELS_DATA || []).map(m => String((m && m.id) || '')).filter(Boolean);
+}
+let MODEL_CATALOG_FILTER = '';
+function clearModelCatalogFilter(){
+  MODEL_CATALOG_FILTER = '';
+  const input = document.getElementById('modelCatalogFilter');
+  if(input) input.value = '';
+  renderAvailableModels();
 }
 
 // 计数挂在「网关模型清单」标题后面：共几个 + 已勾选几个。勾选数放在这里而
@@ -8039,18 +8750,32 @@ function renderAvailableModels(){
   const tb = document.querySelector('#modelsTable tbody');
   if(!tb) return;
   updateAvailModelCount();
+  const query = MODEL_CATALOG_FILTER.trim().toLowerCase();
+  const visibleModels = MODELS_DATA.filter(m => !query || [
+    m.id, m.name, m.description, m.credits,
+    m.supports_vision ? '视觉 vision' : '文本 text',
+    m.supports_tool_calls ? '工具 tools' : '',
+    m.supports_reasoning ? '推理 reasoning' : ''
+  ].some(v => String(v || '').toLowerCase().includes(query)));
+  const count = document.getElementById('modelCatalogFilterCount');
+  if(count) count.textContent = query ? ('显示 ' + visibleModels.length + ' / ' + MODELS_DATA.length + ' 个模型') : '';
   if(!MODELS_DATA.length){
     tb.innerHTML = '<tr><td colspan="8" class="empty">暂无可用模型</td></tr>';
     return;
   }
-  tb.innerHTML = MODELS_DATA.map(m => {
+  if(!visibleModels.length){
+    tb.innerHTML = '<tr><td colspan="8"><div class="console-filter-empty"><span>没有符合当前条件的模型</span><button type="button" class="sec mini" onclick="clearModelCatalogFilter()">清除筛选</button></div></td></tr>';
+    return;
+  }
+  tb.innerHTML = visibleModels.map(m => {
     // 1. 倍率与折扣 —— 一律以 /v1/models 取回的 credits 为准（活目录优先、
     //    内置快照兜底）。以前这里还按模型 id 写死了 hy3 / hy4-preview-f /
     //    国际版 deepseek-v4.1-flash 三个"限时免费"，与 credits 值是 OR 关系，
     //    上游一旦调价面板会继续宣传免费；cn 的夜间注记在 credits 缺失时还会
     //    兜底显示写死的 0.79x。现在取不到就不显示数字。
     let credBadge = '-';
-    const credText = (m.credits == null ? '' : String(m.credits)).trim();
+    let credText = (m.credits == null ? '' : String(m.credits)).trim();
+
     const c = credText.toLowerCase().replace('x', '');
     if(c === '0.00' || c === '0'){
       credBadge = '<span class="badge ok" style="background:var(--accent2-soft);color:var(--accent2)">限时免费 0.00x</span>';
@@ -8061,6 +8786,7 @@ function renderAvailableModels(){
         ? ' <span style="font-size:10px;color:var(--accent)">(夜间0.5x)</span>' : '';
       credBadge = '<span class="badge s">' + esc(raw) + night + '</span>';
     }
+
     // #505: 只标「Pro Only」（与上游徽章同名），不标「可用」。没有 entitlement 就什么都不显示。
     // 标注由 /v1/models 给出：source=catalog 是上游目录 modelTiers 的声明（与
     // 调度器拦人用的是同一份数据），source=runtime 是历史上真撞到过 11158。
@@ -8188,7 +8914,7 @@ function renderAvailableModels(){
       + '<td style="text-align:left" class="mono model-id-cell" data-label="模型 ID" title="' + esc(m.id) + '">'
       + '<label><input type="checkbox" class="model-pick" data-model-id="' + esc(m.id) + '"'
       + (picked ? ' checked' : '')
-      + ' title="勾选后该模型才会写入 DSH 等客户端的一键配置"><b>' + esc(m.id) + '</b></label></td>'
+      + ' title="勾选后该模型才会写入 DSH 等客户端的一键配置"><b>' + esc(m.id) + '</b></label>' + '</td>'
       + nameCell
       + '<td style="text-align:center" class="rate-cell" data-label="消费倍率">' + credBadge + '</td>'
       + '<td style="text-align:center" data-label="能力">' + capHtml + '</td>'
@@ -8259,11 +8985,27 @@ async function loadGrowthTasks(){
     const tr = sum.travel || {};
 
     const sel = document.getElementById("growthAcctSelect");
-    if(sel && accts.length){
-      const opts = ['<option value="all"' + (CURRENT_GROWTH_UID === 'all' ? ' selected' : '') + '>全部国内账号 (批量)</option>']
-        .concat(accts.map(a => '<option value="' + esc(a.uid) + '"' + (CURRENT_GROWTH_UID === a.uid ? ' selected' : '') + '>' + esc(a.nickname) + ' (' + esc(a.uid.slice(0,6)) + ')</option>'))
-        .join('');
-      sel.innerHTML = opts;
+    if(sel){
+      if(accts.length){
+        const opts = ['<option value="all"' + (CURRENT_GROWTH_UID === 'all' ? ' selected' : '') + '>全部国内账号 (批量)</option>']
+          .concat(accts.map(a => '<option value="' + esc(a.uid) + '"' + (CURRENT_GROWTH_UID === a.uid ? ' selected' : '') + '>' + esc(a.nickname) + ' (' + esc(a.uid.slice(0,6)) + ')</option>'))
+          .join('');
+        sel.innerHTML = opts;
+      } else {
+        sel.innerHTML = '<option value="">无国内版账号</option>';
+      }
+    }
+    if(!accts.length){
+      if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
+      const elStk = document.getElementById("stkDays"); if(elStk) elStk.textContent = '-';
+      const elNrg = document.getElementById("nrgBalance"); if(elNrg) elNrg.textContent = '-';
+      const elCards = document.getElementById("makeupCards"); if(elCards) elCards.textContent = '-';
+      const elLottery = document.getElementById("lotteryChances"); if(elLottery) elLottery.textContent = '-';
+      const elCat = document.getElementById("catState"); if(elCat) elCat.textContent = '-';
+      const elCatDesc = document.getElementById("catDesc"); if(elCatDesc) elCatDesc.textContent = '-';
+      const tb = document.querySelector("#growthTable tbody");
+      if(tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:24px">暂无任务或未登录国内版账号</td></tr>';
+      return;
     }
 
     if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
@@ -9222,9 +9964,10 @@ const KEY_STORE = 'wb-proxy-api-key';
 // PANEL_STORE 在 <head> 里定义（首帧判定要用它），这里不再重复声明。
 let API_KEY = '';
 let PANEL_TOKEN = '';
-let PANEL_REMEMBER = true;
-try { PANEL_TOKEN = localStorage.getItem(PANEL_STORE) || sessionStorage.getItem(PANEL_STORE) || ''; } catch(e) { PANEL_TOKEN = ''; }
-try { PANEL_REMEMBER = localStorage.getItem(PANEL_REMEMBER_KEY) !== '0'; } catch(e) { PANEL_REMEMBER = true; }
+let PANEL_REMEMBER = false;
+try { PANEL_TOKEN = sessionStorage.getItem(PANEL_STORE) || ''; } catch(e) {}
+try { PANEL_TOKEN = PANEL_TOKEN || localStorage.getItem(PANEL_STORE) || ''; } catch(e) {}
+try { PANEL_REMEMBER = localStorage.getItem(PANEL_REMEMBER_KEY) === '1'; } catch(e) {}
 let PANEL_STATUS = {};
 (function initKey(){
   try {
@@ -10099,6 +10842,32 @@ function accountsInView(){
   return (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === view);
 }
 
+// 纯展示筛选：账号池、禁用汇总和批量操作的输入仍使用 accountsInView()。
+function accountIsHealthy(a){
+  return !!a.enabled && !(a.tokenExpired || a.expiresIn === 'expired')
+    && !a.inCooldown && !a.breakerFor && !a.degradeFor
+    && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
+}
+const ACCOUNT_FILTERS = {query: '', status: ''};
+function accountMatchesFilters(a){
+  const q = ACCOUNT_FILTERS.query.trim().toLowerCase();
+  if(q && ![a.nickname, a.note, a.uid].some(v => String(v || '').toLowerCase().includes(q))) return false;
+  if(ACCOUNT_FILTERS.status === 'disabled') return !a.enabled;
+  const attention = !accountIsHealthy(a);
+  if(ACCOUNT_FILTERS.status === 'healthy') return !attention;
+  if(ACCOUNT_FILTERS.status === 'attention') return !!attention;
+  return true;
+}
+function clearAccountFilters(){
+  ACCOUNT_FILTERS.query = '';
+  ACCOUNT_FILTERS.status = '';
+  const q = document.getElementById('accountSearchFilter');
+  const s = document.getElementById('accountStatusFilter');
+  if(q) q.value = '';
+  if(s) s.value = '';
+  renderAccounts();
+}
+
 // 当前禁用总览：把散落在账号卡片上的停用/限流状态汇总成一张表。
 // 四类来源：①面板手动停用 ②上游账号级冷却 ③上游模型级冷却 ④本地日限额/积分护栏。
 // 全部读 window.ACCOUNTS，不额外发请求；数据与账号卡片同源，不会互相矛盾。
@@ -10372,6 +11141,10 @@ function renderAccounts(){
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "intl");
   let list = accountsInView();
+  const unfilteredCount = list.length;
+  list = list.filter(accountMatchesFilters);
+  const filterCount = document.getElementById('accountFilterCount');
+  if(filterCount) filterCount.textContent = '显示 ' + list.length + ' / ' + unfilteredCount + ' 个账号';
   // 排序：停用的永远沉底（备注/权重再高也一样）→ 备注是启用组内的加分项
   // （有备注的账号只在同权重时排前面，不再全局置顶）→ 权重高的在前 →
   // 同权重保持服务端顺序稳定，表格不乱跳。
@@ -10390,6 +11163,10 @@ function renderAccounts(){
   document.getElementById('acctCount').textContent =
     list.length ? ('（' + viewName + '共 ' + list.length + ' 个，启用 ' + usable + ' 个）') : '';
   if(!list.length){
+    if(unfilteredCount){
+      box.innerHTML = '<div class="console-filter-empty"><span>没有符合当前条件的账号</span><button type="button" class="sec mini" onclick="clearAccountFilters()">清除筛选</button></div>';
+      return;
+    }
     box.innerHTML =
       '<div style="text-align:center;padding:30px 16px">'
       + '<div style="font-size:15px;margin-bottom:8px">当前' + viewName + '还没有账号</div>'
@@ -10433,6 +11210,7 @@ async function loadAccounts(){
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     await loadProxySlots();
     renderAccounts();
+    renderConsoleAccountHealth(window.ACCOUNTS || []);
     updateUI();
     // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
     if(LAST_CREDIT_DATA) renderCreditHistory();
@@ -10831,7 +11609,13 @@ async function deleteAccount(uid, name, btn){
   if(btn) btn.disabled = true;
   try{
     await postJSON('/accounts/delete', {uid: uid});
+    if(typeof CURRENT_GROWTH_UID !== 'undefined' && CURRENT_GROWTH_UID === uid){
+      CURRENT_GROWTH_UID = 'all';
+    }
     await loadAccounts();
+    if(typeof loadGrowthTasks === 'function'){
+      await loadGrowthTasks();
+    }
     toast('已成功删除账号 ' + name, 'ok');
   }catch(e){
     toast('删除失败: ' + e.message, 'bad');
@@ -11806,6 +12590,104 @@ async function doImportDesktop(btn, path, realm){
   }
 }
 
+/* 概览附加图只读当前已加载的数据，不新增请求，也不把当前页分布冒充历史趋势。 */
+let CONSOLE_INSIGHT_ROWS = [];
+function renderConsoleAccountHealth(accts){
+  const box = document.getElementById('consoleAccountHealth');
+  if(!box) return;
+  const isCodearts = window.VIEW_REALM === 'codearts';
+  const all = isCodearts ? [] : accountsInView();
+  const groups = isCodearts ? (() => {
+    const st = (window.CODEARTS_OVERVIEW || {}).stats || {};
+    return [
+      {label: 'CodeArts', total: Number(st.total || 0), ok: Number(st.healthy || 0)}
+    ];
+  })() : [
+    {label: '国际版', total: (accts || []).filter(a => a.realm === 'intl').length, ok: (accts || []).filter(a => a.realm === 'intl' && accountIsHealthy(a)).length},
+    {label: '国内版', total: (accts || []).filter(a => a.realm === 'cn').length, ok: (accts || []).filter(a => a.realm === 'cn' && accountIsHealthy(a)).length}
+  ];
+  const total = groups.reduce((n, g) => n + g.total, 0);
+  const healthy = groups.reduce((n, g) => n + g.ok, 0);
+  const summary = document.getElementById('consoleHealthSummary');
+  if(summary) summary.textContent = healthy + ' / ' + total + ' 可用';
+  box.innerHTML = groups.map(g => {
+    const ratio = g.total ? Math.max(0, Math.min(100, g.ok / g.total * 100)) : 0;
+    return '<div class="console-health-row"><span>' + esc(g.label) + '</span>'
+      + '<div class="console-health-track" role="progressbar" aria-label="' + esc(g.label) + '账号可用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + ratio.toFixed(1) + '"><span class="console-health-fill" style="width:' + ratio + '%"></span></div>'
+      + '<strong>' + g.ok + ' / ' + g.total + '</strong></div>';
+  }).join('');
+}
+function renderConsoleUsageChart(rows){
+  const cv = document.getElementById('consoleUsageChart');
+  if(!cv) return;
+  const host = cv.parentElement;
+  if(!host) return;
+  const style = getComputedStyle(host);
+  const available = host.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+  const W = Math.max(1, available), H = 168;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  const ctx = cv.getContext('2d');
+  if(!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement);
+  const ink = css.getPropertyValue('--dim').trim() || '#4e5969';
+  const grid = css.getPropertyValue('--line').trim() || '#e3e8ef';
+  const color = css.getPropertyValue('--think').trim() || '#1677ff';
+  const pad = {l: 44, r: 10, t: 8, b: 30};
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const vals = rows.map(r => Number(r.total_tokens || 0));
+  const max = Math.max(1, ...vals);
+  ctx.font = '11px ' + getComputedStyle(document.body).fontFamily;
+  ctx.textBaseline = 'middle'; ctx.fillStyle = ink;
+  for(let i = 0; i <= 4; i++){
+    const y = pad.t + ih - ih * i / 4;
+    ctx.strokeStyle = grid; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText(fmtCompact(max * i / 4), 4, y);
+  }
+  if(!rows.length){
+    ctx.textAlign = 'center'; ctx.fillText('当前页暂无请求，等待真实调用数据', W / 2, H / 2); ctx.textAlign = 'left';
+    return;
+  }
+  const step = iw / rows.length, bw = Math.max(2, Math.min(24, step * .62));
+  rows.forEach((r, i) => {
+    const h = Number(r.total_tokens || 0) / max * ih;
+    const x = pad.l + i * step + (step - bw) / 2;
+    ctx.fillStyle = color;
+    if(h > 0) ctx.fillRect(x, pad.t + ih - h, bw, h);
+    if(rows.length <= 12 || i % Math.ceil(rows.length / 6) === 0){
+      const label = String(r.model || '—');
+      ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(label.length > 11 ? label.slice(0, 10) + '…' : label, Math.max(pad.l + 25, Math.min(W - 30, x + bw / 2)), H - 20);
+    }
+  });
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+function renderConsoleInsights(rows, accts){
+  CONSOLE_INSIGHT_ROWS = rows || [];
+  renderConsoleUsageChart(CONSOLE_INSIGHT_ROWS);
+  const totals = {};
+  CONSOLE_INSIGHT_ROWS.forEach(r => {
+    const id = String(r.model || '未命名模型');
+    totals[id] = (totals[id] || 0) + Number(r.total_tokens || 0);
+  });
+  const ranked = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const total = Object.values(totals).reduce((n, value) => n + value, 0);
+  const note = document.getElementById('consoleUsageNote');
+  if(note) note.textContent = '当前页 ' + CONSOLE_INSIGHT_ROWS.length + ' 条请求 · 非时间序列';
+  const share = document.getElementById('consoleModelShare');
+  if(share) share.innerHTML = ranked.length ? ranked.map(([id, tokens]) => {
+    const ratio = total ? tokens / total * 100 : 0;
+    return '<div class="console-share-row"><span class="console-share-name" title="' + esc(id) + '">' + esc(id) + '</span>'
+      + '<span class="console-share-track"><span class="console-share-fill" style="display:block;width:' + ratio + '%"></span></span>'
+      + '<span class="console-share-value">' + fmtCompact(tokens) + ' · ' + ratio.toFixed(1) + '%</span></div>';
+  }).join('') : '<div style="padding:8px 0;color:var(--dim);font-size:12px">暂无模型用量分布</div>';
+  renderConsoleAccountHealth(accts || []);
+}
+
 /* ------------------------------- dashboard ------------------------------ */
 let REFRESH_RUNNING = false;
 let REFRESH_QUEUED = false;
@@ -11924,6 +12806,7 @@ async function refreshInner(gen){
   }
 
   const rows = recent.rows || [];
+  renderConsoleInsights(rows, accts);
   // Terminal state of a request. Rows written before the outcome field only
   // carry error/status, so fall back to that; a client cancellation is shown
   // apart from a real failure because the gateway did nothing wrong.
@@ -11962,9 +12845,9 @@ async function refreshInner(gen){
   if(recentFp === lastRecentFp) return;
   lastRecentFp = recentFp;
   COST_TIP_ROWS.clear();
-  document.getElementById('recent').innerHTML = rows.length ?
+  const buildRecentTable = tableRows => tableRows.length ?
     '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>API Key</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th><th class="pricing-col" style="color:var(--warn)">估算价格</th></tr></thead><tbody>'
-    + rows.map((r, i) => {
+    + tableRows.map((r, i) => {
         // 关闭时不登记悬停明细，也不挂 data-cost-key：列还在（观感不变），
         // 但没有任何可解释的价格，省掉整张表的明细构建与 hover 开销。
         const costKey = PRICING_ON ? costRowKey(r, i) : '';
@@ -11994,6 +12877,8 @@ async function refreshInner(gen){
       + '</tr>';
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有请求记录</div>';
+  RECENT_RENDER = {rows: rows, acctName: acctName, buildTable: buildRecentTable};
+  renderRecentView();
   reanchorCostTip();
 }
 
@@ -12019,6 +12904,36 @@ let RECENT_TOTAL_PAGES = 1;
 // 最近请求表上次真正画进 DOM 的内容指纹（见 refreshInner 里的 recentFp）。
 // 5 秒一轮的重画代价几乎全在布局（100 行实测 50~65ms），数据没变就不该重画。
 let lastRecentFp = null;
+let RECENT_RENDER = null;
+const RECENT_FILTERS = {query: '', outcome: ''};
+function clearRecentFilters(){
+  RECENT_FILTERS.query = '';
+  RECENT_FILTERS.outcome = '';
+  const q = document.getElementById('recentModelFilter');
+  const s = document.getElementById('recentOutcomeFilter');
+  if(q) q.value = '';
+  if(s) s.value = '';
+  renderRecentView();
+}
+function renderRecentView(){
+  if(!RECENT_RENDER) return;
+  const rows = RECENT_RENDER.rows.filter(r => {
+    const q = RECENT_FILTERS.query.trim().toLowerCase();
+    const outcome = r.outcome || (r.error ? 'failed' : 'completed');
+    if(RECENT_FILTERS.outcome && outcome !== RECENT_FILTERS.outcome) return false;
+    return !q || [r.model, RECENT_RENDER.acctName(r.account), r.account, r.key_name].some(v => String(v || '').toLowerCase().includes(q));
+  });
+  const count = document.getElementById('recentFilterCount');
+  if(count) count.textContent = (RECENT_FILTERS.query || RECENT_FILTERS.outcome)
+    ? ('当前页显示 ' + rows.length + ' / ' + RECENT_RENDER.rows.length + ' 条') : ('当前页 ' + RECENT_RENDER.rows.length + ' 条');
+  const box = document.getElementById('recent');
+  if(!rows.length){
+    box.innerHTML = '<div class="console-filter-empty"><span>当前页没有符合筛选条件的请求</span><button type="button" class="sec mini" onclick="clearRecentFilters()">清除筛选</button></div>';
+  } else {
+    box.innerHTML = RECENT_RENDER.buildTable(rows);
+  }
+  renderConsoleInsights(RECENT_RENDER.rows, window.ACCOUNTS || []);
+}
 
 function updateRecentLimitButtons(){
   [10, 20, 50, 100].forEach(n => {
@@ -12072,7 +12987,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['overview', 'gateway', 'accounts', 'tasks', 'analytics', 'agents', 'settings', 'logs'];
+const MAIN_TABS = ['overview', 'gateway', 'accounts', 'tasks', 'media', 'analytics', 'agents', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -12215,7 +13130,6 @@ async function panelLogout(){
 }
 
 async function bootPanel(){
-  panelSyncRemember();
   try {
     const r = await fetch('/panel/status', {cache: 'no-store', headers: authHeaders()});
     PANEL_STATUS = await r.json().catch(() => ({}));
@@ -12470,6 +13384,32 @@ function togglePageNavCollapse(page){
   const collapsed = !page.classList.contains('page-nav-collapsed');
   try { localStorage.setItem(PAGE_NAV_COLLAPSE_KEY, collapsed ? '1' : '0'); } catch(e){}
   applyPageNavCollapse(page, collapsed);
+}
+
+let CURRENT_SETTINGS_CAT = 'all';
+
+function filterSettingsCategory(cat){
+  CURRENT_SETTINGS_CAT = cat || 'all';
+  try { localStorage.setItem('WB_SETTINGS_CAT', CURRENT_SETTINGS_CAT); } catch(e){}
+
+  // 1. Update capsule button active class
+  document.querySelectorAll('.settings-cat-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.cat === CURRENT_SETTINGS_CAT);
+  });
+
+  // 2. Filter sections inside #pageSettings
+  const page = document.getElementById('pageSettings');
+  if(!page) return;
+  const sections = page.querySelectorAll('section[data-cat]');
+  sections.forEach(sec => {
+    const match = (CURRENT_SETTINGS_CAT === 'all' || sec.dataset.cat === CURRENT_SETTINGS_CAT);
+    sec.style.display = match ? '' : 'none';
+  });
+
+  // 3. Refresh left sidebar navigation so it dynamically matches the filtered sections
+  if(typeof refreshPageNav === 'function'){
+    refreshPageNav();
+  }
 }
 
 function initPageNav(page){
@@ -12915,25 +13855,215 @@ function applyAccountsTabLayout(separate){
   if(btnAccounts) btnAccounts.style.display = _accountsSeparateTab ? '' : 'none';
   // 名字跟着走：账号已经不在这一页了，就不能再叫「网关与账号」。
   const gatewayLabel = document.getElementById('navGatewayLabel');
-  if(gatewayLabel) gatewayLabel.textContent = _accountsSeparateTab ? '网关' : '网关与账号';
-  // 页头（标题 + 一行说明）跟着走：账号在不在这一页，名字与说明都得对得上。
-  const pageTitle = document.getElementById('gatewayPageTitle');
-  const pageDesc = document.getElementById('gatewayPageDesc');
+  if(gatewayLabel) gatewayLabel.textContent = document.documentElement.getAttribute('data-console-layout') === 'on' ? '运行概览' : (_accountsSeparateTab ? '网关' : '网关与账号');
   if(window.__NEXT_UI__){
-    if(pageTitle) pageTitle.textContent = '总览';
-    if(pageDesc) pageDesc.textContent = '出口、账号健康、当日调用和最近请求一屏看完。';
+    const title = document.getElementById('gatewayPageTitle');
+    const desc = document.getElementById('gatewayPageDesc');
+    if(title) title.textContent = '总览';
+    if(desc) desc.textContent = '出口、账号健康、当日调用和最近请求一屏看完。';
+  } else if(document.documentElement.getAttribute('data-console-layout') === 'on') {
+    if(typeof applyConsoleView === 'function') applyConsoleView(CONSOLE_VIEW);
   } else {
+    const pageTitle = document.getElementById('gatewayPageTitle');
+    const pageDesc = document.getElementById('gatewayPageDesc');
     if(pageTitle) pageTitle.textContent = _accountsSeparateTab ? '网关' : '网关与账号';
-    if(pageDesc){
-      pageDesc.textContent = _accountsSeparateTab
-        ? '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。'
-        : '管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。';
-    }
+    if(pageDesc) pageDesc.textContent = _accountsSeparateTab
+      ? '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。'
+      : '管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。';
   }
   return _accountsSeparateTab;
 }
 
 // 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
+// ==== 媒体能力（生图 / 生视频）开始 ====
+// 说明：这里只做两件事——把设置回填/提交，以及在「媒体」页画两张只读表。
+// 生图与生视频的**花钱判断全在服务端**（开关、每分钟次数、每日积分、余额、日限额、
+// 队列上限），前端不做任何预估，避免"面板说可以、服务端拒了"这种自相矛盾。
+const MEDIA_STATUS_LABEL = {
+  queued: '排队中', in_progress: '生成中', running: '生成中',
+  completed: '已完成', failed: '失败'
+};
+const MEDIA_STATUS_BADGE = {
+  queued: 's', in_progress: 'warn', running: 'warn',
+  completed: 'ok', failed: 'bad'
+};
+
+function applyMediaSettings(media){
+  const cfg = media || {};
+  const enabled = document.getElementById('setMediaEnabled');
+  if(enabled) enabled.checked = cfg.enabled === true;
+  const realm = document.getElementById('setMediaRealm');
+  if(realm && cfg.realm) realm.value = cfg.realm;
+  const identity = document.getElementById('setMediaIdentity');
+  if(identity && cfg.identity) identity.value = cfg.identity;
+  const rate = document.getElementById('setMediaImageRate');
+  if(rate && cfg.image_max_per_minute != null) rate.value = cfg.image_max_per_minute;
+  const seconds = document.getElementById('setMediaVideoSeconds');
+  if(seconds && cfg.video_max_seconds != null) seconds.value = cfg.video_max_seconds;
+  const credits = document.getElementById('setMediaDailyCredits');
+  if(credits && cfg.daily_credits_per_key != null) credits.value = cfg.daily_credits_per_key;
+  const conc = document.getElementById('setMediaVideoConcurrency');
+  if(conc && cfg.video_concurrency != null) conc.value = cfg.video_concurrency;
+  const state = document.getElementById('setMediaState');
+  if(state){
+    state.textContent = cfg.enabled === true ? '(已开启)' : '(已关闭)';
+    state.style.color = cfg.enabled === true ? 'var(--accent2)' : 'var(--dim)';
+  }
+}
+
+async function saveMediaConfig(btn){
+  const num = (id, fallback) => {
+    const el = document.getElementById(id);
+    const value = el ? Number(el.value) : NaN;
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const payload = {
+    media: {
+      enabled: !!(document.getElementById('setMediaEnabled') || {}).checked,
+      realm: (document.getElementById('setMediaRealm') || {}).value || 'cn',
+      identity: (document.getElementById('setMediaIdentity') || {}).value || 'desktop',
+      image_max_per_minute: num('setMediaImageRate', 6),
+      video_max_seconds: num('setMediaVideoSeconds', 15),
+      daily_credits_per_key: num('setMediaDailyCredits', 0),
+      video_concurrency: num('setMediaVideoConcurrency', 3)
+    }
+  };
+  if(btn) btn.disabled = true;
+  try{
+    const res = await postJSON('/settings/save', payload);
+    if(res && res.media) applyMediaSettings(res.media);
+    toast(payload.media.enabled ? '已开启：媒体路由可用' : '已关闭：媒体路由不再存在');
+    loadSettings();
+  }catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function loadMediaPage(){
+  loadMediaModels();
+  loadMediaTasks();
+}
+
+async function loadMediaModels(force){
+  const box = document.getElementById('mediaModelsList');
+  const state = document.getElementById('mediaModelsState');
+  if(!box) return;
+  if(state){ state.textContent = '(读取中…)'; state.style.color = 'var(--dim)'; }
+  try{
+    const data = await getJSON('/v1/media/models');
+    const models = (data && data.models) || [];
+    if(state){
+      state.textContent = '(' + models.length + ' 个 · ' + (data.realm || '-')
+        + (data.enabled ? ' · 已开启' : ' · 未开启') + ')';
+      state.style.color = data.enabled ? 'var(--accent2)' : 'var(--warn)';
+    }
+    if(!models.length){
+      box.innerHTML = '<div style="font-size:12px;color:var(--dim)">该区目录里没有媒体模型——账号可能没有生图 / 生视频权限。</div>';
+      return;
+    }
+    box.innerHTML = '<table><thead><tr><th>模型</th><th>能力</th><th>时长</th>'
+      + '<th>分辨率</th><th>比例</th><th>prompt 上限</th></tr></thead><tbody>'
+      + models.map(m => {
+          const g = m.videoGeneration || {};
+          const tags = (m.tags || []).map(t => {
+            const label = {'text-to-image': '文生图', 'image-to-image': '改图',
+                           'text-to-video': '文生视频', 'image-to-video': '图生视频'}[t];
+            return '<span class="badge s mini">' + esc(label || t) + '</span>';
+          }).join(' ');
+          const span = (g.minSeconds != null && g.maxSeconds != null)
+            ? (g.minSeconds + '–' + g.maxSeconds + ' 秒') : '-';
+          const res = (g.resolutions || []).length ? g.resolutions.join(' / ') : '-';
+          const ratios = (g.aspectRatios || []).length ? g.aspectRatios.join(' / ') : '-';
+          const prompt = g.maxPromptLength != null ? (g.maxPromptLength + ' 字符') : '-';
+          return '<tr><td class="mono">' + esc(m.id) + '</td>'
+               + '<td>' + tags + '</td><td>' + esc(span) + '</td>'
+               + '<td class="mono">' + esc(res) + '</td>'
+               + '<td class="mono">' + esc(ratios) + '</td>'
+               + '<td>' + esc(prompt) + '</td></tr>';
+        }).join('')
+      + '</tbody></table>';
+  }catch(e){
+    if(state){ state.textContent = '(读取失败)'; state.style.color = 'var(--bad)'; }
+    box.innerHTML = '<div style="font-size:12px;color:var(--bad)">' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadMediaTasks(force){
+  const box = document.getElementById('mediaTasksList');
+  const state = document.getElementById('mediaTasksState');
+  if(!box) return;
+  if(state){ state.textContent = '(读取中…)'; state.style.color = 'var(--dim)'; }
+  try{
+    const data = await getJSON('/v1/media/tasks?limit=50');
+    const tasks = (data && data.tasks) || [];
+    const stats = (data && data.stats) || {};
+    if(state){
+      const pending = stats.pending || 0;
+      state.textContent = '(' + tasks.length + ' 条' + (pending ? ' · ' + pending + ' 条进行中' : '') + ')';
+      state.style.color = 'var(--dim)';
+    }
+    if(!tasks.length){
+      box.innerHTML = '<div style="font-size:12px;color:var(--dim)">还没有任务。生视频提交成功后会出现在这里。</div>';
+      return;
+    }
+    box.innerHTML = '<table><thead><tr><th>任务</th><th>状态</th><th>模型</th>'
+      + '<th>时长</th><th>花费</th><th>提交时间</th><th>操作</th></tr></thead><tbody>'
+      + tasks.map(t => {
+          const label = MEDIA_STATUS_LABEL[t.status] || t.status;
+          const badge = MEDIA_STATUS_BADGE[t.status] || 's';
+          const when = t.created_at ? new Date(t.created_at * 1000).toLocaleString() : '-';
+          const credit = (t.credit != null) ? (t.credit + ' 积分') : '-';
+          const span = t.seconds ? (t.seconds + ' 秒') : '-';
+          let action = '-';
+          if(t.url){
+            action = '<a href="' + esc(t.url) + '" target="_blank" rel="noopener">下载</a>';
+          }else if(t.status === 'queued'){
+            action = '<a href="#" data-media-task="' + esc(t.id)
+              + '" onclick="cancelMediaTask(this);return false">取消</a>';
+          }
+          let tip = '';
+          if(t.error && (t.error.code || t.error.message)){
+            // 一行省略 + title 看全文：失败原因可能有整段上游原文，
+            // 直接铺开会把整行撑得很高，后面的表格就对不齐了。
+            const full = t.error.message || '';
+            tip = '<div style="font-size:11px;color:var(--dim);margin-top:2px;'
+              + 'max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"'
+              + ' title="' + esc(full) + '">' + esc(full) + '</div>';
+          }
+          return '<tr><td class="mono">' + esc(t.id) + '</td>'
+               + '<td><span class="badge ' + badge + '">' + esc(label) + '</span>' + tip + '</td>'
+               + '<td class="mono">' + esc(t.model || '-') + '</td>'
+               + '<td>' + esc(span) + '</td><td>' + esc(credit) + '</td>'
+               + '<td>' + esc(when) + '</td><td>' + action + '</td></tr>';
+        }).join('')
+      + '</tbody></table>'
+      + '<div style="font-size:12px;color:var(--dim);margin-top:8px">'
+      + '排队 ' + (stats.queue_depth || 0) + ' 条 · 进行中 ' + (stats.pending || 0)
+      + ' 条 · 共持有 ' + (stats.total || 0) + ' 条。失败的任务请展开看原因：'
+      + '「invalid_request」没扣积分可以改参数重试，「upstream_error / task_lost」可能已经扣过费。</div>';
+  }catch(e){
+    if(state){ state.textContent = '(读取失败)'; state.style.color = 'var(--bad)'; }
+    box.innerHTML = '<div style="font-size:12px;color:var(--bad)">' + esc(e.message) + '</div>';
+  }
+}
+
+async function cancelMediaTask(trigger){
+  const taskId = (trigger && trigger.getAttribute)
+    ? trigger.getAttribute('data-media-task') : trigger;
+  if(!taskId){ toast('缺少任务 id', 'bad'); return; }
+  try{
+    const res = await postJSON('/v1/videos/' + encodeURIComponent(taskId) + '/cancel', {});
+    if(res && res.status) toast('已取消（本地轮询已停止）');
+    else toast('取消请求已发送');
+    loadMediaTasks();
+  }catch(e){
+    toast('取消失败: ' + e.message, 'bad');
+  }
+}
+// ==== 媒体能力结束 ====
+
 async function saveAccountsSeparateTab(btn){
   const el = document.getElementById('setAccountsSeparate');
   const value = !!(el && el.checked);
@@ -12953,6 +14083,217 @@ async function saveAccountsSeparateTab(btn){
   }
 }
 // ==== 账号页签模式结束 ====
+
+// Layout and color theme are independent; use the console layout by default.
+function toggleNextLayout(){
+  const url = new URL(window.location.href);
+  if(window.__NEXT_UI__) url.searchParams.delete('ui');
+  else url.searchParams.set('ui', 'next');
+  url.searchParams.delete('tab');
+  window.location.assign(url.toString());
+}
+function initConsoleLayout(){
+  const nextOption = document.getElementById('nextLayoutOption');
+  if(nextOption && window.__NEXT_UI__) nextOption.textContent = '返回原布局';
+  const on = document.documentElement.getAttribute('data-console-layout') === 'on';
+  const nav = document.querySelector('.main-nav');
+  const sidebar = document.getElementById('consoleSidebar');
+  const header = document.querySelector('.header-left');
+  const status = document.getElementById('statusDot');
+  const statusHost = document.getElementById(on ? 'consoleStatusSlot' : 'classicTitle');
+  if(status && statusHost) statusHost.insertBefore(status, statusHost.firstChild);
+  if(nav && sidebar && header){
+    if(on) sidebar.insertBefore(nav, sidebar.querySelector('.console-sidebar-foot'));
+    else header.insertBefore(nav, header.querySelector('.gh-link'));
+  }
+  const option = document.getElementById('consoleLayoutOption');
+  if(option) { option.setAttribute('aria-checked', on ? 'true' : 'false'); option.classList.toggle('active', on); }
+}
+function toggleConsoleLayout(evt){
+  if(evt) { evt.preventDefault(); evt.stopPropagation(); }
+  const menu = document.getElementById('themeDropdown');
+  const themeButton = document.getElementById('themeToggleBtn');
+  if(menu) menu.classList.remove('open');
+  if(themeButton) themeButton.setAttribute('aria-expanded', 'false');
+  const root = document.documentElement;
+  const on = root.getAttribute('data-console-layout') !== 'on';
+  if(on) root.setAttribute('data-console-layout', 'on'); else root.removeAttribute('data-console-layout');
+  ['wb-console-v2'].forEach(id => { const el = document.getElementById(id); if(el) el.media = on ? 'all' : 'not all'; });
+  try { localStorage.setItem('wb-console-layout', on ? '1' : '0'); } catch(e){}
+  if(!on){
+    document.querySelectorAll('.console-view-hidden').forEach(el => el.classList.remove('console-view-hidden'));
+    setConsoleNavOpen(false);
+  }
+  initConsoleLayout();
+  applyAccountsTabLayout(_accountsSeparateTab);
+  if(typeof switchMainTab === 'function') switchMainTab(currentMainTab);
+  window.dispatchEvent(new Event('resize'));
+}
+
+// ==== 全局控制台导航开始 ====
+const CONSOLE_COLLAPSE_KEY = 'wb-console-nav-collapsed';
+const CONSOLE_PAGE_LABELS = {
+  gateway: '运行概览', accounts: '账号管理', tasks: '任务与福利',
+  media: '媒体', analytics: '数据看板', logs: '运行日志', settings: '网关设置', agents: '智能体接入'
+};
+function consoleNavIsMobile(){
+  return !!(window.matchMedia && window.matchMedia('(max-width:760px)').matches);
+}
+function syncConsoleCollapseButton(){
+  const collapsed = document.body.classList.contains('console-collapsed');
+  const btn = document.getElementById('btnConsoleCollapse');
+  if(!btn) return;
+  const label = collapsed ? '展开功能导航' : '收起功能导航';
+  btn.textContent = collapsed ? '»' : '«';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  document.querySelectorAll('.console-sidebar .main-nav-btn,.console-sidebar .console-nav-link').forEach(function(item){
+    item.title = collapsed ? item.textContent.trim() : '';
+  });
+}
+function toggleConsoleCollapse(){
+  if(consoleNavIsMobile()){ setConsoleNavOpen(false); return; }
+  const collapsed = document.body.classList.toggle('console-collapsed');
+  try { localStorage.setItem(CONSOLE_COLLAPSE_KEY, collapsed ? '1' : '0'); } catch(e){}
+  syncConsoleCollapseButton();
+  if(typeof syncPageNavOffset === 'function') syncPageNavOffset();
+  requestAnimationFrame(function(){ window.dispatchEvent(new Event('resize')); });
+}
+function setConsoleNavOpen(open){
+  const on = !!open && consoleNavIsMobile();
+  document.body.classList.toggle('console-nav-open', on);
+  const btn = document.getElementById('btnConsoleNav');
+  if(btn){
+    btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', on ? '关闭功能导航' : '打开功能导航');
+  }
+  const sidebar = document.getElementById('consoleSidebar');
+  if(sidebar){
+    if(consoleNavIsMobile()) sidebar.setAttribute('aria-hidden', on ? 'false' : 'true');
+    else sidebar.removeAttribute('aria-hidden');
+  }
+  if(on && sidebar){
+    const active = sidebar.querySelector('.main-nav-btn.active,.console-nav-link.active');
+    if(active) active.focus();
+  } else if(consoleNavIsMobile() && document.activeElement && sidebar && sidebar.contains(document.activeElement)){
+    if(btn) btn.focus();
+  }
+}
+function toggleConsoleNav(){ setConsoleNavOpen(!document.body.classList.contains('console-nav-open')); }
+function initConsoleShell(){
+  // 端口按实际访问地址显示：默认 8788，但部署在别的端口上时不该写死。
+  const portEl = document.getElementById('consolePort');
+  const port = (window.location && window.location.port) || '8788';
+  if(portEl) portEl.textContent = port;
+  const footPort = document.getElementById('consoleFootPort');
+  if(footPort) footPort.textContent = ':' + port;
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(CONSOLE_COLLAPSE_KEY) === '1'; } catch(e){}
+  document.body.classList.toggle('console-collapsed', collapsed && !consoleNavIsMobile());
+  window.addEventListener('resize', function(){
+    if(!document.body.classList.contains('console-nav-open')) renderConsoleUsageChart(CONSOLE_INSIGHT_ROWS);
+  });
+  syncConsoleCollapseButton();
+  setConsoleNavOpen(false);
+  document.addEventListener('keydown', function(ev){
+    if(ev.key === 'Escape' && document.body.classList.contains('console-nav-open')) setConsoleNavOpen(false);
+  });
+  document.addEventListener('click', function(ev){
+    if(consoleNavIsMobile() && document.body.classList.contains('console-nav-open')
+       && ev.target && ev.target.closest && ev.target.closest('.console-sidebar .main-nav-btn,.console-sidebar .console-nav-link')){
+      setConsoleNavOpen(false);
+    }
+  });
+  if(window.matchMedia){
+    const media = window.matchMedia('(max-width:760px)');
+    const changed = function(){
+      if(!media.matches) setConsoleNavOpen(false);
+      syncConsoleCollapseButton();
+    };
+    if(media.addEventListener) media.addEventListener('change', changed);
+    else if(media.addListener) media.addListener(changed);
+  }
+}
+function syncConsoleContext(tab){
+  const label = document.getElementById('consoleCurrentPage');
+  if(label) label.textContent = CONSOLE_PAGE_LABELS[tab] || '控制台';
+  document.querySelectorAll('.console-nav-link').forEach(function(item){ item.classList.remove('active'); });
+}
+// 内容入口（模型管理 / 请求记录）与「运行概览」是三个互斥视图：
+// 进入其中一个时，只显示它自己的区块，其余隐藏——不是在同一页里滚动定位。
+let CONSOLE_VIEW = 'overview';
+function setConsoleNavActive(linkId, label){
+  document.querySelectorAll('.console-sidebar .main-nav-btn.active').forEach(function(btn){
+    btn.classList.remove('active');
+    btn.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('.console-nav-link').forEach(function(item){
+    const on = !!linkId && item.id === linkId;
+    item.classList.toggle('active', on);
+    if(on) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
+  if(!linkId){
+    const gw = document.getElementById('btnNavGateway');
+    if(gw){ gw.classList.add('active'); gw.setAttribute('aria-current', 'page'); }
+  }
+  const ctx = document.getElementById('consoleCurrentPage');
+  if(ctx && label) ctx.textContent = label;
+}
+function applyConsoleView(view){
+  if(document.documentElement.getAttribute('data-console-layout') !== 'on') return;
+  CONSOLE_VIEW = (view === 'models' || view === 'requests') ? view : 'overview';
+  const page = document.getElementById('pageGateway');
+  const head = document.getElementById('gatewayPageHead');
+  if(page){
+    const host = page.querySelector('.page-nav-body') || page;
+    const kids = host && host.children ? Array.from(host.children) : [];
+    kids.forEach(function(el){
+      if(!el || el.classList.contains('page-sidebar') || el.classList.contains('page-nav')) return;
+      let keep;
+      if(CONSOLE_VIEW === 'models') keep = el.id === 'gatewayModelsSection' || el.id === 'accountsRealmSwitch' || el === head;
+      else if(CONSOLE_VIEW === 'requests') keep = el.id === 'recentRequestsSection' || el.id === 'accountsRealmSwitch' || el === head;
+      // 概览：模型清单与请求记录各自成页，不在这里重复出现。
+      else keep = el.id !== 'gatewayModelsSection' && el.id !== 'recentRequestsSection';
+      // 用类而不是内联 display：其它代码（CodeArts 视图、账号分区等）也在管
+      // 这些元素的显隐，直接写 style.display 会把它们的判断覆盖掉。
+      el.classList.toggle('console-view-hidden', !keep);
+    });
+  }
+  // 页头随视图走：三个视图各有自己的标题与说明。
+  const title = document.getElementById('gatewayPageTitle');
+  const desc = document.getElementById('gatewayPageDesc');
+  const COPY = {
+    overview: ['运行概览', _accountsSeparateTab
+      ? '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。'
+      : '管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。'],
+    models: ['模型管理', '当前视图下官方对话大模型、上下文容量、推理/视觉能力、思考控制、默认采样参数与在售倍率。'],
+    requests: ['请求记录', '当前视图的请求明细：模型、账号、结果、耗时与用量，可按关键词和结果筛选。']
+  }[CONSOLE_VIEW];
+  if(title) title.textContent = COPY[0];
+  if(desc) desc.textContent = COPY[1];
+  if(CONSOLE_VIEW === 'models') setConsoleNavActive('btnNavModels', '模型管理');
+  else if(CONSOLE_VIEW === 'requests') setConsoleNavActive('btnNavRequests', '请求记录');
+  else setConsoleNavActive(null, '运行概览');
+}
+// 兼容旧调用点：保持原来的函数名语义不变。
+function selectConsoleEntry(linkId, label){
+  if(linkId === 'btnNavModels') return applyConsoleView('models');
+  if(linkId === 'btnNavRequests') return applyConsoleView('requests');
+  return applyConsoleView('overview');
+}
+function openModelCatalog(){
+  switchMainTab('gateway');
+  applyConsoleView('models');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+function openRecentRequests(){
+  switchMainTab('gateway');
+  applyConsoleView('requests');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+// ==== 全局控制台导航结束 ====
 
 // ==== 面板窗口限高开始 ====
 // 每个窗口（区块 + 日志终端）超过限高时在窗口内部滚动、标题行吸顶，整页不再被
@@ -13024,7 +14365,8 @@ async function loadSettings(showToast){
     // 账号页签模式：同样只有明确存过 true 才拆开，其余（没存过、存坏了、
     // 后端没这个字段）都保持上游那个合并的「网关与账号」页。
     const separateTab = data.accounts_separate_tab === true;
-    applyAccountsTabLayout(separateTab);
+    applyAccountsTabLayout(window.__NEXT_UI__ || separateTab);
+    applyMediaSettings(data.media);
     const separateState = document.getElementById('setAccountsSeparateState');
     if(separateState) separateState.textContent = separateTab ? '(已开启)' : '(默认：合并)';
     const separateInput = document.getElementById('setAccountsSeparate');
@@ -13037,6 +14379,10 @@ async function loadSettings(showToast){
     const winMax = (typeof rawWinMax === 'number' && Number.isFinite(rawWinMax) && rawWinMax >= 0)
       ? rawWinMax : 640;
     applyWinMaxHeight(winMax);
+    if(!window.__NEXT_UI__){
+      const savedCat = (typeof localStorage !== 'undefined') ? (localStorage.getItem('WB_SETTINGS_CAT') || 'all') : 'all';
+      filterSettingsCategory(savedCat);
+    }
     const winMaxInput = document.getElementById('setWinMaxHeight');
     if(winMaxInput) winMaxInput.value = String(Math.round(winMax));
 
@@ -13071,7 +14417,9 @@ async function loadSettings(showToast){
         const gaps = document.getElementById('setPricingGaps');
         if(gaps) gaps.innerHTML = '';
       }
-      const autoSwitch = data.auto_switch_product === true;
+      window.CURRENT_SETTINGS = data;
+
+    const autoSwitch = data.auto_switch_product === true;
       const creditFallback = data.free_model_credit_fallback === true;
       const anthropicMsg = data.enable_anthropic_messages === true;
       const filterModelsByKey = data.filter_models_by_key === true;
@@ -13446,7 +14794,6 @@ async function savePanelPassword(btn){
   try {
     const data = await postJSON('/panel/password', {current: cur, new: nw});
     if(data.token){
-      // 改密会轮换令牌：沿用当前「保持登录」选择，别把持久会话降级成标签页会话。
       panelStoreToken(data.token, PANEL_REMEMBER);
     }
     document.getElementById('setPwdCurrent').value = '';
@@ -13901,6 +15248,8 @@ async function saveFilterModelsByKey(btn){
     if(btn) btn.disabled = false;
   }
 }
+
+
 
 async function saveCreditFallback(btn){
   const el = document.getElementById('setCreditFallback');
@@ -15994,16 +17343,10 @@ function switchMainTab(tab){
   if(pageHidden(tab)) tab = firstVisiblePage();
   // 账号页被合并掉之后（设置里的「账号独立成一个页签」关闭，默认），
   // ?tab=accounts 的书签与上次停留的页签都退回总览页——区块就在那一页里。
-  if(tab === 'accounts' && !_accountsSeparateTab) tab = 'overview';
-  // 旧壳把「网关与账号」保留成一个合并页；新壳才拆成总览 + 网关。
-  // 只在旧壳真的完成了合并（pageOverview 在、pageGateway 已移走）时改写；
-  // 测试沙箱里可能只有合成 pageGateway，不应被这条规则带走。
-  if(!window.__NEXT_UI__ && tab === 'gateway'
-      && document.getElementById('pageOverview')
-      && !document.getElementById('pageGateway')){
-    tab = 'overview';
-  }
+  if(tab === 'accounts' && !_accountsSeparateTab) tab = window.__NEXT_UI__ ? 'overview' : 'gateway';
+  if(!window.__NEXT_UI__ && tab === 'overview') tab = 'gateway';
   currentMainTab = tab;
+  syncConsoleContext(tab);
   // Remember the page across reloads. The URL is updated so the address bar
   // matches what is on screen and a copied link reopens the same page;
   // storage covers a plain reload and the ?key= link, which strips the
@@ -16023,6 +17366,7 @@ function switchMainTab(tab){
   const btnSettings = document.getElementById('btnNavSettings');
   const btnAgents = document.getElementById('btnNavAgents');
   const pageOverview = document.getElementById('pageOverview');
+  const btnMedia = document.getElementById('btnNavMedia');
   const pageGateway = document.getElementById('pageGateway');
   const pageTasks = document.getElementById('pageTasks');
   const pageAccounts = document.getElementById('pageAccounts');
@@ -16030,6 +17374,7 @@ function switchMainTab(tab){
   const pageLogs = document.getElementById('pageLogs');
   const pageSettings = document.getElementById('pageSettings');
   const pageAgents = document.getElementById('pageAgents');
+  const pageMedia = document.getElementById('pageMedia');
   const tabs = [
     ['overview', btnOverview, pageOverview],
     ['gateway', btnGateway, pageGateway],
@@ -16038,7 +17383,8 @@ function switchMainTab(tab){
     ['analytics', btnAnalytics, pageAnalytics],
     ['logs', btnLogs, pageLogs],
     ['settings', btnSettings, pageSettings],
-    ['agents', btnAgents, pageAgents]
+    ['agents', btnAgents, pageAgents],
+    ['media', btnMedia, pageMedia]
   ];
   tabs.forEach(([name, btn, page]) => {
     if(!page) return;
@@ -16048,17 +17394,14 @@ function switchMainTab(tab){
     // 每个页面各自按自己的区块重建侧栏；非当前页的区块变化在切过来时补上
     if(on) initPageNav(page);
   });
-  // 旧壳的网关页签现在指向合并后的 overview 页；pageGateway 已被移走，
-  // 上面的循环不会再碰这个按钮，单独同步一次。
-  if(!window.__NEXT_UI__){
-    const oldGatewayBtn = document.getElementById('btnNavGateway');
-    if(oldGatewayBtn) oldGatewayBtn.classList.toggle('active', tab === 'overview');
-  }
+  if(!window.__NEXT_UI__ && tab === 'gateway') applyConsoleView('overview');
   if(tab === 'tasks'){ loadGrowthTasks(); }
-  if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'overview')){ loadActivityBoard(); }
+  if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){ loadActivityBoard(); }
+  if(window.__NEXT_UI__ && !_accountsSeparateTab && tab === 'overview'){ loadActivityBoard(); }
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
   if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
   if(tab === 'agents'){ loadAgents(); }
+  if(tab === 'media'){ loadMediaPage(); }
   if(tab === 'logs'){
     startLogPolling();
     fetchNewLogs(true);
@@ -18321,9 +19664,7 @@ function drawSeries(){
     const h = v / maxV * ih;
     const x = padL + gap * i + (gap - bw) / 2;
     const y = padT + ih - h;
-    const grd = ctx.createLinearGradient(0, y, 0, padT + ih);
-    grd.addColorStop(0, barC);
-    grd.addColorStop(1, seriesColor('--chart-bar-soft'));
+    const grd = barC;
     ctx.fillStyle = i === n - 1 ? barC : grd;
     if (h >= 0.5){
       const r = Math.min(3, bw / 2);
@@ -19331,6 +20672,12 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     var need = Math.min(320, window.innerHeight * 0.52);
     var up = below < need && r.top > below;
     wrap.classList.toggle('cs-drop-up', up);
+    var panel = wrap.querySelector('.cs-panel');
+    if (panel){
+      var avail = up ? (r.top - 12) : (below - 12);
+      var maxH = Math.max(100, Math.floor(Math.min(320, avail)));
+      panel.style.maxHeight = maxH + 'px';
+    }
   }
 
   function openWrap_(wrap){
@@ -19528,7 +20875,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
   'use strict';
 
   var NEXT = !!window.__NEXT_UI__;
-  var MORE_TABS = ['tasks', 'agents', 'settings', 'logs'];
+  var MORE_TABS = ['tasks', 'agents', 'media', 'settings', 'logs'];
 
   function nextCurrentTab(){
     var page = document.querySelector('.main-page.active');
@@ -19540,6 +20887,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     if(id === 'pageTasks') return 'tasks';
     if(id === 'pageAnalytics') return 'analytics';
     if(id === 'pageAgents') return 'agents';
+    if(id === 'pageMedia') return 'media';
     if(id === 'pageSettings') return 'settings';
     if(id === 'pageLogs') return 'logs';
     return '';
@@ -19559,6 +20907,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     analytics: { title: '用量', desc: 'Token、请求、缓存、成本和剩余额度。' },
     tasks: { title: '自动化', desc: '每日活跃、成长任务和后台调度器。' },
     agents: { title: '智能体', desc: '把本机 AI 客户端一键指向当前网关。' },
+    media: { title: '媒体', desc: '图片与视频生成任务、额度、价格和账号分配。' },
     settings: { title: '设置', desc: 'API Key、出口、模型、调度和系统选项。' },
     logs: { title: '日志', desc: '实时运行日志、筛选、导出和落库状态。' }
   };
@@ -19591,7 +20940,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     try {
       if(typeof _hiddenPages !== 'undefined' && Array.isArray(_hiddenPages)) hidden = _hiddenPages;
     } catch(e){}
-    var order = ['overview', 'gateway', 'accounts', 'analytics', 'tasks', 'agents', 'settings', 'logs'];
+    var order = ['overview', 'gateway', 'accounts', 'analytics', 'tasks', 'agents', 'media', 'settings', 'logs'];
     var firstVisible = '';
     order.forEach(function(key){
       var off = hidden.indexOf(key) >= 0;
@@ -19809,13 +21158,13 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
   window.nextSettingsGroup = nextSettingsGroup;
 
   if(!NEXT){
-    /* 旧 / 仍然按「网关与账号」一页展示：把新拆出去的模型区块放回总览页，
-       并把旧网关页签映射到 overview。新壳走下面的独立页面。 */
+    /* 合并页面时保留 pageGateway，供控制台的模型和请求子视图使用。 */
     var oldModels = document.getElementById('pageGateway');
     var oldOverview = document.getElementById('pageOverview');
     if(oldModels && oldOverview){
-      while(oldModels.firstChild) oldOverview.appendChild(oldModels.firstChild);
-      if(oldModels.parentNode) oldModels.parentNode.removeChild(oldModels);
+      var firstModel = oldModels.firstChild;
+      while(oldOverview.firstChild) oldModels.insertBefore(oldOverview.firstChild, firstModel);
+      if(oldOverview.parentNode) oldOverview.parentNode.removeChild(oldOverview);
     }
     return;
   }
@@ -19840,7 +21189,11 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
       + '<button type="button" id="nextSchedSwitch" class="next-switch" role="switch" aria-checked="true" onclick="toggleScheduler(this)" title="暂停或恢复后台调度器"><span class="next-switch-knob"></span></button></div>';
     schedSection.appendChild(schedHead);
     schedSection.appendChild(sched);
-    tasksPage.insertBefore(schedSection, tasksPage.firstChild);
+    if(typeof tasksPage.insertBefore === 'function'){
+      tasksPage.insertBefore(schedSection, tasksPage.firstChild);
+    }else{
+      tasksPage.appendChild(schedSection);
+    }
   }
 
   /* 旧页签的 switchMainTab 是唯一入口：包一层，让新导航始终跟着真实页面走。 */

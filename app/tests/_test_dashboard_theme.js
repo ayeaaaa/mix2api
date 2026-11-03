@@ -197,7 +197,7 @@ assert.strictEqual(inside.el('themeDropdown').classList.contains('open'), true,
   '点菜单自己身上不该收起菜单');
 
 
-// 风格维度：五套预设均应可选择、持久化，且不影响旧的明暗偏好。
+// 风格维度：三套预设均应可选择、持久化，且不影响旧的明暗偏好。
 for (const style of ['claude','material','miuix']) {
   const t = makeHarness({stored:'light'});
   t.win.selectStyle(style, evt());
@@ -209,6 +209,8 @@ for (const style of ['claude','material','miuix']) {
 }
 const styleDefault = makeHarness({stored:'light'});
 assert.strictEqual(styleDefault.documentElement.getAttribute('data-theme-style'), 'claude', '缺少 style 偏好时默认 Claude');
+const styleExisting = makeHarness({stored:'light', styleStored:'claude'});
+assert.strictEqual(styleExisting.documentElement.getAttribute('data-theme-style'), 'claude', '已有主题偏好应得到保留');
 
 console.log('dashboard theme assertions passed '
   + `(${mustBeGlobal.length} exported handlers, ${handlers.size} inline handlers swept)`);

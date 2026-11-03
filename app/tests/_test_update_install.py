@@ -84,12 +84,12 @@ class VersionAndPathTests(unittest.TestCase):
     def test_checksum_must_name_the_expected_asset(self):
         digest = "a" * 64
         self.assertEqual(wb_systemd_updater._expected_hash(
-            (digest + "  mix2api-1.7.13-deploy.zip\n").encode("ascii"),
-            "mix2api-1.7.13-deploy.zip"), digest)
+            (digest + "  workbuddy2api-hub-v1.7.13.zip\n").encode("ascii"),
+            "workbuddy2api-hub-v1.7.13.zip"), digest)
         with self.assertRaises(wb_systemd_updater.UpdateError):
             wb_systemd_updater._expected_hash(
                 (digest + "  another.zip\n").encode("ascii"),
-                "mix2api-1.7.13-deploy.zip")
+                "workbuddy2api-hub-v1.7.13.zip")
 
 
 class PackageManifestTests(unittest.TestCase):

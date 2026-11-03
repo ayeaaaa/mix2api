@@ -22,7 +22,7 @@ import time
 import urllib.request
 import zipfile
 
-REPO_DEFAULT = "ayeaaaa/mix2api"
+REPO_DEFAULT = "ardeyouxipianyi/workbuddy2api-hub"
 UPDATES_DIR = "updates"
 STATUS_NAME = "status.json"
 MANIFEST_NAME = "release-manifest.json"
@@ -120,7 +120,7 @@ def status():
 
 def asset_urls(repo, tag, version):
     """(zip_url, sha_url, zip_name) for one stable release."""
-    name = "mix2api-%s-deploy.zip" % version
+    name = "workbuddy2api-hub-v%s.zip" % version
     base = "https://github.com/%s/releases/download/%s" % (repo, tag)
     return base + "/" + name, base + "/SHA256SUMS", name
 
@@ -223,7 +223,7 @@ def validate_stage(stage, version, root_name):
     proxy = os.path.join(stage, root_name, "wb_proxy.py")
     with open(proxy, encoding="utf-8") as fh:
         text = fh.read()
-    match = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^"]+)"', text)
+    match = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
     if not match or match.group(1) != version:
         raise UpdateError("更新包里的 wb_proxy.py 版本不一致")
     if not os.path.isfile(os.path.join(stage, root_name, HELPER_NAME)):
@@ -382,7 +382,7 @@ def _served_version(path):
             text = fh.read()
     except OSError:
         return ""
-    match = re.search(r'server_version\s*=\s*"(?:wb-proxy|mix2api)/([^"]+)"', text)
+    match = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
     return match.group(1) if match else ""
 
 
@@ -641,7 +641,7 @@ def wait_health(port, timeout=45, expect_version=None):
     A 200 alone does not prove the new code is running: a supervisor that
     restarts the gateway quickly can answer the probe with the *old* process
     before the files are replaced. The version comes from the `Server` header
-    (`mix2api/1.2.0 Python/3.11.17`); the /health body carries no version.
+    (`wb-proxy/1.7.24 Python/3.11.17`); the /health body carries no version.
     """
     want = str(expect_version or "").strip()
     deadline = time.time() + timeout
@@ -661,12 +661,12 @@ def wait_health(port, timeout=45, expect_version=None):
 
 
 def _header_version(headers):
-    """`1.2.0` out of a `Server: mix2api/1.2.0 Python/3.11` header."""
+    """`1.7.24` out of a `Server: wb-proxy/1.7.24 Python/3.11` header."""
     try:
         server = str(headers.get("Server") or "")
     except AttributeError:
         return ""
-    match = re.search(r"(?:wb-proxy|mix2api)/([0-9][^\s]*)", server)
+    match = re.search(r"wb-proxy/([0-9][^\s]*)", server)
     return match.group(1) if match else ""
 
 
@@ -696,7 +696,7 @@ def _spawn_helper(cmd, version, failure):
         raise UpdateError("%s: %s" % (failure, exc))
 
 
-def request_install(tag, current_version, port=58675, lan=False, repo=None):
+def request_install(tag, current_version, port=8788, lan=False, repo=None):
     if not available():
         raise UpdateError("当前部署不支持便携版一键更新")
     target = _version_tuple(tag)
@@ -719,7 +719,7 @@ def request_install(tag, current_version, port=58675, lan=False, repo=None):
     return {"state": "queued", "version": version, "message": "更新任务已排队"}
 
 
-def request_rollback(version, current_version, port=58675, lan=False):
+def request_rollback(version, current_version, port=8788, lan=False):
     """Queue a restore from a retained backup for the detached helper."""
     if not available():
         raise UpdateError("当前部署不支持便携版一键回退")

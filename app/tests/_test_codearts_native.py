@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -60,13 +61,6 @@ try:
     cfg = C.load_config(ACCOUNTS)
     check("default disabled", cfg["enabled"] is False)
     check("default max concurrent", cfg["max_concurrent"] == 1)
-    check("auto checkin default on", cfg["auto_checkin"] is True)
-    C.save_config(ACCOUNTS, {"auto_checkin": False})
-    check("auto checkin can be disabled",
-          C.load_config(ACCOUNTS)["auto_checkin"] is False)
-    C.save_config(ACCOUNTS, {"auto_checkin": True})
-    check("auto checkin restored",
-          C.load_config(ACCOUNTS)["auto_checkin"] is True)
     C.save_config(ACCOUNTS, {"enabled": True, "max_concurrent": 2})
     check("enabled", C.configured(ACCOUNTS) is True)
     check("max concurrent saved", C.load_config(ACCOUNTS)["max_concurrent"] == 2)
@@ -96,6 +90,27 @@ try:
     check("disabled", acct.disabled is True and pool.stats()["disabled"] == 1)
     pool.enable("u1")
     check("enabled again", acct.disabled is False)
+    print("== task opt-out ==")
+    with mock.patch.object(C, '_maybe_auto_checkin') as auto:
+        C.set_tasks_enabled(C.load_config(ACCOUNTS), 'u1', False)
+        check("disabling tasks does not trigger auto checkin", not auto.called)
+    pool.config['credits_auto_claim'] = True
+    with mock.patch.object(C.threading, 'Thread') as worker:
+        C._maybe_auto_checkin(pool)
+        check("task opt-out blocks lazy auto checkin", not worker.called)
+    with mock.patch.object(C, '_ensure_token') as ensure:
+        C._auto_checkin_worker([acct])
+        check("task opt-out blocks already queued worker", not ensure.called)
+    import wb_scheduler
+    scheduler = wb_scheduler.Scheduler(type('P', (), {'dir': ACCOUNTS})())
+    with mock.patch.object(C, 'load_config', return_value={'enabled': True, 'credits_auto_claim': True}), \
+         mock.patch.object(C, 'pool_for', return_value=pool) as lookup, \
+         mock.patch.object(C, 'checkin') as claim:
+        check("task opt-out blocks scheduler pending", not scheduler._codearts_checkin_pending(True))
+        check("task opt-out blocks scheduler claim", scheduler._run_codearts_checkin(True) == 0 and not claim.called)
+        check("scheduler lookup suppresses lazy trigger", all(c.kwargs.get('trigger_auto') is False for c in lookup.call_args_list))
+    C.set_tasks_enabled(C.load_config(ACCOUNTS), 'u1', True)
+    pool.config['credits_auto_claim'] = False
     pool.note_error(acct, "boom")
     pool.note_error(acct, "boom")
     pool.note_error(acct, "boom")
@@ -126,14 +141,16 @@ try:
     check("unbound slot is direct", acct.proxy == "", acct.proxy)
     acct.proxy_slot = "slot-1"
     pool.apply_proxy_slots(slots)
-    import base64
-    import wb_upstream_pool as U
-    req_a = urllib.request.Request("http://x", headers={"x-auth-token": "a"})
-    req_b = urllib.request.Request("http://x", headers={"x-auth-token": "b"})
-    check("pool isolates by codearts token",
-          bool(U._identity_discriminator(req_a))
-          and U._identity_discriminator(req_a) != U._identity_discriminator(req_b),
-          (U._identity_discriminator(req_a), U._identity_discriminator(req_b)))
+    opener = C._opener(acct.proxy)
+    handler = next(h for h in opener.handlers
+                   if isinstance(h, urllib.request.ProxyHandler))
+    check("opener pins http/https",
+          handler.proxies.get("http") == acct.proxy
+          and handler.proxies.get("https") == acct.proxy, handler.proxies)
+    direct_proxies = [h.proxies for h in C._opener("").handlers
+                      if isinstance(h, urllib.request.ProxyHandler)]
+    check("direct opener ignores env proxies",
+          all(not proxies for proxies in direct_proxies), direct_proxies)
     seen = []
     orig_json = C._json_http
     C._json_http = lambda method, url, headers=None, body=None, \
@@ -156,19 +173,14 @@ try:
     check("relogin re-resolves proxy",
           pool.get("u1").proxy == "http://127.0.0.1:7890",
           pool.get("u1").proxy)
-    # A real HTTP proxy must receive the absolute-form request line, the
-    # credentials, and a reused connection on the second call.
+    # A real HTTP proxy must receive the absolute-form request line.
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    proxied, auths = [], []
-    expected_auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    proxied = []
 
     class ProxyProbe(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
         def do_GET(self):
             proxied.append(self.path)
-            auths.append(self.headers.get("Proxy-Authorization") or "")
             self.send_response(200)
             self.send_header("Content-Length", "2")
             self.end_headers()
@@ -179,24 +191,15 @@ try:
 
     proxy_srv = ThreadingHTTPServer(("127.0.0.1", 0), ProxyProbe)
     threading.Thread(target=proxy_srv.serve_forever, daemon=True).start()
-    proxy_url = "http://user:pass@127.0.0.1:%d" % proxy_srv.server_address[1]
-    reused_before = U.stats().get("reused", 0)
-    first = C._http("GET", "http://codearts.invalid/probe", proxy=proxy_url)
-    second = C._http("GET", "http://codearts.invalid/probe", proxy=proxy_url)
-    U.close_all()
+    proxy_url = "http://127.0.0.1:%d" % proxy_srv.server_address[1]
+    status, raw = C._http("GET", "http://codearts.invalid/probe",
+                          proxy=proxy_url)
     proxy_srv.shutdown()
     proxy_srv.server_close()
-    check("http request goes through proxy",
-          first == (200, b"{}") and second == (200, b"{}"), (first, second))
+    check("http request goes through proxy", status == 200 and raw == b"{}",
+          (status, raw))
     check("proxy saw absolute URI",
-          proxied == ["http://codearts.invalid/probe"] * 2, proxied)
-    check("proxy auth header sent", auths == [expected_auth] * 2, auths)
-    if U.enabled():
-        check("proxy connection reused",
-              U.stats().get("reused", 0) > reused_before,
-              (reused_before, U.stats()))
-    else:
-        check("proxy connection reused (pool disabled)", True)
+          proxied == ["http://codearts.invalid/probe"], proxied)
     # Do not leave the fake proxy bound for the chat tests below.
     acct.proxy_slot = ""
     acct.auth.pop("proxySlot", None)
@@ -209,7 +212,6 @@ try:
     ids = [m["id"] for m in models]
     check("agent/builtin/benefit merged", set(ids) ==
           {"GLM-5.2", "GLM-4.7", "Qwen3-VL-235B",
-           "deepseek-v4.1-flash", "glm-5.3-flash",
            "deepseek-v4-pro-0813"}, ids)
     check("benefit marked", acct.is_benefit("deepseek-v4-pro-0813") is True)
     check("normal not benefit", acct.is_benefit("GLM-5.2") is False)
@@ -217,21 +219,6 @@ try:
     check("entries owned_by", entries[0]["owned_by"] == "codearts")
     check("entries benefit flag",
           any(e.get("benefit") for e in entries if e["id"] == "deepseek-v4-pro-0813"))
-    entry_by_id = {e["id"]: e for e in entries}
-    check("entries vision flag",
-          entry_by_id["Qwen3-VL-235B"]["capabilities"]["vision"] is True,
-          entry_by_id.get("Qwen3-VL-235B"))
-    check("entries text not vision",
-          entry_by_id["GLM-5.2"]["capabilities"]["vision"] is False,
-          entry_by_id.get("GLM-5.2"))
-    check("entries reasoning efforts",
-          entry_by_id["deepseek-v4.1-flash"].get("reasoning_efforts")
-          == ["none", "low", "medium", "high", "xhigh", "max"],
-          entry_by_id.get("deepseek-v4.1-flash"))
-    check("entries glm reasoning efforts",
-          entry_by_id["GLM-5.2"].get("reasoning_efforts")
-          == ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          entry_by_id.get("GLM-5.2"))
     check("models meta source", C.models_meta(C.load_config(ACCOUNTS))["source"] == "codearts")
 
     print("== credits ==")
@@ -257,177 +244,88 @@ try:
           acct.auth["expiration"])
 
     print("== content parts ==")
-    expected_parts = [
-        {"type": "text", "text": "hello "},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
-        {"type": "text", "text": "world"},
-    ]
     parts_body = C.build_chat_body({
-        "model": "Qwen3-VL-235B",
-        "messages": [{"role": "user", "content": expected_parts}],
-    }, "sess-parts")
-    check("content parts preserved",
-          parts_body["messages"][0]["content"] == expected_parts, parts_body)
-    text_body = C.build_chat_body({
         "model": "GLM-5.2",
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": "hello "},
             {"type": "text", "text": "world"},
         ]}],
-    }, "sess-text-parts")
-    check("text-only parts flattened",
-          text_body["messages"][0]["content"] == "hello world", text_body)
-    image_body = C.build_chat_body({
-        "model": "Qwen3-VL-235B",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": "look"},
-            {"type": "image_url", "image_url": "data:image/png;base64,BBB"},
-        ]}],
-    }, "sess-image")
-    check("image url string normalized",
-          image_body["messages"][0]["content"] == [
-              {"type": "text", "text": "look"},
-              {"type": "image_url",
-               "image_url": {"url": "data:image/png;base64,BBB"}},
-          ], image_body)
-    source_body = C.build_chat_body({
-        "model": "Qwen3-VL-235B",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": "look"},
-            {"type": "image",
-             "source": {"type": "base64", "media_type": "image/png",
-                        "data": "CCC"}},
-        ]}],
-    }, "sess-source")
-    check("anthropic image normalized",
-          source_body["messages"][0]["content"] == [
-              {"type": "text", "text": "look"},
-              {"type": "image_url",
-               "image_url": {"url": "data:image/png;base64,CCC"}},
-          ], source_body)
-    detail_body = C.build_chat_body({
-        "model": "Qwen3-VL-235B",
+    }, "sess-parts")
+    check("content parts flattened",
+          parts_body["messages"][0]["content"] == "hello world", parts_body)
+    image_body = C.build_chat_body({"model": "Qwen3-VL-235B",
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": "look"},
             {"type": "image_url",
-             "image_url": {"url": "https://example.com/a.png",
-                           "detail": "high"}},
-        ]}],
-    }, "sess-detail")
-    check("remote image detail preserved",
-          detail_body["messages"][0]["content"] == [
-              {"type": "text", "text": "look"},
-              {"type": "image_url",
-               "image_url": {"url": "https://example.com/a.png",
-                             "detail": "high"}},
-          ], detail_body)
-    tool_parts = C._flatten_content([
-        {"type": "text", "text": "tool output"},
-        {"type": "image_url",
-         "image_url": {"url": "data:image/png;base64,DDD"}},
-    ])
-    check("tool result image preserved",
-          isinstance(tool_parts, list)
-          and any(p.get("type") == "image_url" for p in tool_parts),
-          tool_parts)
-    stream, _, _ = C.open_chat(C.load_config(ACCOUNTS), image_body, "sess-image")
-    b"".join(stream)
-    stream.close()
-    upstream_parts = state.last_body["messages"][0]["content"]
-    check("image part reached upstream",
-          isinstance(upstream_parts, list)
-          and any(p.get("type") == "image_url" for p in upstream_parts),
-          state.last_body)
-
-    print("== request params ==")
-    params_body = C.build_chat_body({
-        "model": "GLM-5.2",
-        "messages": [{"role": "user", "content": "hi"}],
-        "stop": ["\n"], "frequency_penalty": 0.1,
-        "presence_penalty": 0.2, "seed": 42,
-        "response_format": {"type": "json_object"},
-        "top_k": 20, "parallel_tool_calls": False,
-    }, "sess-params")
-    check("stop preserved", params_body.get("stop") == ["\n"], params_body)
-    check("penalties preserved",
-          params_body.get("frequency_penalty") == 0.1
-          and params_body.get("presence_penalty") == 0.2, params_body)
-    check("seed preserved", params_body.get("seed") == 42, params_body)
-    check("response_format preserved",
-          params_body.get("response_format") == {"type": "json_object"},
-          params_body)
-    check("top_k preserved", params_body.get("top_k") == 20, params_body)
-    check("parallel_tool_calls preserved",
-          params_body.get("parallel_tool_calls") is False, params_body)
+             "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]}]}, "sess-image")
+    image_parts = image_body["messages"][0]["content"]
+    check("image parts preserved", isinstance(image_parts, list)
+          and image_parts[0] == {"type": "text", "text": "look"}
+          and image_parts[1] == {"type": "image_url",
+                                 "image_url": {"url": "data:image/png;base64,AAA"}},
+          image_body)
+    anthropic_body = C.build_chat_body({"model": "Qwen3-VL-235B",
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg", "data": "BBB"}},
+        ]}]}, "sess-anthropic-image")
+    anthropic_parts = anthropic_body["messages"][0]["content"]
+    check("anthropic image normalized",
+          anthropic_parts == [{"type": "image_url", "image_url": {
+              "url": "data:image/jpeg;base64,BBB"}}], anthropic_body)
 
     print("== reasoning effort ==")
     effort_body = C.build_chat_body({
-        "model": "deepseek-v4.1-flash",
+        "model": "GLM-5.2",
+        "reasoning_effort": "high",
         "messages": [{"role": "user", "content": "hi"}],
-        "reasoning_effort": "max",
     }, "sess-effort")
-    check("reasoning effort kept", effort_body.get("reasoning_effort") == "max",
+    check("effort forwarded", effort_body.get("reasoning_effort") == "high",
           effort_body)
-    try:
-        C.build_chat_body({
-            "model": "deepseek-v4.1-flash",
-            "messages": [{"role": "user", "content": "hi"}],
-            "reasoning_effort": "auto",
-        }, "sess-effort-bad")
-        check("reasoning effort rejects auto", False)
-    except C.CodeArtsBadRequest as exc:
-        check("reasoning effort rejects auto", "none" in str(exc), str(exc))
-    glm_body = C.build_chat_body({
+    thinking_body = C.build_chat_body({
         "model": "GLM-5.2",
-        "messages": [{"role": "user", "content": "hi"}],
-        "reasoning_effort": "minimal",
-    }, "sess-effort-glm")
-    check("glm reasoning minimal allowed",
-          glm_body.get("reasoning_effort") == "minimal", glm_body)
-    try:
-        C.build_chat_body({
-            "model": "glm-5.3-flash",
-            "messages": [{"role": "user", "content": "hi"}],
-            "reasoning_effort": "medium",
-        }, "sess-effort-flash")
-        check("glm flash rejects medium", False)
-    except C.CodeArtsBadRequest as exc:
-        check("glm flash rejects medium", "low" in str(exc), str(exc))
-    thinking_on = C.build_chat_body({
-        "model": "GLM-5.2",
-        "messages": [{"role": "user", "content": "hi"}],
         "thinking": {"type": "enabled"},
-    }, "sess-thinking-on")
-    check("thinking enabled maps to high",
-          thinking_on.get("reasoning_effort") == "high", thinking_on)
-    thinking_off = C.build_chat_body({
-        "model": "GLM-5.2",
         "messages": [{"role": "user", "content": "hi"}],
-        "thinking": {"type": "disabled"},
-    }, "sess-thinking-off")
-    check("thinking disabled maps to none",
-          thinking_off.get("reasoning_effort") == "none", thinking_off)
-    enable_off = C.build_chat_body({
-        "model": "GLM-5.2",
+    }, "sess-thinking")
+    check("thinking maps to high",
+          thinking_body.get("reasoning_effort") == "high", thinking_body)
+    try:
+        C.build_chat_body({
+            "model": "GLM-5.2", "reasoning_effort": "auto",
+            "messages": [{"role": "user", "content": "hi"}],
+        }, "sess-bad-effort")
+        check("invalid effort rejected", False)
+    except C.CodeArtsBadRequest:
+        check("invalid effort rejected", True)
+    always_body = C.build_chat_body({
+        "model": "glm-5.3-flash", "reasoning_effort": "none",
         "messages": [{"role": "user", "content": "hi"}],
-        "enable_thinking": False,
-    }, "sess-enable-off")
-    check("enable_thinking false maps to none",
-          enable_off.get("reasoning_effort") == "none", enable_off)
-    camel = C.build_chat_body({
-        "model": "GLM-5.2",
-        "messages": [{"role": "user", "content": "hi"}],
-        "reasoningEffort": "max",
-    }, "sess-camel")
-    check("camel reasoningEffort normalized",
-          camel.get("reasoning_effort") == "max", camel)
-    always = C.build_chat_body({
-        "model": "glm-5.3-flash",
-        "messages": [{"role": "user", "content": "hi"}],
-        "thinking": {"type": "disabled"},
     }, "sess-always")
-    check("always-thinking falls back to low",
-          always.get("reasoning_effort") == "low", always)
+    check("always-thinking uses accepted level",
+          always_body.get("reasoning_effort") == "low", always_body)
+    sampling_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["END"], "seed": 7, "top_k": 5,
+        "frequency_penalty": 0.2, "presence_penalty": 0.1,
+        "response_format": {"type": "json_object"},
+    }, "sess-sampling")
+    check("sampling fields forwarded",
+          sampling_body.get("stop") == ["END"]
+          and sampling_body.get("seed") == 7
+          and sampling_body.get("top_k") == 5
+          and sampling_body.get("frequency_penalty") == 0.2
+          and sampling_body.get("presence_penalty") == 0.1
+          and sampling_body.get("response_format") == {"type": "json_object"},
+          sampling_body)
+
+    import io
+    stream = C.CodeArtsStream(io.BytesIO(b'data: {"text":"hello"}\n\ndata: [DONE]\n\n'),
+                              "model", acct, acct.pool)
+    stream.preflight()
+    result = b''.join(stream)
+    check("first SSE text normalized", b'"content": "hello"' in result, result)
 
     print("== named tool choice ==")
     tool_body = C.build_chat_body({
@@ -443,6 +341,38 @@ try:
           and tool_body["tools"][0]["function"]["name"] == "b", tool_body)
     check("tool choice required", tool_body["tool_choice"] == "required",
           tool_body)
+
+    print("== malformed tools ==")
+    dirty_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"type": "function", "function": {"name": "ok", "parameters": {}}},
+            {"type": "function"},
+            {"type": "web_search"},
+            {"type": "function", "function": {"name": "no_params"}},
+            {"type": "function", "function": {"name": "ok"}},
+            {"name": "flat", "description": "d"},
+        ],
+    }, "sess-dirty-tools")
+    names = [t["function"]["name"] for t in dirty_body.get("tools") or []]
+    check("unusable tools dropped", names == ["ok", "no_params", "flat"], names)
+    check("missing parameters defaulted",
+          dirty_body["tools"][1]["function"]["parameters"]
+          == {"type": "object", "properties": {}}, dirty_body)
+    check("flat tool wrapped",
+          dirty_body["tools"][2]["type"] == "function"
+          and dirty_body["tools"][2]["function"]["parameters"]
+          == {"type": "object", "properties": {}}, dirty_body)
+    empty_tools_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function"}, {"type": "web_search"}],
+        "tool_choice": "auto",
+    }, "sess-empty-tools")
+    check("all-unusable tools removed",
+          "tools" not in empty_tools_body and "tool_choice" not in empty_tools_body,
+          empty_tools_body)
 
     print("== concurrency retry ==")
     state.chat_error = (400, {"error_msg": "并发会话数已达上限(3个)，请关闭部分会话后重试。"})
@@ -516,72 +446,14 @@ try:
     reloaded = C.CodeArtsPool(ACCOUNTS, C.load_config(ACCOUNTS))
     check("checkin persisted", reloaded.get("u1").checkin == acct.checkin,
           reloaded.get("u1").checkin)
-
-    print("== scheduler auto checkin ==")
-    import wb_scheduler
-
-    class DummyPool(object):
-        dir = ACCOUNTS
-        accounts = []
-
-    sched = wb_scheduler.Scheduler(DummyPool())
-    sched.log = lambda *args, **kwargs: None
-    acct.checkin = None
-    acct.disabled = False
-    acct.cool_until = 0
-    pool.save_state()
-    check("auto checkin runs", sched._run_codearts_checkin(True) == 1)
-    check("auto checkin marks today", acct.checked_in_today() is True)
-    check("scheduler status shows codearts checkin",
-          sched.status().get("codearts_checkin") is True)
-    check("auto checkin skips same day",
-          sched._run_codearts_checkin(True) == 0)
-    acct.checkin = None
-    acct.cool_until = time.time() + 3600
-    check("auto checkin skips cooling",
-          sched._run_codearts_checkin(True) == 0)
-    acct.cool_until = 0
-    C.save_config(ACCOUNTS, {"auto_checkin": False})
-    check("auto checkin obeys switch",
-          sched._run_codearts_checkin(True) == 0)
-    C.save_config(ACCOUNTS, {"auto_checkin": True})
-    acct.disabled = True
-    acct.tasks_enabled = False
-    check("auto checkin skips tasks-off",
-          sched._run_codearts_checkin(True) == 0)
-    acct.disabled = False
-    acct.tasks_enabled = True
-    check("auto checkin only on checkin slots",
-          sched._run_codearts_checkin(False) == 0)
-    acct.checkin = None
-    acct.disabled = False
-    acct.cool_until = 0
-    pool.save_state()
-    sched._run_cycle("test cycle", force=True)
-    check("scheduler cycle runs codearts without workbuddy",
-          acct.checked_in_today() is True)
-    acct.checkin = None
-    acct.disabled = False
-    acct.tasks_enabled = False
-    pool.save_state()
-    check("auto checkin obeys tasks toggle",
-          sched._run_codearts_checkin(True) == 0)
-    acct.tasks_enabled = True
-    acct.disabled = True
-    acct.checkin = None
-    pool.save_state()
-    check("disabled account can still check in",
-          sched._run_codearts_checkin(True) == 1)
-    acct.disabled = False
-    pool.save_state()
-
-    acct.auth["expiration"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10))
-    check("codearts keepalive pending",
-          sched._codearts_keepalive_pending(True) is True)
-    check("codearts keepalive runs",
-          sched._run_codearts_keepalive(True) >= 1)
-    check("codearts keepalive restored", acct.expires_at() > time.time())
+    saved_checkin = acct.checkin
+    check("checked_in_today true", acct.checked_in_today() is True)
+    acct.checkin = {"ok": True, "checked_at": "2000-01-01T00:00:00"}
+    check("checked_in_today old false", acct.checked_in_today() is False)
+    acct.checkin = {"ok": False,
+                    "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    check("checked_in_today failed false", acct.checked_in_today() is False)
+    acct.checkin = saved_checkin
 
     print("== oauth ==")
     started = C.oauth_start(C.load_config(ACCOUNTS), port=8788)

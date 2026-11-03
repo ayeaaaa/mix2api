@@ -280,7 +280,7 @@ class RollbackTests(unittest.TestCase):
 
     def test_rollback_cleans_the_download_folder_and_prunes(self):
         make_backup(self.root, "3.0.0", "2.0.0")
-        write(os.path.join(self.root, "updates", "1.0.0", "mix2api-1.0.0-deploy.zip"),
+        write(os.path.join(self.root, "updates", "1.0.0", "workbuddy2api-hub-v1.0.0.zip"),
               "zip")
         self._run(keep_backups=1)
         self.assertFalse(os.path.isdir(os.path.join(self.root, "updates", "1.0.0")))

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """华为云 CodeArts（盘古助手/码道）原生客户端与账号池。
 
-这是单进程版本：mix2api 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
+这是单进程版本：wb-hub 直接完成 OAuth 登录、token 续期、账号轮转、模型发现、
 聊天 SSE 与签到，不再依赖独立的 codearts2api 服务。
 
 协议来源：codearts2api 的 Go 实现与 `docs/reverse-engineering.md`。关键点：
@@ -28,7 +28,6 @@ import urllib.parse
 import urllib.request
 
 import wb_settings
-import wb_activity
 import wb_codearts_crypto as crypto
 
 # ---------------------------------------------------------------------------
@@ -63,6 +62,13 @@ EP_CREDIT_DELIVERY = "/v1/ops/delivery"
 EP_CREDIT_CLAIM = "/v1/ops/claim"
 EP_CREDIT_CONFIRM = "/v1/ops/confirm"
 EP_PACKAGE_INFO = "/v1/statistics/plugin"
+
+#: 积分活动里「签到」的判据。控制台上的「每日签到赢100积分」是一条
+#: `USER_LOGIN` / `triggerEvent=user.login` 的 MANUAL_CLAIM 活动，
+#: 但 campaignId 每换季都会变（2026-10 是 34），所以按类型挑，不按 id 硬编码。
+#: 1 / 4 是历史 id（4 是「新用户注册送 4000 积分」），留着兼容老账号。
+CHECKIN_CAMPAIGN_IDS = (1, 4)
+CHECKIN_CAMPAIGN_TYPES = ("USER_LOGIN",)
 
 HEADER_MAAS_TYPE = "maas_type"
 MAAS_BENEFIT = "benefit"
@@ -101,7 +107,6 @@ DEFAULTS = {
     "max_concurrent": 1,
     "benefit_auto_claim": True,
     "credits_auto_claim": True,
-    "auto_checkin": True,
 }
 
 #: Verified with the upstream validation error: reasoning_effort must be one of
@@ -218,38 +223,51 @@ def load_config(accounts_dir):
             raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20),
         "benefit_auto_claim": raw.get("benefit_auto_claim", True) is not False,
         "credits_auto_claim": raw.get("credits_auto_claim", True) is not False,
-        "auto_checkin": raw.get("auto_checkin", True) is not False,
         "accounts_dir": accounts_dir,
     }
 
 
 def save_config(accounts_dir, patch):
-    """保存配置；返回完整配置。非法值抛 ValueError。"""
+    """保存配置；返回完整配置。非法值抛 ValueError。
+
+    整段读-改-写必须在 `_LOCK` 内完成。只靠 `wb_settings.save()` 内部那把锁
+    是不够的——它只保护「写」这一步，`load_config()` 读到的旧值到
+    `wb_settings.save()` 落盘之间有一个窗口。面板连续点两次保存、或者两个
+    浏览器同时保存时，后一次会用「读到旧值 + 自己那一项」覆盖掉前一次刚写
+    进去的另一项，且双方都拿到 200，没有任何报错。
+
+    锁序：这里持有 `_LOCK` 时会调用 `wb_settings.load/save`，它们各自持
+    `wb_settings._lock`。反向（`wb_settings` 持锁时调 `wb_codearts`）不存在，
+    见 `wb_settings.set_codearts_config()` —— 它只做转发，不持锁。所以
+    `_LOCK -> wb_settings._lock` 是唯一的获取顺序，不会死锁。
+    """
     if not isinstance(patch, dict):
         raise ValueError("codearts settings must be an object")
-    current = load_config(accounts_dir)
-    merged = dict(current)
-    for key in DEFAULTS:
-        if key in patch:
-            merged[key] = patch[key]
-    merged["enabled"] = merged.get("enabled") is True
-    merged["timeout_seconds"] = _positive_float(
-        merged.get("timeout_seconds"), DEFAULTS["timeout_seconds"], 1.0, 600.0)
-    merged["stream_timeout_seconds"] = _positive_float(
-        merged.get("stream_timeout_seconds"),
-        DEFAULTS["stream_timeout_seconds"], 1.0, 3600.0)
-    merged["models_ttl_seconds"] = _positive_float(
-        merged.get("models_ttl_seconds"), DEFAULTS["models_ttl_seconds"],
-        60.0, 86400.0)
-    merged["max_concurrent"] = _positive_int(
-        merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20)
-    merged["benefit_auto_claim"] = merged.get("benefit_auto_claim", True) is not False
-    merged["credits_auto_claim"] = merged.get("credits_auto_claim", True) is not False
-    merged["auto_checkin"] = merged.get("auto_checkin", True) is not False
-    data = wb_settings.load(accounts_dir)
-    data["codearts"] = {k: merged[k] for k in DEFAULTS}
-    wb_settings.save(accounts_dir, data)
-    return load_config(accounts_dir)
+    with _LOCK:
+        current = load_config(accounts_dir)
+        merged = dict(current)
+        for key in DEFAULTS:
+            if key in patch:
+                merged[key] = patch[key]
+        merged["enabled"] = merged.get("enabled") is True
+        merged["timeout_seconds"] = _positive_float(
+            merged.get("timeout_seconds"), DEFAULTS["timeout_seconds"], 1.0, 600.0)
+        merged["stream_timeout_seconds"] = _positive_float(
+            merged.get("stream_timeout_seconds"),
+            DEFAULTS["stream_timeout_seconds"], 1.0, 3600.0)
+        merged["models_ttl_seconds"] = _positive_float(
+            merged.get("models_ttl_seconds"), DEFAULTS["models_ttl_seconds"],
+            60.0, 86400.0)
+        merged["max_concurrent"] = _positive_int(
+            merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20)
+        merged["benefit_auto_claim"] = merged.get("benefit_auto_claim", True) is not False
+        merged["credits_auto_claim"] = merged.get("credits_auto_claim", True) is not False
+        # 重新读 settings：`load_config` 只返回收敛后的 codearts 段，写回去要
+        # 保留其它段（api_keys / realm / 媒体配置…），所以必须拿整份再合并。
+        data = wb_settings.load(accounts_dir)
+        data["codearts"] = {k: merged[k] for k in DEFAULTS}
+        wb_settings.save(accounts_dir, data)
+        return load_config(accounts_dir)
 
 
 def configured(accounts_dir):
@@ -358,7 +376,7 @@ def _fmt_duration(seconds):
 # ---------------------------------------------------------------------------
 
 class CodeArtsAccount(object):
-    """一个华为云 CodeArts 账号；也是 mix2api 回程处理器需要的账号表面。"""
+    """一个华为云 CodeArts 账号；也是 wb-hub 回程处理器需要的账号表面。"""
 
     uid = ""
     realm = "codearts"
@@ -376,9 +394,6 @@ class CodeArtsAccount(object):
         # CodeArtsPool.apply_proxy_slots() derives from the current settings.
         self.proxy_slot = str(auth.get("proxySlot") or "").strip()
         self.proxy = ""
-        # Panel-side metadata; state.json is the source of truth for both.
-        self.note = ""
-        self.tasks_enabled = True
         self.disabled = False
         self.disabled_reason = ""
         self.cool_until = 0.0
@@ -391,6 +406,8 @@ class CodeArtsAccount(object):
         self.model_benefit = {}
         self.models_fetched_at = 0.0
         self.checkin = None
+        self.note = ""
+        self.tasks_enabled = True
         self.info = None
         self.info_fetched_at = 0.0
         self._lock = threading.RLock()
@@ -497,12 +514,21 @@ class CodeArtsAccount(object):
             "tasks_enabled": bool(self.tasks_enabled),
         }
 
+    def healthy(self, now=None):
+        """能否被选中。
+
+        故意不检查 token 是否过期：过期账号仍要被选中，交给 `_ensure_token`
+        刷新；把过期号直接过滤掉会让整池过期时一个号都选不到、也无法续期。
+        """
+        now = now or time.time()
+        return (not self.disabled) and now >= self.cool_until
+
     def checked_in_today(self, now=None):
         """Whether this account already completed a successful check-in today.
 
-        A failed attempt (``ok`` false) does not count, so the 21:00 slot can
-        retry after a 09:00 failure. The timestamp is local time, matching the
-        scheduler's clock.
+        A failed attempt (``ok`` false) does not count, so a later slot can
+        retry after an earlier failure. The timestamp is local time, matching
+        the scheduler's clock.
         """
         entry = self.checkin if isinstance(self.checkin, dict) else {}
         if not entry.get("ok"):
@@ -513,15 +539,6 @@ class CodeArtsAccount(object):
         today = time.strftime("%Y-%m-%d",
                               time.localtime(now if now is not None else time.time()))
         return text[:10] == today
-
-    def healthy(self, now=None):
-        """能否被选中。
-
-        故意不检查 token 是否过期：过期账号仍要被选中，交给 `_ensure_token`
-        刷新；把过期号直接过滤掉会让整池过期时一个号都选不到、也无法续期。
-        """
-        now = now or time.time()
-        return (not self.disabled) and now >= self.cool_until
 
     def has_model(self, model):
         mid = str(model or "").lower()
@@ -758,9 +775,7 @@ class CodeArtsPool(object):
                         and acct.active_concurrent < acct.max_concurrent:
                     return acct
         candidates = [a for a in accounts
-                      if a.uid not in exclude
-                      and (allowed_accounts is None or a.uid in allowed_accounts)
-                      and a.healthy(now)
+                      if a.uid not in exclude and (allowed_accounts is None or a.uid in allowed_accounts) and a.healthy(now)
                       and a.active_concurrent < a.max_concurrent]
         capable = [a for a in candidates if a.has_model(model)]
         pool = capable or candidates
@@ -819,7 +834,7 @@ _POOLS = {}
 _POOLS_LOCK = threading.Lock()
 
 
-def pool_for(accounts_dir):
+def pool_for(accounts_dir, trigger_auto=True):
     """按 accounts_dir 取单例池；配置变化时刷新池配置。"""
     key = os.path.abspath(str(accounts_dir or "."))
     cfg = load_config(accounts_dir)
@@ -832,7 +847,10 @@ def pool_for(accounts_dir):
             pool.config = cfg
             for acct in pool.accounts:
                 acct.max_concurrent = cfg.get("max_concurrent", 1)
-        return pool
+    # 锁外触发：自动签到只做判断/记账，真正的领积分在后台线程里跑。
+    if trigger_auto:
+        _maybe_auto_checkin(pool)
+    return pool
 
 
 def invalidate_pool(accounts_dir=None):
@@ -847,16 +865,30 @@ def invalidate_pool(accounts_dir=None):
 # HTTP
 # ---------------------------------------------------------------------------
 
-def _urlopen(req, timeout=30.0, proxy=""):
-    """Send through the same keep-alive/proxy path as WorkBuddy accounts.
+_OPENER_CACHE = {}
+_OPENER_LOCK = threading.Lock()
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    wb_accounts.urlopen() is the single transport entry point: it uses
-    wb_upstream_pool (connection reuse, proxy auth, no_proxy, stale-connection
-    retry) and falls back to urllib for the cases the pool cannot replay.
-    Importing it lazily avoids a module cycle with wb_settings/wb_proxy.
+
+def _opener(proxy=""):
+    """Build (and cache) an opener pinned to one proxy slot.
+
+    Empty/blank means direct, and direct deliberately ignores the process
+    environment proxies: a CodeArts account that is not bound to a slot must
+    keep the pre-slot behaviour (no accidental HTTP_PROXY). One opener per
+    proxy URL keeps each account's traffic on its own exit IP.
     """
-    import wb_accounts
-    return wb_accounts.urlopen(req, timeout=timeout, proxy=proxy)
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return _DIRECT_OPENER
+    with _OPENER_LOCK:
+        opener = _OPENER_CACHE.get(proxy)
+        if opener is None:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+            )
+            _OPENER_CACHE[proxy] = opener
+        return opener
 
 
 def _error_text(raw):
@@ -880,7 +912,7 @@ def _http(method, url, headers=None, body=None, timeout=30.0, proxy=""):
     req = urllib.request.Request(url, data=body, headers=headers or {},
                                  method=method)
     try:
-        with _urlopen(req, timeout=timeout, proxy=proxy) as resp:
+        with _opener(proxy).open(req, timeout=timeout) as resp:
             return resp.status, resp.read(ERROR_BODY_MAX * 4)
     except urllib.error.HTTPError as exc:
         try:
@@ -1060,9 +1092,9 @@ def _canonical_model(acct, model):
 
 
 #: CodeArts models known to read images even when a discovery source omits
-#: `supports_images`. Deliberately CodeArts-specific: WorkBuddy marks several
-#: overlapping ids (GLM-5.2, kimi-k3, deepseek-v4.1-flash) as vision, but the
-#: CodeArts backend answers "The request model is not multimodal" for them.
+#: `supports_images`. Deliberately CodeArts-specific: several overlapping ids
+#: are marked as vision by other catalogues, but the CodeArts backend answers
+#: "The request model is not multimodal" for them.
 _KNOWN_VISION_IDS = {
     "qwen3-vl-235b", "qwen3.5-397b-a17b-vl",
     "qwen3.6-27b-vl", "kimi-k2.6-vl",
@@ -1358,7 +1390,7 @@ def model_entries(config):
         vision = bool(supports)
         inputs = ["text"] + (["image"] if vision else [])
         # Same convention set WorkBuddy emits: clients read different spellings
-        # for vision support, and DSH specifically needs input modalities.
+        # for vision support, and some clients need input modalities.
         entry["capabilities"] = {"vision": vision, "tool_calls": True}
         entry["supports_vision"] = vision
         entry["supports_images"] = vision
@@ -1375,18 +1407,20 @@ def model_entries(config):
             "output_modalities": ["text"],
             "modality": "+".join(inputs) + "->text",
         }
-        efforts = REASONING_EFFORTS.get(str(item["id"]).lower())
-        if efforts:
-            entry["reasoning_efforts"] = list(efforts)
-            entry["supports_reasoning"] = True
-            entry["capabilities"]["reasoning"] = True
-        if str(item["id"]).lower() == "glm-5.3-flash":
-            entry["reasoning_can_disable"] = False
-            entry["always_reasoning"] = True
         if item.get("desc"):
             entry["description"] = item["desc"]
         if item.get("model_category"):
             entry["category"] = item["model_category"]
+        efforts = REASONING_EFFORTS.get(str(item["id"]).lower())
+        if efforts:
+            entry["reasoning_efforts"] = list(efforts)
+            entry["supports_reasoning"] = True
+            capabilities = entry.setdefault(
+                "capabilities", {"vision": False, "tool_calls": True})
+            capabilities["reasoning"] = True
+        if str(item["id"]).lower() == "glm-5.3-flash":
+            entry["reasoning_can_disable"] = False
+            entry["always_reasoning"] = True
         out.append(entry)
     return out
 
@@ -1528,7 +1562,8 @@ def build_chat_body(payload, session_key=None):
     if not isinstance(payload, dict):
         raise CodeArtsBadRequest("request body must be a JSON object")
     from wb_proxy import (cleanup_orphan_tool_calls, merge_adjacent_tool_calls,
-                          normalize_roles, repack_tool_result_blocks)
+                          normalize_roles, normalize_tools,
+                          repack_tool_result_blocks)
     # 只发 Go 版 chatBodyV2 会发的字段；客户端多出来的采样/格式字段一律丢掉，
     # 避免华为网关对未知字段返回 400。
     allowed = {
@@ -1571,6 +1606,14 @@ def build_chat_body(payload, session_key=None):
     if not messages:
         raise CodeArtsBadRequest("messages is empty")
     body["messages"] = messages
+    # CodeArts builds its own chat body and therefore bypasses the generic
+    # normalize_tools() pass. A client tool entry without a usable
+    # ``function`` object (``{"type": "function"}``, a bare server tool such
+    # as ``{"type": "web_search"}``, or a flat ``{"name": ...}`` declaration)
+    # is forwarded as-is and the upstream rejects the whole request with
+    # "Tool function cannot empty". Repair the common shapes and drop the
+    # entries that still cannot satisfy the function schema.
+    normalize_tools(body)
     # 指定函数名时 CodeArts 只认字符串 required：把工具清单收窄到该函数，
     # 再把 tool_choice 改成 required（与 Go 版 nativeTools 一致）。
     tools = body.get("tools")
@@ -1620,9 +1663,9 @@ def _chat_headers(acct, chat_id, session_id, benefit):
 
 
 class CodeArtsStream(object):
-    """把华为云 SSE 包成 mix2api 回程处理器能吃的行迭代器。
+    """把华为云 SSE 包成 wb-hub 回程处理器能吃的行迭代器。
 
-    mix2api 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
+    wb-hub 的 `_chat_stream_response` / `aggregate_stream` 只认标准 OpenAI
     chunk（choices[].delta / finish_reason / usage）。这里把 CodeArts 的
     `text` 全文快照、`output` 终态和顶层 `delta` 都归一成标准 chunk。
     """
@@ -1868,7 +1911,7 @@ def _client_chat(acct, body, session_key):
         req = urllib.request.Request(SNAP_HOST + EP_CHAT, data=raw,
                                      headers=headers, method="POST")
         try:
-            resp = _urlopen(req, timeout=timeout, proxy=acct.proxy)
+            resp = _opener(acct.proxy).open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             try:
                 err = exc.read(ERROR_BODY_MAX)
@@ -1899,14 +1942,6 @@ def _client_chat(acct, body, session_key):
             stream.preflight()
         except CodeArtsUpstreamError as exc:
             stream.close()
-            text = str(exc).lower()
-            if ("not multimodal" in text
-                    or "does not support image" in text
-                    or "image input" in text and "not support" in text):
-                raise CodeArtsBadRequest(
-                    "模型 %s 不支持图片输入；可用视觉模型："
-                    "Qwen3-VL-235B、kimi-k2.6-vl" % model,
-                    status=400)
             if _is_concurrency_message(str(exc)):
                 last_error = exc
                 if attempt < 2:
@@ -2543,13 +2578,15 @@ def set_note(config, uid, note):
     pool = pool_for(config["accounts_dir"])
     if not pool.set_note(uid, note):
         raise CodeArtsNotFound("account not found")
+    invalidate_overview()
     return {"ok": True, "uid": uid, "note": pool.get(uid).note}
 
 
 def set_tasks_enabled(config, uid, enabled):
-    pool = pool_for(config["accounts_dir"])
+    pool = pool_for(config["accounts_dir"], trigger_auto=False)
     if not pool.set_tasks_enabled(uid, enabled):
         raise CodeArtsNotFound("account not found")
+    invalidate_overview()
     return {"ok": True, "uid": uid,
             "tasks_enabled": bool(pool.get(uid).tasks_enabled)}
 
@@ -2663,7 +2700,48 @@ def _credit_request(acct, method, path, payload=None, timeout=30.0):
                        agent_type="PromptCenter")
 
 
-def checkin_account(acct, timeout=30.0, trigger="manual"):
+def _is_checkin_campaign(item):
+    """这条积分活动是不是「签到类」，值得领取。
+
+    以前按 campaignId 白名单 `(1, 4)` 过滤，每日签到换成 id=34 以后整条被
+    跳过——面板点「签到」只会回「新用户注册送 4000 积分: 已领取」，看似成功
+    其实一分没进。改成按活动类型/触发事件判断，换季也不怕。
+    """
+    if item.get("campaignId") in CHECKIN_CAMPAIGN_IDS:
+        return True
+    if str(item.get("type") or "").upper() in CHECKIN_CAMPAIGN_TYPES:
+        return True
+    return str((item.get("extra") or {}).get("triggerEvent")
+               or "").lower() == "user.login"
+
+
+_CHECKIN_LOCKS = {}
+_CHECKIN_LOCKS_LOCK = threading.Lock()
+
+
+def _checkin_lock(uid):
+    """每个账号一把签到锁（进程内），面板点击与自动签到撞车时只放一个过去。"""
+    with _CHECKIN_LOCKS_LOCK:
+        lock = _CHECKIN_LOCKS.get(uid)
+        if lock is None:
+            lock = threading.Lock()
+            _CHECKIN_LOCKS[uid] = lock
+        return lock
+
+
+def checkin_account(acct, timeout=30.0):
+    """签到入口：同账号串行，避免两条路径同时 claim 同一条活动。"""
+    lock = _checkin_lock(acct.uid)
+    if not lock.acquire(False):
+        return {"ok": False, "credits": 0.0, "campaigns": [],
+                "message": "该账号签到正在进行中，稍后刷新即可"}
+    try:
+        return _checkin_account(acct, timeout=timeout)
+    finally:
+        lock.release()
+
+
+def _checkin_account(acct, timeout=30.0):
     data = _credit_request(acct, "GET",
                            EP_CREDIT_DELIVERY + "?channel=IDE",
                            timeout=timeout)
@@ -2672,7 +2750,7 @@ def checkin_account(acct, timeout=30.0, trigger="manual"):
     total_credits = 0.0
     for item in items:
         campaign_id = item.get("campaignId")
-        if campaign_id not in (1, 4):
+        if not _is_checkin_campaign(item):
             continue
         status = str(item.get("status") or "").strip()
         title = str(item.get("title") or ("积分活动 %s" % campaign_id))
@@ -2719,32 +2797,40 @@ def checkin_account(acct, timeout=30.0, trigger="manual"):
                     "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
     acct.info_fetched_at = 0.0
     acct.pool.save_state()
-    try:
-        wb_activity.record(uid=acct.uid, nickname=acct.nickname,
-                           realm="codearts", task=wb_activity.TASK_CHECKIN,
-                           trigger=trigger, ok=result["ok"],
-                           message=message)
-    except Exception:
-        pass
     return result
 
 
-def checkin(config, uid="", trigger="manual"):
+#: 手动签到路径（面板按钮 / API）里的抑制标记：那条路径自己就要签，不该再让
+#: 后台线程去抢同一把锁（否则按钮的回复会变成「该账号签到正在进行中」）。
+#: 用 thread-local，只影响当前请求线程，别的请求照常触发自动签到。
+_AUTO_CHECKIN_SUPPRESS = threading.local()
+
+
+def checkin(config, uid=""):
+    """手动签到入口（面板按钮 / `/codearts/accounts/checkin`）。"""
+    depth = getattr(_AUTO_CHECKIN_SUPPRESS, "depth", 0)
+    _AUTO_CHECKIN_SUPPRESS.depth = depth + 1
+    try:
+        return _checkin(config, uid)
+    finally:
+        _AUTO_CHECKIN_SUPPRESS.depth = depth
+
+
+def _checkin(config, uid=""):
     pool = pool_for(config["accounts_dir"])
     if uid:
         acct = pool.get(uid)
         if acct is None:
             raise CodeArtsNotFound("account not found")
         _ensure_token(acct)
-        return checkin_account(acct, trigger=trigger)
+        return checkin_account(acct)
     results = []
     for acct in list(pool.accounts):
         if acct.disabled:
             continue
         try:
             _ensure_token(acct)
-            results.append({"uid": acct.uid,
-                            **checkin_account(acct, trigger=trigger)})
+            results.append({"uid": acct.uid, **checkin_account(acct)})
         except CodeArtsError as exc:
             results.append({"uid": acct.uid, "ok": False, "message": str(exc)})
     total = sum(float(r.get("credits") or 0) for r in results)
@@ -2752,3 +2838,85 @@ def checkin(config, uid="", trigger="manual"):
             "credits": total,
             "message": "已处理 %d 个账号，共领取 %g 积分" % (len(results), total),
             "results": results}
+
+
+# ---------------------------------------------------------------------------
+# 每日自动签到（惰性触发）
+#
+# 签到的积分是 MANUAL_CLAIM 活动，没有任何定时器会来领：`wb_scheduler` 只排
+# 国内版账号（`acc.realm == "cn"`），面板按钮又只能人工点。于是每天那 100
+# 积分经常整天没人领，而它**次日就过期**（`expireAt` 只到第二天），等于白丢。
+#
+# 这里不新开定时线程池，只在池被用到时（每个 CodeArts 请求、/health、面板
+# 刷新都会经过 pool_for）检查一次「今天还有谁没签」，有就起一个 daemon 线程
+# 去领。节流记在进程内：每个账号每天最多 `AUTO_CHECKIN_MAX_ATTEMPTS` 次、
+# 两次间隔 ≥ `AUTO_CHECKIN_RETRY_GAP`，所以上游抖动也不会被连打。
+# 代价是网关整天没人请求时不会签——那种日子本来也没有消耗积分的请求。
+# ---------------------------------------------------------------------------
+
+#: 每个账号每天最多尝试几次（失败重试用）。
+AUTO_CHECKIN_MAX_ATTEMPTS = 3
+#: 同一账号两次尝试之间的最短间隔（秒）。
+AUTO_CHECKIN_RETRY_GAP = 3600.0
+
+_AUTO_CHECKIN_LOCK = threading.Lock()
+#: {accounts_dir: {uid: [日期, 已尝试次数, 上次尝试时刻]}}
+_AUTO_CHECKIN_STATE = {}
+
+
+def _checked_in_today(acct, today):
+    """这个账号今天已经签到成功了吗（看落盘的 checkin 记录）。"""
+    info = acct.checkin if isinstance(acct.checkin, dict) else {}
+    if not info.get("ok"):
+        return False
+    return str(info.get("checked_at") or "").startswith(today)
+
+
+def _auto_checkin_worker(accounts):
+    """后台线程：逐个领签到积分；任何失败都咽掉，绝不影响正在跑的会话。"""
+    for acct in accounts:
+        if acct.disabled or not getattr(acct, "tasks_enabled", True):
+            continue
+        try:
+            _ensure_token(acct)
+            checkin_account(acct)
+        except CodeArtsError:
+            pass
+        except Exception:  # noqa: BLE001 - 后台任务，不能把异常抛给调用方
+            pass
+
+
+def _maybe_auto_checkin(pool):
+    """惰性触发每日签到；同步部分只做判断与记账，真正的请求在后台线程。"""
+    try:
+        if getattr(_AUTO_CHECKIN_SUPPRESS, "depth", 0):
+            return                      # 本线程正在手动签到，别抢
+        if not pool.config.get("credits_auto_claim", False):
+            return
+        today = time.strftime("%Y-%m-%d")
+        now = time.time()
+        key = os.path.abspath(str(pool.accounts_dir or "."))
+        pending = []
+        with _AUTO_CHECKIN_LOCK:
+            state = dict(_AUTO_CHECKIN_STATE.get(key) or {})
+            for acct in list(pool.accounts):
+                if acct.disabled or not acct.uid or not getattr(acct, "tasks_enabled", True):
+                    continue
+                if _checked_in_today(acct, today):
+                    continue
+                entry = state.get(acct.uid) or [today, 0, 0.0]
+                if entry[0] != today:
+                    entry = [today, 0, 0.0]      # 跨天重置
+                if entry[1] >= AUTO_CHECKIN_MAX_ATTEMPTS:
+                    continue
+                if entry[2] and now - entry[2] < AUTO_CHECKIN_RETRY_GAP:
+                    continue
+                state[acct.uid] = [today, entry[1] + 1, now]
+                pending.append(acct)
+            _AUTO_CHECKIN_STATE[key] = state
+        if not pending:
+            return
+        threading.Thread(target=_auto_checkin_worker, args=(pending,),
+                         name="codearts-auto-checkin", daemon=True).start()
+    except Exception:  # noqa: BLE001 - 自动签到坏了也不能让业务请求失败
+        return

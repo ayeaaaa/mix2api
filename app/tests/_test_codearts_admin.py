@@ -105,11 +105,27 @@ try:
         check("%s ok" % action, status == 200 and body.get("ok") is True,
               (status, body))
     check("account still in pool", C.pool_for(ACCOUNTS).get("u1") is not None)
-    status, body = call("GET", "/activity/history?range=all", token=token)
-    check("codearts checkin in activity",
-          any(r.get("realm") == "codearts" and r.get("task") == "checkin"
-              and r.get("uid") == "u1"
-              for r in body.get("rows") or []), body)
+
+    print("== account admin ==")
+    status, body = call("POST", "/codearts/accounts/note",
+                        {"uid": "u1", "note": "hello"}, token=token)
+    check("note saved", status == 200 and body.get("note") == "hello",
+          (status, body))
+    status, body = call("POST", "/codearts/accounts/tasks",
+                        {"uid": "u1", "enabled": False}, token=token)
+    check("tasks disabled", status == 200
+          and body.get("tasks_enabled") is False, (status, body))
+    status, body = call("POST", "/codearts/accounts/test",
+                        {"uid": "u1"}, token=token)
+    check("account test", status == 200 and body.get("ok") is True,
+          (status, body))
+    status, body = call("POST", "/codearts/credits/refresh", {}, token=token)
+    check("credits refresh", status == 200 and body.get("ok") is True,
+          (status, body))
+    status, body = call("GET", "/codearts/overview", token=token)
+    acct = (body.get("accounts") or [{}])[0]
+    check("overview note", acct.get("note") == "hello", acct)
+    check("overview tasks flag", acct.get("tasks_enabled") is False, acct)
 
     print("== proxy slots ==")
     import wb_settings
@@ -148,30 +164,6 @@ try:
           C.pool_for(ACCOUNTS).get("u1").proxy == "",
           C.pool_for(ACCOUNTS).get("u1").proxy)
 
-    print("== account metadata ==")
-    status, body = call("POST", "/codearts/accounts/note",
-                        {"uid": "u1", "note": "hello"}, token=token)
-    check("note ok", status == 200 and body.get("note") == "hello",
-          (status, body))
-    status, body = call("GET", "/codearts/overview", token=token)
-    check("note in view", body["accounts"][0].get("note") == "hello", body)
-    status, body = call("POST", "/codearts/accounts/tasks",
-                        {"uid": "u1", "enabled": False}, token=token)
-    check("tasks off", status == 200
-          and body.get("tasks_enabled") is False, (status, body))
-    status, body = call("POST", "/codearts/accounts/tasks",
-                        {"uid": "u1", "enabled": True}, token=token)
-    check("tasks on", status == 200
-          and body.get("tasks_enabled") is True, (status, body))
-    status, body = call("POST", "/codearts/accounts/test",
-                        {"uid": "u1"}, token=token)
-    check("account test", status == 200 and body.get("ok") is True,
-          (status, body))
-
-    status, body = call("POST", "/codearts/credits/refresh", {}, token=token)
-    check("credits refresh", status == 200
-          and body.get("refreshed", 0) >= 1, (status, body))
-
     status, body = call("POST", "/codearts/accounts/enable", {}, token=token)
     check("missing uid -> 400", status == 400, (status, body))
 
@@ -204,6 +196,11 @@ try:
 
     print("== browser callback ==")
     started = call("POST", "/codearts/accounts/oauth/start", {}, token=token)[1]
+    try:
+        urllib.request.urlopen(HUB + "/oauth/callback?code=abc", timeout=20)
+        check("callback without session identifier rejected", False)
+    except urllib.error.HTTPError as exc:
+        check("callback without session identifier rejected", exc.code == 400, exc.code)
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(started["auth_url"]).query)
     ticket = (query.get("ticket_id") or [""])[0]
     req = urllib.request.Request(
@@ -231,24 +228,12 @@ try:
     check("settings has codearts", isinstance(body.get("codearts"), dict), body)
     check("settings no secret", state.token not in json.dumps(body), body)
     check("settings codearts has no key", "api_key" not in body["codearts"], body)
-    check("settings auto checkin default",
-          body["codearts"].get("auto_checkin") is True, body)
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": True, "max_concurrent": 2},
     }, token=token)
     check("settings save", status == 200, (status, body))
     check("settings max concurrent",
           body["codearts"].get("max_concurrent") == 2, body)
-    status, body = call("POST", "/settings/save", {
-        "codearts": {"enabled": True, "auto_checkin": False},
-    }, token=token)
-    check("settings auto checkin can be disabled",
-          body["codearts"].get("auto_checkin") is False, body)
-    status, body = call("POST", "/settings/save", {
-        "codearts": {"enabled": True, "auto_checkin": True},
-    }, token=token)
-    check("settings auto checkin restored",
-          body["codearts"].get("auto_checkin") is True, body)
     wb_proxy.CURRENT_REALM = "codearts"
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": False},

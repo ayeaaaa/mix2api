@@ -15,9 +15,9 @@ const html = dashboardHtml();
 const proxy = fs.readFileSync(path.join(__dirname, '..', 'wb_proxy.py'), 'utf8');
 
 /* ---- 1. 路由与首帧标记 ---- */
-assert.ok(/path in \("\/", "\/dashboard", "\/ui", "\/next", "\/next\/", "\/classic", "\/classic\/"\)/.test(proxy),
-  'wb_proxy.py 的 do_GET 应把 /、/next、/classic 指到看板');
-assert.ok(/p === '\/classic'/.test(html) && /var next = !classic/.test(html) && /data-ui/.test(html),
+assert.ok(/path in \("\/", "\/dashboard", "\/ui", "\/classic", "\/classic\/"\)/.test(proxy),
+  'wb_proxy.py 的 do_GET 应把 /、/classic 指到看板');
+assert.ok(/p === '\/classic'/.test(html) && /var next = true/.test(html) && /data-ui/.test(html),
   '首帧脚本应默认新面板、仅 /classic 保留旧壳');
 assert.ok(/window\.__NEXT_UI__ = next/.test(html), '首帧脚本应暴露 window.__NEXT_UI__');
 
@@ -69,12 +69,10 @@ assert.ok(/if\(!page\) return;/.test(html),
   'switchMainTab 即使没有旧导航按钮也必须切换页面');
 
 /* ---- 5. 旧壳回退 ---- */
-assert.ok(/if\(!NEXT\)\{[\s\S]{0,500}?oldModels\.parentNode\.removeChild\(oldModels\)/.test(html),
-  '旧壳应把模型区块搬回 overview 并移除空的 pageGateway');
-assert.ok(/if\(!window\.__NEXT_UI__ && tab === 'gateway'[\s\S]{0,220}?tab = 'overview';/.test(html),
+assert.ok(/if\(!NEXT\)\{[\s\S]{0,500}?oldModels\.insertBefore\(oldOverview\.firstChild, firstModel\)/.test(html),
+  '旧壳应把 overview 区块合并回 pageGateway');
+assert.ok(/if\(!window\.__NEXT_UI__ && tab === 'gateway'\) applyConsoleView\('overview'\)/.test(html),
   '旧壳的 gateway 页签应映射到 overview');
-assert.ok(/oldGatewayBtn\.classList\.toggle\('active', tab === 'overview'\)/.test(html),
-  '旧壳的网关按钮应在 overview 页保持 active');
 
 /* ---- 6. 调度器与设置分组 ---- */
 assert.ok(/schedSection\.appendChild\(sched\)/.test(html),

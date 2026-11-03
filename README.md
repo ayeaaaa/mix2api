@@ -29,7 +29,7 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 - **账号代理槽**：CodeArts 账号可绑定与 WorkBuddy 相同的「账号代理槽」，账号表直接选出口；聊天、模型发现、token 续期、签到和积分查询都走该槽。出站复用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
 - **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`，不按 WorkBuddy 价目表计价。
 - **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
-- **测试**：246 个套件全过；CodeArts 链路用本机假华为云上游覆盖，密码学有 Go 对照向量。
+- **测试**：263 个套件全过；CodeArts 链路用本机假华为云上游覆盖，密码学有 Go 对照向量。
 
 > 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号，不要共享或转售账号。
 
@@ -58,11 +58,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.2.0
+docker pull ghcr.io/ayeaaaa/mix2api:v1.3.0
 docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.2.0
+  ghcr.io/ayeaaaa/mix2api:v1.3.0
 ```
 
 ### 方式二：本地构建

@@ -32,7 +32,7 @@ import wb_settings
 
 # 默认仍指向官方仓库。自建 fork 的 systemd 服务可通过 WB_UPDATE_REPO 指定
 # 自己的 Release 源；该值只允许 owner/repo 形状，避免把更新请求导向任意主机。
-DEFAULT_REPOSITORY = "ayeaaaa/mix2api"
+DEFAULT_REPOSITORY = "ardeyouxipianyi/workbuddy2api-hub"
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 
@@ -51,7 +51,7 @@ TAG_RE = re.compile(r"/releases/tag/([^/?#]+)")
 # 可选凭据：认证请求的配额是 5000 次/小时。只从环境变量读，绝不落盘
 # （模块头第 3 条）。
 TOKEN_ENV = "GITHUB_TOKEN"
-USER_AGENT = "mix2api-update-check"
+USER_AGENT = "wb2api-hub-update-check"
 # 回退路径是 302 跳转 + 对象存储下载，代理出口下实测 4.2~10s；5s 会把
 # 本可成功的回退请求掐掉，两条路径全挂才报「更新检查失败」。10s 留足
 # 余量又不至于让坏响应挂住面板（检查本身有 24h 节流，失败下个窗口重试）。
