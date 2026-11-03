@@ -80,9 +80,11 @@ class ErrorResponseTests(unittest.TestCase):
 
     def test_429_error_parses_a_wall_clock_from_the_message(self):
         handler = self._Handler()
+        reset_text = time.strftime("%Y-%m-%d %H:%M:%S UTC",
+                                   time.gmtime(time.time() + 3600))
         handler._error(
             429,
-            "usage exceeds frequency limit, reset at 2026-11-03 12:00:00 UTC+8",
+            f"usage exceeds frequency limit, reset at {reset_text}",
             "rate_limit_error")
         headers = dict(handler.sent_headers)
         self.assertIn("X-RateLimit-Reset", headers)
@@ -93,8 +95,10 @@ class CodeArtsErrorTests(unittest.TestCase):
 
     def test_codearts_429_maps_to_rate_limit(self):
         handler = ErrorResponseTests._Handler()
+        reset_text = time.strftime("%Y-%m-%d %H:%M:%S UTC",
+                                   time.gmtime(time.time() + 3600))
         exc = wb_codearts.CodeArtsUpstreamError(
-            "usage exceeds frequency limit, reset at 2026-11-03 12:00:00 UTC+8",
+            f"usage exceeds frequency limit, reset at {reset_text}",
             status=429)
         with mock.patch.object(wb_proxy, "record_error", lambda *a, **k: None):
             handler._codearts_error("glm-5.2", exc, time.time(), "codearts")
