@@ -58,11 +58,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.1.3
+docker pull ghcr.io/ayeaaaa/mix2api:v1.2.0
 docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.1.3
+  ghcr.io/ayeaaaa/mix2api:v1.2.0
 ```
 
 ### 方式二：本地构建
