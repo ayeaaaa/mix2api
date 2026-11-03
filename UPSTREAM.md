@@ -33,7 +33,7 @@
 - 工具名校验：`normalize_tools` 丢弃上游不接受的 `function.name`（空、非法字符、超长、重名），修掉 400 / code 11133。
 - 面板单请求体上限：设置页可调 1–256 MB，立即生效；413 提示同步更新。
 - 面板细节：Key 选择器显示账号备注、活动状态区分「无本地记录」、删除重复的「上游响应头超时」卡片、活动流跨天补日期。
-- 429 绝对恢复时刻：`X-RateLimit-Reset` / `X-RateLimit-Reset-At` 与正文 `reset_at` 已接入模型 429 出口（登录限流与 CodeArts 透传出口尚未覆盖）。
+- 429 绝对恢复时刻：`X-RateLimit-Reset` / `X-RateLimit-Reset-At` 与正文 `reset_at` 已覆盖模型 429、登录限流和 CodeArts 透传出口（OpenAI / Anthropic 两种信封）。
 - v1.10.2–v1.10.4：CodeArts OAuth 回调认领 `state` 作为 `ticket_id`；非流式聚合在 `finally` 关闭上游，修掉背靠背请求提前释放账号；`pricing/pricing.json` 快照与 `wb_catalog.py` / `wb_tasks.py` 对齐上游 v1.10.4；成长中心新增任务、Buddy 开盲盒与小程序链式任务已随 `wb_tasks.py` 进入本仓库。
 
 `codearts2api` 的 `8d1e43d` 基线已包含每日签到与新手活动积分，本仓库现有实现已对齐；该上游没有新的后续 commit。

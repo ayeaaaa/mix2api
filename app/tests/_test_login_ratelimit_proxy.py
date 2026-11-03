@@ -176,12 +176,13 @@ class LoginDispatch(proxy.Handler):
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
         self.status = None
+        self.response_headers = []
 
     def send_response(self, code, message=None):
         self.status = code
 
     def send_header(self, key, value):
-        pass
+        self.response_headers.append((key, value))
 
     def end_headers(self):
         pass
@@ -243,6 +244,22 @@ class LoginFlowTests(unittest.TestCase):
         # 直连 8788（对端回环、无代理头）也按自己的桶走，不被 A 连坐。
         status, _ = self.login(RIGHT_PASSWORD, None, nginx)
         self.assertEqual(status, 200)
+
+    def test_429_carries_absolute_reset_headers(self):
+        nginx = ("127.0.0.1", 40000)
+        client_a = {"X-Real-IP": "203.0.113.7"}
+        for _ in range(5):
+            status, _ = self.login(WRONG_PASSWORD, client_a, nginx)
+            self.assertEqual(status, 401)
+        body = json.dumps({"password": WRONG_PASSWORD}).encode("utf-8")
+        request = LoginDispatch(headers=client_a, body=body, client=nginx)
+        with mock.patch.object(proxy, "ACCOUNTS_DIR", self.directory):
+            status, payload = request.dispatch()
+        self.assertEqual(status, 429)
+        headers = dict(request.response_headers)
+        self.assertIn("X-RateLimit-Reset", headers)
+        self.assertTrue(headers["X-RateLimit-Reset-At"].endswith("Z"))
+        self.assertIn("reset_at", payload["error"])
 
     def test_forged_headers_from_an_untrusted_peer_change_nothing(self):
         """公网/局域网对端伪造头：仍按对端地址分桶，换"新"IP 也不解锁。"""

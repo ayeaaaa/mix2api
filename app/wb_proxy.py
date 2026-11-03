@@ -10338,7 +10338,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "1.1.1",
+        "version": "1.1.2",
         "project": "mix2api",
         "update_repository": wb_updates.REPOSITORY,
         "max_payload_mb": wb_settings.max_payload_mb(ACCOUNTS_DIR),
@@ -14574,6 +14574,14 @@ def rate_limit_headers(reset_at):
             ("X-RateLimit-Reset-At", _iso_utc(epoch))]
 
 
+def rate_limit_reset_note(reset_at):
+    """给 429 正文补一句「什么时候恢复」，没有可用时刻时回空串。"""
+    epoch = _usable_reset_epoch(reset_at)
+    if epoch is None:
+        return ""
+    return " (resets at %s)" % _iso_utc(epoch)
+
+
 def upstream_timeouts():
     """(header, idle) seconds for the chat upstream socket.
 
@@ -18471,6 +18479,10 @@ class Handler(BaseHTTPRequestHandler):
     # 而不是参数，是因为测试里大量 Handler 桩只覆写了 _json(code, obj) 这两个
     # 位置参数——加参数会让它们全部报错，而属性默认 None 对它们完全无感。
     _json_etag = None
+    # 本次 _json() 响应要额外带的头（429 的恢复时刻，见 rate_limit_headers）。
+    # 与 _json_etag 同一个理由放成实例属性：测试里大量 Handler 桩只覆写了
+    # _json(code, obj)，加参数会让它们全部报错，而属性对它们完全无感。
+    _json_extra_headers = None
     # The stdlib default caps the request line at 64KB and answers an opaque
     # bare "414 Request-URI Too Long" for anything longer. Raise it and reply in
     # the normal JSON error shape so an over-long URL is diagnosable.
@@ -18485,6 +18497,8 @@ class Handler(BaseHTTPRequestHandler):
         # 校验符同理：留着上一轮的 tag，下一次 _json() 就会把别的请求的 ETag
         # 发出去（keep-alive 上同一个 Handler 实例服务一整条连接）。
         self._json_etag = None
+        # 同一理由：上一轮 429 的恢复时刻不能跟着 keep-alive 漏到下一个响应上。
+        self._json_extra_headers = None
         # Body-tracking state must also start clean for every request, otherwise
         # a later drain would skip a body that has not been read yet.
         self._body_consumed = False
@@ -18536,7 +18550,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.1.1"
+    server_version = "mix2api/1.1.2"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -18558,6 +18572,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # 429 需要把恢复时刻带出去（见 rate_limit_headers）；其余响应一个
+        # 头都不多发，保持与从前逐字节一致。
+        for name, value in (self._json_extra_headers or ()):
+            self.send_header(name, value)
         # 只有 _json_cached() 覆盖的只读接口才有校验符；其余调用点保持原样，
         # 一个头都不多发。
         etag = self._json_etag
@@ -18771,7 +18789,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except Exception:
             pass
-    def _error(self, code, message, err_type="server_error"):
+    def _error(self, code, message, err_type="server_error", reset_at=None):
         # Every early rejection funnels through here, so draining the body in
         # one place covers all of them. Unblock any client still waiting on
         # "Expect: 100-continue" first, otherwise it never sends the body and
@@ -18782,12 +18800,34 @@ class Handler(BaseHTTPRequestHandler):
         hint = gateway_hint(code, message)
         if hint:
             error["gateway_hint"] = hint
-        self._json(code, {"error": error})
-    def _anthropic_error(self, code, message, err_type=None):
+        epoch = _usable_reset_epoch(reset_at) if code == 429 else None
+        if epoch is None and code == 429:
+            # Passthrough paths (CodeArts, a raw upstream 429) only carry a
+            # body: if it names a wall clock, still give the client an instant.
+            epoch = _usable_reset_epoch(parse_rate_limit_reset(message or ""))
+        if epoch is not None:
+            error["reset_at"] = epoch
+            error["message"] = message + rate_limit_reset_note(epoch)
+            self._json_extra_headers = rate_limit_headers(epoch)
+        try:
+            self._json(code, {"error": error})
+        finally:
+            # 与 _json_etag 同一口径：绝不能把这一轮的头发给下一个响应。
+            self._json_extra_headers = None
+    def _anthropic_error(self, code, message, err_type=None, reset_at=None):
         """Reply with the Anthropic JSON error envelope, not OpenAI's."""
         self._handle_expect_continue()
         self._discard_body()
-        return self._json(code, anthropic_error_obj(code, message, err_type))
+        epoch = _usable_reset_epoch(reset_at) if code == 429 else None
+        if epoch is None and code == 429:
+            epoch = _usable_reset_epoch(parse_rate_limit_reset(message or ""))
+        if epoch is not None:
+            message = message + rate_limit_reset_note(epoch)
+            self._json_extra_headers = rate_limit_headers(epoch)
+        try:
+            return self._json(code, anthropic_error_obj(code, message, err_type))
+        finally:
+            self._json_extra_headers = None
     def _rate_limited(self, exc):
         """429 with Retry-After, so clients back off instead of hammering.
 
@@ -21124,7 +21164,11 @@ class Handler(BaseHTTPRequestHandler):
                 _login_attempts[client_ip] = attempts
                 if len(attempts) >= 5:
                     wait_sec = int(60 - (now - attempts[0]))
-                    return self._error(429, f"too many login attempts, please wait {max(1, wait_sec)}s", "rate_limit_error")
+                    return self._error(
+                        429,
+                        f"too many login attempts, please wait {max(1, wait_sec)}s",
+                        "rate_limit_error",
+                        reset_at=attempts[0] + 60)
             password = str(payload.get("password") or "")
             try:
                 valid = wb_settings.verify_panel_password(ACCOUNTS_DIR, password)
@@ -23153,6 +23197,7 @@ class Handler(BaseHTTPRequestHandler):
     def _codearts_error(self, model, exc, t_start, realm):
         """把 CodeArts 异常落一条用量行，再回一个可读的 OpenAI 错误。"""
         elapsed = int((time.time() - t_start) * 1000)
+        err_type = "invalid_request_error"
         if isinstance(exc, wb_codearts.CodeArtsBadRequest):
             status = 400
         elif isinstance(exc, wb_codearts.CodeArtsAuthError):
@@ -23161,11 +23206,13 @@ class Handler(BaseHTTPRequestHandler):
             status = 409
         elif isinstance(exc, wb_codearts.CodeArtsConflict):
             status = 409
+        elif isinstance(exc, wb_codearts.CodeArtsError) and exc.status == 429:
+            status, err_type = 429, "rate_limit_error"
         else:
             status = 502
         record_error(model, status, str(exc)[:200], elapsed_ms=elapsed,
                      realm=realm, key=self._key_id())
-        return self._error(status, str(exc), "invalid_request_error")
+        return self._error(status, str(exc), err_type)
 
     def _handle_codearts_chat(self, payload, session_key, realm):
         """`/v1/chat/completions` 的 CodeArts 分支。"""
