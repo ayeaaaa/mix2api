@@ -23,3 +23,6 @@ reference/codearts2api/config.json
 .DS_Store
 .vscode/
 .idea/
+
+# agent workspace metadata
+.superpowers/
