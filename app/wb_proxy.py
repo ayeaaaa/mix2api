@@ -20967,7 +20967,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/console/state":
             return self._get_console_state()
         if path == "/health":
-            return self._get_health()
+            return self._get_health(query)
         if path == "/realm":
             return self._get_realm()
         if path == "/codearts/overview":
@@ -20975,7 +20975,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/codearts/accounts":
             return self._get_codearts_accounts()
         if path == "/raccoon/overview":
-            return self._get_raccoon_overview()
+            return self._get_raccoon_overview(query)
         if path == "/raccoon/accounts":
             return self._get_raccoon_accounts()
         if path == "/v1/balance-summary":
@@ -21104,9 +21104,13 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=_bye, daemon=True).start()
         return self._json(200, {"ok": True, "shutting_down": True})
 
-    def _get_health(self):
+    def _get_health(self, query=None):
         # Always answer (the launcher uses this to detect a running copy),
         # but only expose account identity to an authorised caller.
+        force_health = bool(
+            query
+            and str((query.get("force") or [""])[0]).lower() in ("1", "true", "yes")
+        )
         rep = current_account()
         crypto_ok, crypto_reason = wb_settings.check_pbkdf2_available()
         info = {
@@ -21138,7 +21142,7 @@ class Handler(BaseHTTPRequestHandler):
             raccoon_cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
             raccoon = {"configured": wb_raccoon.configured_config(raccoon_cfg),
                        "base_url": wb_raccoon.BASE_URL}
-            raccoon.update(wb_raccoon.health(raccoon_cfg))
+            raccoon.update(wb_raccoon.health(raccoon_cfg, force=force_health))
             info["raccoon"] = raccoon
         except Exception as exc:
             # 与 CodeArts 一样，子出口掉线不能把整体 /health 变红。
@@ -23926,14 +23930,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _get_raccoon_overview(self):
+    def _get_raccoon_overview(self, query=None):
+        force = bool(
+            query
+            and str((query.get("force") or [""])[0]).lower() in ("1", "true", "yes")
+        )
         cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
         try:
-            data = wb_raccoon.overview(cfg)
+            data = wb_raccoon.overview(cfg, force=force)
         except wb_raccoon.RaccoonError as exc:
             return self._error(502, str(exc), "invalid_request_error")
         out = dict(data)
-        health = wb_raccoon.health(cfg)
+        health = wb_raccoon.health(cfg, force=force)
         out["online"] = health.get("ok") is True
         out["health"] = health
         out["base_url"] = wb_raccoon.BASE_URL
@@ -24003,6 +24011,34 @@ class Handler(BaseHTTPRequestHandler):
                         code=payload.get("code") or "",
                         state=payload.get("state") or "",
                     ),
+                )
+            if path == "/raccoon/test":
+                if not wb_raccoon.configured_config(cfg):
+                    return self._json(
+                        200,
+                        {
+                            "ok": False,
+                            "models": 0,
+                            "catalog_source": "",
+                            "message": "小浣熊出口未启用：请先在设置页启用，或导入 auth.json。",
+                        },
+                    )
+                data = wb_raccoon.refresh_models(cfg)
+                catalog = data.get("catalog") or {}
+                ok = catalog.get("source") == "raccoon"
+                message = (
+                    "连接正常"
+                    if ok
+                    else (catalog.get("warning") or "上游模型目录不可用")
+                )
+                return self._json(
+                    200,
+                    {
+                        "ok": ok,
+                        "models": data.get("models") or 0,
+                        "catalog_source": catalog.get("source") or "",
+                        "message": message,
+                    },
                 )
             if path == "/raccoon/keepalive":
                 result = wb_raccoon.keepalive(cfg)

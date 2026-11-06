@@ -203,6 +203,18 @@ def test_overview_never_leaks_tokens():
     overview = call("GET", "/raccoon/overview", token=TOKEN)[1]
     check("overview health block", isinstance(overview.get("health"), dict), overview)
     check("overview online", overview.get("online") is True, overview)
+    status, forced = call("GET", "/raccoon/overview?force=1", token=TOKEN)
+    check(
+        "overview force query accepted",
+        status == 200 and isinstance(forced.get("health"), dict),
+        (status, forced),
+    )
+    status, health = call("GET", "/health?force=1")
+    check(
+        "health force query accepted",
+        status == 200 and isinstance((health or {}).get("raccoon"), dict),
+        (status, health),
+    )
 
 
 def test_oauth_start_builds_loopback_url_and_state():
@@ -616,6 +628,27 @@ def test_models_refresh_and_keepalive():
         (status, result),
     )
     check("models refresh count", result.get("models", 0) >= 2, result)
+
+    status, result = call("POST", "/raccoon/test", {}, token=TOKEN)
+    check(
+        "connection test ok",
+        status == 200 and result.get("ok") is True,
+        (status, result),
+    )
+    check(
+        "connection test catalog source",
+        result.get("catalog_source") == "raccoon",
+        result,
+    )
+    check("connection test models", result.get("models", 0) >= 2, result)
+
+    reset_accounts()
+    status, result = call("POST", "/raccoon/test", {}, token=TOKEN)
+    check(
+        "connection test disabled realm is readable",
+        status == 200 and result.get("ok") is False and bool(result.get("message")),
+        (status, result),
+    )
 
     reset_accounts()
     reset_fake()

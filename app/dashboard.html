@@ -1212,8 +1212,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .realm-tag{font-size:10px;font-weight:650;border-radius:5px;padding:1px 6px;line-height:15px;letter-spacing:.02em}
 #pageAnalytics .realm-intl{color:#17527e;background:#d9e9f7;border:1px solid #b3d0e8}
 #pageAnalytics .realm-cn{color:#8a3a22;background:#f7ded2;border:1px solid #eabfa9}
+#pageAnalytics .realm-codearts{color:#5b3fa0;background:#ece7fa;border:1px solid #d6c9f4}
+#pageAnalytics .realm-raccoon{color:#0f766e;background:#ccfbf1;border:1px solid #99f6e4}
 [data-theme="dark"] #pageAnalytics .realm-intl{color:#b5d6f5;background:rgba(106,155,204,.32);border-color:rgba(106,155,204,.5)}
 [data-theme="dark"] #pageAnalytics .realm-cn{color:#f5bd9f;background:rgba(201,100,66,.32);border-color:rgba(201,100,66,.55)}
+[data-theme="dark"] #pageAnalytics .realm-codearts{color:#c4b1f5;background:rgba(124,92,214,.30);border-color:rgba(124,92,214,.5)}
+[data-theme="dark"] #pageAnalytics .realm-raccoon{color:#5eead4;background:rgba(20,184,166,.28);border-color:rgba(20,184,166,.5)}
 #pageAnalytics .minibar{position:relative;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:70px}
 #pageAnalytics .minibar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-color,var(--accent));opacity:.75}
 #pageAnalytics .tokcell{display:flex;flex-direction:column;gap:3px;min-width:100px}
@@ -2425,6 +2429,43 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     'CodeArts 设置已保存': 'CodeArts settings saved',
     'CodeArts 连接正常（': 'CodeArts connection OK (',
     'CodeArts 连接失败: ': 'CodeArts connection failed: ',
+    // Raccoon 第四出口
+    '小浣熊': 'Raccoon',
+    '小浣熊 (Raccoon)': 'Raccoon',
+    '小浣熊账号': 'Raccoon accounts',
+    '小浣熊接入': 'Raccoon',
+    '启用小浣熊出口': 'Enable the Raccoon exit',
+    '添加小浣熊账号': 'Add a Raccoon account',
+    '保存小浣熊设置': 'Save Raccoon settings',
+    '小浣熊设置已保存': 'Raccoon settings saved',
+    '小浣熊连接正常（': 'Raccoon connection OK (',
+    '小浣熊连接失败: ': 'Raccoon connection failed: ',
+    '固定小浣熊出口': 'Raccoon exit only',
+    '导入 auth.json': 'Import auth.json',
+    '浏览器授权': 'Browser authorization',
+    '开始浏览器授权': 'Start browser authorization',
+    '复制授权链接': 'Copy authorization link',
+    '请输入 auth.json 内容': 'Paste auth.json contents first',
+    'auth.json 不是合法的 JSON': 'auth.json is not valid JSON',
+    'auth.json 缺少 access_token': 'auth.json is missing access_token',
+    'auth.json 必须是 JSON 对象': 'auth.json must be a JSON object',
+    '还没有小浣熊账号。导入 auth.json 或点「添加账号」开始。': 'No Raccoon accounts yet. Import auth.json or click Add account to start.',
+    '小浣熊账号已导入': 'Raccoon account added',
+    '导入失败: ': 'Import failed: ',
+    '可粘贴 auth.json 导入，或点击「开始浏览器授权」。': 'Paste auth.json to import, or click Start browser authorization.',
+    '授权发起失败: ': 'Could not start authorization: ',
+    '服务端没有返回授权会话': 'The server did not return an authorization session',
+    '已生成授权链接，正在等待授权…': 'Authorization link ready; waiting for authorization...',
+    '等待浏览器完成授权…': 'Waiting for the browser to finish authorization...',
+    '授权超时，请重新发起或导入 auth.json': 'Authorization timed out; start again or import auth.json',
+    '请先发起授权，再粘贴完整回调地址': 'Start authorization first, then paste the full callback URL',
+    '回调已接收，继续等待授权…': 'Callback received; still waiting for authorization...',
+    '中转失败: ': 'Relay failed: ',
+    '还没有授权链接，请先点击「开始浏览器授权」': 'No authorization link yet; click Start browser authorization first',
+    '授权链接已复制': 'Authorization link copied',
+    '停任务': 'Pause tasks',
+    '开任务': 'Enable tasks',
+    '浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。': 'The browser and this gateway must share loopback (the same machine). Remote users should import auth.json; QR-code and password login are not available in v1.6.0.',
     '保存失败: ': 'Save failed: ',
     '操作失败: ': 'Action failed: ',
     '签到失败: ': 'Check-in failed: ',
@@ -6375,6 +6416,40 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       </div>
     </section>
 
+    <section data-cat="network" id="raccoonSettingsSection">
+      <h2>小浣熊接入 <em id="setRaccoonState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、
+        token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="raccoonEnabled" type="checkbox" style="width:16px;height:16px">
+          启用小浣熊出口
+        </label>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
+          <input id="raccoonMaxConcurrent" type="number" min="1" max="10" value="1"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">管理超时（秒）</div>
+          <input id="raccoonTimeout" type="number" min="1" max="600" value="60"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">流式超时（秒）</div>
+          <input id="raccoonStreamTimeout" type="number" min="1" max="3600" value="900"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button onclick="saveRaccoonSettings(this)">保存小浣熊设置</button>
+        <button class="sec" onclick="testRaccoon(this)">测试连接</button>
+        <span id="setRaccoonHint" style="font-size:12px;color:var(--dim)"></span>
+      </div>
+    </section>
+
     <section data-cat="network">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
@@ -7525,6 +7600,58 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   </div>
 </div>
 
+<div class="modal-mask" id="raccoonAuthModal">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(680px,100%)">
+    <div class="modal-hd">
+      <h2>添加小浣熊账号</h2>
+      <button class="modal-x" onclick="closeRaccoonAuth()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.7">
+        浏览器授权要求浏览器和本网关共享 loopback（同一台机器）。远程用户请导入 auth.json；
+        v1.6.0 暂不支持扫码或密码登录。
+      </div>
+      <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:6px">导入 auth.json</div>
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
+          粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 <code>{"data": {...}}</code>。
+        </div>
+        <textarea id="raccoonAuthInput" rows="5" placeholder="粘贴 auth.json 原文（JSON）"
+                  style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:12px/1.5 var(--mono,monospace);resize:vertical"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button onclick="importRaccoonAuth(this)">导入 auth.json</button>
+        </div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:6px">浏览器授权</div>
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
+          点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+          <button class="sec" onclick="startRaccoonOauth(this)">开始浏览器授权</button>
+        </div>
+        <div style="font-size:12px;color:var(--dim);margin-bottom:4px">授权链接</div>
+        <div id="raccoonAuthUrl" class="mono" style="word-break:break-all;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:38px"></div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="sec" onclick="openRaccoonAuthUrl()">打开授权页</button>
+          <button class="sec" onclick="copyRaccoonAuthUrl(this)">复制授权链接</button>
+          <button class="sec" onclick="pollRaccoonOauth(false)">我已授权</button>
+        </div>
+        <div style="font-size:12px;color:var(--dim);margin:14px 0 4px">远端回调（可选）</div>
+        <input id="raccoonAuthCallback" type="text" placeholder="http://127.0.0.1:.../raccoon/oauth/callback?..."
+               style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button class="sec" onclick="submitRaccoonCallback(this)">中转回调</button>
+        </div>
+      </div>
+      <div id="raccoonAuthStatus" style="font-size:12px;color:var(--dim);margin-top:12px;min-height:18px"></div>
+    </div>
+    <div class="modal-ft">
+      <button onclick="closeRaccoonAuth()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-mask" id="loginModal">
   <div class="modal" role="dialog" aria-modal="true">
     <div class="modal-hd">
@@ -8655,9 +8782,197 @@ function raccoonEditNote(uid){
   raccoonAccountAction("note", uid, note);
 }
 
-// 添加账号弹窗由后续任务接入；先给内联入口一个可调用的落点，避免点了没反应。
+let RACCOON_OAUTH_SESSION = "";
+let RACCOON_OAUTH_TIMER = null;
+let RACCOON_OAUTH_DEADLINE = 0;
+
+function setRaccoonOauthStatus(msg, ok){
+  const el = document.getElementById("raccoonAuthStatus");
+  if(!el) return;
+  el.textContent = msg || "";
+  el.style.color = (ok === true) ? "var(--accent2)" : (ok === false ? "var(--bad)" : "var(--dim)");
+}
+
+function stopRaccoonOauthPolling(){
+  if(RACCOON_OAUTH_TIMER){ clearInterval(RACCOON_OAUTH_TIMER); RACCOON_OAUTH_TIMER = null; }
+}
+
 function openRaccoonAuth(){
-  toast("小浣熊添加账号弹窗尚未接入；可先通过 /raccoon/accounts/import 导入 auth.json。", "warn");
+  const modal = document.getElementById("raccoonAuthModal");
+  if(modal) modal.classList.add("show");
+  const input = document.getElementById("raccoonAuthInput");
+  if(input) input.value = "";
+  const url = document.getElementById("raccoonAuthUrl");
+  if(url) url.textContent = "";
+  const cb = document.getElementById("raccoonAuthCallback");
+  if(cb) cb.value = "";
+  stopRaccoonOauthPolling();
+  RACCOON_OAUTH_SESSION = "";
+  RACCOON_OAUTH_DEADLINE = 0;
+  setRaccoonOauthStatus("可粘贴 auth.json 导入，或点击「开始浏览器授权」。", null);
+}
+
+function closeRaccoonAuth(){
+  stopRaccoonOauthPolling();
+  RACCOON_OAUTH_SESSION = "";
+  RACCOON_OAUTH_DEADLINE = 0;
+  const modal = document.getElementById("raccoonAuthModal");
+  if(modal) modal.classList.remove("show");
+}
+
+async function startRaccoonOauth(btn){
+  stopRaccoonOauthPolling();
+  RACCOON_OAUTH_SESSION = "";
+  RACCOON_OAUTH_DEADLINE = 0;
+  const url = document.getElementById("raccoonAuthUrl");
+  if(url) url.textContent = "";
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/raccoon/accounts/oauth/start", {});
+    RACCOON_OAUTH_SESSION = r.session_id || "";
+    if(!RACCOON_OAUTH_SESSION) throw new Error("服务端没有返回授权会话");
+    if(url) url.textContent = r.auth_url || "";
+    setRaccoonOauthStatus("已生成授权链接，正在等待授权…", null);
+    RACCOON_OAUTH_DEADLINE = Date.now() + 300000;
+    RACCOON_OAUTH_TIMER = setInterval(function(){ pollRaccoonOauth(true); }, 1500);
+  }catch(e){
+    setRaccoonOauthStatus("授权发起失败: " + e.message, false);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function pollRaccoonOauth(silent){
+  if(!RACCOON_OAUTH_SESSION) return;
+  if(RACCOON_OAUTH_DEADLINE && Date.now() > RACCOON_OAUTH_DEADLINE){
+    stopRaccoonOauthPolling();
+    RACCOON_OAUTH_SESSION = "";
+    setRaccoonOauthStatus("授权超时，请重新发起或导入 auth.json", false);
+    return;
+  }
+  try{
+    const r = await postJSON("/raccoon/accounts/oauth/poll",
+                             {session_id: RACCOON_OAUTH_SESSION});
+    if(r.status === "pending"){
+      setRaccoonOauthStatus(r.message || "等待浏览器完成授权…", null);
+      return;
+    }
+    if(r.status === "done" && r.ok){
+      stopRaccoonOauthPolling();
+      RACCOON_OAUTH_SESSION = "";
+      RACCOON_OAUTH_DEADLINE = 0;
+      setRaccoonOauthStatus("✓ " + (r.message || "登录成功"), true);
+      await Promise.all([
+        loadRaccoonOverview(true).catch(function(){}),
+        loadAccounts().catch(function(){}),
+        refreshActiveRealm().catch(function(){}),
+      ]);
+      if(window.updateUI) window.updateUI();
+      closeRaccoonAuth();
+      return;
+    }
+    stopRaccoonOauthPolling();
+    RACCOON_OAUTH_SESSION = "";
+    RACCOON_OAUTH_DEADLINE = 0;
+    setRaccoonOauthStatus("✗ " + (r.message || "授权失败"), false);
+  }catch(e){
+    if(!silent) setRaccoonOauthStatus("查询失败: " + e.message, false);
+  }
+}
+
+async function submitRaccoonCallback(btn){
+  const input = document.getElementById("raccoonAuthCallback");
+  const callbackUrl = input ? input.value.trim() : "";
+  if(!RACCOON_OAUTH_SESSION || !callbackUrl){
+    setRaccoonOauthStatus("请先发起授权，再粘贴完整回调地址", false);
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/raccoon/accounts/oauth/callback", {
+      session_id: RACCOON_OAUTH_SESSION,
+      callback_url: callbackUrl,
+    });
+    if(input) input.value = "";
+    setRaccoonOauthStatus(r.message || "回调已接收，继续等待授权…", null);
+    await pollRaccoonOauth(true);
+  }catch(e){
+    setRaccoonOauthStatus("中转失败: " + e.message, false);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function openRaccoonAuthUrl(){
+  const el = document.getElementById("raccoonAuthUrl");
+  const url = el ? el.textContent.trim() : "";
+  if(url) window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function copyRaccoonAuthUrl(){
+  const el = document.getElementById("raccoonAuthUrl");
+  const url = el ? el.textContent.trim() : "";
+  if(!url){
+    setRaccoonOauthStatus("还没有授权链接，请先点击「开始浏览器授权」", false);
+    return;
+  }
+  try{
+    await writeClipboard(url);
+    toast("授权链接已复制", "ok");
+  }catch(e){
+    setRaccoonOauthStatus("复制失败: " + e.message, false);
+  }
+}
+
+function parseRaccoonAuthText(text){
+  const raw = String(text || "").trim();
+  if(!raw) return {error: "请输入 auth.json 内容"};
+  let parsed;
+  try{
+    parsed = JSON.parse(raw);
+  }catch(e){
+    return {error: "auth.json 不是合法的 JSON: " + e.message};
+  }
+  if(!parsed || typeof parsed !== "object" || Array.isArray(parsed)){
+    return {error: "auth.json 必须是 JSON 对象"};
+  }
+  // 兼容桌面客户端的 {"auth": {...}}、auth 接口的 {"data": {...}} 以及扁平对象。
+  const auth = (parsed.auth && typeof parsed.auth === "object" && !Array.isArray(parsed.auth))
+    ? parsed.auth : parsed;
+  const data = (auth.data && typeof auth.data === "object" && !Array.isArray(auth.data))
+    ? auth.data : null;
+  const token = auth.access_token || (data && data.access_token);
+  if(!token || !String(token).trim()){
+    return {error: "auth.json 缺少 access_token"};
+  }
+  return {auth: auth};
+}
+
+async function importRaccoonAuth(btn){
+  const input = document.getElementById("raccoonAuthInput");
+  const parsed = parseRaccoonAuthText(input ? input.value : "");
+  if(parsed.error){
+    setRaccoonOauthStatus(parsed.error, false);
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/raccoon/accounts/import", {auth: parsed.auth});
+    setRaccoonOauthStatus("✓ " + (r.message || "账号已导入"), true);
+    toast("小浣熊账号已导入", "ok");
+    await Promise.all([
+      loadRaccoonOverview(true).catch(function(){}),
+      loadAccounts().catch(function(){}),
+      refreshActiveRealm().catch(function(){}),
+    ]);
+    if(window.updateUI) window.updateUI();
+    closeRaccoonAuth();
+  }catch(e){
+    setRaccoonOauthStatus("导入失败: " + e.message, false);
+    toast("导入失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
 
 let CODEARTS_OAUTH_SESSION = "";
@@ -8818,6 +9133,68 @@ async function testCodeartsConnection(btn){
     toast("CodeArts 连接正常（" + ((r.models != null) ? r.models : 0) + " 个模型）", "ok");
   }catch(e){
     toast("CodeArts 连接失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function renderRaccoonSettings(cfg){
+  if(!cfg) return;
+  const enabled = cfg.enabled === true || cfg.configured === true;
+  const enabledInput = document.getElementById("raccoonEnabled");
+  if(enabledInput) enabledInput.checked = enabled;
+  const timeout = document.getElementById("raccoonTimeout");
+  if(timeout) timeout.value = cfg.timeout_seconds || 60;
+  const stream = document.getElementById("raccoonStreamTimeout");
+  if(stream) stream.value = cfg.stream_timeout_seconds || 900;
+  const conc = document.getElementById("raccoonMaxConcurrent");
+  if(conc) conc.value = cfg.max_concurrent || 1;
+  const state = document.getElementById("setRaccoonState");
+  if(state){
+    state.textContent = enabled ? "(已启用)" : "(未启用)";
+    state.style.color = enabled ? "var(--accent2)" : "var(--dim)";
+  }
+  const hint = document.getElementById("setRaccoonHint");
+  if(hint){
+    hint.textContent = (cfg.accounts || 0) + " 个账号，"
+      + (cfg.healthy || 0) + " 个健康；账号在「账号」页的小浣熊视图管理。";
+  }
+}
+
+async function saveRaccoonSettings(btn){
+  const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  const payload = {
+    enabled: !!(document.getElementById("raccoonEnabled") || {}).checked,
+    timeout_seconds: parseFloat(val("raccoonTimeout")) || 60,
+    stream_timeout_seconds: parseFloat(val("raccoonStreamTimeout")) || 900,
+    max_concurrent: parseInt(val("raccoonMaxConcurrent"), 10) || 1,
+  };
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/settings/save", {raccoon: payload});
+    if(r && r.warning) toast(r.warning, "warn");
+    else toast("小浣熊设置已保存", "ok");
+    if(r && r.raccoon) renderRaccoonSettings(r.raccoon);
+    await refreshActiveRealm();
+    window.updateUI();
+  }catch(e){
+    toast("保存失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function testRaccoon(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/raccoon/test", {});
+    if(r && r.ok === false){
+      toast("小浣熊连接失败: " + (r.message || "未知错误"), "bad");
+    }else{
+      toast("小浣熊连接正常（" + ((r.models != null) ? r.models : 0) + " 个模型）", "ok");
+    }
+  }catch(e){
+    toast("小浣熊连接失败: " + e.message, "bad");
   }finally{
     if(btn) btn.disabled = false;
   }
@@ -11453,7 +11830,7 @@ function activityTaskLabel(r){
 }
 const ACTIVITY_TRIGGER_LABEL = {scheduler: '定时', manual: '手动', account_add: '添加账号',
                                 account_import: '导入', unknown: '未知'};
-const ACTIVITY_REALM_LABEL = {cn: '国内版', intl: '国际版', codearts: 'CodeArts'};
+const ACTIVITY_REALM_LABEL = {cn: '国内版', intl: '国际版', codearts: 'CodeArts', raccoon: '小浣熊'};
 
 function activityValue(id){
   const el = document.getElementById(id);
@@ -13746,6 +14123,7 @@ async function bootPanel(){
   if(hint && PANEL_STATUS.panel_password_is_default) hint.style.display = 'block';
   const cryptoWarn = document.getElementById('panelCryptoWarning');
   if(cryptoWarn && PANEL_STATUS.crypto_ok === false) cryptoWarn.style.display = 'block';
+  if(PANEL_STATUS.raccoon) renderRaccoonSettings(PANEL_STATUS.raccoon);
   if(PANEL_STATUS.authenticated){
     panelHideGate();
     await startDashboard();
@@ -15389,6 +15767,7 @@ async function loadSettings(showToast){
     }));
     renderKeyRows();
     renderCodeartsSettings(data.codearts);
+    renderRaccoonSettings(data.raccoon);
     updateUI();
     const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
     set('setProject', data.project);
@@ -17227,7 +17606,8 @@ function renderDeletedKeyRows(){
   const rows = DELETED_KEY_ROWS.map(k => {
     const realmLbl = (k.realm === 'intl') ? '固定国际版出口'
       : ((k.realm === 'cn') ? '固定国内版出口'
-        : ((k.realm === 'codearts') ? '固定 CodeArts 出口' : '跟随面板切换'));
+        : ((k.realm === 'codearts') ? '固定 CodeArts 出口'
+          : ((k.realm === 'raccoon') ? '固定小浣熊出口' : '跟随面板切换')));
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
       + '<span>' + esc(realmLbl) + '</span>'
@@ -17258,7 +17638,9 @@ function renderKeyRows(){
     if(row._editing){
       const realmChoices = REALM_CHOICES.concat(
         (window.REALM_OPTIONS || []).includes('codearts')
-          ? [['codearts', '固定 CodeArts 出口']] : []);
+          ? [['codearts', '固定 CodeArts 出口']] : [],
+        (window.REALM_OPTIONS || []).includes('raccoon')
+          ? [['raccoon', '固定小浣熊出口']] : []);
       const options = realmChoices.map(([val, lbl]) =>
         '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
       ).join('');
@@ -17340,6 +17722,8 @@ function renderKeyRows(){
       ? '<span class="realm-badge-intl" style="font-size:11px">固定国际版出口</span>'
       : (row.realm === 'cn')
       ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
+      : (row.realm === 'raccoon')
+      ? '<span class="realm-badge-raccoon" style="font-size:11px">固定小浣熊出口</span>'
       : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
 
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
@@ -19924,6 +20308,8 @@ function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
+  if(k.realm === 'codearts') return '<span class="realm-tag realm-codearts" style="font-size:10px">CodeArts</span>';
+  if(k.realm === 'raccoon') return '<span class="realm-tag realm-raccoon" style="font-size:10px">小浣熊</span>';
   // realm 为空的 Key 不绑出口，而是跟着模型走：它可能两个出口都用过，
   // 那时代理返回的积分是两个价格体系相加的结果，必须说出来。
   if(k.cross_realm) return '<span class="badge warn" style="font-size:10px">跟随 · 混合</span>';
@@ -20664,17 +21050,22 @@ const dimDefs = {
     ],
     rows(){
       const a = state.analytics; if (!a) return [];
-      return (a.accounts || []).map(acc => ({
-        key: acc.uid,
-        who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag ${acc.realm === 'intl' ? 'realm-intl' : 'realm-cn'}">${acc.realm === 'intl' ? '国际版' : '国内版'}</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
-        req: acc.window.requests,
-        tok: acc.window.total_tokens,
-        tokSub: `思考 ${fmtCompact(acc.window.reasoning_tokens)} · 缓存 ${fmtCompact(acc.window.cached_tokens)}`,
-        speed: acc.window.speed_avg,
-        cache: acc.window.cache_hit_pct,
-        credit: acc.window.credit != null ? Number(acc.window.credit).toFixed(2) : '—',
-        cost: acc.window.cost_cny,
-      }));
+      return (a.accounts || []).map(acc => {
+        const realm = acc.realm === 'cn' ? ['cn', '国内版']
+          : (acc.realm === 'codearts' ? ['codearts', 'CodeArts']
+          : (acc.realm === 'raccoon' ? ['raccoon', '小浣熊'] : ['intl', '国际版']));
+        return {
+          key: acc.uid,
+          who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag realm-${realm[0]}">${realm[1]}</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
+          req: acc.window.requests,
+          tok: acc.window.total_tokens,
+          tokSub: `思考 ${fmtCompact(acc.window.reasoning_tokens)} · 缓存 ${fmtCompact(acc.window.cached_tokens)}`,
+          speed: acc.window.speed_avg,
+          cache: acc.window.cache_hit_pct,
+          credit: acc.window.credit != null ? Number(acc.window.credit).toFixed(2) : '—',
+          cost: acc.window.cost_cny,
+        };
+      });
     }
   },
   key: {
