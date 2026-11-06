@@ -2462,8 +2462,8 @@ def cost_for_row(row, details=True, enabled=None):
         return cost
     model = row.get("model")
     pid = row.get("cost_policy")
-    if pid == "codearts:unpriced":
-        # CodeArts 没有 WorkBuddy 的积分/价目口径，显式标成不可计价；
+    if pid in ("codearts:unpriced", "raccoon:unpriced"):
+        # CodeArts/Raccoon 没有 WorkBuddy 的积分/价目口径，显式标成不可计价；
         # 不能让未知 pid 回退到内置价表把同名模型估出一个假价格。
         cost = {"cny": 0.0, "known": False, "band": None,
                 "source": pid, "source_at": None, "backfilled": False}

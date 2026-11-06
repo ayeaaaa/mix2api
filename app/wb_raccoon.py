@@ -715,6 +715,7 @@ class RaccoonAccount(object):
 
     realm = "raccoon"
     product = "raccoon"
+    chat_path = "/api/web/llm/v2/chat/completions"
 
     def __init__(self, auth, pool):
         self.auth = dict(auth)
@@ -741,6 +742,10 @@ class RaccoonAccount(object):
         self.auth_generation = 0
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
+
+    def chat_base_url(self):
+        """Current upstream base; a test/override can move BASE_URL."""
+        return BASE_URL
 
     # ---- 凭证 ----
     def expires_at(self):
@@ -1192,6 +1197,28 @@ def invalidate_pool(accounts_dir=None):
             _POOLS.clear()
         else:
             _POOLS.pop(os.path.abspath(str(accounts_dir)), None)
+
+
+def apply_proxy_slots(accounts_dir, slots=None):
+    """Re-resolve Raccoon account exits after the panel saves slots."""
+    pool_for(accounts_dir).apply_proxy_slots(slots)
+
+
+def drop_missing_bindings(accounts_dir, slots):
+    """Clear Raccoon bindings that point at a slot which no longer exists."""
+    valid = {entry["id"] for entry in slots}
+    pool = pool_for(accounts_dir)
+    changed = 0
+    for acct in list(pool.accounts):
+        if acct.proxy_slot and acct.proxy_slot not in valid:
+            acct.proxy_slot = ""
+            auth = dict(acct.auth)
+            auth.pop("proxySlot", None)
+            acct.auth = save_auth(accounts_dir, auth)
+            changed += 1
+    # Always re-resolve: a surviving slot may have had its URL edited.
+    pool.apply_proxy_slots(slots)
+    return changed
 
 
 # ---------------------------------------------------------------------------

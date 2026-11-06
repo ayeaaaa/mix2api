@@ -79,6 +79,7 @@ import wb_media
 import wb_media_client
 import wb_media_tasks
 import wb_pricing
+import wb_raccoon
 import wb_usage_io
 import wb_settings
 import wb_webprompts
@@ -1600,9 +1601,12 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         # 媒体模型不在 chat 价目表里，current_policy_id() 会给一个 chat 的默认策略，
         # 那会让「按价目表统计」把媒体请求算进某个 chat 策略的样本里。
         row["cost_policy"] = "media"
+    elif realm in ("codearts", "raccoon"):
+        # Provider-managed exits have no WorkBuddy credit price; a same-named
+        # model must not be estimated from the local price table.
+        row["cost_policy"] = "%s:unpriced" % realm
     else:
-        row["cost_policy"] = ("codearts:unpriced" if realm == "codearts"
-                              else wb_pricing.current_policy_id(model))
+        row["cost_policy"] = wb_pricing.current_policy_id(model)
     # Only when the request had one: the panel shows a chip for rows that carry
     # the field, and a model without reasoning controls has nothing to report.
     if effort:
@@ -1648,6 +1652,10 @@ def record_upstream_usage(upstream, requested_model, usage, **kwargs):
     billed_model = getattr(upstream, "_wb_billed_model", requested_model)
     # 出口归因（#743）：每条完成行都带上响应对象的账号槽位与实际出口。
     account = POOL.get(getattr(upstream, "_wb_account_uid", "")) if POOL else None
+    if account is None and hasattr(upstream, "acct"):
+        # Provider-managed exits (CodeArts/Raccoon) keep their account object
+        # on the stream; it is not part of the WorkBuddy pool.
+        account = getattr(upstream, "acct", None)
     if account is not None:
         kwargs.setdefault("proxy_slot", account.proxy_slot)
         kwargs.setdefault("proxy_exit", egress_exit(account.proxy))
@@ -6825,8 +6833,8 @@ def realm_state_file():
 def _realm_selectable(realm):
     """这个出口现在能不能被选中。
 
-    intl/cn 永远可用；codearts 只有配置完整时才可用，避免持久化了一个已经
-    被删掉/关闭的出口，进程起来后所有未绑定 Key 都打到 503。
+    intl/cn 永远可用；codearts/raccoon 只有配置完整或已启用时才可用，避免
+    持久化了一个已经被删掉/关闭的出口，进程起来后所有未绑定 Key 都打到 503。
     """
     if realm in ("intl", "cn"):
         return True
@@ -6835,14 +6843,21 @@ def _realm_selectable(realm):
             return wb_settings.codearts_configured(ACCOUNTS_DIR)
         except Exception:
             return False
+    if realm == "raccoon":
+        try:
+            return wb_raccoon.configured(ACCOUNTS_DIR)
+        except Exception:
+            return False
     return False
 
 
 def realm_options():
-    """看板/`/realm` 的出口选项。CodeArts 未配置时不出现在列表里。"""
+    """看板/`/realm` 的出口选项。未配置的 CodeArts/Raccoon 不出现在列表里。"""
     options = ["intl", "cn"]
     if _realm_selectable("codearts"):
         options.append("codearts")
+    if _realm_selectable("raccoon"):
+        options.append("raccoon")
     return options
 
 
@@ -6858,6 +6873,18 @@ def reconcile_codearts_realm():
     return False
 
 
+def reconcile_raccoon_realm():
+    """Raccoon 被关闭/删配置后，把默认出口从 raccoon 收敛回 intl。
+
+    返回 True 表示真的发生了收敛；调用方（设置保存）据此给看板带一条 warning。
+    """
+    if CURRENT_REALM == "raccoon" and not _realm_selectable("raccoon"):
+        save_persisted_realm("intl")
+        log("raccoon realm disabled; default exit reset to intl")
+        return True
+    return False
+
+
 def load_persisted_realm():
     global CURRENT_REALM
     path = realm_state_file()
@@ -6866,10 +6893,10 @@ def load_persisted_realm():
             with open(path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
                 r = d.get("realm")
-                if r in ("intl", "cn", "codearts"):
-                    if r == "codearts" and not _realm_selectable(r):
-                        log("persisted realm 'codearts' is not configured; "
-                            "falling back to intl")
+                if r in ("intl", "cn", "codearts", "raccoon"):
+                    if r in ("codearts", "raccoon") and not _realm_selectable(r):
+                        log("persisted realm '%s' is not configured; "
+                            "falling back to intl" % r)
                         return CURRENT_REALM
                     CURRENT_REALM = r
                     return CURRENT_REALM
@@ -6878,8 +6905,8 @@ def load_persisted_realm():
     return CURRENT_REALM
 def save_persisted_realm(realm):
     global CURRENT_REALM
-    if realm in ("intl", "cn", "codearts"):
-        if realm == "codearts" and not _realm_selectable(realm):
+    if realm in ("intl", "cn", "codearts", "raccoon"):
+        if realm in ("codearts", "raccoon") and not _realm_selectable(realm):
             return CURRENT_REALM
         CURRENT_REALM = realm
         try:
@@ -7267,6 +7294,14 @@ def proxy_slots_view():
     except Exception:
         # CodeArts is optional; a broken account file must not take down the
         # WorkBuddy proxy-slot panel.
+        pass
+    try:
+        for account in wb_raccoon.pool_for(ACCOUNTS_DIR).accounts:
+            slot_id = account.proxy_slot
+            if slot_id and not account.disabled:
+                counts[slot_id] = counts.get(slot_id, 0) + 1
+    except Exception:
+        # Raccoon is optional too; its account files cannot break the panel.
         pass
     out = []
     for entry in wb_settings.proxy_slots(ACCOUNTS_DIR):
@@ -11318,6 +11353,7 @@ def runtime_settings_view():
         "identity": wb_settings.identity_config(ACCOUNTS_DIR),
         "identity_version_defaults": wb_identity.default_versions(),
         "codearts": wb_codearts.masked_config(ACCOUNTS_DIR),
+        "raccoon": wb_raccoon.masked_config(ACCOUNTS_DIR),
         "daily_activity": wb_settings.daily_activity_enabled(ACCOUNTS_DIR),
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "daily_chat_web_timeout":
@@ -20709,8 +20745,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not realm or not model:
             return ""
-        if realm == "codearts":
-            # CodeArts 的模型名和 WorkBuddy 大量重叠（GLM-5.2、
+        if realm in ("codearts", "raccoon"):
+            # CodeArts/Raccoon 的模型名和 WorkBuddy 大量重叠（GLM-5.2、
             # deepseek-v4-pro-0813…），按模型名猜出口在这里必然误判。出口已经
             # 由 Key/面板显式选定，直接放行。
             return ""
@@ -21069,6 +21105,16 @@ class Handler(BaseHTTPRequestHandler):
             # CodeArts 只是子字段：它掉线不能把整体 /health 变红。
             info["codearts"] = {"configured": False, "ok": False,
                                 "error": str(exc)[:200]}
+        try:
+            raccoon_cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+            raccoon = {"configured": wb_raccoon.configured_config(raccoon_cfg),
+                       "base_url": wb_raccoon.BASE_URL}
+            raccoon.update(wb_raccoon.health(raccoon_cfg))
+            info["raccoon"] = raccoon
+        except Exception as exc:
+            # 与 CodeArts 一样，子出口掉线不能把整体 /health 变红。
+            info["raccoon"] = {"configured": False, "ok": False,
+                               "error": str(exc)[:200]}
         # 媒体能力：`/health` 是运维第一眼看的地方，早给比晚给好。队列深度等视频
         # 任务表落地后再补（生图是同步请求，没有队列可报）。
         media_cfg = wb_settings.media_config(ACCOUNTS_DIR)
@@ -21129,10 +21175,36 @@ class Handler(BaseHTTPRequestHandler):
         }
         return self._json(200, payload)
 
+    def _get_raccoon_models(self):
+        """Raccoon 出口的模型目录：裸 ID，失败时由 provider 回退种子目录。"""
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        if not wb_raccoon.configured_config(cfg):
+            return self._error(
+                503, "Raccoon 出口未启用：请到设置页打开「启用 Raccoon 出口」。",
+                "invalid_request_error")
+        try:
+            data = wb_raccoon.model_entries(cfg)
+        except wb_raccoon.RaccoonAuthError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        except wb_raccoon.RaccoonError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        if wb_settings.filter_models_by_key(ACCOUNTS_DIR) and self.key_entry:
+            data = [m for m in data
+                    if wb_settings.key_allows_model(self.key_entry, m.get("id"))]
+        payload = {
+            "object": "list",
+            "data": data,
+            "realm": "raccoon",
+            "catalog": wb_raccoon.models_meta(cfg),
+        }
+        return self._json(200, payload)
+
     def _get_v1_models(self):
         if not self._authorized():
             return
         req_realm = self._request_realm() or CURRENT_REALM
+        if req_realm == "raccoon":
+            return self._get_raccoon_models()
         if req_realm == "codearts":
             return self._get_codearts_models()
         try:
@@ -22522,11 +22594,15 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     realm = str(stored.get("realm") or "").strip().lower()
                 if realm not in wb_settings.REALMS:
-                    return self._error(400, "realm must be intl, cn, codearts or empty",
+                    return self._error(400, "realm must be intl, cn, codearts, raccoon or empty",
                                        "invalid_request_error")
                 if realm == "codearts" and not _realm_selectable("codearts"):
                     return self._error(
                         400, "codearts realm is not configured; enable it in settings first",
+                        "invalid_request_error")
+                if realm == "raccoon" and not _realm_selectable("raccoon"):
+                    return self._error(
+                        400, "raccoon realm is not configured; enable it in settings first",
                         "invalid_request_error")
                 # An older cached panel does not know this field at all, so a
                 # row that omits it keeps whatever is stored instead of
@@ -23230,6 +23306,21 @@ class Handler(BaseHTTPRequestHandler):
             if reconcile_codearts_realm():
                 reply["warning"] = ("CodeArts 出口已停用，默认出口已切回国际版；"
                                     "绑定 CodeArts 的 Key 需要改绑后才能继续使用。")
+        if "raccoon" in payload:
+            raw = payload.get("raccoon")
+            if not isinstance(raw, dict):
+                return self._error(400, "raccoon must be an object",
+                                   "invalid_request_error")
+            try:
+                wb_raccoon.save_config(ACCOUNTS_DIR, raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            wb_raccoon.invalidate_models()
+            wb_raccoon.invalidate_health()
+            reply["raccoon"] = wb_raccoon.masked_config(ACCOUNTS_DIR)
+            if reconcile_raccoon_realm():
+                reply["warning"] = ("Raccoon 出口已停用，默认出口已切回国际版；"
+                                    "绑定 Raccoon 的 Key 需要改绑后才能继续使用。")
         new_key = payload.get("api_key")
         if new_key is not None:
             new_key = str(new_key).strip()
@@ -23283,6 +23374,14 @@ class Handler(BaseHTTPRequestHandler):
                         "removed slots" % dropped_ca)
             except Exception as exc:
                 log("proxy slots: CodeArts rebind failed: %s" % exc)
+            try:
+                dropped_r = wb_raccoon.drop_missing_bindings(ACCOUNTS_DIR, saved)
+                if dropped_r:
+                    log("proxy slots: unbound %d Raccoon account(s) from "
+                        "removed slots" % dropped_r)
+                wb_raccoon.apply_proxy_slots(ACCOUNTS_DIR, saved)
+            except Exception as exc:
+                log("proxy slots: Raccoon rebind failed: %s" % exc)
             log("proxy slots saved: %d slot(s)" % len(saved))
             return self._json(200, {"slots": proxy_slots_view()})
         if path == "/proxy/slots/test":
@@ -24334,12 +24433,16 @@ class Handler(BaseHTTPRequestHandler):
                                     "panel session, not an API key",
                                "invalid_request_error")
         new_realm = payload.get("realm")
-        if new_realm not in ("intl", "cn", "codearts"):
-            return self._error(400, "realm must be intl, cn or codearts",
+        if new_realm not in ("intl", "cn", "codearts", "raccoon"):
+            return self._error(400, "realm must be intl, cn, codearts or raccoon",
                                "invalid_request_error")
         if new_realm == "codearts" and not _realm_selectable("codearts"):
             return self._error(
                 400, "codearts realm is not configured; enable it in settings first",
+                "invalid_request_error")
+        if new_realm == "raccoon" and not _realm_selectable("raccoon"):
+            return self._error(
+                400, "raccoon realm is not configured; enable it in settings first",
                 "invalid_request_error")
         save_persisted_realm(new_realm)
         return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
@@ -24918,6 +25021,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_codearts_responses(
                     chat_req, session_key, model, want_stream, compaction,
                     custom_names, request_meta, ns_map, fp, t_start)
+            if req_realm == "raccoon":
+                return self._handle_raccoon_responses(
+                    chat_req, session_key, model, want_stream, compaction,
+                    custom_names, request_meta, ns_map, fp, t_start)
             upstream, account, effort = open_upstream_with_fallback(
                 chat_req, session_key=session_key, target_realm=req_realm,
                 allow_realm_fallback=not explicit_realm,
@@ -25269,6 +25376,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._anthropic_error(400, key_blocked, "invalid_request_error")
             if req_realm == "codearts":
                 return self._handle_codearts_messages(
+                    chat_req, session_key, model, want_stream, fp, t_start)
+            if req_realm == "raccoon":
+                return self._handle_raccoon_messages(
                     chat_req, session_key, model, want_stream, fp, t_start)
             upstream, account, effort = open_upstream_with_fallback(
                 chat_req, session_key=session_key, target_realm=req_realm,
@@ -25688,6 +25798,12 @@ class Handler(BaseHTTPRequestHandler):
             # CodeArts 不走 WorkBuddy 的 build_upstream_body / 账号池：请求体、
             # 超时、错误映射都由 wb_codearts 负责，回程复用下面的处理器。
             return self._handle_codearts_chat(payload, session_key, req_realm)
+        if req_realm == "raccoon":
+            blocked = self._banned_model_error(payload.get("model")) or self._key_model_error(payload.get("model"))
+            if blocked:
+                return self._error(400, blocked, "invalid_request_error")
+            # Raccoon 同样拥有自己的请求体、账号池和错误映射。
+            return self._handle_raccoon_chat(payload, session_key, req_realm)
         forwarded = build_upstream_body(payload)
         given = client_effort_of(payload) or payload.get("reasoning") \
             or payload.get("thinking") or payload.get("enable_thinking")
@@ -25890,6 +26006,118 @@ class Handler(BaseHTTPRequestHandler):
             return self._messages_nonstream_response(
                 upstream, model, fp, account, t_start, base_body=chat_req,
                 session_key=session_key, realm="codearts", effort=effort)
+
+    def _open_raccoon_chat(self, payload, session_key):
+        """选号并打开 Raccoon 的 SSE 上游；返回 (stream, account, model)。"""
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        if not wb_raccoon.configured_config(cfg):
+            # 本地配置问题，按 400 回：502 会让人以为上游坏了。
+            raise wb_raccoon.RaccoonBadRequest(
+                "Raccoon 出口未启用：请到设置页打开「启用 Raccoon 出口」。")
+        return wb_raccoon.open_chat(
+            cfg, payload, session_key,
+            allowed_accounts=self._key_allowed_accounts())
+
+    def _raccoon_error(self, model, exc, t_start, realm):
+        """把 Raccoon 异常落一条用量行，再回一个可读的 OpenAI 错误。"""
+        elapsed = int((time.time() - t_start) * 1000)
+        err_type = "invalid_request_error"
+        if isinstance(exc, wb_raccoon.RaccoonBadRequest):
+            status = 400
+        elif isinstance(exc, wb_raccoon.RaccoonAuthError):
+            status = 502
+        elif isinstance(exc, wb_raccoon.RaccoonNotFound):
+            status = 409
+        elif isinstance(exc, wb_raccoon.RaccoonRateLimited):
+            status, err_type = 429, "rate_limit_error"
+        elif isinstance(exc, wb_raccoon.RaccoonUnavailable):
+            status = 503
+        else:
+            status = 502
+        record_error(model, status, str(exc)[:200], elapsed_ms=elapsed,
+                     realm=realm, key=self._key_id())
+        return self._error(status, str(exc), err_type)
+
+    def _handle_raccoon_chat(self, payload, session_key, realm):
+        """`/v1/chat/completions` 的 Raccoon 分支。"""
+        model = payload.get("model") or "raccoon-090dd3"
+        want_stream = bool(payload.get("stream"))
+        t_start = time.time()
+        fp = prompt_fingerprint(payload.get("messages"))
+        try:
+            upstream, account, billed_model = self._open_raccoon_chat(
+                payload, session_key)
+        except wb_raccoon.RaccoonError as exc:
+            return self._raccoon_error(model, exc, t_start, realm)
+        log("raccoon chat: model=%s stream=%s msgs=%d key=%s"
+            % (billed_model or model, want_stream,
+               len(payload.get("messages") or []),
+               key_label(self._key_id()) or "-"))
+        with upstream:
+            if want_stream:
+                return self._chat_stream_response(
+                    upstream, model, fp, account, t_start, realm=realm)
+            return self._chat_nonstream_response(
+                upstream, model, fp, account, t_start, realm=realm)
+
+    def _handle_raccoon_responses(self, chat_req, session_key, model, want_stream,
+                                  compaction, custom_names, request_meta, ns_map,
+                                  fp, t_start):
+        """`/v1/responses` 的 Raccoon 分支。"""
+        try:
+            upstream, account, billed_model = self._open_raccoon_chat(
+                chat_req, session_key)
+        except wb_raccoon.RaccoonError as exc:
+            return self._raccoon_error(model, exc, t_start, "raccoon")
+        effort = chat_req.get("reasoning_effort")
+        with upstream:
+            if compaction:
+                return self._responses_compaction_response(
+                    upstream, model, fp, account, t_start, want_stream,
+                    session_key=session_key, realm="raccoon")
+            if want_stream:
+                return self._responses_stream_response(
+                    upstream, model, custom_names, request_meta, fp, account,
+                    t_start, ns_map, base_body=chat_req, session_key=session_key,
+                    realm="raccoon", effort=effort)
+            return self._responses_nonstream_response(
+                upstream, model, custom_names, request_meta, fp, account,
+                t_start, ns_map, base_body=chat_req, session_key=session_key,
+                realm="raccoon", effort=effort, allow_web_tools=False)
+
+    def _raccoon_anthropic_error(self, model, exc, t_start, realm):
+        if isinstance(exc, wb_raccoon.RaccoonBadRequest):
+            status, etype = 400, "invalid_request_error"
+        elif isinstance(exc, wb_raccoon.RaccoonNotFound):
+            status, etype = 409, "invalid_request_error"
+        elif isinstance(exc, wb_raccoon.RaccoonRateLimited):
+            status, etype = 429, "rate_limit_error"
+        elif isinstance(exc, wb_raccoon.RaccoonUnavailable):
+            status, etype = 503, "api_error"
+        else:
+            status, etype = 502, "api_error"
+        record_error(model, status, str(exc)[:200],
+                     elapsed_ms=int((time.time() - t_start) * 1000),
+                     realm=realm, key=self._key_id())
+        return self._anthropic_error(status, str(exc), etype)
+
+    def _handle_raccoon_messages(self, chat_req, session_key, model, want_stream,
+                                 fp, t_start):
+        """Anthropic Messages 的 Raccoon 分支。"""
+        try:
+            upstream, account, billed_model = self._open_raccoon_chat(
+                chat_req, session_key)
+        except wb_raccoon.RaccoonError as exc:
+            return self._raccoon_anthropic_error(model, exc, t_start, "raccoon")
+        effort = chat_req.get("reasoning_effort")
+        with upstream:
+            if want_stream:
+                return self._messages_stream_response(
+                    upstream, model, fp, account, t_start, base_body=chat_req,
+                    session_key=session_key, realm="raccoon", effort=effort)
+            return self._messages_nonstream_response(
+                upstream, model, fp, account, t_start, base_body=chat_req,
+                session_key=session_key, realm="raccoon", effort=effort)
 
     def _chat_stream_response(self, upstream, model, fp, account, t_start, effort=None,
                               reopen=None, headers_sent=False, retried=False,
