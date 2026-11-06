@@ -70,6 +70,7 @@ wb_probes.py
 wb_prompt.py
 wb_proxy.py
 wb_quota_scan.py
+wb_raccoon.py
 wb_scheduler.py
 wb_settings.py
 wb_tasks.py
