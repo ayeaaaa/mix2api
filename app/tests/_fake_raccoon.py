@@ -6,9 +6,9 @@ real gateway or a real account. Tokens are unsigned JWT-shaped strings: they
 carry a `sub` and `exp` claim so the provider can derive the UID and refresh
 window, but there is no signature to verify.
 
-Task 1 only needs the auth/refresh/catalog skeleton and a 501 chat placeholder;
-later tasks extend `FakeState.catalog` and the chat branch without changing the
-server lifecycle.
+Task 1 needs the auth/refresh/catalog skeleton and a 501 chat placeholder; Task 2
+adds the two-model catalog fixture and failure controls; later tasks extend the
+chat branch without changing the server lifecycle.
 
 The file name does not start with `_test_`, so `tests/run_all.py` treats it as
 a helper rather than a suite.
@@ -19,6 +19,38 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+CATALOG_FIXTURE = {
+    "code": 0,
+    "data": {
+        "categories": [
+            {
+                "type": "chat",
+                "default_model": "raccoon-090dd3",
+                "models": [
+                    {
+                        "name": "raccoon-090dd3",
+                        "display_name": "Raccoon-Work",
+                        "params": {"context_window": 1000000, "max_tokens": 100000},
+                        "tags": ["general", "code", "vision", "reasoning"],
+                    },
+                    {
+                        "name": "sn-glm-5-3",
+                        "display_name": "GLM-5-3",
+                        "params": {"context_window": 1000000, "max_tokens": 100000},
+                        "tags": ["code", "reasoning"],
+                    },
+                ],
+            }
+        ]
+    },
+}
+
+
+def default_catalog():
+    """A deep copy of the fixture so a test can mutate `state.catalog` safely."""
+    return json.loads(json.dumps(CATALOG_FIXTURE))
 
 
 def _b64url(raw):
@@ -55,21 +87,16 @@ class FakeState(object):
         self.refresh_status = 200
         self.refresh_body = None
         self.catalog_status = 200
+        # Task 2 failure control: a non-zero status wins over `catalog_status`.
+        self.catalog_error = 0
+        self.catalog_error_body = None
         self.exchange_status = 200
         self.exchange_body = None
         self.chat_status = 501
         self.code = "test-code"
         self.office_identity = "personal"
         self.office_org_name = "Raccoon Test"
-        # Task 2 replaces this with the real two-model fixture.
-        self.catalog = {
-            "code": 0,
-            "data": {
-                "categories": [
-                    {"type": "chat", "models": []},
-                ]
-            },
-        }
+        self.catalog = default_catalog()
         self.lock = threading.Lock()
 
     def reset_requests(self):
@@ -161,6 +188,12 @@ class _Handler(BaseHTTPRequestHandler):
             state.catalog_calls += 1
             if not self._authorized():
                 self._send_json(401, {"message": "invalid access token"})
+                return
+            if state.catalog_error:
+                self._send_json(
+                    state.catalog_error,
+                    state.catalog_error_body or {"message": "catalog failed"},
+                )
                 return
             if state.catalog_status != 200:
                 self._send_json(state.catalog_status, {"message": "catalog failed"})

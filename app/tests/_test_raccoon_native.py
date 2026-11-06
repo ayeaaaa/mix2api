@@ -19,7 +19,12 @@ ACCOUNTS = os.environ["ACCOUNTS_DIR"]
 
 import wb_settings  # noqa: E402
 import wb_raccoon as R  # noqa: E402
-from _fake_raccoon import make_jwt, start_server, stop_server  # noqa: E402
+from _fake_raccoon import (  # noqa: E402
+    default_catalog,
+    make_jwt,
+    start_server,
+    stop_server,
+)
 
 PASS = FAIL = 0
 
@@ -40,6 +45,7 @@ def reset():
     wb_settings.save(ACCOUNTS, {})
     R.invalidate_pool()
     R.invalidate_health()
+    R.invalidate_models()
 
 
 def reset_fake(expires_in=3600, refresh_token="refresh-1"):
@@ -51,6 +57,9 @@ def reset_fake(expires_in=3600, refresh_token="refresh-1"):
     state.refresh_status = 200
     state.refresh_body = None
     state.catalog_status = 200
+    state.catalog_error = 0
+    state.catalog_error_body = None
+    state.catalog = default_catalog()
     state.exchange_status = 200
     state.exchange_body = None
     state.chat_status = 501
@@ -142,7 +151,9 @@ def test_config_defaults_and_clamping():
         },
     )
     check("nan timeout falls back", saved["timeout_seconds"] == 60.0)
-    check("infinite stream timeout falls back", saved["stream_timeout_seconds"] == 900.0)
+    check(
+        "infinite stream timeout falls back", saved["stream_timeout_seconds"] == 900.0
+    )
     check("negative infinite ttl falls back", saved["models_ttl_seconds"] == 600.0)
     check("infinite max concurrent falls back", saved["max_concurrent"] == 1)
 
@@ -159,7 +170,9 @@ def test_config_defaults_and_clamping():
     )
     cfg = R.load_config(ACCOUNTS)
     check("load rejects nan timeout", cfg["timeout_seconds"] == 60.0)
-    check("load rejects infinite stream timeout", cfg["stream_timeout_seconds"] == 900.0)
+    check(
+        "load rejects infinite stream timeout", cfg["stream_timeout_seconds"] == 900.0
+    )
     check("load rejects negative infinite ttl", cfg["models_ttl_seconds"] == 600.0)
     check("load rejects infinite max concurrent", cfg["max_concurrent"] == 1)
 
@@ -261,6 +274,273 @@ def test_import_rejects_missing_access_token():
         check("rejects payload %r" % (payload,), raised)
     check("rejected import saved nothing", R.load_auths(ACCOUNTS) == [])
     check("rejected import stays disabled", R.configured(ACCOUNTS) is False)
+
+
+SEED_IDS = {
+    "raccoon-090dd3",
+    "raccoon-19b265",
+    "raccoon-405a1c",
+    "sn-sensenova-6-8-flash",
+    "sn-sensenova-6-8-flash-lite",
+    "sn-glm-5-3",
+    "sn-kimi-k3",
+    "sn-glm-5-3-flash",
+    "sn-deepseek-v4-1-flash-1017",
+}
+SEED_VISION = {
+    "raccoon-090dd3",
+    "sn-sensenova-6-8-flash",
+    "sn-sensenova-6-8-flash-lite",
+    "sn-kimi-k3",
+    "sn-glm-5-3-flash",
+    "sn-deepseek-v4-1-flash-1017",
+}
+SEED_REASONING = {
+    "raccoon-090dd3",
+    "sn-glm-5-3",
+    "sn-kimi-k3",
+    "sn-deepseek-v4-1-flash-1017",
+}
+
+
+def _catalog_account(token=None, refresh=None):
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token if token is None else token,
+                "refresh_token": (state.refresh_token if refresh is None else refresh),
+            }
+        ),
+    )
+    return R.pool_for(ACCOUNTS).add(auth)
+
+
+def test_catalog_normalizes_ids_limits_and_tags():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+
+    catalog = R.fetch_catalog(acct)
+    check("catalog source", catalog.get("source") == "raccoon", catalog)
+    check(
+        "catalog default model",
+        catalog.get("default_model") == "raccoon-090dd3",
+        catalog,
+    )
+    by_id = {item["id"]: item for item in catalog.get("models") or []}
+    check(
+        "catalog keeps the two chat models",
+        set(by_id) == {"raccoon-090dd3", "sn-glm-5-3"},
+        by_id,
+    )
+    raccoon = by_id.get("raccoon-090dd3") or {}
+    glm = by_id.get("sn-glm-5-3") or {}
+    check("catalog context window", raccoon.get("context_window") == 1000000, raccoon)
+    check("catalog max tokens", raccoon.get("max_tokens") == 100000, raccoon)
+    check("catalog display name", raccoon.get("name") == "Raccoon-Work", raccoon)
+    check("catalog vision tag", raccoon.get("vision") is True, raccoon)
+    check("catalog reasoning tag", raccoon.get("reasoning") is True, raccoon)
+    check("catalog keeps tags", "vision" in (raccoon.get("tags") or []), raccoon)
+    check("text model is not vision", glm.get("vision") is False, glm)
+    check("text model still reasons", glm.get("reasoning") is True, glm)
+    check("catalog fetched timestamp", catalog.get("fetched_at", 0) > 0, catalog)
+
+
+def test_catalog_401_refreshes_once_then_retries():
+    reset()
+    reset_fake()
+    # Valid-looking but not the fake's accepted token: ensure_token does not
+    # refresh eagerly, so the first catalog request is the 401 that matters.
+    acct = _catalog_account(token=make_jwt("pu-catalog-401", 3600))
+
+    catalog = R.fetch_catalog(acct)
+    check("catalog survives one 401", len(catalog.get("models") or []) == 2, catalog)
+    check("catalog refreshed once", state.refresh_calls == 1, state.refresh_calls)
+    check("catalog retried after 401", state.catalog_calls == 2, state.catalog_calls)
+    check("account uses rotated token", acct.auth["access_token"] == state.token)
+    check(
+        "account persisted rotated refresh token",
+        acct.auth["refresh_token"] == state.refresh_token,
+    )
+    requests = [item for item in state.requests if item["path"] == R.EP_CATALOG]
+    check("catalog sent bearer auth", len(requests) == 2, requests)
+    check(
+        "catalog retry carried the new token",
+        requests[-1]["headers"].get("authorization") == "Bearer " + state.token,
+        requests[-1]["headers"],
+    )
+
+
+def test_catalog_seed_fallback_when_upstream_fails():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    state.catalog_error = 500
+    # The top-level code is token-shaped on purpose: the warning must be
+    # redacted even though `_error_text` turns it into `error_code=...`.
+    state.catalog_error_body = {"code": state.token}
+
+    entries = R.model_entries(R.load_config(ACCOUNTS))
+    ids = [item["id"] for item in entries]
+    check("catalog failure does not raise", len(entries) == 9, entries)
+    check("catalog failure falls back to the nine seeds", set(ids) == SEED_IDS, ids)
+    meta = R.models_meta(R.load_config(ACCOUNTS))
+    check("catalog failure source", meta.get("source") == "seed", meta)
+    check("catalog failure warning", bool(meta.get("warning")), meta)
+    check(
+        "catalog failure does not leak the access token",
+        state.token not in json.dumps(meta, ensure_ascii=False),
+        meta,
+    )
+    check(
+        "catalog failure does not leak the refresh token",
+        state.refresh_token not in json.dumps(meta, ensure_ascii=False),
+        meta,
+    )
+    check(
+        "catalog failure left the account usable",
+        acct.disabled is False and acct.cool_until == 0,
+        acct.view(),
+    )
+
+
+def test_model_entries_are_bare_and_capability_complete():
+    reset()
+    reset_fake()
+    entries = R.model_entries(R.load_config(ACCOUNTS))
+    ids = [item["id"] for item in entries]
+    check("seed entries use the verified nine", set(ids) == SEED_IDS, ids)
+    check("seed entries are unique", len(ids) == len(set(ids)), ids)
+    check(
+        "seed ids are bare",
+        all("/" not in mid and not mid.startswith("YYLS/") for mid in ids),
+        ids,
+    )
+
+    for item in entries:
+        mid = item["id"]
+        vision = mid in SEED_VISION
+        reasoning = mid in SEED_REASONING
+        check("%s object" % mid, item.get("object") == "model", item)
+        check("%s owned_by" % mid, item.get("owned_by") == "sensetime", item)
+        check("%s provider" % mid, item.get("provider") == "raccoon", item)
+        check("%s created" % mid, isinstance(item.get("created"), int), item)
+        capabilities = item.get("capabilities") or {}
+        check(
+            "%s capabilities vision" % mid, capabilities.get("vision") is vision, item
+        )
+        check(
+            "%s capabilities tools" % mid, capabilities.get("tool_calls") is True, item
+        )
+        check(
+            "%s capabilities reasoning" % mid,
+            capabilities.get("reasoning") is reasoning,
+            item,
+        )
+        for key in (
+            "supports_vision",
+            "supports_images",
+            "vision",
+            "multimodal",
+        ):
+            check("%s %s" % (mid, key), item.get(key) is vision, item)
+        check(
+            "%s supports_tool_calls" % mid,
+            item.get("supports_tool_calls") is True,
+            item,
+        )
+        check(
+            "%s supports_reasoning" % mid,
+            item.get("supports_reasoning") is reasoning,
+            item,
+        )
+        abilities = item.get("abilities") or {}
+        check("%s abilities vision" % mid, abilities.get("vision") is vision, item)
+        check(
+            "%s abilities functionCall" % mid,
+            abilities.get("functionCall") is True,
+            item,
+        )
+        check(
+            "%s abilities function_call" % mid,
+            abilities.get("function_call") is True,
+            item,
+        )
+        inputs = ["text"] + (["image"] if vision else [])
+        check("%s input_modalities" % mid, item.get("input_modalities") == inputs, item)
+        check(
+            "%s output_modalities" % mid,
+            item.get("output_modalities") == ["text"],
+            item,
+        )
+        check(
+            "%s modalities" % mid,
+            item.get("modalities") == {"input": inputs, "output": ["text"]},
+            item,
+        )
+        check(
+            "%s architecture" % mid,
+            item.get("architecture")
+            == {
+                "input_modalities": inputs,
+                "output_modalities": ["text"],
+                "modality": "+".join(inputs) + "->text",
+            },
+            item,
+        )
+        expected_context = (
+            256000 if mid.startswith("sn-sensenova-6-8-flash") else 1000000
+        )
+        expected_max = 63999 if mid.startswith("sn-sensenova-6-8-flash") else 100000
+        for key in ("context_window", "context_length", "max_input_tokens"):
+            check("%s %s" % (mid, key), item.get(key) == expected_context, item)
+        for key in (
+            "max_tokens",
+            "max_output_tokens",
+            "max_completion_tokens",
+            "max_output",
+        ):
+            check("%s %s" % (mid, key), item.get(key) == expected_max, item)
+
+
+def test_model_entries_respect_ttl_and_refresh():
+    reset()
+    reset_fake()
+    _catalog_account()
+    cfg = R.load_config(ACCOUNTS)
+
+    first = R.model_entries(cfg)
+    second = R.model_entries(cfg)
+    check(
+        "model entries use the normalized catalog",
+        {item["id"] for item in first} == {"raccoon-090dd3", "sn-glm-5-3"},
+        first,
+    )
+    check("second read reuses the cache", state.catalog_calls == 1, state.catalog_calls)
+    check(
+        "two reads return the same ids",
+        first == second or ([i["id"] for i in first] == [i["id"] for i in second]),
+    )
+
+    refreshed = R.refresh_models(cfg)
+    check("refresh ok", refreshed.get("ok") is True, refreshed)
+    check("refresh reports two models", refreshed.get("models") == 2, refreshed)
+    check(
+        "refresh catalog source",
+        (refreshed.get("catalog") or {}).get("source") == "raccoon",
+        refreshed,
+    )
+    check(
+        "refresh forces a second upstream call",
+        state.catalog_calls == 2,
+        state.catalog_calls,
+    )
+    check(
+        "refresh metadata has no warning",
+        not (refreshed.get("catalog") or {}).get("warning"),
+        refreshed,
+    )
 
 
 def test_refresh_rotates_tokens_and_persists():
@@ -604,7 +884,11 @@ def test_upstream_error_redacts_known_secrets():
     check("error does not echo access token", state.token not in message, message)
     view_blob = json.dumps(acct.view(), ensure_ascii=False)
     check("view does not echo refresh token", secret not in view_blob, view_blob)
-    check("view still explains the failure", "invalid refresh token" in view_blob, view_blob)
+    check(
+        "view still explains the failure",
+        "invalid refresh token" in view_blob,
+        view_blob,
+    )
     check("terminal state kept", acct.disabled is True)
 
     labels = R._redact(
@@ -718,6 +1002,12 @@ try:
     print("== import ==")
     test_import_auth_derives_uid_and_auto_enables()
     test_import_rejects_missing_access_token()
+    print("== catalog ==")
+    test_catalog_normalizes_ids_limits_and_tags()
+    test_catalog_401_refreshes_once_then_retries()
+    test_catalog_seed_fallback_when_upstream_fails()
+    test_model_entries_are_bare_and_capability_complete()
+    test_model_entries_respect_ttl_and_refresh()
     print("== refresh ==")
     test_refresh_rotates_tokens_and_persists()
     test_concurrent_refresh_single_flight()

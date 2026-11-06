@@ -42,6 +42,12 @@ EP_REFRESH = "/api/web/auth/v1/refresh"
 EP_CATALOG = "/api/web/llm/v2/model_catalog"
 EP_CHAT = "/api/web/llm/v2/chat/completions"
 
+#: Desktop-client headers. The catalog accepts the same client identity as
+#: chat; Task 3 reuses these constants for the SSE request.
+CLIENT_PLATFORM = "desktop-linux-x64"
+CLIENT_VERSION = "v1.1.5"
+CLIENT_LANGUAGE = "zh"
+
 ACCOUNTS_SUBDIR = "raccoon"
 STATE_FILE = "state.json"
 
@@ -731,6 +737,7 @@ class RaccoonAccount(object):
         self.last_used = 0.0
         self.models = []
         self.models_fetched_at = 0.0
+        self.models_source = ""
         self.auth_generation = 0
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
@@ -1145,9 +1152,7 @@ class RaccoonPool(object):
     def note_error(self, acct, message, soft=False, terminal=False):
         if acct is None:
             return
-        acct.last_error = _redact(
-            str(message or ""), _auth_secrets(acct.auth)
-        )[:200]
+        acct.last_error = _redact(str(message or ""), _auth_secrets(acct.auth))[:200]
         if terminal:
             acct.disabled = True
             acct.disabled_reason = acct.last_error
@@ -1190,6 +1195,571 @@ def invalidate_pool(accounts_dir=None):
 
 
 # ---------------------------------------------------------------------------
+# 模型目录
+# ---------------------------------------------------------------------------
+
+#: Verified fallback catalog. The upstream catalogue is authoritative; these
+#: entries keep `/v1/models` usable when a fetch fails. IDs stay bare: the
+#: desktop proxy's `YYLS/`-style namespace is never exposed.
+SEED_MODELS = [
+    {
+        "id": "raccoon-090dd3",
+        "name": "Raccoon-Work",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": ["vision", "reasoning"],
+    },
+    {
+        "id": "raccoon-19b265",
+        "name": "Raccoon-Work-260817-A",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": [],
+    },
+    {
+        "id": "raccoon-405a1c",
+        "name": "Raccoon-Work-260817-B",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": [],
+    },
+    {
+        "id": "sn-sensenova-6-8-flash",
+        "name": "SenseNova 6.8 Flash",
+        "context_window": 256000,
+        "max_tokens": 63999,
+        "tags": ["vision"],
+    },
+    {
+        "id": "sn-sensenova-6-8-flash-lite",
+        "name": "SenseNova 6.8 Flash Lite",
+        "context_window": 256000,
+        "max_tokens": 63999,
+        "tags": ["vision"],
+    },
+    {
+        "id": "sn-glm-5-3",
+        "name": "GLM-5.3",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": ["reasoning"],
+    },
+    {
+        "id": "sn-kimi-k3",
+        "name": "Kimi K3",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": ["vision", "reasoning"],
+    },
+    {
+        "id": "sn-glm-5-3-flash",
+        "name": "GLM-5.3 Flash",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": ["vision"],
+    },
+    {
+        "id": "sn-deepseek-v4-1-flash-1017",
+        "name": "DeepSeek V4.1 Flash 1017",
+        "context_window": 1000000,
+        "max_tokens": 100000,
+        "tags": ["vision", "reasoning"],
+    },
+]
+
+_SEED_BY_ID = {str(item["id"]).lower(): item for item in SEED_MODELS}
+
+#: `{models, default_model, fetched_at, source}` shared by every account. The
+#: TTL comes from `models_ttl_seconds`; a failed fetch never replaces a good
+#: cached catalog with an empty one.
+_CATALOG_CACHE = {
+    "models": [],
+    "default_model": "",
+    "fetched_at": 0.0,
+    "source": "seed",
+}
+_CATALOG_LAST_ERROR = ""
+_CATALOG_LOCK = threading.RLock()
+
+
+def _int_value(value):
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    return max(0, number)
+
+
+def _first_int(*values):
+    for value in values:
+        number = _int_value(value)
+        if number > 0:
+            return number
+    return 0
+
+
+def _bare_model_id(value):
+    """Strip a `YYLS/`/provider namespace; `/v1/models` only emits bare ids."""
+    text = str(value or "").strip()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1].strip()
+    return text
+
+
+def _tag_list(value):
+    if isinstance(value, str):
+        raw = re.split(r"[,\s]+", value)
+    elif isinstance(value, (list, tuple)):
+        raw = list(value)
+    else:
+        raw = []
+    tags = []
+    for item in raw:
+        text = str(item or "").strip().lower()
+        if text and text not in tags:
+            tags.append(text)
+    return tags
+
+
+def _normalize_catalog(payload):
+    """Normalize the first `chat` category of a model_catalog response."""
+    if not isinstance(payload, dict):
+        raise RaccoonUpstreamError("Raccoon returned an unexpected catalog response")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    categories = data.get("categories") if isinstance(data, dict) else ()
+    chat = None
+    for category in categories if isinstance(categories, list) else ():
+        if not isinstance(category, dict):
+            continue
+        if str(category.get("type") or "").strip().lower() != "chat":
+            continue
+        chat = category
+        break
+
+    models = []
+    seen = set()
+    if isinstance(chat, dict):
+        for item in chat.get("models") or ():
+            if not isinstance(item, dict):
+                continue
+            mid = _bare_model_id(
+                item.get("name") or item.get("model_name") or item.get("id")
+            )
+            if not mid or mid.lower() in seen:
+                continue
+            seen.add(mid.lower())
+            params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            seed = _SEED_BY_ID.get(mid.lower()) or {}
+            context_window = _first_int(
+                params.get("context_window"),
+                item.get("context_window"),
+                params.get("context_length"),
+                item.get("context_length"),
+                params.get("max_input_tokens"),
+                item.get("max_input_tokens"),
+                seed.get("context_window"),
+            )
+            max_tokens = _first_int(
+                params.get("max_tokens"),
+                item.get("max_tokens"),
+                params.get("max_output_tokens"),
+                item.get("max_output_tokens"),
+                params.get("max_completion_tokens"),
+                item.get("max_completion_tokens"),
+                seed.get("max_tokens"),
+            )
+            tags = _tag_list(item.get("tags") if "tags" in item else params.get("tags"))
+            display = str(
+                item.get("display_name") or item.get("description") or mid
+            ).strip()[:120]
+            models.append(
+                {
+                    "id": mid,
+                    "name": display or mid,
+                    "context_window": context_window,
+                    "max_tokens": max_tokens,
+                    "tags": tags,
+                    "vision": "vision" in tags,
+                    "reasoning": "reasoning" in tags,
+                }
+            )
+
+    default_model = ""
+    if isinstance(chat, dict):
+        default_model = _bare_model_id(
+            chat.get("default_model") or chat.get("defaultModel")
+        )
+    if not default_model and models:
+        default_model = models[0]["id"]
+    return {
+        "models": models,
+        "default_model": default_model,
+        "fetched_at": time.time(),
+        "source": "raccoon",
+        "warning": "",
+    }
+
+
+def _account_headers(acct, accept="application/json"):
+    """Desktop-client headers; `X-Org-Code` only for a real org identity."""
+    headers = {
+        "Accept": accept,
+        "Authorization": "Bearer "
+        + _clean_token((acct.auth or {}).get("access_token")),
+        "X-Client-Platform": CLIENT_PLATFORM,
+        "X-Client-Version": CLIENT_VERSION,
+        "X-Raccoon-Language": CLIENT_LANGUAGE,
+    }
+    identity = str((acct.auth or {}).get("office_identity") or "").strip()
+    if identity and identity.lower() not in ("personal", "none"):
+        headers["X-Org-Code"] = identity
+    return headers
+
+
+def _cached_catalog():
+    with _CATALOG_LOCK:
+        return {
+            "models": [dict(item) for item in _CATALOG_CACHE["models"]],
+            "default_model": _CATALOG_CACHE["default_model"],
+            "fetched_at": _CATALOG_CACHE["fetched_at"],
+            "source": _CATALOG_CACHE["source"],
+        }
+
+
+def _seed_model_list():
+    return [dict(item, tags=list(item.get("tags") or [])) for item in SEED_MODELS]
+
+
+def _adopt_catalog(acct, catalog):
+    acct.models = [dict(item) for item in catalog.get("models") or []]
+    acct.models_fetched_at = float(catalog.get("fetched_at") or 0.0)
+    acct.models_source = "raccoon" if catalog.get("source") == "raccoon" else ""
+
+
+def fetch_catalog(acct, timeout=20.0, force=False):
+    """Fetch and normalize the upstream catalog for one account.
+
+    A 401/403 forces exactly one token refresh and retries the same account.
+    Catalog calls carry the account's known tokens as redaction secrets, so an
+    upstream error body cannot echo them into a warning or log line.
+    """
+    global _CATALOG_LAST_ERROR
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for catalog")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 20.0
+    # `force` is a cache-bypass hint for callers; a direct fetch is always
+    # fresh, and only a 401 below forces a credential refresh.
+    ensure_token(acct)
+
+    payload = None
+    for attempt in (0, 1):
+        headers = _account_headers(acct)
+        headers["Cache-Control"] = "no-store"
+        try:
+            payload = _request_json(
+                "GET",
+                BASE_URL + EP_CATALOG,
+                headers,
+                timeout=timeout,
+                proxy=acct.proxy,
+                secrets=_auth_secrets(acct.auth),
+            )
+            break
+        except RaccoonAuthError:
+            if attempt:
+                raise
+            ensure_token(acct, force=True)
+
+    catalog = _normalize_catalog(payload)
+    if not catalog["models"]:
+        raise RaccoonUpstreamError("Raccoon catalog returned no chat models")
+
+    with _CATALOG_LOCK:
+        _CATALOG_CACHE.update(
+            {
+                "models": [dict(item) for item in catalog["models"]],
+                "default_model": catalog["default_model"],
+                "fetched_at": catalog["fetched_at"],
+                "source": "raccoon",
+            }
+        )
+        _CATALOG_LAST_ERROR = ""
+    _adopt_catalog(acct, catalog)
+    return catalog
+
+
+def ensure_catalog(acct, force=False, timeout=20.0):
+    """Return the account's catalog, honoring the shared cache TTL."""
+    global _CATALOG_LAST_ERROR
+    if acct is None:
+        return _seed_model_list()
+    ttl = float(
+        acct.pool.config.get("models_ttl_seconds") or DEFAULTS["models_ttl_seconds"]
+    )
+    now = time.time()
+    if (
+        not force
+        and getattr(acct, "models_source", "") == "raccoon"
+        and acct.models
+        and now - float(acct.models_fetched_at or 0.0) < ttl
+    ):
+        return [dict(item) for item in acct.models]
+    if not force:
+        cached = _cached_catalog()
+        if (
+            cached["source"] == "raccoon"
+            and cached["models"]
+            and now - float(cached["fetched_at"] or 0.0) < ttl
+        ):
+            _adopt_catalog(acct, cached)
+            return [dict(item) for item in acct.models]
+
+    try:
+        catalog = fetch_catalog(acct, timeout=timeout) or {}
+        return [dict(item) for item in catalog.get("models") or ()]
+    except RaccoonError as exc:
+        # A failed refresh must not blank `/v1/models`: keep the account's last
+        # good catalog, then the shared cache, then the verified seed list.
+        message = _redact(str(exc), _auth_secrets(acct.auth))
+        with _CATALOG_LOCK:
+            _CATALOG_LAST_ERROR = message
+        if getattr(acct, "models_source", "") == "raccoon" and acct.models:
+            return [dict(item) for item in acct.models]
+        cached = _cached_catalog()
+        if cached["source"] == "raccoon" and cached["models"]:
+            _adopt_catalog(acct, cached)
+            return [dict(item) for item in acct.models]
+        return _seed_model_list()
+
+
+def _merge_catalog_item(merged, item):
+    mid = str(item.get("id") or "").strip()
+    if not mid:
+        return
+    key = mid.lower()
+    current = merged.get(key)
+    if current is None:
+        merged[key] = dict(item, tags=list(item.get("tags") or []))
+        return
+    if not current.get("context_window") and item.get("context_window"):
+        current["context_window"] = _int_value(item.get("context_window"))
+    if not current.get("max_tokens") and item.get("max_tokens"):
+        current["max_tokens"] = _int_value(item.get("max_tokens"))
+    if not current.get("name") or current.get("name") == current.get("id"):
+        if item.get("name"):
+            current["name"] = item["name"]
+    current["vision"] = bool(current.get("vision") or item.get("vision"))
+    current["reasoning"] = bool(current.get("reasoning") or item.get("reasoning"))
+    tags = list(current.get("tags") or [])
+    for tag in item.get("tags") or ():
+        if tag not in tags:
+            tags.append(tag)
+    current["tags"] = tags
+
+
+def _catalog_union(pool):
+    """Union account catalogs plus the shared cache; no network access."""
+    accounts = list(pool.accounts) if pool else []
+    if not accounts:
+        return {}, None
+    merged = {}
+    stamps = []
+    for acct in accounts:
+        if getattr(acct, "models_source", "") != "raccoon" or not acct.models:
+            continue
+        for item in acct.models:
+            _merge_catalog_item(merged, item)
+        if acct.models_fetched_at:
+            stamps.append(float(acct.models_fetched_at))
+    if not merged:
+        cached = _cached_catalog()
+        if cached["source"] == "raccoon" and cached["models"]:
+            for item in cached["models"]:
+                _merge_catalog_item(merged, item)
+            if cached["fetched_at"]:
+                stamps.append(float(cached["fetched_at"]))
+    return merged, (max(stamps) if stamps else None)
+
+
+def _model_entry(item, created):
+    """One OpenAI-style entry with every capability spelling clients read."""
+    mid = str(item.get("id") or "").strip()
+    seed = _SEED_BY_ID.get(mid.lower()) or {}
+    tags = _tag_list(item.get("tags"))
+    vision = bool(item.get("vision")) or "vision" in tags
+    reasoning = bool(item.get("reasoning")) or "reasoning" in tags
+    context_window = _int_value(item.get("context_window")) or _int_value(
+        seed.get("context_window")
+    )
+    max_tokens = _int_value(item.get("max_tokens")) or _int_value(
+        seed.get("max_tokens")
+    )
+    inputs = ["text"] + (["image"] if vision else [])
+    entry = {
+        "id": mid,
+        "object": "model",
+        "created": int(created),
+        "owned_by": "sensetime",
+        "provider": "raccoon",
+        "name": str(item.get("name") or mid),
+    }
+    if context_window:
+        entry["context_window"] = context_window
+        entry["context_length"] = context_window
+        entry["max_input_tokens"] = context_window
+    if max_tokens:
+        entry["max_tokens"] = max_tokens
+        entry["max_output_tokens"] = max_tokens
+        entry["max_completion_tokens"] = max_tokens
+        entry["max_output"] = max_tokens
+    # Same convention set as CodeArts/WorkBuddy: no standard exists, so emit
+    # every spelling a common client might read.
+    entry["capabilities"] = {
+        "vision": vision,
+        "tool_calls": True,
+        "reasoning": reasoning,
+    }
+    entry["supports_vision"] = vision
+    entry["supports_images"] = vision
+    entry["supports_tool_calls"] = True
+    entry["supports_reasoning"] = reasoning
+    entry["vision"] = vision
+    entry["multimodal"] = vision
+    entry["abilities"] = {
+        "vision": vision,
+        "functionCall": True,
+        "function_call": True,
+        "reasoning": reasoning,
+    }
+    entry["input_modalities"] = inputs
+    entry["output_modalities"] = ["text"]
+    entry["modalities"] = {"input": inputs, "output": ["text"]}
+    entry["architecture"] = {
+        "input_modalities": inputs,
+        "output_modalities": ["text"],
+        "modality": "+".join(inputs) + "->text",
+    }
+    if tags:
+        entry["tags"] = list(tags)
+    return entry
+
+
+def _config_or_load(config):
+    if isinstance(config, dict) and config.get("accounts_dir"):
+        return config
+    folder = config.get("accounts_dir") if isinstance(config, dict) else "."
+    return load_config(folder or ".")
+
+
+def model_entries(config):
+    """Bare-id `/v1/models` entries: union of account catalogs, else seeds."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    for acct in list(pool.accounts):
+        try:
+            ensure_catalog(acct, timeout=8.0)
+        except RaccoonError:
+            pass
+    merged, _ = _catalog_union(pool)
+    if not merged:
+        for item in SEED_MODELS:
+            _merge_catalog_item(merged, item)
+    created = int(time.time())
+    return [_model_entry(item, created) for item in merged.values()]
+
+
+def models_meta(config):
+    """Catalog provenance for `/v1/models` and `/health`; never fetches."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    merged, fetched_at = _catalog_union(pool)
+    with _CATALOG_LOCK:
+        last_error = _CATALOG_LAST_ERROR
+    accounts = len(pool.accounts)
+    if merged and accounts:
+        warning = ""
+        if last_error:
+            warning = "using cached catalog after refresh failed: %s" % last_error
+        return {
+            "source": "raccoon",
+            "fetched_at": fetched_at,
+            "accounts": accounts,
+            "warning": warning,
+        }
+    if not accounts:
+        warning = "no Raccoon accounts configured; using built-in seed models"
+    elif last_error:
+        warning = (
+            "upstream catalog unavailable: %s; using built-in seed models" % last_error
+        )
+    else:
+        warning = "upstream catalog unavailable; using built-in seed models"
+    return {
+        "source": "seed",
+        "fetched_at": None,
+        "accounts": accounts,
+        "warning": warning,
+    }
+
+
+def invalidate_models():
+    """Drop every account catalog and the shared cache."""
+    global _CATALOG_LAST_ERROR
+    with _CATALOG_LOCK:
+        _CATALOG_CACHE.update(
+            {
+                "models": [],
+                "default_model": "",
+                "fetched_at": 0.0,
+                "source": "seed",
+            }
+        )
+        _CATALOG_LAST_ERROR = ""
+    with _POOLS_LOCK:
+        pools = list(_POOLS.values())
+    for pool in pools:
+        for acct in list(pool.accounts):
+            acct.models = []
+            acct.models_fetched_at = 0.0
+            acct.models_source = ""
+    invalidate_health()
+
+
+def refresh_models(config):
+    """Invalidate the cache, refetch from the first healthy account, report."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    invalidate_models()
+    accounts = list(pool.accounts)
+    target = None
+    for acct in accounts:
+        if acct.healthy():
+            target = acct
+            break
+    if target is None and accounts:
+        target = accounts[0]
+    if target is not None:
+        try:
+            ensure_catalog(target, force=True, timeout=20.0)
+        except RaccoonError:
+            pass
+    entries = model_entries(config)
+    return {
+        "ok": True,
+        "models": len(entries),
+        "catalog": models_meta(config),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 导入 / 概览 / 健康
 # ---------------------------------------------------------------------------
 
@@ -1226,6 +1796,10 @@ def overview(config, force=False):
             config.get("accounts_dir") if isinstance(config, dict) else "."
         )
     pool = pool_for(config["accounts_dir"])
+    models = [
+        {"id": item["id"], "name": item.get("name") or item["id"]}
+        for item in model_entries(config)
+    ]
     return {
         "provider": "raccoon",
         "service": "raccoon",
@@ -1234,8 +1808,7 @@ def overview(config, force=False):
         "stats": pool.stats(),
         "accounts": pool.list(),
         "health": health(config, force=True),
-        # Task 2 fills the catalog; Task 1 deliberately exposes no fake models.
-        "models": [],
+        "models": models,
     }
 
 
@@ -1247,6 +1820,11 @@ def health(config, force=False):
         )
     pool = pool_for(config["accounts_dir"])
     stats = pool.stats()
+    catalog = models_meta(config)
+    catalog_models, _ = _catalog_union(pool)
+    model_count = (
+        len(catalog_models) if catalog["source"] == "raccoon" else len(SEED_MODELS)
+    )
     now = time.time()
     key = (
         os.path.abspath(str(config["accounts_dir"])),
@@ -1260,6 +1838,9 @@ def health(config, force=False):
         stats["healthy"],
         stats["disabled"],
         stats["cooling"],
+        catalog["source"],
+        catalog["fetched_at"],
+        model_count,
     )
     with _health_lock:
         if (
@@ -1274,8 +1855,8 @@ def health(config, force=False):
         "accounts": stats["total"],
         "healthy": stats["healthy"],
         "base_url": BASE_URL,
-        "catalog_source": "seed",
-        "models": 0,
+        "catalog_source": catalog["source"],
+        "models": model_count,
     }
     with _health_lock:
         _health_cache.update({"at": now, "key": key, "value": value})
