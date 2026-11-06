@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -70,6 +71,14 @@ def get_html(path):
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def get_html_with_headers(path):
+    try:
+        with urllib.request.urlopen(HUB + path, timeout=20) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace"), resp.headers
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace"), exc.headers
 
 
 def reset_accounts():
@@ -689,6 +698,189 @@ def test_admin_errors_are_readable_and_secret_free():
     )
 
 
+def test_callback_requests_are_redacted_and_nostore():
+    print("== callback log/headers ==")
+    reset_accounts()
+    reset_fake()
+    state.code = "log-secret-code-123"
+    body, info = start_oauth()
+    with wb_proxy._LOG_LOCK:
+        wb_proxy.LOG_BUFFER.clear()
+    status, html, headers = get_html_with_headers(
+        "/raccoon/oauth/callback?"
+        + urllib.parse.urlencode({"code": state.code, "state": info["state"]})
+    )
+    check("callback 200", status == 200, (status, html[:120]))
+    check(
+        "callback cache-control",
+        headers.get("Cache-Control") == "no-store",
+        dict(headers),
+    )
+    check(
+        "callback referrer-policy",
+        headers.get("Referrer-Policy") == "no-referrer",
+        dict(headers),
+    )
+
+    codearts_code = "codearts-log-code-456"
+    codearts_state = "codearts-log-state-456"
+    status, _, headers = get_html_with_headers(
+        "/oauth/callback?"
+        + urllib.parse.urlencode({"code": codearts_code, "state": codearts_state})
+    )
+    check(
+        "codearts callback cache-control",
+        headers.get("Cache-Control") == "no-store",
+        dict(headers),
+    )
+    check(
+        "codearts callback referrer-policy",
+        headers.get("Referrer-Policy") == "no-referrer",
+        dict(headers),
+    )
+
+    with wb_proxy._LOG_LOCK:
+        logs = "\n".join(str(item.get("msg") or "") for item in wb_proxy.LOG_BUFFER)
+    for secret in (state.code, info["state"], codearts_code, codearts_state):
+        check("callback log hides %s" % secret[:18], secret not in logs, logs[-500:])
+    check("callback log shows redaction", "<redacted>" in logs, logs[-500:])
+
+
+def test_callback_missing_code_does_not_burn_state():
+    print("== missing callback code ==")
+    reset_accounts()
+    reset_fake()
+    state.code = "keep-pending-code"
+    body, info = start_oauth()
+    status, html = get_html(
+        "/raccoon/oauth/callback?" + urllib.parse.urlencode({"state": info["state"]})
+    )
+    check("missing code -> 400", status == 400, (status, html[:120]))
+    session = R._OAUTH_SESSIONS[info["session_id"]]
+    check(
+        "missing code keeps state pending", session.status == "pending", session.status
+    )
+    check(
+        "missing code did not exchange", state.exchange_calls == 0, state.exchange_calls
+    )
+    status, html = get_html(
+        "/raccoon/oauth/callback?"
+        + urllib.parse.urlencode({"code": state.code, "state": info["state"]})
+    )
+    check("retry after missing code succeeds", status == 200, (status, html[:120]))
+    check("retry exchanged once", state.exchange_calls == 1, state.exchange_calls)
+
+
+def test_oauth_session_table_is_capped():
+    print("== oauth session cap ==")
+    reset_accounts()
+    reset_fake()
+    for _ in range(R.OAUTH_MAX_SESSIONS + 5):
+        R.oauth_start(R.load_config(ACCOUNTS), HUB_PORT)
+    check(
+        "session table capped",
+        len(R._OAUTH_SESSIONS) <= R.OAUTH_MAX_SESSIONS,
+        len(R._OAUTH_SESSIONS),
+    )
+    reset_accounts()
+
+
+def test_delete_failure_keeps_account_and_removes_duplicates():
+    print("== delete failure/duplicates ==")
+    reset_accounts()
+    reset_fake()
+    body = import_current_account(uid="pu-delete-fail")
+    uid = body.get("uid")
+    path = R.load_auths(ACCOUNTS)[0]["_path"]
+    with mock.patch.object(R, "delete_auth", return_value=False):
+        status, result = call(
+            "POST", "/raccoon/accounts/delete", {"uid": uid}, token=TOKEN
+        )
+    check("failed delete is not success", status in (409, 500), (status, result))
+    check(
+        "failed delete does not claim deleted",
+        result.get("deleted") is not True,
+        result,
+    )
+    check("failed delete keeps pool entry", R.pool_for(ACCOUNTS).get(uid) is not None)
+    check("failed delete keeps auth file", os.path.exists(path))
+
+    status, result = call("POST", "/raccoon/accounts/delete", {"uid": uid}, token=TOKEN)
+    check(
+        "retry delete succeeds",
+        status == 200 and result.get("deleted") is True,
+        (status, result),
+    )
+
+    body = import_current_account(uid="pu-delete-dup")
+    uid = body.get("uid")
+    path = R.load_auths(ACCOUNTS)[0]["_path"]
+    duplicate = os.path.join(os.path.dirname(path), "raccoon-duplicate.json")
+    shutil.copyfile(path, duplicate)
+    status, result = call("POST", "/raccoon/accounts/delete", {"uid": uid}, token=TOKEN)
+    check(
+        "duplicate delete succeeds",
+        status == 200 and result.get("deleted") is True,
+        (status, result),
+    )
+    check("canonical file gone", not os.path.exists(path))
+    check("duplicate file gone", not os.path.exists(duplicate))
+    check("duplicate pool entry gone", R.pool_for(ACCOUNTS).get(uid) is None)
+
+
+def test_proxy_credentials_are_masked_in_views():
+    print("== proxy masking ==")
+    reset_accounts()
+    reset_fake()
+    import_current_account()
+    wb_settings.set_proxy_slots(
+        ACCOUNTS,
+        [
+            {
+                "id": "slot-secret",
+                "name": "secret",
+                "url": "http://alice:hunter2@127.0.0.1:7890",
+                "enabled": True,
+            },
+        ],
+    )
+    status, result = call(
+        "POST",
+        "/raccoon/accounts/proxy",
+        {"uid": state.uid, "slot_id": "slot-secret"},
+        token=TOKEN,
+    )
+    check("proxy bind with credentials", status == 200, (status, result))
+    check("proxy action hides password", "hunter2" not in json.dumps(result), result)
+    view = R.pool_for(ACCOUNTS).get(state.uid).view()
+    check("account view hides password", "hunter2" not in json.dumps(view), view)
+    overview = call("GET", "/raccoon/overview", token=TOKEN)[1]
+    check("overview hides password", "hunter2" not in json.dumps(overview), overview)
+    check("masked marker present", "<redacted>" in json.dumps(view), view)
+    wb_settings.set_proxy_slots(ACCOUNTS, [])
+
+
+def test_import_rolls_back_auth_file_when_enable_fails():
+    print("== import rollback ==")
+    reset_accounts()
+    reset_fake()
+    with mock.patch.object(R, "save_config", side_effect=RuntimeError("boom")):
+        raised = False
+        try:
+            R.import_auth(
+                R.load_config(ACCOUNTS),
+                {
+                    "access_token": make_jwt("pu-rollback", 3600),
+                    "refresh_token": "rt-rollback",
+                },
+            )
+        except RuntimeError:
+            raised = True
+    check("enable failure raised", raised)
+    check("rolled back auth file", R.load_auths(ACCOUNTS) == [])
+    check("rolled back realm stays disabled", R.configured(ACCOUNTS) is False)
+
+
 srv, base, state = start_server()
 R.BASE_URL = base
 
@@ -713,8 +905,14 @@ try:
     test_manual_callback_url_creates_account()
     test_account_actions_enable_disable_clear_note_proxy_test()
     test_delete_removes_account_file()
+    test_delete_failure_keeps_account_and_removes_duplicates()
+    test_proxy_credentials_are_masked_in_views()
+    test_import_rolls_back_auth_file_when_enable_fails()
     test_models_refresh_and_keepalive()
     test_admin_errors_are_readable_and_secret_free()
+    test_callback_requests_are_redacted_and_nostore()
+    test_callback_missing_code_does_not_burn_state()
+    test_oauth_session_table_is_capped()
 finally:
     try:
         hub.shutdown()

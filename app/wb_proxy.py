@@ -11651,6 +11651,16 @@ def _mask_text(text):
     return _PHONE_IN_TEXT.sub(lambda m: m.group(1) + "****" + m.group(3), text)
 
 
+_CALLBACK_LOG_SECRET_RE = re.compile(
+    r"(?i)([?&](?:authorization_code|code|state|secret|ticket_id)=)[^&\s\"']*"
+)
+
+
+def _redact_callback_log_line(line):
+    """Mask OAuth query credentials in a request log line."""
+    return _CALLBACK_LOG_SECRET_RE.sub(r"\1<redacted>", str(line or ""))
+
+
 def _redact_account_names(obj):
     """递归脱敏账号名，**copy-on-write**：无命中时原对象原样返回（同一引用）。
 
@@ -20241,7 +20251,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
         except Exception:
             pass
-        log(fmt % args)
+        line = fmt % args
+        if "/oauth/callback" in line:
+            line = _redact_callback_log_line(line)
+        log(line)
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -23851,6 +23864,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
@@ -23905,6 +23920,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
@@ -23942,6 +23959,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _raccoon_admin_error(self, exc):
         message = str(exc)
+        if isinstance(exc, wb_raccoon.RaccoonDeleteError):
+            return self._error(500, message, "server_error")
         if isinstance(exc, wb_raccoon.RaccoonNotFound):
             if "account not found" in message.lower():
                 return self._error(404, message, "invalid_request_error")

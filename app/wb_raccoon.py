@@ -53,6 +53,7 @@ AUTHORIZE_URL = os.environ.get("WB_RACCOON_AUTHORIZE_URL") or (
 )
 OAUTH_REDIRECT_PATH = "/raccoon/oauth/callback"
 OAUTH_TTL_SECONDS = 300
+OAUTH_MAX_SESSIONS = 64
 
 #: Desktop-client headers. The catalog accepts the same client identity as
 #: chat; Task 3 reuses these constants for the SSE request.
@@ -117,6 +118,10 @@ class RaccoonRateLimited(RaccoonError):
 
 class RaccoonUpstreamError(RaccoonError):
     """The upstream failed (5xx, unparseable payload, embedded error)."""
+
+
+class RaccoonDeleteError(RaccoonError):
+    """The account file could not be removed; the account stays in the pool."""
 
 
 # ---------------------------------------------------------------------------
@@ -422,24 +427,56 @@ def save_auth(accounts_dir, auth):
     return auth
 
 
-def delete_auth(accounts_dir, uid):
-    path = os.path.join(accounts_path(accounts_dir), _auth_filename(uid))
+def _auth_file_uid(path):
     try:
-        os.remove(path)
-        return True
-    except FileNotFoundError:
-        pass
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("uid") or uid_from_auth(data) or "")
+
+
+def _auth_paths_for_uid(accounts_dir, uid):
+    """Every auth file that carries `uid`, including duplicate names."""
+    uid = str(uid or "")
+    folder = accounts_path(accounts_dir)
+    paths = []
+    canonical = os.path.join(folder, _auth_filename(uid))
+    if os.path.exists(canonical):
+        paths.append(canonical)
+    try:
+        names = sorted(os.listdir(folder))
     except OSError:
-        return False
-    for auth in load_auths(accounts_dir):
-        if str(auth.get("uid") or "") != str(uid or ""):
+        names = []
+    for name in names:
+        if not name.startswith("raccoon-") or not name.endswith(".json"):
             continue
+        path = os.path.join(folder, name)
+        if path in paths:
+            continue
+        if uid and _auth_file_uid(path) == uid:
+            paths.append(path)
+    return paths
+
+
+def delete_auth(accounts_dir, uid):
+    """Remove every auth file for `uid`; False if any file survives."""
+    uid = str(uid or "")
+    if not uid:
+        return False
+    paths = _auth_paths_for_uid(accounts_dir, uid)
+    if not paths:
+        return False
+    for path in paths:
         try:
-            os.remove(auth["_path"])
-            return True
+            os.remove(path)
+        except FileNotFoundError:
+            pass
         except OSError:
-            return False
-    return False
+            pass
+    return not any(os.path.exists(path) for path in paths)
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +533,16 @@ def _redact(text, secrets=None):
         text,
     )
     return text
+
+
+def _mask_proxy_url(value):
+    """Hide `user:password@` credentials in a resolved proxy URL."""
+    text = str(value or "")
+    if not text:
+        return ""
+    return re.sub(
+        r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1<redacted>@", text
+    )
 
 
 def _error_text(raw, secrets=None):
@@ -846,7 +893,7 @@ class RaccoonAccount(object):
             ),
             "models": len(self.models),
             "proxy_slot": self.proxy_slot,
-            "proxy": self.proxy,
+            "proxy": _mask_proxy_url(self.proxy),
             "note": self.note,
             "tasks_enabled": bool(self.tasks_enabled),
         }
@@ -1027,9 +1074,10 @@ class RaccoonPool(object):
         acct = self.get(uid)
         if acct is None:
             return False
+        if not delete_auth(self.accounts_dir, acct.uid):
+            return False
         with self._lock:
             self.accounts = [a for a in self.accounts if a.uid != acct.uid]
-        delete_auth(self.accounts_dir, acct.uid)
         self.save_state()
         return True
 
@@ -1856,6 +1904,14 @@ def _find_oauth_session(session_id=None):
         return _OAUTH_SESSIONS.get(str(session_id or ""))
 
 
+def _state_matches(left, right):
+    """Constant-time compare; non-ASCII garbage simply does not match."""
+    try:
+        return secrets.compare_digest(str(left or ""), str(right or ""))
+    except (TypeError, ValueError):
+        return False
+
+
 def _find_pending_oauth_state(state):
     _gc_oauth()
     text = str(state or "").strip()
@@ -1863,7 +1919,9 @@ def _find_pending_oauth_state(state):
         return None
     with _OAUTH_LOCK:
         for session in _OAUTH_SESSIONS.values():
-            if session.state == text and session.status == "pending":
+            if session.status == "pending" and _state_matches(
+                session.state, text
+            ):
                 return session
     return None
 
@@ -1881,15 +1939,14 @@ def _claim_oauth_session(session_id=None, state=None):
         else:
             session = None
             for candidate in _OAUTH_SESSIONS.values():
-                if (
-                    candidate.state == str(state or "")
-                    and candidate.status == "pending"
+                if candidate.status == "pending" and _state_matches(
+                    candidate.state, str(state or "")
                 ):
                     session = candidate
                     break
         if session is None or session.status != "pending":
             return None
-        if state and session.state != str(state):
+        if state and not _state_matches(session.state, state):
             return None
         session.status = "exchanging"
         return session
@@ -1977,8 +2034,7 @@ def exchange_code(config, code, timeout=None):
             code=getattr(exc, "code", None),
         )
     auth = auth_from_payload(payload)
-    auth = save_auth(accounts_dir, auth)
-    save_config(accounts_dir, {"enabled": True})
+    auth = _save_and_enable(accounts_dir, auth)
     acct = pool_for(accounts_dir).add(auth)
     invalidate_health()
     return acct
@@ -2015,6 +2071,11 @@ def oauth_start(config, port=8788):
         raise RaccoonBadRequest("gateway port must be between 1024 and 65535")
     _gc_oauth()
     with _OAUTH_LOCK:
+        while len(_OAUTH_SESSIONS) >= OAUTH_MAX_SESSIONS:
+            oldest = min(
+                _OAUTH_SESSIONS.values(), key=lambda item: item.created_at
+            )
+            _OAUTH_SESSIONS.pop(oldest.id, None)
         state = secrets.token_hex(32)
         while any(item.state == state for item in _OAUTH_SESSIONS.values()):
             state = secrets.token_hex(32)
@@ -2060,13 +2121,14 @@ def oauth_callback_get(config, query):
     code = _clean_token(_query_value(query, "code"))
     if not state:
         return 400, _oauth_html("回调缺少 state，请回到看板重新发起授权。")
+    pending = _find_pending_oauth_state(state)
+    if pending is None:
+        return 400, _oauth_html("登录会话不存在或已过期，请回到看板重新发起。")
+    if not code:
+        return 400, _oauth_html("登录失败：回调缺少 code。")
     session = _claim_oauth_session(state=state)
     if session is None:
         return 400, _oauth_html("登录会话不存在或已过期，请回到看板重新发起。")
-    if not code:
-        session.status = "error"
-        session.message = "回调缺少 code"
-        return 400, _oauth_html("登录失败：回调缺少 code。")
     try:
         _exchange_session(config, session, code)
     except RaccoonError as exc:
@@ -2100,7 +2162,7 @@ def oauth_callback(config, session_id=None, callback_url="", code="", state=""):
         url_code = _clean_token(_query_value(query, "code"))
         if not url_state:
             raise RaccoonBadRequest("callback URL is missing state")
-        if state and state != url_state:
+        if state and not _state_matches(state, url_state):
             raise RaccoonBadRequest("callback state does not match the session")
         state = url_state
         if not code:
@@ -2123,9 +2185,9 @@ def oauth_callback(config, session_id=None, callback_url="", code="", state=""):
             raise RaccoonBadRequest(
                 "callback port does not match the authorization session"
             )
-        if url_state != session.state:
+        if not _state_matches(url_state, session.state):
             raise RaccoonBadRequest("callback state does not match the session")
-    if state and state != session.state:
+    if state and not _state_matches(state, session.state):
         raise RaccoonBadRequest("callback state does not match the session")
     if not code:
         raise RaccoonBadRequest("callback is missing code")
@@ -2169,8 +2231,12 @@ def disable(config, uid, reason=""):
 def remove(config, uid):
     config = _config_or_load(config)
     pool = pool_for(config["accounts_dir"])
-    if not pool.remove(uid):
+    if pool.get(uid) is None:
         raise RaccoonNotFound("account not found")
+    if not pool.remove(uid):
+        raise RaccoonDeleteError(
+            "账号文件删除失败，账号仍保留；请检查 accounts/raccoon 的文件权限"
+        )
     invalidate_health()
     return {"ok": True, "deleted": True, "message": "已删除 %s" % uid}
 
@@ -2220,7 +2286,7 @@ def set_proxy_slot(config, uid, slot_id):
         "ok": True,
         "uid": acct.uid,
         "proxy_slot": acct.proxy_slot,
-        "proxy": acct.proxy,
+        "proxy": _mask_proxy_url(acct.proxy),
         "message": "出口已更新",
     }
 
@@ -2228,6 +2294,32 @@ def set_proxy_slot(config, uid, slot_id):
 # ---------------------------------------------------------------------------
 # 导入 / 概览 / 健康
 # ---------------------------------------------------------------------------
+
+
+def _save_and_enable(accounts_dir, auth):
+    """Persist an auth file and enable the realm, rolling the file back if enable fails."""
+    target = os.path.join(accounts_path(accounts_dir), _auth_filename(auth["uid"]))
+    backup = None
+    if os.path.exists(target):
+        try:
+            with open(target, "rb") as fh:
+                backup = fh.read()
+        except OSError:
+            backup = None
+    saved = save_auth(accounts_dir, auth)
+    try:
+        save_config(accounts_dir, {"enabled": True})
+    except Exception:
+        path = saved.get("_path")
+        try:
+            if backup is not None:
+                _atomic_write(path, json.loads(backup.decode("utf-8")))
+            elif path:
+                os.remove(path)
+        except Exception:
+            pass
+        raise
+    return saved
 
 
 def import_auth(config, payload):
@@ -2240,8 +2332,7 @@ def import_auth(config, payload):
     if isinstance(payload.get("auth"), dict):
         payload = payload["auth"]
     auth = auth_from_payload(payload)
-    auth = save_auth(accounts_dir, auth)
-    save_config(accounts_dir, {"enabled": True})
+    auth = _save_and_enable(accounts_dir, auth)
     acct = pool_for(accounts_dir).add(auth)
     invalidate_health()
     return {
