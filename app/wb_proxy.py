@@ -1652,10 +1652,12 @@ def record_upstream_usage(upstream, requested_model, usage, **kwargs):
     billed_model = getattr(upstream, "_wb_billed_model", requested_model)
     # 出口归因（#743）：每条完成行都带上响应对象的账号槽位与实际出口。
     account = POOL.get(getattr(upstream, "_wb_account_uid", "")) if POOL else None
-    if account is None and hasattr(upstream, "acct"):
-        # Provider-managed exits (CodeArts/Raccoon) keep their account object
-        # on the stream; it is not part of the WorkBuddy pool.
-        account = getattr(upstream, "acct", None)
+    if account is None:
+        provider_account = getattr(upstream, "acct", None)
+        # Only Raccoon opts in: CodeArts rows must keep their pre-Raccoon
+        # shape, and its stream exposes `.acct` too.
+        if getattr(provider_account, "realm", "") == "raccoon":
+            account = provider_account
     if account is not None:
         kwargs.setdefault("proxy_slot", account.proxy_slot)
         kwargs.setdefault("proxy_exit", egress_exit(account.proxy))
@@ -19537,7 +19539,8 @@ def stream_responses_events(upstream, model, holder):
     _internal_calls = {}
     # Only reach for same-named calls when this request's definitions were the
     # gateway's own (see web_tools_active); otherwise they belong to the client.
-    _own_web_tools = web_tools_active(holder.get("base_body"))
+    _own_web_tools = (holder.get("allow_web_tools", True)
+                      and web_tools_active(holder.get("base_body")))
     # Echo the request capabilities the client actually sent, same as the
     # non-streaming path; these were hardcoded before.
     meta = holder.get("request_meta") or {}
@@ -21044,6 +21047,10 @@ class Handler(BaseHTTPRequestHandler):
         # Whether a key exists is not a secret; its value never leaves the
         # process, and the settings endpoint only reports a masked form.
         info["api_key_set"] = bool(API_KEY)
+        try:
+            info["raccoon"] = wb_raccoon.masked_config(ACCOUNTS_DIR)
+        except Exception as exc:
+            info["raccoon"] = {"configured": False, "error": str(exc)[:200]}
         return self._json(200, info)
 
     def _get_console_state(self):
@@ -21203,6 +21210,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         req_realm = self._request_realm() or CURRENT_REALM
+        try:
+            raw_realm = parse_qs(urlparse(self.path).query).get("realm", [None])[0]
+        except Exception:
+            raw_realm = None
+        if raw_realm == "all" and req_realm == "raccoon":
+            # `realm=all` is a WorkBuddy-only discovery contract. The key
+            # binding outranks the query in _request_realm(), so a Raccoon
+            # key would otherwise silently turn it into a Raccoon list.
+            req_realm = "all"
         if req_realm == "raccoon":
             return self._get_raccoon_models()
         if req_realm == "codearts":
@@ -25108,7 +25124,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             record_error(model, 502, "compaction failed: %s" % exc,
                          elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=account.uid, key=self._key_id())
+                         account=account.uid, realm=realm, key=self._key_id())
             return self._error(502, "upstream stream error: %s" % exc)
         choice = (chat_obj.get("choices") or [{}])[0]
         summary = str((choice.get("message") or {}).get("content") or "").strip()
@@ -25116,13 +25132,14 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, "compaction produced no summary",
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account.uid, usage=chat_obj.get("usage"),
-                         stream=False, fp=fp, outcome="failed", key=self._key_id())
+                         stream=False, fp=fp, outcome="failed", realm=realm,
+                         key=self._key_id())
             return self._error(
                 502, "compaction produced no summary (the model returned no text); retry")
         wall = int((time.time() - t_start) * 1000)
         record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False,
                               elapsed_ms=wall, fp=fp, account=account.uid,
-                              key=self._key_id())
+                              realm=realm, key=self._key_id())
         item = {
             "id": _new_id("cmp_"),
             "type": "compaction",
@@ -25184,7 +25201,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
 
-    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None):
+    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None, allow_web_tools=True):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -25198,7 +25215,8 @@ class Handler(BaseHTTPRequestHandler):
                   "base_body": base_body,
                   "base_messages": (base_body or {}).get("messages"),
                   "session_key": session_key,
-                  "realm": realm}
+                  "realm": realm,
+                  "allow_web_tools": allow_web_tools}
         first_ms = None
         heartbeat = SSEHeartbeat(
             lambda data: (self.wfile.write(data), self.wfile.flush()))
@@ -26079,7 +26097,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._responses_stream_response(
                     upstream, model, custom_names, request_meta, fp, account,
                     t_start, ns_map, base_body=chat_req, session_key=session_key,
-                    realm="raccoon", effort=effort)
+                    realm="raccoon", effort=effort, allow_web_tools=False)
             return self._responses_nonstream_response(
                 upstream, model, custom_names, request_meta, fp, account,
                 t_start, ns_map, base_body=chat_req, session_key=session_key,

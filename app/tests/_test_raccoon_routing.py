@@ -9,6 +9,7 @@ import shutil
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 
@@ -78,10 +79,14 @@ def sse_objects(raw):
 
 
 class FakePool(object):
+    def __init__(self):
+        self.calls = []
+
     def get(self, uid):
         return None
 
     def __getattr__(self, name):
+        self.calls.append(name)
         raise AssertionError("WorkBuddy pool used: %s" % name)
 
 
@@ -229,6 +234,57 @@ try:
     check("responses stream status", status == 200, (status, raw[:300]))
     check("responses stream completed", "response.completed" in raw, raw[:300])
 
+    print("== responses compaction usage ==")
+    reset_fake()
+    reset_gateway()
+    add_account("pu-a")
+    wb_proxy.CURRENT_REALM = "intl"
+    compaction_req = {
+        "model": "raccoon-090dd3",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "summarize"}]},
+            {"type": "compaction_trigger"},
+        ],
+        "stream": False,
+    }
+    status, raw = post("/v1/responses", compaction_req)
+    check("compaction status", status == 200, (status, raw[:300]))
+    check("compaction item returned", "encrypted_content" in raw, raw[:300])
+    compaction_row = rows_for("pu-a")[-1]
+    check("compaction realm raccoon",
+          compaction_row.get("realm") == "raccoon", compaction_row)
+    check("compaction unpriced",
+          compaction_row.get("cost_policy") == "raccoon:unpriced",
+          compaction_row)
+
+    print("== responses stream web tools ==")
+    reset_fake()
+    reset_gateway()
+    add_account("pu-a")
+    pool = wb_proxy.POOL
+    wb_settings.set_local_web_tools(ACCOUNTS, True)
+    state.tool_calls = [
+        {
+            "index": 0,
+            "id": "call_web",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+        }
+    ]
+    web_req = {
+        "model": "raccoon-090dd3",
+        "input": [{"role": "user", "content": "search"}],
+        "tools": [{"type": "web_search"}],
+        "stream": True,
+    }
+    status, raw = post("/v1/responses", web_req)
+    check("web tools stream status", status == 200, (status, raw[:300]))
+    check("web tools stream completed", "response.completed" in raw, raw[:300])
+    check("web tools stream not aborted",
+          "upstream stream aborted" not in raw, raw[:300])
+    check("web tools stream never used WorkBuddy pool", pool.calls == [], pool.calls)
+    wb_settings.set_local_web_tools(ACCOUNTS, False)
+
     print("== messages ==")
     messages_req = {
         "model": "raccoon-090dd3",
@@ -273,6 +329,22 @@ try:
         rows_for("pu-a")[-1:],
     )
     acct.proxy_slot = ""
+
+    class FakeCodeArtsStream(object):
+        _wb_billed_model = "GLM-5.2"
+        acct = types.SimpleNamespace(
+            uid="codearts-1", realm="codearts", proxy_slot="slot-ca", proxy="")
+
+    wb_proxy.record_upstream_usage(
+        FakeCodeArtsStream(), "GLM-5.2",
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        elapsed_ms=1, account="codearts-1", realm="codearts",
+        key=None)
+    codearts_row = usage_rows()[-1]
+    check("codearts proxy attribution unchanged",
+          codearts_row.get("realm") == "codearts"
+          and "proxy_slot" not in codearts_row, codearts_row)
+
     cost = wb_pricing.cost_for_row(
         {
             "model": "raccoon-090dd3",

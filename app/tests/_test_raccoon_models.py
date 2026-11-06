@@ -164,27 +164,38 @@ try:
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
 
     print("== realm all ==")
-    # An unbound key so ?realm=all is not overridden by the key binding.
-    wb_settings.set_api_keys(ACCOUNTS, [{
-        "key": "hub-key-1234", "name": "test",
-    }])
-    original_fetch = wb_proxy.fetch_models
-    original_refresh = wb_proxy.wb_modelsdev.refresh_async
-    wb_proxy.fetch_models = lambda realm=None: [("workbuddy-only", {})]
-    wb_proxy.wb_modelsdev.refresh_async = lambda *args, **kwargs: False
+    # The key is still Raccoon-bound; the literal ?realm=all query must win
+    # for model discovery. Use the production fetch path and spy only on the
+    # Raccoon branch so reaching it fails the suite.
+    original_raccoon_models = wb_proxy.Handler._get_raccoon_models
+
+    def forbid_raccoon_models(handler):
+        raise AssertionError("_get_raccoon_models reached for realm=all")
+
+    wb_proxy.Handler._get_raccoon_models = forbid_raccoon_models
     try:
         status, payload = get(HUB + "/v1/models?realm=all", "hub-key-1234")
-        check("realm all status", status == 200, (status, payload))
-        all_ids = [m["id"] for m in payload.get("data") or []]
-        check("realm all is WorkBuddy only", all_ids == ["workbuddy-only"], all_ids)
-        check(
-            "realm all excludes raccoon",
-            not any(mid in ("raccoon-090dd3", "sn-glm-5-3") for mid in all_ids),
-            all_ids,
-        )
     finally:
-        wb_proxy.fetch_models = original_fetch
-        wb_proxy.wb_modelsdev.refresh_async = original_refresh
+        wb_proxy.Handler._get_raccoon_models = original_raccoon_models
+    check("realm all status", status == 200, (status, payload))
+    check("realm all marker", payload.get("realm") == "all",
+          payload.get("realm"))
+    all_ids = [m["id"] for m in payload.get("data") or []]
+    check("realm all has WorkBuddy models", bool(all_ids), all_ids)
+    check(
+        "realm all excludes raccoon",
+        not any(mid in ("raccoon-090dd3", "sn-glm-5-3") for mid in all_ids),
+        all_ids,
+    )
+
+    print("== panel status ==")
+    status, panel = get(HUB + "/panel/status", "hub-key-1234")
+    check("panel status status", status == 200, (status, panel))
+    panel_raccoon = panel.get("raccoon") or {}
+    check("panel status raccoon configured",
+          panel_raccoon.get("configured") is True, panel_raccoon)
+    check("panel status raccoon accounts",
+          panel_raccoon.get("accounts") == 1, panel_raccoon)
 
     print("== health ==")
     status, health = get(HUB + "/health", "hub-key-1234")
