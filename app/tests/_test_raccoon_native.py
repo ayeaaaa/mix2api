@@ -56,6 +56,8 @@ def reset_fake(expires_in=3600, refresh_token="refresh-1"):
     state.exchange_calls = 0
     state.refresh_status = 200
     state.refresh_body = None
+    state.refresh_delay = 0.0
+    state.refresh_started.clear()
     state.catalog_status = 200
     state.catalog_error = 0
     state.catalog_error_body = None
@@ -645,6 +647,236 @@ def test_concurrent_refresh_single_flight():
     )
 
 
+def test_manual_disable_survives_catalog_and_token_refresh():
+    reset()
+    reset_fake(expires_in=-10, refresh_token="refresh-manual")
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token,
+                "refresh_token": state.refresh_token,
+                "office_org_name": "Manual Disabled",
+            }
+        ),
+    )
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.add(auth)
+    uid = acct.uid
+    pool.disable(uid, "manual disable")
+    check("manual disable flag set", acct.manual_disabled is True, acct.view())
+    check("manual disable provenance", acct.disabled_by == "manual", acct.view())
+
+    entries = R.model_entries(R.load_config(ACCOUNTS))
+    check("disabled account catalog falls back to seeds", len(entries) == 9, entries)
+    check(
+        "model_entries never refreshes a disabled token",
+        state.refresh_calls == 0,
+        state.refresh_calls,
+    )
+    check(
+        "model_entries never fetches a disabled catalog",
+        state.catalog_calls == 0,
+        state.catalog_calls,
+    )
+
+    overview = R.overview(R.load_config(ACCOUNTS))
+    account = (overview.get("accounts") or [{}])[0]
+    check("overview keeps manual disable", account.get("disabled") is True, account)
+    check(
+        "overview did not refresh the disabled token",
+        state.refresh_calls == 0,
+        state.refresh_calls,
+    )
+
+    refreshed = R.refresh_models(R.load_config(ACCOUNTS))
+    check("catalog refresh reports failure", refreshed.get("ok") is False, refreshed)
+    check(
+        "catalog refresh skipped the disabled account",
+        state.catalog_calls == 0,
+        state.catalog_calls,
+    )
+    check("manual disable survives catalog refresh", acct.disabled is True)
+
+    R.ensure_token(acct, force=True)
+    check(
+        "explicit token refresh happened", state.refresh_calls == 1, state.refresh_calls
+    )
+    check(
+        "token refresh rotated the access token",
+        acct.auth["access_token"] == state.token,
+        acct.auth,
+    )
+    check("successful refresh keeps manual disable", acct.disabled is True, acct.view())
+    check(
+        "reason kept after refresh",
+        acct.disabled_reason == "manual disable",
+        acct.view(),
+    )
+    check("manual flag kept after refresh", acct.manual_disabled is True, acct.view())
+
+    R.invalidate_pool(ACCOUNTS)
+    reloaded = R.pool_for(ACCOUNTS).get(uid)
+    check("manual disable survives reload", reloaded.disabled is True, reloaded.view())
+    check(
+        "manual flag survives reload", reloaded.manual_disabled is True, reloaded.view()
+    )
+    check(
+        "manual provenance survives reload",
+        reloaded.disabled_by == "manual",
+        reloaded.view(),
+    )
+
+
+def test_delete_during_refresh_removes_file_and_pool_entry():
+    reset()
+    reset_fake(expires_in=-10, refresh_token="refresh-delete-race")
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token,
+                "refresh_token": state.refresh_token,
+            }
+        ),
+    )
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.add(auth)
+    uid = acct.uid
+    path = auth["_path"]
+    state.refresh_delay = 0.3
+    state.refresh_started.clear()
+    errors = []
+
+    def refresh():
+        try:
+            R.ensure_token(acct)
+        except Exception as exc:  # noqa: BLE001 - the delete must win
+            errors.append(repr(exc))
+
+    thread = threading.Thread(target=refresh)
+    thread.start()
+    check(
+        "delayed refresh started",
+        state.refresh_started.wait(5.0) is True,
+        state.refresh_calls,
+    )
+    check("delete succeeds while refreshing", pool.remove(uid) is True)
+    thread.join(15)
+    check("refresh thread finished", thread.is_alive() is False)
+    check("account tombstoned", acct.deleted is True)
+    check("pool entry removed", pool.get(uid) is None)
+    check("auth file removed", not os.path.exists(path), path)
+    check("no auth documents remain", R.load_auths(ACCOUNTS) == [])
+    raised = False
+    try:
+        R.refresh_auth(dict(auth))
+    except R.RaccoonAuthError:
+        raised = True
+    check("direct refresh refuses a deleted auth path", raised)
+    check("direct refresh did not recreate the file", not os.path.exists(path), path)
+    state_data = json.load(open(pool.state_file, encoding="utf-8"))
+    check("state pruned after delete", uid not in state_data, state_data)
+    R.invalidate_pool(ACCOUNTS)
+    check(
+        "reload does not resurrect the account", R.pool_for(ACCOUNTS).get(uid) is None
+    )
+    check("refresh cannot write after deletion", R.load_auths(ACCOUNTS) == [], errors)
+
+
+def test_reimport_increments_generation_and_survives_refresh():
+    reset()
+    reset_fake(expires_in=-10, refresh_token="refresh-old")
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token,
+                "refresh_token": state.refresh_token,
+            }
+        ),
+    )
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.add(auth)
+    uid = acct.uid
+    first_generation = acct.auth_generation
+
+    new_auth = R.auth_from_payload(
+        {
+            "access_token": make_jwt(uid, 3600, jti="reimport"),
+            "refresh_token": "refresh-new",
+            "office_org_name": "Reimported",
+        }
+    )
+    replaced = pool.add(new_auth)
+    check("reimport reuses the pool entry", replaced is acct)
+    check(
+        "reimport bumps the auth generation",
+        acct.auth_generation == first_generation + 1,
+        (first_generation, acct.auth_generation),
+    )
+    check(
+        "reimport replaces credentials",
+        acct.auth["refresh_token"] == "refresh-new",
+        acct.auth,
+    )
+
+    # Now the harder case: an expired token refresh is already in flight when
+    # the same account is re-imported. The new credentials must win.
+    reset()
+    reset_fake(expires_in=-10, refresh_token="refresh-slow")
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token,
+                "refresh_token": state.refresh_token,
+            }
+        ),
+    )
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.add(auth)
+    uid = acct.uid
+    state.refresh_delay = 0.3
+    state.refresh_started.clear()
+    errors = []
+
+    def refresh():
+        try:
+            R.ensure_token(acct)
+        except Exception as exc:  # noqa: BLE001 - reported by the test
+            errors.append(repr(exc))
+
+    thread = threading.Thread(target=refresh)
+    thread.start()
+    check(
+        "slow refresh started",
+        state.refresh_started.wait(5.0) is True,
+        state.refresh_calls,
+    )
+    newest = R.auth_from_payload(
+        {
+            "access_token": make_jwt(uid, 3600, jti="winner"),
+            "refresh_token": "refresh-winner",
+        }
+    )
+    pool.add(newest)
+    thread.join(15)
+    check("slow refresh thread finished", thread.is_alive() is False)
+    check("slow refresh did not raise", errors == [], errors)
+    check(
+        "reimport credentials survive an in-flight refresh",
+        acct.auth["refresh_token"] == "refresh-winner",
+        acct.auth,
+    )
+    disk = R.load_auths(ACCOUNTS)[0]
+    check(
+        "disk keeps the reimported credentials",
+        disk["refresh_token"] == "refresh-winner",
+        disk,
+    )
+
+
 def test_pool_state_and_actions():
     reset()
     pool = R.pool_for(ACCOUNTS)
@@ -1011,6 +1243,9 @@ try:
     print("== refresh ==")
     test_refresh_rotates_tokens_and_persists()
     test_concurrent_refresh_single_flight()
+    test_manual_disable_survives_catalog_and_token_refresh()
+    test_delete_during_refresh_removes_file_and_pool_entry()
+    test_reimport_increments_generation_and_survives_refresh()
     print("== pool ==")
     test_pool_state_and_actions()
     test_proxy_slot_binding()

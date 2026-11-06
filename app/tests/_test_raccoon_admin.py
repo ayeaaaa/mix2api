@@ -102,6 +102,8 @@ def reset_fake():
     state.exchange_calls = 0
     state.refresh_status = 200
     state.refresh_body = None
+    state.refresh_delay = 0.0
+    state.refresh_started.clear()
     state.catalog_status = 200
     state.catalog_error = 0
     state.catalog_error_body = None
@@ -608,6 +610,83 @@ def test_delete_removes_account_file():
     check("delete missing -> 404", status == 404, (status, result))
 
 
+def test_manual_disable_survives_admin_catalog_and_refresh():
+    print("== manual disable ==")
+    reset_accounts()
+    reset_fake()
+    state.uid = "pu-manual-admin"
+    state.refresh_token = "refresh-manual-admin"
+    state.token = make_jwt(state.uid, -10)
+    imported = import_current_account(uid=state.uid, expires_in=-10)
+    uid = imported.get("uid")
+    status, result = call(
+        "POST", "/raccoon/accounts/disable", {"uid": uid}, token=TOKEN
+    )
+    check("manual disable accepted", status == 200, (status, result))
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.get(uid)
+    check(
+        "manual disable stored", acct.disabled is True and acct.manual_disabled is True
+    )
+
+    state.reset_requests()
+    status, overview = call("GET", "/raccoon/overview", token=TOKEN)
+    account = next(
+        (item for item in overview.get("accounts") or [] if item.get("uid") == uid),
+        {},
+    )
+    check("overview keeps disabled state", account.get("disabled") is True, account)
+    check(
+        "overview does not refresh the disabled token",
+        state.refresh_calls == 0,
+        state.refresh_calls,
+    )
+    check(
+        "overview does not fetch a disabled catalog",
+        state.catalog_calls == 0,
+        state.catalog_calls,
+    )
+
+    status, refreshed = call("POST", "/raccoon/models/refresh", {}, token=TOKEN)
+    check(
+        "bulk refresh succeeds with no active account",
+        status == 200 and refreshed.get("ok") is False,
+        (status, refreshed),
+    )
+    check(
+        "bulk refresh skips the disabled account",
+        state.refresh_calls == 0 and state.catalog_calls == 0,
+        (state.refresh_calls, state.catalog_calls),
+    )
+
+    # An explicit account test is allowed to rotate credentials; it still must
+    # not undo the panel's manual disable.
+    status, tested = call("POST", "/raccoon/accounts/test", {"uid": uid}, token=TOKEN)
+    check(
+        "manual disabled account can still be tested", status == 200, (status, tested)
+    )
+    check(
+        "manual disabled account refreshed once",
+        state.refresh_calls == 1,
+        state.refresh_calls,
+    )
+    overview = call("GET", "/raccoon/overview", token=TOKEN)[1]
+    account = next(
+        (item for item in overview.get("accounts") or [] if item.get("uid") == uid),
+        {},
+    )
+    check(
+        "successful refresh keeps manual disable",
+        account.get("disabled") is True,
+        account,
+    )
+    check(
+        "manual reason kept",
+        "manual" in str(account.get("reason") or "").lower(),
+        account,
+    )
+
+
 def test_models_refresh_and_keepalive():
     print("== refresh/keepalive ==")
     reset_accounts()
@@ -649,6 +728,25 @@ def test_models_refresh_and_keepalive():
         status == 200 and result.get("ok") is False and bool(result.get("message")),
         (status, result),
     )
+
+    reset_accounts()
+    reset_fake()
+    import_current_account(uid="pu-test-down", expires_in=3600)
+    state.catalog_error = 500
+    status, result = call("POST", "/raccoon/test", {}, token=TOKEN)
+    check("connection test upstream failure -> 502", status == 502, (status, result))
+    check(
+        "connection test upstream failure is readable",
+        bool((result.get("error") or {}).get("message")),
+        result,
+    )
+    status, result = call("POST", "/raccoon/models/refresh", {}, token=TOKEN)
+    check(
+        "bulk model refresh stays 200 on failure",
+        status == 200 and result.get("ok") is False,
+        (status, result),
+    )
+    state.catalog_error = 0
 
     reset_accounts()
     reset_fake()
@@ -996,6 +1094,7 @@ try:
     test_delete_failure_keeps_account_and_removes_duplicates()
     test_proxy_credentials_are_masked_in_views()
     test_import_rolls_back_auth_file_when_enable_fails()
+    test_manual_disable_survives_admin_catalog_and_refresh()
     test_models_refresh_and_keepalive()
     test_admin_errors_are_readable_and_secret_free()
     test_callback_requests_are_redacted_and_nostore()

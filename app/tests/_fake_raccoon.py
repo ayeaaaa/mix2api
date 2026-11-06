@@ -85,6 +85,8 @@ class FakeState(object):
         # Response overrides: status + optional JSON body.
         self.refresh_status = 200
         self.refresh_body = None
+        self.refresh_delay = 0.0
+        self.refresh_started = threading.Event()
         self.catalog_status = 200
         # Task 2 failure control: a non-zero status wins over `catalog_status`.
         self.catalog_error = 0
@@ -108,6 +110,7 @@ class FakeState(object):
         self.truncate_after = None
         self.embedded_error = None
         self.embedded_error_by_token = {}
+        self.embedded_error_after = None
         self.saw_image = False
         self.extra_tokens = set()
         self.code = "test-code"
@@ -320,6 +323,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/web/auth/v1/refresh":
             with state.lock:
                 state.refresh_calls += 1
+                state.refresh_started.set()
+                if state.refresh_delay:
+                    time.sleep(float(state.refresh_delay))
                 if state.refresh_status != 200:
                     self._send_json(
                         state.refresh_status,
@@ -383,7 +389,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             embedded = state.embedded_error_by_token.get(token, state.embedded_error)
-            if embedded:
+            if embedded and state.embedded_error_after is None:
                 raw = (
                     "data: " + json.dumps(embedded, ensure_ascii=False) + "\n\n"
                 ).encode("utf-8")
@@ -396,6 +402,19 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 for chunk in chunks
             ]
+            if state.embedded_error_after is not None:
+                try:
+                    limit = max(0, int(state.embedded_error_after))
+                except (TypeError, ValueError):
+                    limit = 0
+                error = state.embedded_error_by_token.get(token, state.embedded_error)
+                if not error:
+                    error = {"error_code": 500, "error_msg": "mid-stream failure"}
+                raw = b"".join(frames[:limit]) + (
+                    "data: " + json.dumps(error, ensure_ascii=False) + "\n\n"
+                ).encode("utf-8")
+                self._send_sse(raw)
+                return
             if state.truncate_after is not None:
                 try:
                     limit = max(0, int(state.truncate_after))

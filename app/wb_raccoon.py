@@ -83,6 +83,33 @@ DEFAULTS = {
 
 _LOCK = threading.RLock()
 
+#: Absolute auth-file paths whose account was deleted. `refresh_auth()` checks
+#: this even when it is called without an account object, so a late write can
+#: never recreate a deleted file. `save_auth()` clears the uid's entries on an
+#: explicit re-import.
+_AUTH_TOMBSTONES = {}
+_TOMBSTONE_LOCK = threading.Lock()
+
+
+def _tombstone_auth_paths(paths, uid):
+    with _TOMBSTONE_LOCK:
+        for path in paths:
+            _AUTH_TOMBSTONES[os.path.abspath(str(path))] = str(uid or "")
+
+
+def _auth_path_tombstoned(path):
+    with _TOMBSTONE_LOCK:
+        return os.path.abspath(str(path)) in _AUTH_TOMBSTONES
+
+
+def _clear_auth_tombstones(uid="", path=""):
+    uid = str(uid or "")
+    path = os.path.abspath(str(path)) if path else ""
+    with _TOMBSTONE_LOCK:
+        for key, value in list(_AUTH_TOMBSTONES.items()):
+            if (uid and value == uid) or (path and key == path):
+                _AUTH_TOMBSTONES.pop(key, None)
+
 
 # ---------------------------------------------------------------------------
 # 异常
@@ -422,6 +449,9 @@ def save_auth(accounts_dir, auth):
         auth["updated_at"] = int(time.time())
     if not path:
         path = os.path.join(accounts_path(accounts_dir), _auth_filename(uid))
+    # An explicit save (import/re-import) is the only caller that may revive a
+    # tombstoned uid; refresh writes use `_atomic_write` directly.
+    _clear_auth_tombstones(uid, path)
     _atomic_write(path, auth)
     auth["_path"] = path
     return auth
@@ -654,15 +684,30 @@ def _request_json(
     return parsed
 
 
-def refresh_auth(auth, timeout=30.0, proxy=""):
+def refresh_auth(auth, timeout=30.0, proxy="", acct=None):
     """Exchange a refresh token for a new access/refresh pair.
 
     When `auth` carries `_path` (the normal load/save round-trip), the rotated
     document is written back atomically. A 401/403 or an invalid success body
     raises `RaccoonAuthError`: only re-importing/auth-flow can recover.
+
+    With `acct`, the whole exchange holds the account's refresh lock and the
+    write is refused after the account has been deleted. This is what makes
+    account deletion durable while a refresh is in flight.
     """
+    if acct is None:
+        return _refresh_auth(auth, timeout=timeout, proxy=proxy, acct=None)
+    with acct._refresh_lock:
+        if not acct.live():
+            raise RaccoonAuthError("account was deleted during token refresh")
+        return _refresh_auth(auth, timeout=timeout, proxy=proxy, acct=acct)
+
+
+def _refresh_auth(auth, timeout=30.0, proxy="", acct=None):
     if not isinstance(auth, dict):
         raise RaccoonAuthError("auth must be an object")
+    if auth.get("_path") and _auth_path_tombstoned(auth.get("_path")):
+        raise RaccoonAuthError("account was deleted during token refresh")
     refresh_token = _clean_token(auth.get("refresh_token"))
     if not refresh_token:
         raise RaccoonAuthError(
@@ -716,23 +761,41 @@ def refresh_auth(auth, timeout=30.0, proxy=""):
     path = auth.get("_path")
     merged.pop("_path", None)
     if path:
+        if acct is not None and not acct.live():
+            raise RaccoonAuthError("account was deleted during token refresh")
+        if _auth_path_tombstoned(path):
+            raise RaccoonAuthError("account was deleted during token refresh")
         _atomic_write(path, merged)
         merged["_path"] = path
     return merged
 
 
-def ensure_token(acct, force=False):
+def ensure_token(acct, force=False, expected_generation=None):
     """Refresh `acct` single-flight, double-checking under its lock.
 
     A force refresh is what a 401 retry uses. Two concurrent 401s both capture
     the same auth generation; the first rotates it and the second returns
     without consuming the one-time refresh token again.
+
+    `expected_generation` lets a caller pin the credentials it sent upstream:
+    if a re-import or another request rotated them while the response was in
+    flight, this returns without refreshing (or writing) again.
     """
     force = bool(force)
+    if acct is None or getattr(acct, "deleted", False):
+        raise RaccoonAuthError("account was deleted")
+    observed = (
+        int(expected_generation)
+        if expected_generation is not None
+        else acct.auth_generation
+    )
     if not force and not acct.expiring_soon() and not acct.expired():
         return
-    observed = acct.auth_generation
     with acct._refresh_lock:
+        if acct.auth_generation != observed:
+            return
+        if not acct.live():
+            raise RaccoonAuthError("account was deleted during token refresh")
         if force:
             if acct.auth_generation != observed:
                 return
@@ -742,7 +805,7 @@ def ensure_token(acct, force=False):
             acct.pool.config.get("timeout_seconds") or DEFAULTS["timeout_seconds"]
         )
         try:
-            data = refresh_auth(acct.auth, timeout=timeout, proxy=acct.proxy)
+            data = refresh_auth(acct.auth, timeout=timeout, proxy=acct.proxy, acct=acct)
         except RaccoonAuthError as exc:
             message = _redact(str(exc), _auth_secrets(acct.auth))
             if message != str(exc):
@@ -753,7 +816,9 @@ def ensure_token(acct, force=False):
             if force or acct.expired():
                 raise
             return
-        acct.update_auth(data)
+        if acct.auth_generation != observed:
+            return
+        acct.update_auth(data, expected_generation=observed)
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +853,8 @@ class RaccoonAccount(object):
         self.proxy = ""
         self.disabled = False
         self.disabled_reason = ""
+        self.manual_disabled = False
+        self.disabled_by = ""
         self.cool_until = 0.0
         self.err_count = 0
         self.last_error = ""
@@ -800,8 +867,16 @@ class RaccoonAccount(object):
         self.models_fetched_at = 0.0
         self.models_source = ""
         self.auth_generation = 0
+        self.deleted = False
         self._lock = threading.RLock()
-        self._refresh_lock = threading.Lock()
+        self._refresh_lock = threading.RLock()
+
+    def live(self):
+        """True while this object is still the pool's current entry for its uid."""
+        if getattr(self, "deleted", False):
+            return False
+        with self.pool._lock:
+            return any(item is self for item in self.pool.accounts)
 
     def chat_base_url(self):
         """Current upstream base; a test/override can move BASE_URL."""
@@ -825,42 +900,59 @@ class RaccoonAccount(object):
         exp = self.expires_at()
         return bool(exp and exp - time.time() <= skew)
 
-    def update_auth(self, data):
-        """Apply a refresh result, persist it, and recover terminal state."""
-        data = dict(data or {})
-        updated = dict(self.auth)
-        for key in (
-            "access_token",
-            "refresh_token",
-            "token_type",
-            "office_identity",
-            "office_org_name",
-            "office_org_role",
-        ):
-            value = data.get(key)
-            if value not in (None, ""):
-                updated[key] = value
-        if data.get("expires_at"):
-            updated["expires_at"] = data.get("expires_at")
-        claims = jwt_claims(updated.get("access_token"))
-        updated["uid"] = (
-            str(claims.get("sub") or "").strip() or self.uid or uid_from_auth(updated)
-        )
-        updated["updated_at"] = int(time.time())
-        if self.proxy_slot:
-            updated["proxySlot"] = self.proxy_slot
-        self.auth = save_auth(self.pool.accounts_dir, updated)
-        self.uid = str(self.auth.get("uid") or self.uid)
-        self.name = self.uid
-        self.nickname = str(self.auth.get("office_org_name") or self.uid)
-        self.proxy_slot = str(self.auth.get("proxySlot") or "").strip()
-        self.auth_generation += 1
-        self.disabled = False
-        self.disabled_reason = ""
-        self.last_error = ""
-        self.err_count = 0
-        self.cool_until = 0.0
-        self.pool.save_state()
+    def update_auth(self, data, expected_generation=None):
+        """Apply a refresh result, persist it, and recover non-manual terminal state.
+
+        A manual disable is a panel decision, not an auth failure: rotating a
+        token must never silently re-enable the account.
+        """
+        with self._refresh_lock:
+            if expected_generation is not None and self.auth_generation != int(
+                expected_generation
+            ):
+                raise RaccoonAuthError(
+                    "account credentials changed during token refresh"
+                )
+            if not self.live():
+                raise RaccoonAuthError("account was deleted during token refresh")
+            data = dict(data or {})
+            updated = dict(self.auth)
+            for key in (
+                "access_token",
+                "refresh_token",
+                "token_type",
+                "office_identity",
+                "office_org_name",
+                "office_org_role",
+            ):
+                value = data.get(key)
+                if value not in (None, ""):
+                    updated[key] = value
+            if data.get("expires_at"):
+                updated["expires_at"] = data.get("expires_at")
+            claims = jwt_claims(updated.get("access_token"))
+            updated["uid"] = (
+                str(claims.get("sub") or "").strip()
+                or self.uid
+                or uid_from_auth(updated)
+            )
+            updated["updated_at"] = int(time.time())
+            if self.proxy_slot:
+                updated["proxySlot"] = self.proxy_slot
+            self.auth = save_auth(self.pool.accounts_dir, updated)
+            self.uid = str(self.auth.get("uid") or self.uid)
+            self.name = self.uid
+            self.nickname = str(self.auth.get("office_org_name") or self.uid)
+            self.proxy_slot = str(self.auth.get("proxySlot") or "").strip()
+            self.auth_generation += 1
+            if not self.manual_disabled:
+                self.disabled = False
+                self.disabled_reason = ""
+                self.disabled_by = ""
+                self.last_error = ""
+                self.err_count = 0
+                self.cool_until = 0.0
+            self.pool.save_state()
 
     # ---- 状态快照 ----
     def view(self):
@@ -902,7 +994,7 @@ class RaccoonAccount(object):
     def healthy(self, now=None):
         """Selectable? Expired tokens stay selectable so ensure_token can fix them."""
         now = now or time.time()
-        return (not self.disabled) and now >= self.cool_until
+        return (not self.disabled) and (not self.deleted) and now >= self.cool_until
 
     def has_model(self, model):
         mid = str(model or "").strip().lower()
@@ -926,6 +1018,7 @@ class RaccoonPool(object):
         self.config = dict(config)
         self.accounts = []
         self._affinity = {}
+        self._tombstones = {}
         self._lock = threading.RLock()
         self.load()
 
@@ -945,6 +1038,20 @@ class RaccoonPool(object):
             acct.cool_until = float(entry.get("cool_until") or 0)
             acct.disabled = bool(entry.get("disabled"))
             acct.disabled_reason = str(entry.get("reason") or "")
+            acct.manual_disabled = bool(entry.get("manual_disabled"))
+            acct.disabled_by = str(entry.get("disabled_by") or "")
+            # State written before `manual_disabled` existed only tagged manual
+            # disables through the default reason. Preserve those decisions so
+            # the first token rotation after an upgrade cannot undo them.
+            if acct.disabled and not acct.manual_disabled:
+                if (
+                    acct.disabled_by == "manual"
+                    or acct.disabled_reason == "manual disable"
+                ):
+                    acct.manual_disabled = True
+                    acct.disabled_by = "manual"
+                elif not acct.disabled_by:
+                    acct.disabled_by = "auth"
             acct.last_error = str(entry.get("last_error") or "")
             acct.note = str(entry.get("note") or "")[:200]
             acct.tasks_enabled = bool(entry.get("tasks_enabled", True))
@@ -983,6 +1090,8 @@ class RaccoonPool(object):
         for acct in accounts:
             state[acct.uid] = {
                 "disabled": bool(acct.disabled),
+                "manual_disabled": bool(acct.manual_disabled),
+                "disabled_by": acct.disabled_by,
                 "reason": acct.disabled_reason,
                 "cool_until": acct.cool_until,
                 "err_count": acct.err_count,
@@ -1041,44 +1150,87 @@ class RaccoonPool(object):
 
     # ---- 增删启停 ----
     def add(self, auth):
-        acct = RaccoonAccount(auth, self)
+        candidate = RaccoonAccount(auth, self)
         with self._lock:
-            for index, existing in enumerate(self.accounts):
-                if existing.uid != acct.uid:
-                    continue
-                # Re-import/refresh may drop panel-side fields; keep the slot.
-                if not acct.proxy_slot and existing.proxy_slot:
-                    acct.proxy_slot = existing.proxy_slot
-                if acct.proxy_slot:
-                    acct.auth["proxySlot"] = acct.proxy_slot
-                acct.auth = save_auth(self.accounts_dir, acct.auth)
-                existing.auth = acct.auth
-                existing.proxy_slot = acct.proxy_slot
-                existing.nickname = acct.nickname
-                existing.disabled = False
-                existing.disabled_reason = ""
-                existing.last_error = ""
-                existing.err_count = 0
-                existing.cool_until = 0.0
+            existing = None
+            for account in self.accounts:
+                if account.uid == candidate.uid:
+                    existing = account
+                    break
+            if existing is None:
+                self.accounts.append(candidate)
+                self._tombstones.pop(candidate.uid, None)
+        if existing is None:
+            _clear_auth_tombstones(candidate.uid)
+            self.save_state()
+            self.apply_proxy_slots()
+            return candidate
+
+        # Re-import replaces credentials. Wait for an in-flight refresh so the
+        # old pair cannot land afterwards, and bump the generation so a refresh
+        # that captured the old pair before this import returns without writing.
+        with existing._refresh_lock:
+            if not existing.proxy_slot and candidate.proxy_slot:
+                existing.proxy_slot = candidate.proxy_slot
+            if existing.proxy_slot:
+                candidate.auth["proxySlot"] = existing.proxy_slot
+            _clear_auth_tombstones(candidate.uid)
+            saved = save_auth(self.accounts_dir, candidate.auth)
+            with self._lock:
+                existing.auth = saved
+                existing.proxy_slot = str(saved.get("proxySlot") or "").strip()
+                existing.nickname = str(saved.get("office_org_name") or existing.uid)
+                existing.auth_generation += 1
+                existing.deleted = False
+                self._tombstones.pop(existing.uid, None)
+                if not existing.manual_disabled:
+                    existing.disabled = False
+                    existing.disabled_reason = ""
+                    existing.disabled_by = ""
+                    existing.last_error = ""
+                    existing.err_count = 0
+                    existing.cool_until = 0.0
                 existing.models = []
                 existing.models_fetched_at = 0.0
-                self.accounts[index] = existing
-                self.save_state()
-                self.apply_proxy_slots()
-                return existing
-            self.accounts.append(acct)
         self.save_state()
         self.apply_proxy_slots()
-        return acct
+        return existing
 
     def remove(self, uid):
         acct = self.get(uid)
         if acct is None:
             return False
-        if not delete_auth(self.accounts_dir, acct.uid):
-            return False
+        # Tombstone first: a refresh that has not started yet must abort, and a
+        # catalog/discovery path must not treat the account as still present.
         with self._lock:
-            self.accounts = [a for a in self.accounts if a.uid != acct.uid]
+            self._tombstones[acct.uid] = time.time()
+            acct.deleted = True
+        tombstoned_paths = _auth_paths_for_uid(self.accounts_dir, acct.uid)
+        tombstoned_paths.append(
+            os.path.join(accounts_path(self.accounts_dir), _auth_filename(acct.uid))
+        )
+        _tombstone_auth_paths(tombstoned_paths, acct.uid)
+        with acct._refresh_lock:
+            # An in-flight refresh either finished before we got the lock (so
+            # its file is deleted below) or sees the tombstone and refuses to
+            # write. Re-check once more to cover a writer that completed just
+            # as the tombstone was raised.
+            removed = delete_auth(self.accounts_dir, acct.uid)
+            if removed and _auth_paths_for_uid(self.accounts_dir, acct.uid):
+                removed = delete_auth(self.accounts_dir, acct.uid)
+        if not removed:
+            _clear_auth_tombstones(acct.uid)
+            with self._lock:
+                self._tombstones.pop(acct.uid, None)
+                acct.deleted = False
+            return False
+        # Keep the path tombstones after a successful delete: a refresh that
+        # was already on the wire must not recreate the file afterwards.
+        _tombstone_auth_paths(tombstoned_paths, acct.uid)
+        with self._lock:
+            self.accounts = [
+                account for account in self.accounts if account is not acct
+            ]
         self.save_state()
         return True
 
@@ -1087,6 +1239,8 @@ class RaccoonPool(object):
         if acct is None:
             return False
         acct.disabled = False
+        acct.manual_disabled = False
+        acct.disabled_by = ""
         acct.disabled_reason = ""
         acct.last_error = ""
         acct.err_count = 0
@@ -1099,6 +1253,8 @@ class RaccoonPool(object):
         if acct is None:
             return False
         acct.disabled = True
+        acct.manual_disabled = True
+        acct.disabled_by = "manual"
         acct.disabled_reason = str(reason or "manual disable")
         acct.last_error = acct.disabled_reason
         self.save_state()
@@ -1207,7 +1363,7 @@ class RaccoonPool(object):
                 acct.active_concurrent -= 1
 
     def note_success(self, acct):
-        if acct is None:
+        if acct is None or getattr(acct, "deleted", False):
             return
         if acct.err_count or acct.cool_until or acct.last_error:
             acct.err_count = 0
@@ -1216,12 +1372,14 @@ class RaccoonPool(object):
             self.save_state()
 
     def note_error(self, acct, message, soft=False, terminal=False):
-        if acct is None:
+        if acct is None or getattr(acct, "deleted", False):
             return
         acct.last_error = _redact(str(message or ""), _auth_secrets(acct.auth))[:200]
         if terminal:
-            acct.disabled = True
-            acct.disabled_reason = acct.last_error
+            if not acct.manual_disabled:
+                acct.disabled = True
+                acct.disabled_by = "auth"
+                acct.disabled_reason = acct.last_error
         elif soft:
             acct.cool_until = time.time() + SOFT_COOLDOWN
         else:
@@ -1749,6 +1907,11 @@ def model_entries(config):
     config = _config_or_load(config)
     pool = pool_for(config["accounts_dir"])
     for acct in list(pool.accounts):
+        # Discovery must not poke a disabled or already-deleted account: a
+        # manual disable is a panel decision, and a terminal auth failure would
+        # only produce noise.
+        if acct.disabled or acct.deleted:
+            continue
         try:
             ensure_catalog(acct, timeout=8.0)
         except RaccoonError:
@@ -1823,7 +1986,11 @@ def refresh_models(config):
     config = _config_or_load(config)
     pool = pool_for(config["accounts_dir"])
     invalidate_models()
-    accounts = list(pool.accounts)
+    accounts = [
+        account
+        for account in list(pool.accounts)
+        if not account.disabled and not account.deleted
+    ]
     target = None
     for acct in accounts:
         if acct.healthy():
@@ -1837,10 +2004,15 @@ def refresh_models(config):
         except RaccoonError:
             pass
     entries = model_entries(config)
+    catalog = models_meta(config)
+    ok = catalog.get("source") == "raccoon"
     return {
-        "ok": True,
+        "ok": ok,
         "models": len(entries),
-        "catalog": models_meta(config),
+        "catalog": catalog,
+        "message": (
+            "模型目录已刷新" if ok else (catalog.get("warning") or "上游模型目录不可用")
+        ),
     }
 
 
@@ -2311,6 +2483,7 @@ def _save_and_enable(accounts_dir, auth):
                 backup = fh.read()
         except OSError:
             backup = None
+    _clear_auth_tombstones(auth.get("uid") or "")
     saved = save_auth(accounts_dir, auth)
     try:
         save_config(accounts_dir, {"enabled": True})
@@ -2549,6 +2722,9 @@ def _clamp_output_tokens(acct, model, body):
             raise RaccoonBadRequest("%s must be a positive integer" % key, status=400)
         if requested <= 0:
             raise RaccoonBadRequest("%s must be a positive integer" % key, status=400)
+        # Normalize numeric strings (and integral floats) before they reach the
+        # upstream: the allowlist forwards the body verbatim otherwise.
+        body[key] = requested
         if limit > 0 and requested > limit:
             body[key] = limit
 
@@ -2623,6 +2799,20 @@ class RaccoonStream(object):
         except Exception:
             return
         if not isinstance(payload, dict):
+            return
+
+        # Normal chat/usage chunks are not errors even though they share the
+        # stream. A frame only counts as error-shaped when it carries an
+        # `error` object/message or a non-zero `error_code`/`code`.
+        error = payload.get("error")
+        raw_code = payload.get("error_code")
+        if raw_code in (None, "", 0, "0"):
+            raw_code = payload.get("code")
+        if (
+            (payload.get("choices") or payload.get("usage") is not None)
+            and not error
+            and raw_code in (None, "", 0, "0")
+        ):
             return
 
         code = payload.get("error_code")
@@ -2713,6 +2903,7 @@ class RaccoonStream(object):
                 if data == b"[DONE]":
                     self._saw_done = True
                 if data:
+                    self._raise_embedded(data)
                     yield line
             while True:
                 line = self.raw.readline()
@@ -2723,6 +2914,11 @@ class RaccoonStream(object):
                     continue
                 if data == b"[DONE]":
                     self._saw_done = True
+                else:
+                    # A 200 stream can carry an error object after some normal
+                    # chunks. Raise it here as well; otherwise the gateway would
+                    # treat the truncated answer as a clean completion.
+                    self._raise_embedded(data)
                 yield line
             if not self._saw_done:
                 raise RaccoonUpstreamError(
@@ -2767,6 +2963,7 @@ def _client_chat(acct, body, session_key):
     )
 
     for attempt in (0, 1):
+        expected_generation = acct.auth_generation
         headers = _chat_headers(acct)
         secrets = _auth_secrets(acct.auth)
         req = urllib.request.Request(
@@ -2787,7 +2984,7 @@ def _client_chat(acct, body, session_key):
             except Exception:
                 pass
             if exc.code in (401, 403) and attempt == 0:
-                ensure_token(acct, force=True)
+                ensure_token(acct, force=True, expected_generation=expected_generation)
                 continue
             _raise_for_status(exc.code, err, secrets)
             raise
@@ -2809,7 +3006,7 @@ def _client_chat(acct, body, session_key):
         except RaccoonAuthError:
             stream.abort()
             if attempt == 0:
-                ensure_token(acct, force=True)
+                ensure_token(acct, force=True, expected_generation=expected_generation)
                 continue
             raise
         except RaccoonError:

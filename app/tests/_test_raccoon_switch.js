@@ -174,15 +174,28 @@ assert.equal(byId('accountsRealmRaccoon').style.display, 'none',
 assert.equal(byId('nextGatewayRealmRaccoon').hidden, true,
   '未配置时网关页出口切换应隐藏小浣熊按钮');
 
-// 未启用时即便 URL 强塞 view=raccoon，也不能露出账号区/统计条。
+// 未启用时即便 URL 强塞 view=raccoon，也不能露出账号区/统计条；视图应先
+// 回落到当前默认出口，WorkBuddy 区块随之恢复（不能只剩空壳）。
 window.VIEW_REALM = 'raccoon';
 api.updateUI();
+assert.equal(window.VIEW_REALM, 'intl',
+  '小浣熊停用后无效视图应回落到默认出口');
 assert.equal(byId('raccoonAccountsSection').style.display, 'none',
   '未启用时即使视图是 raccoon 也应隐藏账号区');
 assert.equal(byId('raccoonSummary').style.display, 'none',
   '未启用时即使视图是 raccoon 也应隐藏统计条');
 assert.equal(byId('tabRaccoon').style.display, 'none',
   '未启用时即使视图是 raccoon 也应隐藏卡片');
+assert.equal(byId('workbuddyAccountsSection').style.display, '',
+  '小浣熊停用后 WorkBuddy 账号区应恢复');
+assert.equal(byId('workbuddyDisabledSection').style.display, '',
+  '小浣熊停用后 WorkBuddy 禁用区应恢复');
+assert.equal(byId('workbuddyActivitySection').style.display, '',
+  '小浣熊停用后 WorkBuddy 活动区应恢复');
+assert.equal(byId('cards').style.display, '',
+  '小浣熊停用后 WorkBuddy 统计卡应恢复');
+assert.equal(byId('schedulerBar').style.display, '',
+  '小浣熊停用后 WorkBuddy 调度器应恢复');
 
 assert.ok(api.realmLabel('raccoon').includes('小浣熊'), '小浣熊出口名称');
 console.log('raccoon switch assertions passed');

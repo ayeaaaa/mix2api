@@ -206,6 +206,34 @@ try:
     check("health healthy", block.get("healthy") == 1, block)
     check("health catalog source", block.get("catalog_source") == "raccoon", block)
 
+    print("== disabled account catalog ==")
+    R.save_config(ACCOUNTS, {"enabled": True})
+    pool = R.pool_for(ACCOUNTS)
+    acct = pool.get("pu-raccoon-test")
+    pool.disable(acct.uid, "manual disable")
+    acct.auth["access_token"] = make_jwt(acct.uid, -10)
+    acct.auth["refresh_token"] = "refresh-disabled"
+    R.invalidate_models()
+    state.refresh_calls = 0
+    state.catalog_calls = 0
+    status, payload = get(HUB + "/v1/models?realm=raccoon", "hub-key-1234")
+    check("disabled account models status", status == 200, (status, payload))
+    check(
+        "disabled account does not refresh its token",
+        state.refresh_calls == 0,
+        state.refresh_calls,
+    )
+    check(
+        "disabled account does not fetch a catalog",
+        state.catalog_calls == 0,
+        state.catalog_calls,
+    )
+    check(
+        "disabled account stays disabled",
+        pool.get(acct.uid).disabled is True,
+        pool.get(acct.uid).view(),
+    )
+
     print("== disabled ==")
     R.save_config(ACCOUNTS, {"enabled": False})
     R.invalidate_models()

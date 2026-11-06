@@ -24025,16 +24025,20 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 data = wb_raccoon.refresh_models(cfg)
                 catalog = data.get("catalog") or {}
-                ok = catalog.get("source") == "raccoon"
+                ok = catalog.get("source") == "raccoon" and data.get("ok") is not False
                 message = (
                     "连接正常"
                     if ok
-                    else (catalog.get("warning") or "上游模型目录不可用")
+                    else (data.get("message")
+                          or catalog.get("warning")
+                          or "上游模型目录不可用")
                 )
+                if not ok:
+                    return self._error(502, message, "invalid_request_error")
                 return self._json(
                     200,
                     {
-                        "ok": ok,
+                        "ok": True,
                         "models": data.get("models") or 0,
                         "catalog_source": catalog.get("source") or "",
                         "message": message,

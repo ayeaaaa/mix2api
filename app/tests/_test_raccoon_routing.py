@@ -108,6 +108,9 @@ def reset_fake():
     state.embedded_error_by_token = {}
     state.saw_image = False
     state.extra_tokens = set()
+    state.refresh_delay = 0.0
+    state.refresh_started.clear()
+    state.embedded_error_after = None
     state.catalog = default_catalog()
     state.reset_requests()
 
@@ -427,6 +430,44 @@ try:
             for p in content
         ),
         content,
+    )
+
+    print("== truncated stream ==")
+    reset_fake()
+    reset_gateway()
+    add_account("pu-truncated")
+    state.truncate_after = 2
+    before_rows = len(rows_for("pu-truncated"))
+    status, raw = post("/v1/chat/completions", chat_body(stream=True))
+    check("truncated stream status 200", status == 200, (status, raw[:300]))
+    check(
+        "truncated stream emits a terminal error frame",
+        "upstream stream aborted" in raw,
+        raw[-500:],
+    )
+    check(
+        "truncated stream does not claim DONE",
+        not any(line.strip() == "data: [DONE]" for line in raw.splitlines()),
+        raw[-300:],
+    )
+    error_events = [
+        event for event in sse_objects(raw)
+        if isinstance(event.get("error"), dict)
+    ]
+    check("truncated stream error object", bool(error_events), sse_objects(raw)[-3:])
+    rows = rows_for("pu-truncated")
+    check("truncated stream writes one terminal row", len(rows) == before_rows + 1, rows)
+    check(
+        "truncated row is an upstream abort",
+        rows and rows[-1].get("outcome") == "upstream_aborted",
+        rows[-1:] if rows else rows,
+    )
+    check(
+        "truncated row keeps raccoon attribution",
+        rows
+        and rows[-1].get("realm") == "raccoon"
+        and rows[-1].get("account") == "pu-truncated",
+        rows[-1:] if rows else rows,
     )
 
     print("== 401 refresh ==")

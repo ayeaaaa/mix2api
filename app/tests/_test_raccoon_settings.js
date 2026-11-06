@@ -51,6 +51,7 @@ assert.ok(!/id="raccoonReset/i.test(html), '小浣熊设置不应有重置按钮
 let POSTS = [];
 let GETS = [];
 let testReply = {ok: true, models: 9, message: '连接正常'};
+let testStatus = 200;
 const toasts = [];
 
 dom.installDom({
@@ -76,7 +77,8 @@ dom.installDom({
       payload = {accounts: [], data: []};
     }
     return Promise.resolve({
-      status: 200, ok: true,
+      status: target === '/raccoon/test' ? testStatus : 200,
+      ok: (target === '/raccoon/test' ? testStatus : 200) < 400,
       json: () => Promise.resolve(payload),
       text: () => Promise.resolve(JSON.stringify(payload)),
     });
@@ -157,11 +159,13 @@ const byId = id => document.getElementById(id);
     '测试成功应提示连接正常');
 
   POSTS = [];
-  testReply = {ok: false, message: '没有可用的 Raccoon 账号'};
+  testStatus = 502;
+  testReply = {error: {message: '没有可用的 Raccoon 账号'}};
   await api.testRaccoon(null);
   assert.ok(toasts[toasts.length - 1][0].includes('小浣熊连接失败'),
     '测试失败应提示连接失败');
   assert.equal(toasts[toasts.length - 1][1], 'bad', '测试失败应用错误样式');
+  testStatus = 200;
 
   // 2d. Key 出口下拉：启用时追加「固定小浣熊出口」，禁用时完全消失。
   api.setRealmOptions(['intl', 'cn', 'codearts', 'raccoon']);

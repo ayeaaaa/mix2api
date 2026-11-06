@@ -8091,12 +8091,25 @@ window.MODELS_DATA = [];
 window.ACCOUNTS = [];
 
 function updateUI(){
+  const caEnabled = (window.REALM_OPTIONS || []).includes("codearts");
+  const raccoonEnabled = (window.REALM_OPTIONS || []).includes("raccoon");
+  // A realm can disappear while the user is looking at it (settings save or a
+  // failed import). Reset an invalid view to the active gateway exit, else intl,
+  // so the page immediately shows a real section instead of an empty one.
+  const validView = (window.VIEW_REALM === "intl" || window.VIEW_REALM === "cn"
+    || (window.VIEW_REALM === "codearts" && caEnabled)
+    || (window.VIEW_REALM === "raccoon" && raccoonEnabled));
+  if(!validView){
+    const gw = window.ACTIVE_GATEWAY_REALM || "intl";
+    const gwValid = (gw === "intl" || gw === "cn"
+      || (gw === "codearts" && caEnabled)
+      || (gw === "raccoon" && raccoonEnabled));
+    window.VIEW_REALM = gwValid ? gw : "intl";
+  }
   const isIntlView = (window.VIEW_REALM === "intl");
   const isCnView = (window.VIEW_REALM === "cn");
   const isCodeartsView = (window.VIEW_REALM === "codearts");
   const isRaccoonView = (window.VIEW_REALM === "raccoon");
-  const caEnabled = (window.REALM_OPTIONS || []).includes("codearts");
-  const raccoonEnabled = (window.REALM_OPTIONS || []).includes("raccoon");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
   const tCa = document.getElementById("tabCodearts");
@@ -8335,7 +8348,9 @@ function updateUI(){
   }
 
   // CodeArts / 小浣熊视图隐藏 WorkBuddy 专属区块，避免把两套账号/积分读混。
-  const hideWorkbuddy = isCodeartsView || isRaccoonView;
+  // 小浣熊已被停用（或视图已回落到别的出口）时不能继续隐藏 WorkBuddy，
+  // 否则页面会只剩一个空壳。
+  const hideWorkbuddy = isCodeartsView || (isRaccoonView && raccoonEnabled);
   ["workbuddyAccountsSection", "workbuddyDisabledSection",
    "workbuddyActivitySection"].forEach(function(id){
     const el = document.getElementById(id);

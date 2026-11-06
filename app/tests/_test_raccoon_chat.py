@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from http.client import IncompleteRead
 
@@ -65,8 +66,11 @@ def reset_fake():
     state.truncate_after = None
     state.embedded_error = None
     state.embedded_error_by_token = {}
+    state.embedded_error_after = None
     state.saw_image = False
     state.extra_tokens = set()
+    state.refresh_delay = 0.0
+    state.refresh_started.clear()
     state.catalog = default_catalog()
     state.reset_requests()
 
@@ -836,6 +840,106 @@ def test_max_concurrent_is_respected():
     check("slot restored", acct.active_concurrent == 0)
 
 
+def test_numeric_token_strings_normalize_to_int():
+    reset()
+    reset_fake()
+    add_account("pu-numeric")
+    body = chat_body(max_tokens="120000", max_completion_tokens="99999")
+    stream, _acct, model = open_stream(body)
+    sent = state.last_body or {}
+    check(
+        "numeric max_tokens string becomes an int",
+        sent.get("max_tokens") == 100000 and isinstance(sent.get("max_tokens"), int),
+        sent.get("max_tokens"),
+    )
+    check(
+        "numeric max_completion_tokens string becomes an int",
+        sent.get("max_completion_tokens") == 99999
+        and isinstance(sent.get("max_completion_tokens"), int),
+        sent.get("max_completion_tokens"),
+    )
+    aggregate(stream, model)
+
+
+def test_mid_stream_embedded_error_raises():
+    reset()
+    reset_fake()
+    acct = add_account("pu-mid-error")
+    state.embedded_error_after = 1
+    state.embedded_error = {
+        "error_code": 500,
+        "error_msg": "upstream died after the first chunk",
+    }
+    stream, _acct, _model = open_stream(chat_body())
+    yielded = []
+    failure = None
+    try:
+        for line in stream:
+            yielded.append(line)
+    except R.RaccoonUpstreamError as exc:
+        failure = exc
+    finally:
+        stream.close()
+    check("mid-stream error raises", failure is not None, failure)
+    check(
+        "mid-stream error message is readable",
+        "died after" in str(failure or ""),
+        failure,
+    )
+    check("first chunk was delivered before the error", bool(yielded), yielded)
+    check(
+        "mid-stream error is not treated as DONE",
+        not any(b"[DONE]" in line for line in yielded),
+        yielded,
+    )
+    check("mid-stream error releases the slot", acct.active_concurrent == 0)
+
+
+def test_concurrent_401_refreshes_once_and_both_retries_succeed():
+    reset()
+    reset_fake()
+    R.save_config(ACCOUNTS, {"max_concurrent": 2})
+    stale = make_jwt(state.uid, 3600, jti="stale-401")
+    acct = add_account(state.uid, token=stale, refresh=state.refresh_token)
+    state.refresh_delay = 0.5
+    state.refresh_started.clear()
+    results = []
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        try:
+            stream, used, model = open_stream(chat_body())
+            outcome = aggregate(stream, model)
+            results.append(
+                ((outcome.get("choices") or [{}])[0].get("message") or {}).get(
+                    "content"
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - reported by the test
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+    check("both 401 threads finished", all(not t.is_alive() for t in threads))
+    check("both 401 threads succeeded", errors == [], errors)
+    check("both retries served content", results == ["你好", "你好"], results)
+    check(
+        "one refresh for two late 401s", state.refresh_calls == 1, state.refresh_calls
+    )
+    check(
+        "both requests hit 401 before the retry",
+        state.chat_calls == 4,
+        state.chat_calls,
+    )
+    check("account rotated once", acct.auth["access_token"] == state.token)
+    check("slots released", acct.active_concurrent == 0)
+
+
 def test_test_account_forces_catalog_refresh_and_reports_counts():
     reset()
     reset_fake()
@@ -907,11 +1011,14 @@ try:
     test_chat_headers_are_exact_and_org_gated()
     print("== transport ==")
     test_open_chat_nonstream_aggregates_text_usage_and_clamps_tokens()
+    test_numeric_token_strings_normalize_to_int()
     test_stream_passes_raw_chunks_and_close_releases_slot()
+    test_mid_stream_embedded_error_raises()
     test_tools_are_forwarded_and_returned()
     test_image_content_is_forwarded_unchanged()
     print("== retry / failover ==")
     test_401_refreshes_and_retries_same_account()
+    test_concurrent_401_refreshes_once_and_both_retries_succeed()
     test_429_fails_over_to_second_account()
     test_5xx_fails_over_to_second_account()
     test_403_refreshes_and_retries_same_account()
