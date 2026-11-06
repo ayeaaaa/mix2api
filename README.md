@@ -22,7 +22,7 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 
 - **四个出口**：国际版、国内版、CodeArts、小浣熊共用同一个地址和看板，也可以按 API Key 绑定不同出口。
 - **单进程**：CodeArts 的 OAuth、token 续期、模型发现、聊天 SSE、签到和积分查询都在 `app/` 进程内完成，不再需要独立的 Go 服务；Raccoon 的 auth.json / 回环 OAuth、续期、模型发现和聊天 SSE 也全部在 `app/` 进程内完成，不需要 Node sidecar。
-- **代码关系**：`reference/codearts2api/` 只保留 Go 源码作协议参考，不参与构建和运行；Raccoon 为原生 Python 实现，只参考桌面客户端协议，不复制第三方项目代码；上游基线与许可说明见 [`UPSTREAM.md`](UPSTREAM.md)。
+- **代码关系**：`reference/codearts2api/` 只保留 Go 源码作协议参考，不参与构建和运行；Raccoon 为原生 Python 实现，参考桌面客户端协议与本地参考代理的实测行为，不复制第三方项目代码；上游基线与许可说明见 [`UPSTREAM.md`](UPSTREAM.md)。
 
 ## 这次做了什么
 
@@ -139,7 +139,7 @@ Raccoon 是第四个出口，完全在本进程内运行，不需要单独的 No
 - 模型：9 个原始裸 ID —— `raccoon-090dd3`、`raccoon-19b265`、`raccoon-405a1c`、`sn-sensenova-6-8-flash`、`sn-sensenova-6-8-flash-lite`、`sn-glm-5-3`、`sn-kimi-k3`、`sn-glm-5-3-flash`、`sn-deepseek-v4-1-flash-1017`。目录以官方 `model_catalog` 为准，取不到时回落内置种子目录；`/v1/models?realm=raccoon` 只返回这些裸 ID，不加任何提供商前缀。
 - 协议：chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages（需显式开启）复用现有适配层。
 - 账号：多账号池、并发/会话粘性、429/5xx 冷却后自动换号、401/403 先强制续期一次再重试；账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用同一套连接复用、代理认证和 `no_proxy`。
-- 用量：每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录，积分列显示 `0.00`、估算价格显示 `—`。小浣熊没有积分/签到接口，看板不显示积分。
+- 用量：每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表没有积分列；通用用量表沿用字段，积分显示 `0.00`、估算价格显示 `—`。小浣熊没有积分/签到接口。
 - 限制：v1.6.0 不支持扫码登录、手机号/密码登录（后续版本再补）；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型；出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀。
 - 首次配置：
   1. 打开「设置 → 小浣熊接入」，勾选「启用小浣熊出口」并保存（首次成功导入账号会自动启用）。

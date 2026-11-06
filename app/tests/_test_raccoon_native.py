@@ -414,7 +414,7 @@ def test_model_entries_are_bare_and_capability_complete():
     check("seed entries are unique", len(ids) == len(set(ids)), ids)
     check(
         "seed ids are bare",
-        all("/" not in mid and not mid.startswith("YYLS/") for mid in ids),
+        all("/" not in mid for mid in ids),
         ids,
     )
 

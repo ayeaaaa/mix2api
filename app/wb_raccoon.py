@@ -1287,8 +1287,8 @@ def drop_missing_bindings(accounts_dir, slots):
 # ---------------------------------------------------------------------------
 
 #: Verified fallback catalog. The upstream catalogue is authoritative; these
-#: entries keep `/v1/models` usable when a fetch fails. IDs stay bare: the
-#: desktop proxy's `YYLS/`-style namespace is never exposed.
+#: entries keep `/v1/models` usable when a fetch fails. IDs stay bare: no
+#: provider namespace is added or stripped.
 SEED_MODELS = [
     {
         "id": "raccoon-090dd3",
@@ -1392,11 +1392,8 @@ def _first_int(*values):
 
 
 def _bare_model_id(value):
-    """Strip a `YYLS/`/provider namespace; `/v1/models` only emits bare ids."""
-    text = str(value or "").strip()
-    if "/" in text:
-        text = text.rsplit("/", 1)[-1].strip()
-    return text
+    """Trim surrounding whitespace; do not rewrite provider namespaces."""
+    return str(value or "").strip()
 
 
 def _tag_list(value):
