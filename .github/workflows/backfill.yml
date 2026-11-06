@@ -32,10 +32,6 @@ permissions:
   contents: write
   packages: write
 
-concurrency:
-  group: backfill-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   prepare:
     name: prepare tag matrix
