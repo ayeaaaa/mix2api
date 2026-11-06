@@ -92,7 +92,21 @@ class FakeState(object):
         self.catalog_error_body = None
         self.exchange_status = 200
         self.exchange_body = None
-        self.chat_status = 501
+        # Chat SSE controls. `chat_status` is the HTTP status; a negative
+        # `chat_status_remaining` means "always", 0 recovers, and a positive
+        # value fails that many times. `chat_status_by_token` overrides the
+        # global status per bearer token so failover can pick a healthy account.
+        self.chat_status = 200
+        self.chat_status_remaining = -1
+        self.chat_status_by_token = {}
+        self.chat_calls = 0
+        self.chat_text = "你好"
+        self.reasoning_text = ""
+        self.tool_calls = None
+        self.truncate_after = None
+        self.embedded_error = None
+        self.saw_image = False
+        self.extra_tokens = set()
         self.code = "test-code"
         self.office_identity = "personal"
         self.office_org_name = "Raccoon Test"
@@ -126,6 +140,74 @@ def _request_headers(handler):
     return {str(k).lower(): str(v) for k, v in handler.headers.items()}
 
 
+def _bearer_token(handler):
+    value = str(handler.headers.get("Authorization") or "").strip()
+    if value.lower().startswith("bearer "):
+        return value[7:].strip()
+    return ""
+
+
+def _has_image(body):
+    """True when any message content part carries an image URL."""
+    for message in (body or {}).get("messages") or ():
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and (
+                part.get("type") == "image_url" or "image_url" in part
+            ):
+                return True
+    return False
+
+
+def _text_pieces(text):
+    """Split a text into deterministic one-character SSE deltas."""
+    return [text[index] for index in range(len(text))]
+
+
+def _chat_chunks(state, model):
+    """Standard OpenAI chat chunks: role, reasoning, text, tools, finish, usage."""
+    created = int(time.time())
+    chunks = []
+
+    def add(delta, finish=None, usage=None):
+        chunk = {
+            "id": "chatcmpl-raccoon-fake",
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+        }
+        if usage is None:
+            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": finish}]
+        else:
+            chunk["choices"] = []
+            chunk["usage"] = usage
+        chunks.append(chunk)
+
+    add({"role": "assistant", "content": ""})
+    for piece in _text_pieces(str(state.reasoning_text or "")):
+        add({"reasoning_content": piece})
+    for piece in _text_pieces(
+        str(state.chat_text if state.chat_text is not None else "")
+    ):
+        add({"content": piece})
+    if state.tool_calls:
+        add({"tool_calls": json.loads(json.dumps(state.tool_calls))})
+    add({}, "tool_calls" if state.tool_calls else "stop")
+    add(
+        {},
+        usage={
+            "prompt_tokens": 3,
+            "completion_tokens": 2,
+            "total_tokens": 5,
+        },
+    )
+    return chunks
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     state = None
@@ -141,6 +223,26 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
+
+    def _send_sse(self, raw, truncated=False):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        if truncated:
+            # No Content-Length and no chunk terminator: the peer closing the
+            # socket is the only end-of-body signal, which is exactly the
+            # half-finished stream the provider has to detect.
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        else:
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _read(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -166,7 +268,8 @@ class _Handler(BaseHTTPRequestHandler):
         return body
 
     def _authorized(self):
-        return self.headers.get("Authorization") == "Bearer " + self.state.token
+        token = _bearer_token(self)
+        return token == self.state.token or token in self.state.extra_tokens
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -239,12 +342,55 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"code": 0, "data": payload})
             return
         if path == "/api/web/llm/v2/chat/completions":
+            with state.lock:
+                state.chat_calls += 1
             if not self._authorized():
                 self._send_json(401, {"message": "invalid access token"})
                 return
-            self._send_json(
-                state.chat_status, {"message": "chat is implemented in task 3"}
-            )
+            if (
+                not isinstance(body, dict)
+                or not body.get("model")
+                or not body.get("messages")
+            ):
+                self._send_json(400, {"message": "model and messages are required"})
+                return
+            state.saw_image = _has_image(body)
+            token = _bearer_token(self)
+            with state.lock:
+                status = state.chat_status_by_token.get(token, state.chat_status)
+                if status != 200:
+                    if state.chat_status_remaining == 0:
+                        status = 200
+                    elif state.chat_status_remaining > 0:
+                        state.chat_status_remaining -= 1
+            if status != 200:
+                self._send_json(
+                    status, {"message": "chat failed with HTTP %s" % status}
+                )
+                return
+            if state.embedded_error:
+                raw = (
+                    "data: "
+                    + json.dumps(state.embedded_error, ensure_ascii=False)
+                    + "\n\n"
+                ).encode("utf-8")
+                self._send_sse(raw)
+                return
+            chunks = _chat_chunks(state, body.get("model") or "")
+            frames = [
+                ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n").encode(
+                    "utf-8"
+                )
+                for chunk in chunks
+            ]
+            if state.truncate_after is not None:
+                try:
+                    limit = max(0, int(state.truncate_after))
+                except (TypeError, ValueError):
+                    limit = 0
+                self._send_sse(b"".join(frames[:limit]), truncated=True)
+                return
+            self._send_sse(b"".join(frames) + b"data: [DONE]\n\n")
             return
         self._send_json(404, {"message": "not found"})
 

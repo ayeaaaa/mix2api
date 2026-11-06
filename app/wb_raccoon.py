@@ -1866,3 +1866,546 @@ def health(config, force=False):
 def invalidate_health():
     with _health_lock:
         _health_cache.update({"at": 0.0, "key": None, "value": {}})
+
+
+# ---------------------------------------------------------------------------
+# 聊天传输 / SSE
+# ---------------------------------------------------------------------------
+
+#: OpenAI chat fields the Raccoon gateway accepts. Everything else (client
+#: metadata, legacy `functions`, `stream_options`, ...) is dropped before it
+#: reaches upstream; `stream` is always forced on.
+CHAT_ALLOWED_FIELDS = frozenset(
+    (
+        "model",
+        "messages",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "temperature",
+        "top_p",
+        "n",
+        "stream",
+        "stop",
+        "max_tokens",
+        "max_completion_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "user",
+        "seed",
+        "response_format",
+        "reasoning_effort",
+        "thinking",
+        "enable_thinking",
+    )
+)
+
+
+def build_chat_body(payload, session_key=None):
+    """Reduce an OpenAI chat payload to the Raccoon allowlist.
+
+    `stream` is forced to True because the gateway always consumes SSE and
+    aggregates it for non-streaming clients. `session_key` is accepted for
+    parity with the other providers; Raccoon has no client-side session field.
+    """
+    if not isinstance(payload, dict):
+        raise RaccoonBadRequest("request body must be a JSON object")
+    body = {
+        str(key): value
+        for key, value in payload.items()
+        if str(key) in CHAT_ALLOWED_FIELDS
+    }
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise RaccoonBadRequest("model is required")
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise RaccoonBadRequest("messages is empty")
+    body["model"] = model
+    body["messages"] = messages
+    body["stream"] = True
+    return body
+
+
+def _chat_headers(acct):
+    """Desktop-client SSE headers; `X-Org-Code` only for a real org identity."""
+    auth = (acct.auth if acct is not None else None) or {}
+    headers = {
+        "Authorization": "Bearer " + _clean_token(auth.get("access_token")),
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "X-Client-Platform": CLIENT_PLATFORM,
+        "X-Client-Version": CLIENT_VERSION,
+        "X-Raccoon-Language": CLIENT_LANGUAGE,
+        "Cache-Control": "no-store",
+    }
+    identity = str(auth.get("office_identity") or "").strip()
+    if identity and identity.lower() not in ("personal", "none"):
+        headers["X-Org-Code"] = identity
+    return headers
+
+
+def _model_output_limit(acct, model):
+    """Catalog output limit for `model`; 0 when the model is unknown.
+
+    Read-only: account and shared cache lists are never mutated here.
+    """
+    key = str(model or "").strip().lower()
+    if not key:
+        return 0
+    sources = []
+    if acct is not None:
+        sources.append(list(acct.models or ()))
+    sources.append(list(_cached_catalog().get("models") or ()))
+    for items in sources:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id") or "").strip().lower() != key:
+                continue
+            limit = _int_value(item.get("max_tokens"))
+            if limit <= 0:
+                limit = _int_value(item.get("max_completion_tokens"))
+            if limit > 0:
+                return limit
+    seed = _SEED_BY_ID.get(key) or {}
+    return _int_value(seed.get("max_tokens"))
+
+
+def _clamp_output_tokens(acct, model, body):
+    """Validate and clamp both OpenAI output-token spellings."""
+    limit = _model_output_limit(acct, model)
+    for key in ("max_tokens", "max_completion_tokens"):
+        if body.get(key) is None:
+            continue
+        raw = body[key]
+        if isinstance(raw, bool):
+            raise RaccoonBadRequest("%s must be a positive integer" % key, status=400)
+        try:
+            requested = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            raise RaccoonBadRequest("%s must be a positive integer" % key, status=400)
+        if requested <= 0:
+            raise RaccoonBadRequest("%s must be a positive integer" % key, status=400)
+        if limit > 0 and requested > limit:
+            body[key] = limit
+
+
+class RaccoonStream(object):
+    """Pass Raccoon SSE data lines through without re-encoding them.
+
+    The gateway's `_chat_stream_response` / `aggregate_stream` already own
+    chunk normalization, usage aggregation and terminal error frames. This
+    wrapper only caches the first data line during `preflight()` (so an HTTP
+    200 with an embedded error fails before headers are sent) and releases the
+    account slot exactly once.
+    """
+
+    def __init__(self, raw, model, acct, pool):
+        self.raw = raw
+        self.model = model
+        self.acct = acct
+        self.pool = pool
+        self._wb_billed_model = model
+        self._pending = b""
+        self._closed = False
+        self._saw_done = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def close(self):
+        """Close the response and release the account slot, exactly once."""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        try:
+            self.raw.close()
+        except Exception:
+            pass
+        try:
+            if self.pool is not None:
+                self.pool.release(self.acct)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _payload(line):
+        stripped = (line or b"").strip()
+        if not stripped.startswith(b"data:"):
+            return b""
+        return stripped[5:].strip()
+
+    def _raise_embedded(self, data):
+        """Map an error object sent inside a 200 SSE stream to Raccoon*."""
+        text = data.decode("utf-8", "replace").strip()
+        if not text or text == "[DONE]":
+            return
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        code = payload.get("error_code")
+        if code in (None, "", 0, "0"):
+            code = payload.get("code")
+        error = payload.get("error")
+        message = ""
+        if isinstance(error, dict):
+            message = str(
+                error.get("message")
+                or error.get("error_msg")
+                or error.get("detail")
+                or ""
+            ).strip()
+            if code in (None, "", 0, "0"):
+                code = error.get("code") or error.get("type")
+        elif isinstance(error, str) and error.strip():
+            message = error.strip()
+        if not message:
+            for key in ("error_msg", "message", "detail", "error_description"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    message = value.strip()
+                    break
+        if not message:
+            if code in (None, "", 0, "0"):
+                return
+            message = "error_code=%s" % code
+
+        secrets = _auth_secrets(self.acct.auth) if self.acct is not None else ()
+        message = _redact(message, secrets)[:500]
+
+        status = None
+        for key in ("status", "status_code", "http_status"):
+            try:
+                value = int(payload.get(key) or 0)
+            except (TypeError, ValueError, OverflowError):
+                value = 0
+            if value:
+                status = value
+                break
+        if status is None:
+            try:
+                numeric = int(code)
+            except (TypeError, ValueError, OverflowError):
+                numeric = 0
+            if numeric in (400, 401, 403, 429) or 500 <= numeric < 600:
+                status = numeric
+
+        normalized = str(code or "").strip().lower()
+        if status in (401, 403):
+            raise RaccoonAuthError(message, status=status)
+        if status == 400 or normalized in (
+            "400",
+            "bad_request",
+            "invalid_request",
+            "invalid_request_error",
+            "invalid_param",
+            "invalid_parameter",
+        ):
+            raise RaccoonBadRequest(message, status=400)
+        if status == 429 or normalized == "429":
+            raise RaccoonRateLimited(message, status=429)
+        raise RaccoonUpstreamError(message, status=status)
+
+    def preflight(self):
+        """Read the first data event; raise an embedded error before headers."""
+        while True:
+            line = self.raw.readline()
+            if not line:
+                return
+            data = self._payload(line)
+            if not data:
+                continue
+            self._pending = line if line.endswith(b"\n") else line + b"\n"
+            self._raise_embedded(data)
+            return
+
+    def __iter__(self):
+        try:
+            if self._pending:
+                line, self._pending = self._pending, b""
+                data = self._payload(line)
+                if data == b"[DONE]":
+                    self._saw_done = True
+                if data:
+                    yield line
+            while True:
+                line = self.raw.readline()
+                if not line:
+                    break
+                data = self._payload(line)
+                if not data:
+                    continue
+                if data == b"[DONE]":
+                    self._saw_done = True
+                yield line
+            if not self._saw_done:
+                raise RaccoonUpstreamError(
+                    "Raccoon stream ended before the [DONE] event"
+                )
+        finally:
+            self.close()
+
+
+def _open_stream_response(req, timeout, proxy):
+    """Open a streaming response through the shared pool.
+
+    A pooled redirect (`PoolBypass`) replays through the account's proxy-aware
+    opener, matching `_request_json` so an account never changes exit IP.
+    """
+    try:
+        return wb_upstream_pool.urlopen(req, timeout=timeout, proxy=proxy)
+    except wb_upstream_pool.PoolBypass:
+        import wb_accounts
+
+        opener = wb_accounts.opener_for_proxy(proxy)
+        if opener is None:
+            return urllib.request.urlopen(req, timeout=timeout)
+        return opener.open(req, timeout=timeout)
+
+
+def _client_chat(acct, body, session_key):
+    """POST one chat request and return `(RaccoonStream, model)`.
+
+    A 401/403 forces exactly one token refresh and retries the same account;
+    the second auth failure propagates as `RaccoonAuthError`.
+    """
+    if not isinstance(body, dict):
+        raise RaccoonBadRequest("request body must be a JSON object")
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise RaccoonBadRequest("model is required")
+    upstream_body = dict(body)
+    upstream_body["model"] = model
+    upstream_body["stream"] = True
+    _clamp_output_tokens(acct, model, upstream_body)
+    raw = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
+    timeout = float(
+        acct.pool.config.get("stream_timeout_seconds")
+        or DEFAULTS["stream_timeout_seconds"]
+    )
+
+    for attempt in (0, 1):
+        headers = _chat_headers(acct)
+        secrets = _auth_secrets(acct.auth)
+        req = urllib.request.Request(
+            BASE_URL + EP_CHAT, data=raw, headers=headers, method="POST"
+        )
+        # Preserve the exact header spelling on the wire (Request.capitalize()
+        # would turn X-Client-Platform into X-client-platform).
+        req.wb_exact_headers = list(headers.items())
+        try:
+            resp = _open_stream_response(req, timeout, acct.proxy)
+        except urllib.error.HTTPError as exc:
+            try:
+                err = exc.read(ERROR_BODY_MAX)
+            except Exception:
+                err = b""
+            try:
+                exc.close()
+            except Exception:
+                pass
+            if exc.code in (401, 403) and attempt == 0:
+                ensure_token(acct, force=True)
+                continue
+            _raise_for_status(exc.code, err, secrets)
+            raise
+        except (
+            urllib.error.URLError,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        ) as exc:
+            reason = getattr(exc, "reason", None) or exc
+            raise RaccoonUnavailable(
+                _redact("cannot reach Raccoon: %s" % (reason,), secrets)
+            )
+
+        stream = RaccoonStream(resp, model, acct, acct.pool)
+        try:
+            stream.preflight()
+        except RaccoonError:
+            stream.close()
+            raise
+        except Exception as exc:
+            stream.close()
+            raise RaccoonUpstreamError(
+                _redact(
+                    "Raccoon chat stream failed: %s" % (exc,),
+                    _auth_secrets(acct.auth),
+                )
+            )
+        return stream, model
+
+    raise RaccoonAuthError("Raccoon 拒绝访问：token 刷新后仍未授权")
+
+
+def open_chat(config, body, session_key=None, allowed_accounts=None):
+    """Pick an account, refresh/fail over as needed, and open the SSE stream."""
+    config = _config_or_load(config)
+    if not isinstance(body, dict):
+        raise RaccoonBadRequest("request body must be a JSON object")
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise RaccoonBadRequest("model is required")
+    pool = pool_for(config["accounts_dir"])
+    exclude = set()
+    last_error = None
+    attempts = max(2, len(pool.accounts) + 1)
+
+    for _ in range(attempts):
+        acct = pool.pick(
+            model,
+            session_key=session_key,
+            exclude=exclude,
+            allowed_accounts=allowed_accounts,
+        )
+        if acct is None:
+            busy = any(
+                a.healthy() and a.active_concurrent >= a.max_concurrent
+                for a in list(pool.accounts)
+            )
+            if busy and len(exclude) < len(pool.accounts):
+                time.sleep(0.05)
+                continue
+            break
+        if not pool.acquire(acct):
+            exclude.add(acct.uid)
+            continue
+        try:
+            ensure_token(acct)
+            stream, used_model = _client_chat(acct, body, session_key)
+            pool.note_success(acct)
+            pool.bind_session(session_key, acct.uid)
+            return stream, acct, used_model
+        except RaccoonBadRequest:
+            pool.release(acct)
+            raise
+        except RaccoonAuthError as exc:
+            pool.note_error(acct, str(exc), terminal=True)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except RaccoonRateLimited as exc:
+            pool.note_error(acct, str(exc), soft=True)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except RaccoonUpstreamError as exc:
+            soft = exc.status is None or exc.status == 429 or exc.status >= 500
+            pool.note_error(acct, str(exc), soft=soft)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except RaccoonUnavailable as exc:
+            pool.note_error(acct, str(exc), soft=True)
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except RaccoonError as exc:
+            pool.note_error(acct, str(exc))
+            pool.release(acct)
+            exclude.add(acct.uid)
+            last_error = exc
+        except Exception:
+            pool.release(acct)
+            raise
+
+    if last_error is not None:
+        raise last_error
+
+    reasons = []
+    now = time.time()
+    for acct in list(pool.accounts):
+        secrets = _auth_secrets(acct.auth)
+        if acct.disabled:
+            reasons.append(
+                "%s 已停用：%s"
+                % (
+                    acct.nickname,
+                    _redact(acct.disabled_reason or "手动停用", secrets),
+                )
+            )
+        elif acct.cool_until > now:
+            reasons.append(
+                "%s 冷却中：%s"
+                % (acct.nickname, _redact(acct.last_error or "稍后重试", secrets))
+            )
+        elif acct.active_concurrent >= acct.max_concurrent:
+            reasons.append("%s 并发已满" % acct.nickname)
+    if reasons:
+        raise RaccoonUnavailable("没有可用的 Raccoon 账号：" + "；".join(reasons[:2]))
+    raise RaccoonUnavailable(
+        "没有可用的 Raccoon 账号：请在看板「账号」页导入并启用至少一个账号。"
+    )
+
+
+def test_account(config, uid):
+    """Force a catalog refresh and report the account's token/model counts."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    acct = pool.get(uid)
+    if acct is None:
+        raise RaccoonNotFound("account not found")
+    try:
+        fetch_catalog(acct, timeout=15.0, force=True)
+        remaining = max(0, int(acct.token_remaining()))
+        return {
+            "ok": True,
+            "uid": acct.uid,
+            "models": len(acct.models),
+            "token_remaining": _fmt_duration(remaining),
+            "token_seconds": remaining,
+            "message": "连接正常",
+        }
+    except RaccoonError as exc:
+        return {
+            "ok": False,
+            "uid": acct.uid,
+            "message": _redact(str(exc), _auth_secrets(acct.auth))[:300],
+        }
+
+
+def keepalive(config):
+    """Refresh every expiring non-disabled token. There is no check-in here."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    refreshed = 0
+    errors = []
+    accounts = list(pool.accounts)
+    for acct in accounts:
+        if acct.disabled:
+            continue
+        if not (acct.expiring_soon() or acct.expired()):
+            continue
+        generation = acct.auth_generation
+        try:
+            ensure_token(acct)
+        except RaccoonError as exc:
+            errors.append(
+                "%s: %s"
+                % (
+                    acct.nickname,
+                    _redact(str(exc), _auth_secrets(acct.auth))[:160],
+                )
+            )
+            continue
+        if acct.auth_generation != generation:
+            refreshed += 1
+    return {
+        "ok": not errors,
+        "accounts": len(accounts),
+        "refreshed": refreshed,
+        "errors": errors[:3],
+        "message": "已检查 %d 个账号，续期 %d 个" % (len(accounts), refreshed),
+    }
