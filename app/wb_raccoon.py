@@ -468,7 +468,8 @@ def delete_auth(accounts_dir, uid):
         return False
     paths = _auth_paths_for_uid(accounts_dir, uid)
     if not paths:
-        return False
+        # No matching file remains: the desired end state already holds.
+        return True
     for path in paths:
         try:
             os.remove(path)
@@ -2072,9 +2073,16 @@ def oauth_start(config, port=8788):
     _gc_oauth()
     with _OAUTH_LOCK:
         while len(_OAUTH_SESSIONS) >= OAUTH_MAX_SESSIONS:
-            oldest = min(
-                _OAUTH_SESSIONS.values(), key=lambda item: item.created_at
-            )
+            pending = [
+                item
+                for item in _OAUTH_SESSIONS.values()
+                if item.status == "pending"
+            ]
+            if not pending:
+                raise RaccoonBadRequest(
+                    "OAuth 会话过多：请稍后重试或等待现有授权结束"
+                )
+            oldest = min(pending, key=lambda item: item.created_at)
             _OAUTH_SESSIONS.pop(oldest.id, None)
         state = secrets.token_hex(32)
         while any(item.state == state for item in _OAUTH_SESSIONS.values()):

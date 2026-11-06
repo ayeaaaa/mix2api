@@ -785,6 +785,49 @@ def test_oauth_session_table_is_capped():
     reset_accounts()
 
 
+def test_oauth_session_eviction_skips_exchanging():
+    print("== oauth session eviction ==")
+    reset_accounts()
+    reset_fake()
+    with R._OAUTH_LOCK:
+        R._OAUTH_SESSIONS.clear()
+        for index in range(R.OAUTH_MAX_SESSIONS):
+            session = R.RaccoonOAuthSession(
+                "exchanging-%d" % index, "state-%d" % index, HUB_PORT
+            )
+            session.status = "exchanging"
+            R._OAUTH_SESSIONS[session.id] = session
+    raised = False
+    try:
+        R.oauth_start(R.load_config(ACCOUNTS), HUB_PORT)
+    except R.RaccoonBadRequest:
+        raised = True
+    check("no pending session -> start rejected", raised)
+    check(
+        "all exchanging sessions kept",
+        len(R._OAUTH_SESSIONS) == R.OAUTH_MAX_SESSIONS,
+        len(R._OAUTH_SESSIONS),
+    )
+
+    with R._OAUTH_LOCK:
+        pending_id = next(iter(R._OAUTH_SESSIONS))
+        R._OAUTH_SESSIONS[pending_id].status = "pending"
+    started = R.oauth_start(R.load_config(ACCOUNTS), HUB_PORT)
+    check(
+        "pending session is evicted instead",
+        pending_id not in R._OAUTH_SESSIONS,
+        pending_id,
+    )
+    check("new session stored", started["session_id"] in R._OAUTH_SESSIONS)
+    check(
+        "exchanging sessions survive",
+        sum(1 for s in R._OAUTH_SESSIONS.values() if s.status == "exchanging")
+        == R.OAUTH_MAX_SESSIONS - 1,
+        [s.status for s in R._OAUTH_SESSIONS.values()],
+    )
+    reset_accounts()
+
+
 def test_delete_failure_keeps_account_and_removes_duplicates():
     print("== delete failure/duplicates ==")
     reset_accounts()
@@ -826,6 +869,18 @@ def test_delete_failure_keeps_account_and_removes_duplicates():
     check("canonical file gone", not os.path.exists(path))
     check("duplicate file gone", not os.path.exists(duplicate))
     check("duplicate pool entry gone", R.pool_for(ACCOUNTS).get(uid) is None)
+
+    body = import_current_account(uid="pu-delete-missing")
+    uid = body.get("uid")
+    path = R.load_auths(ACCOUNTS)[0]["_path"]
+    os.remove(path)
+    status, result = call("POST", "/raccoon/accounts/delete", {"uid": uid}, token=TOKEN)
+    check(
+        "delete with file already gone succeeds",
+        status == 200 and result.get("deleted") is True,
+        (status, result),
+    )
+    check("already-gone pool entry dropped", R.pool_for(ACCOUNTS).get(uid) is None)
 
 
 def test_proxy_credentials_are_masked_in_views():
@@ -913,6 +968,7 @@ try:
     test_callback_requests_are_redacted_and_nostore()
     test_callback_missing_code_does_not_burn_state()
     test_oauth_session_table_is_capped()
+    test_oauth_session_eviction_skips_exchanging()
 finally:
     try:
         hub.shutdown()
