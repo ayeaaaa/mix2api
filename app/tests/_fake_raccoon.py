@@ -18,6 +18,7 @@ import base64
 import json
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -57,18 +58,16 @@ def _b64url(raw):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def make_jwt(uid, expires_in=3600):
+def make_jwt(uid, expires_in=3600, jti=None):
     """Return an unsigned, JWT-shaped token with `sub` and `exp` claims."""
     now = int(time.time())
     header = _b64url(
         json.dumps({"alg": "none", "typ": "JWT"}, separators=(",", ":")).encode("utf-8")
     )
-    payload = _b64url(
-        json.dumps(
-            {"sub": str(uid or ""), "iat": now, "exp": now + int(expires_in)},
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
+    claims = {"sub": str(uid or ""), "iat": now, "exp": now + int(expires_in)}
+    if jti:
+        claims["jti"] = str(jti)
+    payload = _b64url(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
     return "%s.%s.sig" % (header, payload)
 
 
@@ -105,17 +104,20 @@ class FakeState(object):
         self.tool_calls = None
         self.truncate_after = None
         self.embedded_error = None
+        self.embedded_error_by_token = {}
         self.saw_image = False
         self.extra_tokens = set()
         self.code = "test-code"
         self.office_identity = "personal"
         self.office_org_name = "Raccoon Test"
         self.catalog = default_catalog()
+        self.last_header_names = None
         self.lock = threading.Lock()
 
     def reset_requests(self):
         self.requests = []
         self.last_headers = None
+        self.last_header_names = None
         self.last_body = None
 
     def token_payload(self):
@@ -129,7 +131,7 @@ class FakeState(object):
 
     def rotate(self):
         """Issue a fresh token pair. Caller must hold `self.lock`."""
-        self.token = make_jwt(self.uid, 3600)
+        self.token = make_jwt(self.uid, 3600, jti=uuid.uuid4().hex)
         self.refresh_token = "refresh-%d" % (
             self.refresh_calls + self.exchange_calls + 2
         )
@@ -264,6 +266,7 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
         state.last_headers = headers
+        state.last_header_names = [str(name) for name in self.headers.keys()]
         state.last_body = body
         return body
 
@@ -368,11 +371,10 @@ class _Handler(BaseHTTPRequestHandler):
                     status, {"message": "chat failed with HTTP %s" % status}
                 )
                 return
-            if state.embedded_error:
+            embedded = state.embedded_error_by_token.get(token, state.embedded_error)
+            if embedded:
                 raw = (
-                    "data: "
-                    + json.dumps(state.embedded_error, ensure_ascii=False)
-                    + "\n\n"
+                    "data: " + json.dumps(embedded, ensure_ascii=False) + "\n\n"
                 ).encode("utf-8")
                 self._send_sse(raw)
                 return

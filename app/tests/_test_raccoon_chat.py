@@ -64,6 +64,7 @@ def reset_fake():
     state.tool_calls = None
     state.truncate_after = None
     state.embedded_error = None
+    state.embedded_error_by_token = {}
     state.saw_image = False
     state.extra_tokens = set()
     state.catalog = default_catalog()
@@ -176,13 +177,11 @@ def test_build_chat_body_allows_openai_fields_and_forces_stream():
     for key in (
         "temperature",
         "top_p",
-        "n",
         "stop",
         "max_tokens",
         "max_completion_tokens",
         "presence_penalty",
         "frequency_penalty",
-        "logit_bias",
         "user",
         "seed",
         "response_format",
@@ -191,7 +190,14 @@ def test_build_chat_body_allows_openai_fields_and_forces_stream():
         "enable_thinking",
     ):
         check("%s preserved" % key, body.get(key) == payload[key], body.get(key))
-    for key in ("api_key", "metadata", "stream_options", "functions"):
+    for key in (
+        "api_key",
+        "metadata",
+        "stream_options",
+        "functions",
+        "n",
+        "logit_bias",
+    ):
         check("%s dropped" % key, key not in body, body)
 
     for bad in (None, [], "body"):
@@ -285,6 +291,22 @@ def test_chat_headers_are_exact_and_org_gated():
         sent.get("x-org-code") == "org-code-1",
         sent,
     )
+    wire_names = set(state.last_header_names or ())
+    check(
+        "wire header names keep the exact desktop casing",
+        {
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "X-Client-Platform",
+            "X-Client-Version",
+            "X-Raccoon-Language",
+            "Cache-Control",
+            "X-Org-Code",
+        }
+        <= wire_names,
+        wire_names,
+    )
 
     acct.auth["office_identity"] = ""
     empty_headers = R._chat_headers(acct)
@@ -333,9 +355,20 @@ def test_stream_passes_raw_chunks_and_close_releases_slot():
     reset_fake()
     acct = add_account("pu-stream")
     stream, _acct, _model = open_stream(chat_body())
+    stream.preflight()
     lines = consume(stream)
     blob = b"".join(lines)
     check("stream ends with DONE", b"data: [DONE]" in blob, blob[-120:])
+    check(
+        "first data line is the cached role event",
+        bool(lines) and b'"role": "assistant"' in lines[0],
+        lines[:1],
+    )
+    check(
+        "second preflight did not duplicate the cached event",
+        blob.count(b'"role": "assistant"') == 1,
+        blob[:200],
+    )
     check(
         "raw chunk text is not re-encoded",
         '"content": "你"'.encode("utf-8") in blob,
@@ -429,6 +462,7 @@ def test_401_refreshes_and_retries_same_account():
     reset()
     reset_fake()
     old_token = make_jwt("pu-chat-401", 3600)
+    old_refresh = state.refresh_token
     acct = add_account("pu-chat-401", token=old_token, refresh=state.refresh_token)
     body = chat_body()
     stream, used_acct, model = open_stream(body)
@@ -436,6 +470,19 @@ def test_401_refreshes_and_retries_same_account():
     check("one refresh call", state.refresh_calls == 1, state.refresh_calls)
     check("chat was attempted twice", state.chat_calls == 2, state.chat_calls)
     check("account adopted the rotated token", acct.auth["access_token"] == state.token)
+    check(
+        "account adopted the rotated refresh token",
+        acct.auth["refresh_token"] == state.refresh_token
+        and state.refresh_token != old_refresh,
+        (acct.auth.get("refresh_token"), state.refresh_token),
+    )
+    disk = R.load_auths(ACCOUNTS)[0]
+    check(
+        "rotated refresh token persisted to disk",
+        disk["access_token"] == state.token
+        and disk["refresh_token"] == state.refresh_token,
+        disk,
+    )
     chat_requests = [item for item in state.requests if item["path"] == R.EP_CHAT]
     check("two chat requests", len(chat_requests) == 2, chat_requests)
     check(
@@ -456,6 +503,203 @@ def test_401_refreshes_and_retries_same_account():
         result,
     )
     check("slot released", acct.active_concurrent == 0)
+
+
+def test_5xx_fails_over_to_second_account():
+    reset()
+    reset_fake()
+    state.chat_status = 500
+    state.chat_status_remaining = 1
+    first = add_account("pu-5xx-a")
+    second = add_account("pu-5xx-b")
+    stream, used_acct, model = open_stream(chat_body())
+    check("5xx fails over to the second account", used_acct is second, used_acct.uid)
+    check("5xx account cools down", first.cool_until > time.time(), first.cool_until)
+    check("5xx chat attempted twice", state.chat_calls == 2, state.chat_calls)
+    result = aggregate(stream, model)
+    check(
+        "5xx failover serves content",
+        ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+        == "你好",
+        result,
+    )
+    check("5xx first slot released", first.active_concurrent == 0)
+    check("5xx second slot released", second.active_concurrent == 0)
+
+
+def test_403_refreshes_and_retries_same_account():
+    reset()
+    reset_fake()
+    state.chat_status = 403
+    state.chat_status_remaining = 1
+    acct = add_account("pu-403")
+    stream, used_acct, model = open_stream(chat_body())
+    check("403 retries the same account", used_acct is acct)
+    check("403 triggers one refresh", state.refresh_calls == 1, state.refresh_calls)
+    check("403 chat attempted twice", state.chat_calls == 2, state.chat_calls)
+    check("403 account adopted the new token", acct.auth["access_token"] == state.token)
+    result = aggregate(stream, model)
+    check(
+        "403 retry serves content",
+        ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+        == "你好",
+        result,
+    )
+
+
+def test_second_401_marks_the_account_terminal():
+    reset()
+    reset_fake()
+    state.chat_status = 401
+    acct = add_account("pu-401-terminal")
+    raised = None
+    try:
+        open_stream(chat_body())
+    except R.RaccoonAuthError as exc:
+        raised = exc
+    check("second 401 raises auth error", raised is not None, raised)
+    check("second 401 refreshed once", state.refresh_calls == 1, state.refresh_calls)
+    check("second 401 chat attempted twice", state.chat_calls == 2, state.chat_calls)
+    check("terminal account is disabled", acct.disabled is True, acct.view())
+    check("terminal account released its slot", acct.active_concurrent == 0)
+
+
+def test_embedded_401_refreshes_and_retries_same_account():
+    reset()
+    reset_fake()
+    acct = add_account("pu-embedded-401")
+    state.embedded_error_by_token[state.token] = {
+        "error_code": 401,
+        "error_msg": "token expired",
+    }
+    stream, used_acct, model = open_stream(chat_body())
+    check("embedded 401 retries the same account", used_acct is acct)
+    check("embedded 401 refreshes once", state.refresh_calls == 1, state.refresh_calls)
+    check("embedded 401 chat attempted twice", state.chat_calls == 2, state.chat_calls)
+    check(
+        "embedded 401 account adopted the new token",
+        acct.auth["access_token"] == state.token,
+    )
+    result = aggregate(stream, model)
+    check(
+        "embedded 401 retry serves content",
+        ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+        == "你好",
+        result,
+    )
+    check("embedded 401 released its slot", acct.active_concurrent == 0)
+
+
+def test_preflight_failure_releases_only_its_own_slot():
+    reset()
+    reset_fake()
+    R.save_config(ACCOUNTS, {"max_concurrent": 2})
+    acct = add_account("pu-owned-slot")
+    pool = R.pool_for(ACCOUNTS)
+    check("pre-held slot acquired", pool.acquire(acct) is True)
+    state.embedded_error = {"error_code": 500, "error_msg": "boom"}
+    raised = None
+    try:
+        open_stream(chat_body())
+    except R.RaccoonUpstreamError as exc:
+        raised = exc
+    check("preflight failure raised upstream error", raised is not None, raised)
+    check(
+        "preflight failure released only its own slot",
+        acct.active_concurrent == 1,
+        acct.active_concurrent,
+    )
+    pool.release(acct)
+    check("pre-held slot released", acct.active_concurrent == 0)
+
+
+def test_open_chat_filters_raw_payload_fields():
+    reset()
+    reset_fake()
+    add_account("pu-raw")
+    raw = {
+        "model": "raccoon-090dd3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+        "api_key": "secret",
+        "metadata": {"must": "not-leak"},
+        "n": 2,
+        "logit_bias": {"1": 1},
+    }
+    stream, _acct, _model = R.open_chat(R.load_config(ACCOUNTS), raw)
+    consume(stream)
+    sent = state.last_body or {}
+    check("raw payload still forces stream", sent.get("stream") is True, sent)
+    for key in ("api_key", "metadata", "n", "logit_bias"):
+        check("raw payload %s filtered" % key, key not in sent, sent)
+
+
+def test_disabled_config_rejects_chat():
+    reset()
+    reset_fake()
+    R.save_config(ACCOUNTS, {"enabled": False})
+    raised = None
+    try:
+        open_stream(chat_body())
+    except R.RaccoonBadRequest as exc:
+        raised = exc
+    check("disabled config raises bad request", raised is not None, raised)
+    check("disabled config message is readable", "未启用" in str(raised or ""), raised)
+    check(
+        "disabled config never reaches upstream",
+        state.chat_calls == 0,
+        state.chat_calls,
+    )
+
+
+def test_chat_pool_bypass_keeps_the_account_proxy():
+    from unittest import mock
+    import io
+
+    import wb_accounts
+    import wb_upstream_pool
+
+    reset()
+    reset_fake()
+    acct = add_account("pu-bypass")
+    proxy = "http://127.0.0.1:7899"
+    acct.proxy = proxy
+    seen = {}
+
+    class FakeOpener(object):
+        def open(self, req, timeout=None):
+            seen["url"] = req.full_url
+            seen["timeout"] = timeout
+            return io.BytesIO(b"data: [DONE]\n\n")
+
+    def fake_for_proxy(value):
+        seen["proxy"] = value
+        return FakeOpener()
+
+    with mock.patch.object(
+        R.wb_upstream_pool,
+        "urlopen",
+        side_effect=wb_upstream_pool.PoolBypass("forced"),
+    ):
+        with mock.patch.object(
+            wb_accounts, "opener_for_proxy", side_effect=fake_for_proxy
+        ):
+            stream, _model = R._client_chat(acct, chat_body(), "session-1")
+            try:
+                lines = list(stream)
+            finally:
+                stream.close()
+    check("pool bypass keeps the account proxy", seen.get("proxy") == proxy, seen)
+    check(
+        "pool bypass opens the chat endpoint",
+        seen.get("url") == R.BASE_URL + R.EP_CHAT,
+        seen,
+    )
+    check(
+        "pool bypass stream still works",
+        any(b"[DONE]" in line for line in lines),
+        lines,
+    )
 
 
 def test_429_fails_over_to_second_account():
@@ -636,6 +880,15 @@ def test_keepalive_refreshes_expiring_tokens_only():
     check("one refresh call", state.refresh_calls == 1, state.refresh_calls)
     check("expired account rotated", expired.auth["access_token"] == state.token)
     check("fresh account untouched", fresh.auth["access_token"] == old_token)
+    check(
+        "keepalive refreshed the catalog", state.catalog_calls == 1, state.catalog_calls
+    )
+    check("keepalive reports model count", result.get("models") == 2, result)
+    check(
+        "keepalive reports catalog source",
+        (result.get("catalog") or {}).get("source") == "raccoon",
+        result,
+    )
     check("keepalive has no errors", not result.get("errors"), result)
     paths = {item["path"] for item in state.requests}
     check(
@@ -660,9 +913,18 @@ try:
     print("== retry / failover ==")
     test_401_refreshes_and_retries_same_account()
     test_429_fails_over_to_second_account()
+    test_5xx_fails_over_to_second_account()
+    test_403_refreshes_and_retries_same_account()
+    test_second_401_marks_the_account_terminal()
+    test_embedded_401_refreshes_and_retries_same_account()
     test_bad_request_does_not_fail_over()
     test_truncated_stream_raises_and_close_releases()
     test_embedded_error_raises_before_a_stream_is_returned()
+    test_preflight_failure_releases_only_its_own_slot()
+    print("== payload boundary ==")
+    test_open_chat_filters_raw_payload_fields()
+    test_disabled_config_rejects_chat()
+    test_chat_pool_bypass_keeps_the_account_proxy()
     print("== pool limits ==")
     test_empty_accounts_raises_unavailable()
     test_max_concurrent_is_respected()

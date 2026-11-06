@@ -1884,14 +1884,12 @@ CHAT_ALLOWED_FIELDS = frozenset(
         "parallel_tool_calls",
         "temperature",
         "top_p",
-        "n",
         "stream",
         "stop",
         "max_tokens",
         "max_completion_tokens",
         "presence_penalty",
         "frequency_penalty",
-        "logit_bias",
         "user",
         "seed",
         "response_format",
@@ -2011,6 +2009,7 @@ class RaccoonStream(object):
         self._pending = b""
         self._closed = False
         self._saw_done = False
+        self._preflighted = False
 
     def __enter__(self):
         return self
@@ -2019,15 +2018,25 @@ class RaccoonStream(object):
         self.close()
         return False
 
+    def _close_raw(self):
+        try:
+            self.raw.close()
+        except Exception:
+            pass
+
+    def abort(self):
+        """Close the response without releasing the slot; the caller owns it."""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        self._close_raw()
+
     def close(self):
         """Close the response and release the account slot, exactly once."""
         if getattr(self, "_closed", False):
             return
         self._closed = True
-        try:
-            self.raw.close()
-        except Exception:
-            pass
+        self._close_raw()
         try:
             if self.pool is not None:
                 self.pool.release(self.acct)
@@ -2118,15 +2127,19 @@ class RaccoonStream(object):
 
     def preflight(self):
         """Read the first data event; raise an embedded error before headers."""
+        if self._preflighted:
+            return
         while True:
             line = self.raw.readline()
             if not line:
+                self._preflighted = True
                 return
             data = self._payload(line)
             if not data:
                 continue
-            self._pending = line if line.endswith(b"\n") else line + b"\n"
             self._raise_embedded(data)
+            self._pending = line if line.endswith(b"\n") else line + b"\n"
+            self._preflighted = True
             return
 
     def __iter__(self):
@@ -2179,13 +2192,9 @@ def _client_chat(acct, body, session_key):
     A 401/403 forces exactly one token refresh and retries the same account;
     the second auth failure propagates as `RaccoonAuthError`.
     """
-    if not isinstance(body, dict):
-        raise RaccoonBadRequest("request body must be a JSON object")
-    model = str(body.get("model") or "").strip()
-    if not model:
-        raise RaccoonBadRequest("model is required")
+    body = build_chat_body(body, session_key)
+    model = body["model"]
     upstream_body = dict(body)
-    upstream_body["model"] = model
     upstream_body["stream"] = True
     _clamp_output_tokens(acct, model, upstream_body)
     raw = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
@@ -2234,11 +2243,17 @@ def _client_chat(acct, body, session_key):
         stream = RaccoonStream(resp, model, acct, acct.pool)
         try:
             stream.preflight()
+        except RaccoonAuthError:
+            stream.abort()
+            if attempt == 0:
+                ensure_token(acct, force=True)
+                continue
+            raise
         except RaccoonError:
-            stream.close()
+            stream.abort()
             raise
         except Exception as exc:
-            stream.close()
+            stream.abort()
             raise RaccoonUpstreamError(
                 _redact(
                     "Raccoon chat stream failed: %s" % (exc,),
@@ -2253,11 +2268,12 @@ def _client_chat(acct, body, session_key):
 def open_chat(config, body, session_key=None, allowed_accounts=None):
     """Pick an account, refresh/fail over as needed, and open the SSE stream."""
     config = _config_or_load(config)
-    if not isinstance(body, dict):
-        raise RaccoonBadRequest("request body must be a JSON object")
-    model = str(body.get("model") or "").strip()
-    if not model:
-        raise RaccoonBadRequest("model is required")
+    if not config.get("enabled"):
+        raise RaccoonBadRequest(
+            "Raccoon 出口未启用：请到设置页打开「启用 Raccoon 出口」。"
+        )
+    body = build_chat_body(body, session_key)
+    model = body["model"]
     pool = pool_for(config["accounts_dir"])
     exclude = set()
     last_error = None
@@ -2377,7 +2393,7 @@ def test_account(config, uid):
 
 
 def keepalive(config):
-    """Refresh every expiring non-disabled token. There is no check-in here."""
+    """Refresh expiring tokens and the shared catalog. There is no check-in here."""
     config = _config_or_load(config)
     pool = pool_for(config["accounts_dir"])
     refreshed = 0
@@ -2402,10 +2418,40 @@ def keepalive(config):
             continue
         if acct.auth_generation != generation:
             refreshed += 1
+
+    # The catalog is account-independent; refresh it once after the token pass
+    # so an expired token has just been rotated before this request.
+    target = None
+    for acct in accounts:
+        if not acct.disabled and acct.healthy():
+            target = acct
+            break
+    if target is None:
+        for acct in accounts:
+            if not acct.disabled:
+                target = acct
+                break
+    models = len(SEED_MODELS)
+    catalog = {"source": "seed", "models": models}
+    if target is not None:
+        try:
+            fetch_catalog(target, timeout=20.0, force=True)
+            models = len(target.models)
+            catalog = {"source": "raccoon", "models": models}
+        except RaccoonError as exc:
+            errors.append(
+                "catalog: %s" % _redact(str(exc), _auth_secrets(target.auth))[:160]
+            )
+            if getattr(target, "models_source", "") == "raccoon" and target.models:
+                models = len(target.models)
+                catalog = {"source": "raccoon", "models": models}
     return {
         "ok": not errors,
         "accounts": len(accounts),
         "refreshed": refreshed,
+        "models": models,
+        "catalog": catalog,
         "errors": errors[:3],
-        "message": "已检查 %d 个账号，续期 %d 个" % (len(accounts), refreshed),
+        "message": "已检查 %d 个账号，续期 %d 个，模型 %d 个"
+        % (len(accounts), refreshed, models),
     }
