@@ -44,7 +44,7 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 | `docs/` | 设计、实施计划、部署说明 |
 | `reference/codearts2api/` | Go 版 codearts2api 源码，**仅作协议移植参考，不构建、不运行** |
 
-`app/` 与 `reference/codearts2api` 的上游基线、MIT 版权与同步方式见 [`UPSTREAM.md`](UPSTREAM.md)。
+`app/` 与 `reference/codearts2api` 的上游基线、MIT 版权与维护状态见 [`UPSTREAM.md`](UPSTREAM.md)。
 
 ## 快速启动（Docker）
 
@@ -66,6 +66,14 @@ docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/usage:/app/usage" \
   ghcr.io/ayeaaaa/mix2api:v1.5.0
 ```
+
+### 发布产物
+
+每个 [GitHub Release](https://github.com/ayeaaaa/mix2api/releases) 附带：
+
+- `mix2api-<版本>-deploy.zip`：v1.2.0 起是带 Windows 精简运行时的便携/一键更新包；v1.0.x–v1.1.x 是源码包。
+- `mix2api-<版本>-source.zip`：完整源码包，用于手动部署。
+- `SHA256SUMS`：上述文件的校验和。
 
 ### 方式二：本地构建
 
@@ -128,9 +136,14 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 
 ## 文档
 
-- 设计：`app/docs/superpowers/specs/2026-10-31-codearts-native-design.md`
-- 实施计划：`docs/superpowers/plans/2026-10-31-codearts-native.md`
-- 部署与回滚：`docs/setup.md`
+- 上游基线与维护状态：[`UPSTREAM.md`](UPSTREAM.md)
+- 各版本发布说明：[`docs/releases/`](docs/releases/)
+- 完整变更记录（含上游 v1.4.5–v2.0.0）：[`app/docs/CHANGELOG.md`](app/docs/CHANGELOG.md)
+- CodeArts 设计：[`app/docs/superpowers/specs/2026-10-31-codearts-native-design.md`](app/docs/superpowers/specs/2026-10-31-codearts-native-design.md)
+- 新面板实施计划：[`docs/superpowers/plans/2026-11-01-new-dashboard.md`](docs/superpowers/plans/2026-11-01-new-dashboard.md)
+- 部署与回滚：[`docs/setup.md`](docs/setup.md)
+- 媒体实现：[`app/docs/MEDIA-IMPL.md`](app/docs/MEDIA-IMPL.md)
+- 11-128 排障：[`app/docs/TROUBLESHOOTING-11-128.md`](app/docs/TROUBLESHOOTING-11-128.md)
 
 ## License
 

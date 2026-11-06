@@ -13,6 +13,12 @@ WorkBuddy2API-Hub 已于 **2026-11-06** 发布 v2.0.0 后停止维护：不再�
 
 **mix2api 自 v1.5.0 起接管维护。** 后续功能、修复与发布都在本仓库进行，不再有“同步上游”流程。上游 v2.0.0 的用量聚合缓存补写（#805）与设置页分组语言切换修复（#804）已并入本仓库；更早的 v1.9.3–v1.10.11 变更记录已补进 `app/docs/CHANGELOG.md`。
 
+## 平台支持
+
+- **Docker**：`ghcr.io/ayeaaaa/mix2api` 已回填 v1.0.0–v1.5.0 全部历史 tag，linux/amd64 + linux/arm64。
+- **便携包**：v1.2.0 起提供带 Windows 精简运行时的 `deploy.zip`；v1.0.x–v1.1.x 的 `deploy.zip` 是源码包。每个 Release 另有 `source.zip` 与 `SHA256SUMS`。
+- **OpenWrt**：包名、服务名和 UCI 配置名仍沿用 `workbuddy2api`（保升级兼容），打包配方暂未随 mix2api 版本线重新对齐；等有实际需求再处理。
+
 ## 本仓库相对上游的改动
 
 ### app/

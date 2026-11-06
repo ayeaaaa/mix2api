@@ -14,11 +14,11 @@
 > **WorkBuddy 上游正在收紧对非官方客户端的识别与拦截。**
 >
 > - **封禁**：2026-10-23 下午起，非官方客户端的识别与拦截明显收紧。
-> - **维护者**：近期工作压力增大，无法保证及时更新与响应。
+> - **维护**：mix2api 继续跟进，但上游策略随时可能变化，无法保证长期可用。
 > - **可用性**：上游可能随时进一步收紧，导致本项目不可用。
 > - **账号风险**：使用非官方客户端造成的风控、限流或封禁，由使用者自行承担。
 >
-> **Upstream enforcement** tightened detection and blocking of unofficial clients from the afternoon of 2026-10-23. The maintainer is under increased workload and cannot guarantee timely updates or replies. The upstream may tighten further at any time; rate limits, account restrictions or bans caused by using an unofficial client are the user's responsibility.
+> **Upstream enforcement** tightened detection and blocking of unofficial clients from the afternoon of 2026-10-23. mix2api continues maintenance, but the upstream policy may change at any time and long-term availability is not guaranteed. The upstream may tighten further at any time; rate limits, account restrictions or bans caused by using an unofficial client are the user's responsibility.
 
 本项目仅用于协议学习、研究与个人自用。请优先使用官方客户端，不要使用主账号，不要共享账号，也不要用于商业转售。
 
@@ -631,7 +631,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 - **DSH 一键配置放宽限流重试，修掉「对话到一半链接中断」**：WorkBuddy 的 429 冷却通常约一分钟，而 DSH 的默认 `retryPolicy` 是 `normal` / 最多 5 次 / 退避 500ms 起翻倍、封顶 10s——加起来不到 16 秒就放弃，冷却还没结束回合就以 `RATE_LIMIT` 失败。一键配置现在给 `wb-proxy` 单独写 `retryPolicy: {mode: normal, maxRetries: 8, backoff: {initialDelayMs: 2000, maxDelayMs: 30000, jitterRatio: 0.1}}`（合计约 2 分半），只影响 `wb-proxy`，其它 provider 仍用默认策略；字段与取值按 `@deepseek-ai/dsh-llm` 的 `RetryPolicySchema`。已经接入过的机器重新点一次「一键配置」即可补上这段（幂等），重启 DSH 生效。
   DSH's default per-provider retry policy (normal, at most 5 retries, 500ms→10s backoff, under 16 seconds in total) gives up before WorkBuddy's ~60s rate-limit cooldown ends, so the turn dies with `RATE_LIMIT` — which the user sees as the conversation breaking mid-flight. The one-click config now writes a wider `retryPolicy` for `wb-proxy` only (8 retries, 2s initial delay, 30s cap, ~2.5 minutes in total); other providers keep the default policy. Field names and bounds follow `@deepseek-ai/dsh-llm`'s `RetryPolicySchema`. Re-running the one-click config on an already-integrated machine adds it idempotently, and a DSH restart applies it.
 
-已发布版本的完整记录（v1.4.5 ~ v1.9.2，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+mix2api 各版本的发布说明见 **[../docs/releases/](../docs/releases/)**；上游 v1.4.5–v2.0.0 的完整记录（含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 
 ## 七、致谢与引用声明 (Credits & References)
 
