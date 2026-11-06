@@ -163,7 +163,7 @@ docker run -d --name wb-proxy-watchtower --restart unless-stopped \
 - **持久化**：`./accounts` 与 `./usage` 由宿主机挂载，更新或重建容器都不丢数据；
 - **docker run 快捷启动**：
   ```bash
-  docker run -d --name wb-proxy --restart unless-stopped -p 58675:58675 \
+  docker run -d --name wb-proxy --restart unless-stopped -p 58675:58675 -e PORT=58675 \
     -v $(pwd)/accounts:/app/accounts -v $(pwd)/usage:/app/usage \
     ghcr.io/ayeaaaa/mix2api:latest
   ```

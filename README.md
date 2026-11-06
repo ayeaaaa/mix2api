@@ -63,7 +63,7 @@ docker compose -f docker-compose.image.yml up -d
 
 ```bash
 docker pull ghcr.io/ayeaaaa/mix2api:v1.6.0
-docker run -d --name mix2api -p 58675:58675 \
+docker run -d --name mix2api -p 58675:58675 -e PORT=58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   ghcr.io/ayeaaaa/mix2api:v1.6.0
