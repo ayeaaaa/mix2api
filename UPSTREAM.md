@@ -58,7 +58,7 @@ WorkBuddy2API-Hub 已于 **2026-11-06** 发布 v2.0.0 后停止维护：不再�
 
 1. 新功能、修复直接在本仓库 `app/` 进行；不再从上游同步。
 2. 改动必须带回归测试；提交前跑 `cd app && python3 tests/run_all.py`。
-3. 版本号写在 `app/wb_proxy.py` 的两处（`runtime_settings_view()` 的 `version` 与 `Handler.server_version`）。打 `v<version>` tag 时，CI 会断言 tag 与源码版本一致；Docker 镜像由 `.github/workflows/docker.yml` 发布。
+3. 版本号写在 `app/wb_proxy.py` 的两处（`runtime_settings_view()` 的 `version` 与 `Handler.server_version`）以及 `app/wrt/openwrt/workbuddy2api/Makefile` 的 `PKG_VERSION`。打 `v<version>` tag 时，release workflow 会断言 tag、源码与 OpenWrt 包版本三处一致；Docker 镜像由 `.github/workflows/docker.yml` 发布，便携包与 `.ipk`/`.apk` 由 `.github/workflows/release.yml` 构建。
 4. `app/dashboard.html` 是单文件，修改尽量小步；改完跑 JS 套件。
 5. 发布说明写在 `docs/releases/`。
 
