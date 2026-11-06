@@ -1704,6 +1704,7 @@ def fetch_catalog(acct, timeout=20.0, force=False):
 
     payload = None
     for attempt in (0, 1):
+        expected_generation = acct.auth_generation
         headers = _account_headers(acct)
         headers["Cache-Control"] = "no-store"
         try:
@@ -1719,7 +1720,9 @@ def fetch_catalog(acct, timeout=20.0, force=False):
         except RaccoonAuthError:
             if attempt:
                 raise
-            ensure_token(acct, force=True)
+            ensure_token(
+                acct, force=True, expected_generation=expected_generation
+            )
 
     catalog = _normalize_catalog(payload)
     if not catalog["models"]:
