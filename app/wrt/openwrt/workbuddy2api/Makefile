@@ -1,8 +1,8 @@
 #
-# WorkBuddy2API-Hub · OpenWrt 版
+# mix2api · OpenWrt 版
 #
 # 纯 Python 包（只用标准库，零 pip 依赖），与 CPU 架构无关，
-# 因此 PKGARCH:=all，产物是 workbuddy2api-1.6.20-r1.apk（架构 all）。
+# 因此 PKGARCH:=all，产物是 workbuddy2api-1.5.0-r1.apk（架构 all）。
 #
 # 在 OpenWrt SDK 里构建：
 #   sh wrt/openwrt/build-apk.sh <SDK 目录> [应用源码目录]
@@ -20,11 +20,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=workbuddy2api
-PKG_VERSION:=1.9.2
+PKG_VERSION:=1.5.0
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
-PKG_MAINTAINER:=ardeyouxipianyi
+PKG_MAINTAINER:=ayeaaaa
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -40,16 +40,17 @@ include $(INCLUDE_DIR)/package.mk
 define Package/workbuddy2api
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=WorkBuddy multi-account gateway with OpenAI-compatible API
-  URL:=https://github.com/ardeyouxipianyi/workbuddy2api-hub
+  TITLE:=mix2api multi-account gateway (WorkBuddy + CodeArts, OpenAI-compatible)
+  URL:=https://github.com/ayeaaaa/mix2api
   DEPENDS:=+python3-light +python3-urllib +python3-uuid +python3-openssl +python3-sqlite3 +python3-codecs
   PKGARCH:=all
 endef
 
 define Package/workbuddy2api/description
-  把腾讯 WorkBuddy（国际版 workbuddy.ai / 国内版 codebuddy.cn）包装成
-  OpenAI 兼容 API 的多账号网关：/v1/chat/completions 与 /v1/responses，
-  自带看板（58675 端口）做账号管理、用量统计、定价估算与每日自动任务。
+  把腾讯 WorkBuddy（国际版 workbuddy.ai / 国内版 codebuddy.cn）与华为云
+  CodeArts 包装成 OpenAI 兼容 API 的多账号网关：/v1/chat/completions 与
+  /v1/responses，自带看板（58675 端口）做账号管理、用量统计、定价估算与
+  每日自动任务。
 
   纯 Python 标准库实现（上游不引入任何 pip 依赖）。OpenWrt 把 ssl、sqlite3
   与完整编码表拆成了独立包，所以依赖里显式带上 python3-openssl /

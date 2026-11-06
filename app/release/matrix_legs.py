@@ -24,7 +24,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TESTS_YML = os.path.join(ROOT, ".github", "workflows", "tests.yml")
+# The repository keeps the live workflows at its root and the app under
+# `app/`; a portable package is a flat tree. Prefer the repository root so
+# the gate always reads the workflow that GitHub actually runs, then fall
+# back to the in-package copy.
+_CANDIDATES = (
+    os.path.join(os.path.dirname(ROOT), ".github", "workflows", "tests.yml"),
+    os.path.join(ROOT, ".github", "workflows", "tests.yml"),
+)
+TESTS_YML = next((path for path in _CANDIDATES if os.path.isfile(path)),
+                 _CANDIDATES[0])
 
 # tests.yml names each job `${{ matrix.os }} / python ${{ matrix.python }}`.
 JOB_NAME = "%s / python %s"
