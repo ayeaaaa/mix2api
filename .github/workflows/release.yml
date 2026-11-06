@@ -456,6 +456,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Build the source ZIP
+        # The portable job only produces the Windows runtime bundle; keep the
+        # explicit source archive available for manual deployments as well.
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          git archive --format=zip --prefix="mix2api-$V/" \
+            -o "dist/mix2api-$V-source.zip" HEAD
+          ls -lh dist
       - name: Generate SHA256SUMS from the final assets
         run: |
           set -euo pipefail

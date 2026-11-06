@@ -17,7 +17,7 @@ WorkBuddy2API-Hub 已于 **2026-11-06** 发布 v2.0.0 后停止维护：不再�
 
 - **Docker**：`ghcr.io/ayeaaaa/mix2api` 已回填 v1.0.0–v1.5.0 全部历史 tag，linux/amd64 + linux/arm64。
 - **便携包**：v1.2.0 起提供带 Windows 精简运行时的 `deploy.zip`；v1.0.x–v1.1.x 的 `deploy.zip` 是源码包。每个 Release 另有 `source.zip` 与 `SHA256SUMS`。
-- **OpenWrt**：包名、服务名和 UCI 配置名仍沿用 `workbuddy2api`（保升级兼容），打包配方暂未随 mix2api 版本线重新对齐；等有实际需求再处理。
+- **OpenWrt**：从 v1.5.0 起随 Release 提供 `.ipk`（opkg，24.10 及更早）与 `.apk`（apk-tools，25.x+）。包名、服务名和 UCI 配置名仍沿用 `workbuddy2api`（保升级兼容），`PKG_VERSION` 与 `server_version` 对齐。注意：从上游 1.9.2 的包升级到 1.5.0 属于版本号回退，需先卸载旧包或手动允许降级。
 
 ## 本仓库相对上游的改动
 

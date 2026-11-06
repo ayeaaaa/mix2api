@@ -73,7 +73,11 @@ docker run -d --name mix2api -p 58675:58675 \
 
 - `mix2api-<版本>-deploy.zip`：v1.2.0 起是带 Windows 精简运行时的便携/一键更新包；v1.0.x–v1.1.x 是源码包。
 - `mix2api-<版本>-source.zip`：完整源码包，用于手动部署。
+- `workbuddy2api_<版本>-<发布号>_all.ipk`：OpenWrt opkg 系安装包（24.10 及更早）。
+- `workbuddy2api-<版本>-r<发布号>.apk`：OpenWrt 25.x+ 的 apk-tools 安装包。
 - `SHA256SUMS`：上述文件的校验和。
+
+OpenWrt 包名仍是 `workbuddy2api`，这样已有安装可以直接升级；版本从 v1.5.0 起跟 mix2api 对齐。
 
 ### 方式二：本地构建
 
