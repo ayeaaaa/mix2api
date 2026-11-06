@@ -26,11 +26,22 @@ assert.ok(script.includes("raccoonAccountAction(\\'tasks\\'"),
   '缺少任务开关操作入口');
 
 let POSTS = [];
+let GETS = [];
+let FAIL_OVERVIEW = false;
 dom.installDom({
   confirm: () => true,
   fetch: (url, opts) => {
     const body = opts && opts.body ? JSON.parse(String(opts.body)) : {};
+    GETS.push(String(url));
     if (opts && opts.method === 'POST') POSTS.push({url: String(url), body});
+    if (FAIL_OVERVIEW && String(url).indexOf('/raccoon/overview') >= 0
+        && (!opts || opts.method !== 'POST')) {
+      return Promise.resolve({
+        status: 500, ok: false,
+        json: () => Promise.resolve({}),
+        text: () => Promise.resolve(''),
+      });
+    }
     const payload = {ok: true, message: '已删除 u1', online: true,
                      stats: {total: 2, healthy: 1}, accounts: [], models: [],
                      slots: []};
@@ -49,6 +60,8 @@ try {
   api = new Function(script + `
     window.updateUI = function(){};
     return {renderRaccoonAccounts: renderRaccoonAccounts,
+            renderRaccoonCards: renderRaccoonCards,
+            loadRaccoonOverview: loadRaccoonOverview,
             raccoonAccountAction: raccoonAccountAction,
             raccoonSetProxy: raccoonSetProxy,
             raccoonEditNote: raccoonEditNote,
@@ -127,6 +140,26 @@ assert.ok(!/onclick="[^"]*x' onmouseover/.test(evilHtml),
 assert.ok(evilHtml.includes("raccoonAccountAction('delete','xonmouseoveralert1')"),
   'UID 应按安全字符集收敛后再拼进处理器');
 
+// 昵称、备注与旧代理 URL 同样来自服务端/上游，必须 HTML 转义。
+api.setSlots([]);
+api.renderRaccoonAccounts({
+  stats: {total: 1, healthy: 1},
+  accounts: [{uid: 'u3', nickname: '<img src=x onerror=alert(1)>',
+              note: '<script>alert("note")</script>', disabled: false,
+              cooling: false, proxy_slot: '',
+              proxy: 'http://p/?x=<svg onload=alert(3)>',
+              token_remaining: '1h0m0s', expires_at: '',
+              active_concurrent: 0, max_concurrent: 1, tasks_enabled: true,
+              models: 1}],
+});
+const xssHtml = box.innerHTML;
+assert.ok(!xssHtml.includes('<img'), '昵称不能原样输出 HTML');
+assert.ok(!xssHtml.includes('<script'), '备注不能原样输出 HTML');
+assert.ok(!xssHtml.includes('<svg'), '代理 URL 不能原样输出 HTML');
+assert.ok(xssHtml.includes('&lt;img'), '昵称应被 HTML 转义');
+assert.ok(xssHtml.includes('&lt;script&gt;'), '备注应被 HTML 转义');
+assert.ok(xssHtml.includes('&lt;svg'), '代理 URL 应被 HTML 转义');
+
 // 空状态要告诉用户从哪里开始。
 api.renderRaccoonAccounts({stats: {total: 0}, accounts: []});
 assert.ok(box.innerHTML.includes('auth.json'), '空状态应提示导入 auth.json');
@@ -134,6 +167,27 @@ assert.ok(box.innerHTML.includes('添加账号'), '空状态应提示添加账�
 assert.ok(box.innerHTML.includes('小浣熊'), '空状态应说明是小浣熊账号');
 
 (async () => {
+  GETS = [];
+  await api.loadRaccoonOverview(true);
+  assert.ok(GETS.some(u => u.indexOf('/raccoon/overview?force=1') >= 0),
+    'loadRaccoonOverview(true) 应带上 force 查询参数');
+  assert.equal(window.RACCOON_OVERVIEW.stats.total, 2,
+    'loadRaccoonOverview 应填充 window.RACCOON_OVERVIEW');
+
+  api.renderRaccoonCards({stats: {total: 2, healthy: 1},
+                          models: [{id: 'm1'}, {id: 'm2'}]});
+  const count = document.getElementById('raccoonAcctCount');
+  count.textContent = ' · 2';
+  FAIL_OVERVIEW = true;
+  await api.loadRaccoonOverview(true);
+  assert.equal(window.RACCOON_OVERVIEW, null,
+    '读取失败应清空 RACCOON_OVERVIEW，避免继续显示旧数据');
+  assert.equal(document.getElementById('raccoonCards').innerHTML, '',
+    '读取失败应清空统计卡');
+  assert.equal(count.textContent, '', '读取失败应清空账号计数');
+  assert.ok(box.innerHTML.includes('导入 auth.json'), '读取失败应显示可读错误提示');
+  FAIL_OVERVIEW = false;
+
   await api.raccoonAccountAction('delete', 'u1');
   const hit = POSTS.find(p => p.url.indexOf('/raccoon/accounts/delete') >= 0);
   assert.ok(hit, '删除应 POST /raccoon/accounts/delete');

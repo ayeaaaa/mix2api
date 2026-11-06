@@ -32,6 +32,8 @@ assert.ok(html.includes('id="raccoonAccounts"'), '缺少小浣熊账号表容器
 assert.ok(html.includes('id="raccoonAcctCount"'), '缺少小浣熊账号计数');
 assert.ok(html.includes('realm-badge-raccoon'), '缺少小浣熊徽章样式');
 assert.ok(/openRaccoonAuth\(\)/.test(html), '小浣熊账号区缺少添加账号入口');
+assert.ok(/id="nextGatewayRealmRaccoon"[^>]*onclick="switchViewRealm\('raccoon'\)"/.test(html),
+  '网关页出口切换缺少小浣熊按钮');
 
 assert.ok(/if\(r === "raccoon"\)\{[\s\S]{0,300}?loadRaccoonOverview\(true\)/.test(script),
   'switchViewRealm 应有 raccoon 分支并加载概览');
@@ -39,8 +41,8 @@ assert.ok(/const isRaccoonView = \(window\.VIEW_REALM === "raccoon"\)/.test(scri
   'updateUI 应识别 raccoon 视图');
 assert.ok(/raccoonEnabled = \(window\.REALM_OPTIONS \|\| \[\]\)\.includes\("raccoon"\)/.test(script),
   'updateUI 应读取服务端 REALM_OPTIONS');
-assert.ok(/viewFromUrl === 'raccoon'/.test(script),
-  '?view=raccoon 应被接受');
+assert.ok(/viewFromUrl === 'raccoon' && \(window\.REALM_OPTIONS \|\| \[\]\)\.includes\('raccoon'\)/.test(script),
+  '?view=raccoon 只在已启用时被接受');
 assert.ok(script.includes('/raccoon/models/refresh'), '刷新模型应调用 /raccoon/models/refresh');
 assert.ok(/meta\.source === 'raccoon'/.test(script), '模型表来源横幅应识别 raccoon');
 assert.ok(/function realmLabel[\s\S]{0,400}raccoon/.test(script),
@@ -70,7 +72,8 @@ try {
                                 base_url: 'https://xiaohuanxiong.com'};
     window.REALM_OPTIONS = ['intl', 'cn', 'codearts', 'raccoon'];
     return {updateUI: updateUI, setViewRealm: setViewRealm,
-            switchViewRealm: switchViewRealm, realmLabel: realmLabel};
+            switchViewRealm: switchViewRealm, realmLabel: realmLabel,
+            renderConsoleAccountHealth: renderConsoleAccountHealth};
   `)();
 } catch (e) {
   console.log = realLog;
@@ -114,6 +117,23 @@ assert.equal(byId('tabRaccoonModels').textContent, 1,
   '小浣熊卡片应显示模型数');
 assert.equal(byId('tabRaccoonKeyBadge').textContent, '1 个 Key',
   '小浣熊卡片应显示绑定的 Key 数');
+assert.equal(byId('nextGatewayRealmRaccoon').hidden, false,
+  '已配置时网关页出口切换应显示小浣熊按钮');
+assert.ok(byId('nextGatewayRealmRaccoon').classList.contains('active'),
+  '小浣熊视图应把网关页切换按钮标为 active');
+
+// 概览健康度不能把 WorkBuddy 的国际版/国内版分组带进小浣熊视图。
+api.renderConsoleAccountHealth([
+  {realm: 'intl', enabled: true, credits: {remain: 1}},
+  {realm: 'cn', enabled: false},
+]);
+const healthHtml = byId('consoleAccountHealth').innerHTML;
+assert.ok(healthHtml.includes('小浣熊'), '小浣熊视图健康度应显示小浣熊分组');
+assert.ok(/1 \/ 2/.test(healthHtml), '小浣熊健康度应使用 RACCOON_OVERVIEW.stats');
+assert.ok(!healthHtml.includes('国际版'), '小浣熊视图健康度不应出现国际版分组');
+assert.ok(!healthHtml.includes('国内版'), '小浣熊视图健康度不应出现国内版分组');
+assert.equal(byId('consoleHealthSummary').textContent, '1 / 2 可用',
+  '小浣熊视图健康度汇总应只统计小浣熊账号');
 
 api.setViewRealm('intl');
 api.updateUI();
@@ -141,6 +161,9 @@ assert.notEqual(byId('tabRaccoonDefaultBadge').style.display, 'none',
 assert.ok(byId('btnToggleRealm').textContent.includes('国际版'),
   'raccoon 默认出口的下一个应是 intl');
 
+assert.ok(!byId('nextGatewayRealmRaccoon').classList.contains('active'),
+  '非小浣熊视图不应把网关页切换按钮标为 active');
+
 window.REALM_OPTIONS = ['intl', 'cn'];
 window.VIEW_REALM = 'intl';
 api.updateUI();
@@ -148,6 +171,18 @@ assert.equal(byId('tabRaccoon').style.display, 'none',
   '未配置时小浣熊卡片应隐藏');
 assert.equal(byId('accountsRealmRaccoon').style.display, 'none',
   '未配置时小浣熊视图按钮应隐藏');
+assert.equal(byId('nextGatewayRealmRaccoon').hidden, true,
+  '未配置时网关页出口切换应隐藏小浣熊按钮');
+
+// 未启用时即便 URL 强塞 view=raccoon，也不能露出账号区/统计条。
+window.VIEW_REALM = 'raccoon';
+api.updateUI();
+assert.equal(byId('raccoonAccountsSection').style.display, 'none',
+  '未启用时即使视图是 raccoon 也应隐藏账号区');
+assert.equal(byId('raccoonSummary').style.display, 'none',
+  '未启用时即使视图是 raccoon 也应隐藏统计条');
+assert.equal(byId('tabRaccoon').style.display, 'none',
+  '未启用时即使视图是 raccoon 也应隐藏卡片');
 
 assert.ok(api.realmLabel('raccoon').includes('小浣熊'), '小浣熊出口名称');
 console.log('raccoon switch assertions passed');

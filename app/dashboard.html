@@ -5512,6 +5512,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           <button type="button" data-realm="intl" onclick="switchViewRealm('intl')">国际版</button>
           <button type="button" data-realm="cn" onclick="switchViewRealm('cn')">国内版</button>
           <button type="button" data-realm="codearts" id="nextGatewayRealmCodearts" onclick="switchViewRealm('codearts')">CodeArts</button>
+          <button type="button" data-realm="raccoon" id="nextGatewayRealmRaccoon" onclick="switchViewRealm('raccoon')" hidden>小浣熊</button>
         </div>
       </div>
     </div>
@@ -8010,6 +8011,11 @@ function updateUI(){
     rsRc.classList.toggle("active", isRaccoonView);
     rsRc.setAttribute("aria-pressed", isRaccoonView ? "true" : "false");
   }
+  const nextRcBtn = document.getElementById("nextGatewayRealmRaccoon");
+  if(nextRcBtn){
+    nextRcBtn.hidden = !raccoonEnabled;
+    nextRcBtn.classList.toggle("active", isRaccoonView && raccoonEnabled);
+  }
 
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
   // 最近请求、模型清单），标出来免得把国际版的数字看成全局的。用 <em> 承载：
@@ -8206,10 +8212,12 @@ function updateUI(){
   if(caSection) caSection.style.display = isCodeartsView ? "" : "none";
   const caSummary = document.getElementById("codeartsSummary");
   if(caSummary) caSummary.style.display = isCodeartsView ? "" : "none";
+  // 未启用时即便 URL 里塞了 ?view=raccoon，也不能露出空账号区/统计条。
+  const showRaccoon = isRaccoonView && raccoonEnabled;
   const rcSection = document.getElementById("raccoonAccountsSection");
-  if(rcSection) rcSection.style.display = isRaccoonView ? "" : "none";
+  if(rcSection) rcSection.style.display = showRaccoon ? "" : "none";
   const rcSummary = document.getElementById("raccoonSummary");
-  if(rcSummary) rcSummary.style.display = isRaccoonView ? "" : "none";
+  if(rcSummary) rcSummary.style.display = showRaccoon ? "" : "none";
   const wbCards = document.getElementById("cards");
   if(wbCards) wbCards.style.display = hideWorkbuddy ? "none" : "";
   const wbSched = document.getElementById("schedulerBar");
@@ -8504,13 +8512,18 @@ window.RACCOON_OVERVIEW = null;
 async function loadRaccoonOverview(force){
   const box = document.getElementById("raccoonAccounts");
   try{
-    const r = await getJSON("/raccoon/overview");
+    const r = await getJSON("/raccoon/overview" + (force ? "?force=1" : ""));
     window.RACCOON_OVERVIEW = r;
     await loadProxySlots();
     renderRaccoonCards(r);
     renderRaccoonAccounts(r);
     window.updateUI();
   }catch(e){
+    window.RACCOON_OVERVIEW = null;
+    const cards = document.getElementById("raccoonCards");
+    if(cards) cards.innerHTML = "";
+    const count = document.getElementById("raccoonAcctCount");
+    if(count) count.textContent = "";
     if(box){
       box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
         + escapeHtml(e.message || "读取小浣熊账号失败")
@@ -8831,7 +8844,7 @@ async function initRealm(){
   window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
   const viewFromUrl = new URLSearchParams(window.location.search).get('view');
   if(viewFromUrl && ['intl', 'cn', 'codearts'].includes(viewFromUrl)) window.VIEW_REALM = viewFromUrl;
-  if(viewFromUrl === 'raccoon') window.VIEW_REALM = viewFromUrl;
+  if(viewFromUrl === 'raccoon' && (window.REALM_OPTIONS || []).includes('raccoon')) window.VIEW_REALM = viewFromUrl;
   const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
   if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
   window.updateUI();
@@ -13185,16 +13198,22 @@ function renderConsoleAccountHealth(accts){
   const box = document.getElementById('consoleAccountHealth');
   if(!box) return;
   const isCodearts = window.VIEW_REALM === 'codearts';
-  const all = isCodearts ? [] : accountsInView();
+  const isRaccoon = window.VIEW_REALM === 'raccoon';
+  const all = (isCodearts || isRaccoon) ? [] : accountsInView();
   const groups = isCodearts ? (() => {
     const st = (window.CODEARTS_OVERVIEW || {}).stats || {};
     return [
       {label: 'CodeArts', total: Number(st.total || 0), ok: Number(st.healthy || 0)}
     ];
+  })() : (isRaccoon ? (() => {
+    const st = (window.RACCOON_OVERVIEW || {}).stats || {};
+    return [
+      {label: '小浣熊', total: Number(st.total || 0), ok: Number(st.healthy || 0)}
+    ];
   })() : [
     {label: '国际版', total: (accts || []).filter(a => a.realm === 'intl').length, ok: (accts || []).filter(a => a.realm === 'intl' && accountIsHealthy(a)).length},
     {label: '国内版', total: (accts || []).filter(a => a.realm === 'cn').length, ok: (accts || []).filter(a => a.realm === 'cn' && accountIsHealthy(a)).length}
-  ];
+  ]);
   const total = groups.reduce((n, g) => n + g.total, 0);
   const healthy = groups.reduce((n, g) => n + g.ok, 0);
   const summary = document.getElementById('consoleHealthSummary');
@@ -21801,6 +21820,12 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     if(caBtn){
       var caVisible = !!(caCard && getComputedStyle(caCard).display !== 'none');
       caBtn.hidden = !caVisible;
+    }
+    var rcBtn = document.getElementById('nextGatewayRealmRaccoon');
+    var rcCard = document.getElementById('tabRaccoon');
+    if(rcBtn){
+      var rcVisible = !!(rcCard && getComputedStyle(rcCard).display !== 'none');
+      rcBtn.hidden = !rcVisible;
     }
     var agentsOff = false;
     try { agentsOff = (typeof AGENTS_AVAILABLE !== 'undefined' && !AGENTS_AVAILABLE); } catch(e){}
