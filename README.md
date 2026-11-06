@@ -1,37 +1,39 @@
 # mix2api
 
-一个 **Python 单进程** OpenAI 兼容网关：把 **WorkBuddy 国际版**、**WorkBuddy 国内版** 和 **华为云 CodeArts** 三个上游收进一个服务、一个看板、一套 API Key。
+一个 **Python 单进程** OpenAI 兼容网关：把 **WorkBuddy 国际版**、**WorkBuddy 国内版**、**华为云 CodeArts** 和 **商汤小浣熊（Raccoon）** 四个上游收进一个服务、一个看板、一套 API Key。
 
 ```text
 客户端 ──► mix2api（单进程）──► WorkBuddy 国际版
                           ├──► WorkBuddy 国内版
-                          └──► 华为云 CodeArts（OAuth / 续期 / 模型 / 签到都在进程内）
+                          ├──► 华为云 CodeArts（OAuth / 续期 / 模型 / 签到都在进程内）
+                          └──► 商汤小浣熊 Raccoon（auth.json / 回环 OAuth / 模型 / SSE 都在进程内）
 ```
 
-- **一个服务**：不再需要单独运行 codearts2api；CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签到都由本进程直接完成。
-- **三个出口**：看板顶部切换 `国际版 / 国内版 / CodeArts`；也可以给不同 API Key 各绑一个出口，三个同时用。
-- **一个看板**：三个出口的账号都在这里增删、启停、签到；CodeArts 账号用华为云 OAuth 添加。
-- **三类协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、Anthropic Messages（需显式开启）都能走 CodeArts。
+- **一个服务**：不再需要单独运行 codearts2api 或 Raccoon 的 Node 反代；CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签到，以及 Raccoon 的 auth.json / 回环 OAuth、续期、账号池、模型发现和聊天 SSE，都由本进程直接完成。
+- **四个出口**：看板顶部切换 `国际版 / 国内版 / CodeArts / 小浣熊`；也可以给不同 API Key 各绑一个出口，四个同时用。
+- **一个看板**：四个出口的账号都在这里增删、启停；CodeArts 账号用华为云 OAuth 添加，Raccoon 账号导入 `auth.json` 或走本机回环授权。
+- **三类协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、Anthropic Messages（需显式开启）都能走 CodeArts 和小浣熊。
 
 ## 项目由来
 
-mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、WorkBuddy 国内版和华为云 CodeArts 三个上游收进一个服务、一个看板、一套 API Key。
+mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、WorkBuddy 国内版、华为云 CodeArts 和商汤小浣熊（Raccoon）四个上游收进一个服务、一个看板、一套 API Key。
 
 上游 WorkBuddy2API-Hub 已于 2026-11-06 发布 v2.0.0 后停止维护；mix2api 自 v1.5.0 起接管代码与后续维护。
 
-- **三个出口**：国际版、国内版、CodeArts 共用同一个地址和看板，也可以按 API Key 绑定不同出口。
-- **单进程**：CodeArts 的 OAuth、token 续期、模型发现、聊天 SSE、签到和积分查询都在 `app/` 进程内完成，不再需要独立的 Go 服务。
-- **代码关系**：`reference/codearts2api/` 只保留 Go 源码作协议参考，不参与构建和运行；上游基线与许可说明见 [`UPSTREAM.md`](UPSTREAM.md)。
+- **四个出口**：国际版、国内版、CodeArts、小浣熊共用同一个地址和看板，也可以按 API Key 绑定不同出口。
+- **单进程**：CodeArts 的 OAuth、token 续期、模型发现、聊天 SSE、签到和积分查询都在 `app/` 进程内完成，不再需要独立的 Go 服务；Raccoon 的 auth.json / 回环 OAuth、续期、模型发现和聊天 SSE 也全部在 `app/` 进程内完成，不需要 Node sidecar。
+- **代码关系**：`reference/codearts2api/` 只保留 Go 源码作协议参考，不参与构建和运行；Raccoon 为原生 Python 实现，只参考桌面客户端协议，不复制第三方项目代码；上游基线与许可说明见 [`UPSTREAM.md`](UPSTREAM.md)。
 
 ## 这次做了什么
 
 - **单进程 CodeArts 客户端**：华为云 OAuth2（PKCE + DPoP）、refresh_token 续期、账号池、并发/冷却、模型发现（agent-center / builtin / 限时福利）、聊天 SSE、签到、积分余额。
+- **小浣熊第四出口（原生 Python）**：导入桌面客户端 `auth.json` 或本机回环 OAuth；多账号池、并发/冷却/失败切换、账号级代理槽、备注/任务开关/测试/启停/清冷却/删除、token 自动续期与模型目录刷新。不依赖 Node sidecar，也没有第三方依赖。
 - **纯标准库密码学**：P-256 ECDSA、DPoP JWT、PKCE、华为云 `SDK-HMAC-SHA256` 签名；ECDSA 与 HMAC 都用 Go 侧向量对拍。
-- **看板**：第三张 CodeArts 出口卡片、三出口切换、CodeArts 账号表（OAuth 添加 / 启停 / 清冷却 / 签到 / 删除）、设置页、积分余额与已用/总额、模型描述。
-- **账号代理槽**：CodeArts 账号可绑定与 WorkBuddy 相同的「账号代理槽」，账号表直接选出口；聊天、模型发现、token 续期、签到和积分查询都走该槽。出站复用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
-- **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`，不按 WorkBuddy 价目表计价。
+- **看板**：第三张 CodeArts、第四张小浣熊出口卡片、四出口切换、CodeArts / Raccoon 账号表、设置页、CodeArts 积分余额与已用/总额、模型描述。
+- **账号代理槽**：CodeArts 与 Raccoon 账号可绑定与 WorkBuddy 相同的「账号代理槽」，账号表直接选出口；CodeArts 的聊天、模型发现、token 续期、签到和积分查询，以及 Raccoon 的聊天、模型发现和 token 续期都走该槽。出站复用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
+- **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`、Raccoon 记 `realm=raccoon` 且 `cost_policy=raccoon:unpriced`，都不按 WorkBuddy 价目表计价。
 - **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
-- **测试**：284 个套件全过；CodeArts 链路用本机假华为云上游覆盖，密码学有 Go 对照向量。
+- **测试**：284 个套件：212 个 Python + 72 个 JS 全过；CodeArts 链路用本机假华为云上游覆盖，Raccoon 链路用本机假小浣熊上游覆盖，密码学有 Go 对照向量。
 
 > 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号，不要共享或转售账号。
 
@@ -39,7 +41,7 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 
 | 路径 | 内容 |
 |---|---|
-| `app/` | 唯一的服务：Python 网关 + 看板（三出口） |
+| `app/` | 唯一的服务：Python 网关 + 看板（四出口） |
 | `deploy/` | 单服务 compose |
 | `docs/` | 设计、实施计划、部署说明 |
 | `reference/codearts2api/` | Go 版 codearts2api 源码，**仅作协议移植参考，不构建、不运行** |
@@ -60,11 +62,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.5.0
+docker pull ghcr.io/ayeaaaa/mix2api:v1.6.0
 docker run -d --name mix2api -p 58675:58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.5.0
+  ghcr.io/ayeaaaa/mix2api:v1.6.0
 ```
 
 ### 发布产物
@@ -90,6 +92,7 @@ docker compose up -d --build
    - 浏览器和网关在同一台机器：授权后回调 `127.0.0.1:<端口>/oauth/callback` 会自动完成。
    - 网关在远端：浏览器打不开 127.0.0.1 回调，把地址栏完整地址粘贴到弹窗的「远端回调」输入框，点「中转回调」。
 4. 在「设置 → API Key 与出口绑定」里建一个 Key，出口选 `CodeArts`，或留空跟随顶部默认出口。
+5. 要用小浣熊出口：进「设置 → 小浣熊接入」启用，切到小浣熊视图点「添加账号」，导入桌面客户端 `auth.json` 或完成本机回环授权（详见下文「Raccoon 说明」）。Key 的出口选 `小浣熊`，或留空跟随默认出口。
 
 也可以：
 
@@ -107,7 +110,7 @@ cd app
 python3 wb_proxy.py --port 58675
 ```
 
-CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accounts/` 下。两者互不干扰。
+CodeArts 账号在 `app/accounts/codearts/` 下，Raccoon 账号在 `app/accounts/raccoon/` 下，WorkBuddy 账号在 `app/accounts/` 下。三者互不干扰。
 
 ## CodeArts 说明
 
@@ -126,12 +129,28 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 - 调度：CodeArts 每 30 分钟检查一次 Token 并续期快过期账号；22:00 仍随 WorkBuddy 巡检。自动签到跟随签到时段。CodeArts 账号表新增备注、任务开关（API 停用但继续签到）、单账号测试、重新登录和刷新积分。
 - 错误语义：非视觉模型收到图片返回 400，并提示可用视觉模型；未知参数/图片错误不再统一吞成 502。
 - 活动历史：CodeArts 签到写入 `/activity/history`，可按区域筛选。
-- 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；代理槽按 HTTP/HTTPS 代理实现。
+- 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；CodeArts 账号由本进程的 CodeArts 池轮转，不能按 Key 指定；代理槽按 HTTP/HTTPS 代理实现。
+
+## Raccoon（小浣熊）说明
+
+Raccoon 是第四个出口，完全在本进程内运行，不需要单独的 Node 反代：
+
+- 登录：导入桌面客户端 `auth.json`（也接受 auth 响应里的 `{"data": {...}}`），或使用回环 OAuth。浏览器必须和网关在同一台机器、共享 `127.0.0.1` 回环；远程部署请导入 `auth.json`。
+- 模型：9 个原始裸 ID —— `raccoon-090dd3`、`raccoon-19b265`、`raccoon-405a1c`、`sn-sensenova-6-8-flash`、`sn-sensenova-6-8-flash-lite`、`sn-glm-5-3`、`sn-kimi-k3`、`sn-glm-5-3-flash`、`sn-deepseek-v4-1-flash-1017`。目录以官方 `model_catalog` 为准，取不到时回落内置种子目录；`/v1/models?realm=raccoon` 只返回这些裸 ID，不加任何提供商前缀。
+- 协议：chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages（需显式开启）复用现有适配层。
+- 账号：多账号池、并发/会话粘性、429/5xx 冷却后自动换号、401/403 先强制续期一次再重试；账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用同一套连接复用、代理认证和 `no_proxy`。
+- 用量：每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录，积分列显示 `0.00`、估算价格显示 `—`。小浣熊没有积分/签到接口，看板不显示积分。
+- 限制：v1.6.0 不支持扫码登录、手机号/密码登录（后续版本再补）；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型；出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀。
+- 首次配置：
+  1. 打开「设置 → 小浣熊接入」，勾选「启用小浣熊出口」并保存（首次成功导入账号会自动启用）。
+  2. 切到小浣熊视图，点「添加账号」，导入 `auth.json` 或完成浏览器授权。
+  3. 在「设置 → API Key 与出口绑定」里新建 Key，出口选 `小浣熊`，或留空跟随默认出口。
 
 ## 安全
 
 - 华为云凭据只存在本机 `app/accounts/codearts/codearts-*.json`（权限 600），不返回浏览器、不写日志。
-- `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
+- 小浣熊 token 只存在本机 `app/accounts/raccoon/raccoon-*.json`（权限 600），管理接口和看板都不回显 access/refresh token。
+- `/codearts/*` 与 `/raccoon/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
 - 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。
 
 ## 文档
@@ -147,4 +166,4 @@ CodeArts 账号在 `app/accounts/codearts/` 下；WorkBuddy 账号在 `app/accou
 
 ## License
 
-MIT。`app/` 与 `reference/codearts2api/` 保留各自上游的 MIT 许可证与版权声明。
+MIT。`app/` 与 `reference/codearts2api/` 保留各自上游的 MIT 许可证与版权声明。Raccoon provider 为本仓库新增的原生 Python 实现，不依赖 Node sidecar。

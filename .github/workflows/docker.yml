@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (e.g. v1.5.0)"
+        description: "Image tag to publish (e.g. v1.6.0)"
         required: true
-        default: "v1.5.0"
+        default: "v1.6.0"
 
 permissions:
   contents: read
@@ -55,7 +55,7 @@ jobs:
             type=sha,prefix=sha-
           labels: |
             org.opencontainers.image.title=mix2api
-            org.opencontainers.image.description=Single-process OpenAI-compatible gateway for WorkBuddy (intl/CN) and Huawei Cloud CodeArts
+            org.opencontainers.image.description=Single-process OpenAI-compatible gateway for WorkBuddy (intl/CN), Huawei Cloud CodeArts and SenseTime Raccoon
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 

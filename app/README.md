@@ -1,6 +1,6 @@
-# mix2api — 国际版、国内版、CodeArts 多出口网关
+# mix2api — 国际版、国内版、CodeArts、小浣熊多出口网关
 
-> **mix2api 单进程版**：CodeArts 已并入本进程。部署请使用仓库根目录的
+> **mix2api 单进程版**：CodeArts 与小浣熊已并入本进程。部署请使用仓库根目录的
 > `deploy/docker-compose.yml`（本地构建）或本仓库发布的镜像。
 
 > [!IMPORTANT]
@@ -25,26 +25,27 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.5.0-2496ED?style=flat-square" alt="Version 1.5.0"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.0-2496ED?style=flat-square" alt="Version 1.6.0"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
-  <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
+  <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Maintenance-Low--frequency-c96f3d?style=flat-square" alt="Low-frequency maintenance">
 </p>
 
-把腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)**（国际版）与 **[codebuddy.cn](https://www.codebuddy.cn)**（国内版）的原生服务封装成标准 OpenAI 兼容接口（Chat Completions / Responses），并提供默认关闭的实验性 Anthropic Messages 适配；同时补齐多账号调度与运维能力：
+把腾讯 **[www.workbuddy.ai](https://www.workbuddy.ai)**（国际版）与 **[codebuddy.cn](https://www.codebuddy.cn)**（国内版）、华为云 CodeArts、商汤小浣熊（Raccoon）的原生服务封装成标准 OpenAI 兼容接口（Chat Completions / Responses），并提供默认关闭的实验性 Anthropic Messages 适配；同时补齐多账号调度与运维能力：
 
 - **开箱即用**：绿色包自带精简 Python（Windows），双击脚本即启；
-- **双区域独立路由**：国际版 / 国内版各自配置与调度，看板一键切换，状态落盘；
+- **四个出口独立路由**：国际版 / 国内版 / CodeArts / 小浣熊各自配置与调度，看板一键切换，状态落盘；
 - **协议与风险**：默认支持 Chat Completions、Responses API（Codex）；Anthropic Messages（Claude Code / Anthropic SDK）经协议转换且缓存兼容性尚未验证，默认禁用，仅可显式选择启用；
+- **小浣熊（Raccoon）第四出口**：原生 Python 实现，导入 `auth.json` 或本机回环 OAuth；多账号池、并发/冷却/失败切换、账号级代理槽、备注/任务开关/测试/启停/清冷却/删除、token 自动续期和模型目录刷新，不依赖 Node sidecar；
 - **模型目录对齐官方桌面端**：剔除补全通道与专线变体，能力与规格按桌面端宣告，上游新模型无需发版即进 `/v1/models`；
 - **设备指纹隔离 (`derive_id`)**：以账号 UID 稳定派生机器码与会话标识，同一账号不漂移、不同账号互不关联；
-- **账号接入**：看板点链接走浏览器 OAuth；Windows 上还能直接从运行中的桌面客户端导入（加密 token 就地解密），macOS / Linux 可手动粘贴解码密钥后导入；
+- **账号接入**：看板点链接走浏览器 OAuth；Windows 上还能直接从运行中的桌面客户端导入（加密 token 就地解密），macOS / Linux 可手动粘贴解码密钥后导入；Raccoon 账号导入桌面客户端 `auth.json`，或走本机回环 OAuth；
 - **每日自动化**：国内版签到 / 成长与积分任务 / 猫猫旅行；国际版每日活跃打卡（真跑完网页会话）；后台调度器按 09:00 & 21:00、22:00、01:00 排程；
 - **限额护栏**：保留积分 · 每日 Token · 每日积分 · 按模型 Token 四条账号级护栏，单账号独立计数，本地 0 点解封（默认全部关闭）；
 - **OpenRouter 价估算**：把 token 折算成等价花费（人民币 / 美元可切），逐条请求可悬停查看定价来源；
-- **多 Key 与出口绑定**：每个 Key 可固定走国际版或国内版、可限定模型，用量按 Key 归属；
+- **多 Key 与出口绑定**：每个 Key 可固定走国际版 / 国内版 / CodeArts / 小浣熊、可限定模型，用量按 Key 归属；
 - **Web 看板**：指标卡片、模型性能与用量大表、请求流水、账号与任务管理一屏可查。
 
 > ⚡ **Vibe Coding 产物**：本项目为 100% Vibe Coding 协同产物——人类开发者提出架构与业务意图，AI 助手端到端完成逆向分析、链路调度、WAF 指纹脱敏与界面编写。
@@ -59,7 +60,7 @@ This project is for protocol research and personal use only. Prefer the official
 
 **Windows** 双击 **`start-wb-proxy.bat`**：默认静默启动（`pythonw` 后台运行 + 独立日志窗口，关掉日志窗口不会停服务，用面板电源按钮或 `restart-wb-proxy.bat` 停止）；想用「前台控制台 + 关窗即停」，双击 **`start-wb-proxy-visible.bat`**。**macOS** 双击 **`start-wb-proxy.command`**（首次被 Gatekeeper 拦截时右键 →「打开」确认一次），或在终端执行 `./start-wb-proxy.sh [端口]`（默认 58675）。
 
-启动后：**API 地址** `http://127.0.0.1:58675/v1`，**Web 看板** `http://127.0.0.1:58675/`。首次启动还没有账号，打开看板点「+ 添加账号 (OAuth)」完成授权即自动入库。
+启动后：**API 地址** `http://127.0.0.1:58675/v1`，**Web 看板** `http://127.0.0.1:58675/`。首次启动还没有账号，打开看板点「+ 添加账号 (OAuth)」完成授权即自动入库；Raccoon 账号在「小浣熊」视图点「添加账号」，导入 `auth.json` 或走本机回环授权（见 §7）。
 
 > 绿色包自带的精简 Python 运行时只覆盖 Windows；macOS / Linux 直接使用系统 Python，需要 **3.9+**（启动脚本找不到内置运行时会明确打印所用的解释器与版本）。Docker 部署自带基础镜像，不受影响。
 
@@ -80,9 +81,9 @@ This project is for protocol research and personal use only. Prefer the official
 
 ### 4. 多 API Key 与出口绑定
 
-「设置」页可管理多个 Key，每个 Key 独立出口——不同客户端各用各的 Key，国内外流量互不干扰：
+「设置」页可管理多个 Key，每个 Key 独立出口——不同客户端各用各的 Key，不同出口流量互不干扰：
 
-- **生成 / 绑定**：填名称点「生成随机 Key」；可固定走 🌐 国际版或 🇨🇳 国内版，不绑定则跟随看板顶部的全局出口开关；
+- **生成 / 绑定**：填名称点「生成随机 Key」；可固定走 🌐 国际版 / 🇨🇳 国内版 / CodeArts / 小浣熊，不绑定则跟随看板顶部的全局出口开关；
 - **模型限制**：可填允许的模型（如 `deepseek*`、`gpt-6-astra`，支持 `*`，逗号分隔），留空不限；不在列表里的请求本机直接返回 400，不送达上游、不消耗额度；
 - **区域自检**：Key 绑定的出口与模型不匹配时（如国际版 Key 调国内独占的 `deepseek-v4-pro`）直接返回可读 400，而不是上游晦涩的 WAF 报错；
 - **启停 / 删除**：可单独启停；删除后密钥立即失效，条目以只读形式留在「设置」页的「已删除」折叠区，历史用量仍显示它的名字；
@@ -176,9 +177,9 @@ docker run -d --name wb-proxy-watchtower --restart unless-stopped \
 
 CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签到都由本进程直接完成，不需要再跑独立的 codearts2api 服务。
 
-- 顶部出口卡片从 `国际版 / 国内版` 变成 `国际版 / 国内版 / CodeArts`；
+- 顶部出口卡片为 `国际版 / 国内版 / CodeArts / 小浣熊`；
 - 选中 CodeArts 时，`/v1/models` 返回 CodeArts 的模型目录，`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 都由本进程直连华为云；
-- API Key 可以绑定 `codearts` 出口，三个出口可以同时用；
+- API Key 可以绑定 `codearts` 出口，四个出口可以同时用；
 - 看板「账号」页的 CodeArts 视图可以添加（OAuth）、启用、停用、清冷却、签到、删除 CodeArts 账号。
 - CodeArts 账号支持绑定「账号代理槽」：在账号表的「出口」列选择槽位后，聊天、模型发现、token 续期、签到、积分查询都走该槽；槽位地址变化自动跟随，禁用或删除槽位回退直连。首次 OAuth 换取 token 时还没有账号可绑定，仍直连。
 - CodeArts 自动签到默认开启：跟随国内版签到时段（默认 09:00 / 21:00），只跑已启用且未冷却的账号；当天成功一次后不重复，失败会在下一个时段或手动巡检时重试。可在「设置 → CodeArts 接入」关闭。
@@ -202,11 +203,49 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 - 账号、token 续期、冷却、签到、并发都由本进程直接执行；华为云凭据只存在本机 `accounts/codearts/`。
 - CodeArts 积分余额通过 `snap-manager/v1/statistics/plugin` 查询，看板显示剩余 / 总额 / 已用；单次请求的积分扣减上游不返回，最近请求表的积分列显示 `0.00`、估算价格显示 `—`。
 - CodeArts 出口不参与 WorkBuddy 的积分/额度护栏，也不参与 `国际版 → 国内版` 的跨出口回退。
-- API Key 的「允许账号」白名单只作用于 WorkBuddy 账号；CodeArts 账号由本进程的 CodeArts 池轮转，不能按 Key 指定。
+- CodeArts 账号由本进程的 CodeArts 池轮转，不能按 Key 指定；Raccoon 账号支持 Key 级「允许账号」白名单。
 - CodeArts 出口没有 WorkBuddy 出口的 web_search / web_fetch 代跑；客户端自带工具照常透传。
 - `/codearts/*` 管理端点只接受面板会话，不接受普通 API Key；删除账号不可恢复。
 
-### 7. 测试
+### 7. Raccoon 第四出口
+
+小浣熊出口完全在本进程内运行，不需要单独的 Node 反代：
+
+- 顶部出口卡片为 `国际版 / 国内版 / CodeArts / 小浣熊`；选中后 `/v1/models` 返回小浣熊目录，`/v1/chat/completions`、`/v1/responses`、Anthropic Messages（需显式开启）都由本进程直连 `xiaohuanxiong.com`。
+- API Key 可以绑定 `raccoon` 出口，也可以留空跟随顶部默认出口；Key 的模型限制和允许账号白名单照常生效。
+
+**添加账号**
+
+- **导入 auth.json**：粘贴桌面客户端 `auth.json` 原文（也接受 auth 响应里的 `{"data": {...}}`）；网关解析 JWT 得到 UID / 有效期后原子落盘，并自动启用出口。远程部署推荐这种方式。
+- **回环 OAuth**：点「开始浏览器授权」生成官方授权链接，授权完成后页面自动轮询；浏览器和网关必须在同一台机器、共享 `127.0.0.1` 回环。若浏览器回调打不到网关，可把完整回调地址粘贴到「远端回调」中转。state 一次性有效，300 秒过期。
+
+**模型**
+
+- 9 个原始裸 ID：`raccoon-090dd3`、`raccoon-19b265`、`raccoon-405a1c`、`sn-sensenova-6-8-flash`、`sn-sensenova-6-8-flash-lite`、`sn-glm-5-3`、`sn-kimi-k3`、`sn-glm-5-3-flash`、`sn-deepseek-v4-1-flash-1017`。
+- `/v1/models?realm=raccoon` 只返回这些原始 ID，不加任何提供商前缀。目录以官方 `model_catalog` 为准，取不到时回落内置种子目录；视觉 / 推理由目录 tags 宣告，工具调用统一宣告为 true。
+- v1.6.0 不宣告 `reasoning_efforts` 列表（上游档位未完全验证），但 `reasoning_effort` / `thinking` / `enable_thinking` 字段仍会透传。
+
+**协议与账号池**
+
+- chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages 复用现有适配层。
+- 多账号并发、会话粘性、429/5xx 冷却后自动换号；401/403 先强制续期一次再重试同一账号，续期失败再换号；400 不换号。
+- 账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
+- token 在过期前 2 分钟由请求路径自动续期；`/raccoon/keepalive` 可手动续期并刷新模型目录，「测试连接」也会强制刷新目录。小浣熊没有签到 / 成长任务，也没有积分或额度查询接口。
+
+**用量与限制**
+
+- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录，积分列显示 `0.00`、估算价格显示 `—`。
+- Raccoon 不参与 WorkBuddy 的积分/额度护栏和跨出口回退；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型（沿用 v1.0.9 的单出口设计）。
+- v1.6.0 不支持扫码登录、手机号/密码登录（需要二维码渲染和 AES-128-CFB，后续版本再补）；远程用户请导入 `auth.json`。
+- 出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀；以后同时服务多个出口时再加。
+
+**首次配置**
+
+1. 打开「设置 → 小浣熊接入」，勾选「启用小浣熊出口」并保存（首次成功导入账号会自动启用）。
+2. 切到小浣熊视图，点「添加账号」，导入 `auth.json` 或完成浏览器授权。
+3. 在「设置 → API Key 与出口绑定」里新建 Key，出口选 `小浣熊`，或留空跟随顶部默认出口。
+
+### 8. 测试
 
 ```bash
 python tests/run_all.py            # 全部套件
@@ -519,6 +558,14 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.0
+
+- **小浣熊（Raccoon）第四出口**：新增 `raccoon` 出口，原生 Python 单进程实现，不依赖 Node sidecar；支持导入桌面客户端 `auth.json` 与本机回环 OAuth、多账号池、并发/冷却/失败切换、账号级代理槽、备注/任务开关/单账号测试/启停/清冷却/删除、token 自动续期与模型目录刷新。看板顶部变为 `国际版 / 国内版 / CodeArts / 小浣熊`，API Key 可绑定 `raccoon` 或跟随默认出口。 / **Raccoon as a fourth exit**: a native single-process Python implementation with no Node sidecar. It supports importing the desktop client's `auth.json` and a loopback OAuth flow, a multi-account pool with concurrency, cooldown and failover, account proxy slots, notes, a task toggle, per-account tests, enable/disable, cooldown clearing and delete, token refresh and catalog refresh. The panel now shows Global / China / CodeArts / Raccoon, and an API key can bind `raccoon` or follow the default exit.
+- **9 个原始模型 ID**：`raccoon-090dd3`、`raccoon-19b265`、`raccoon-405a1c`、`sn-sensenova-6-8-flash`、`sn-sensenova-6-8-flash-lite`、`sn-glm-5-3`、`sn-kimi-k3`、`sn-glm-5-3-flash`、`sn-deepseek-v4-1-flash-1017`。`/v1/models?realm=raccoon` 只返回裸 ID，不加任何提供商前缀；`realm=all` 仍只含 WorkBuddy，不合并 Raccoon。 / **Nine original model ids**: the nine Raccoon ids above are returned bare by `/v1/models?realm=raccoon`, with no provider prefix; `realm=all` remains WorkBuddy-only and does not merge Raccoon.
+- **协议与用量**：chat 非流式 / SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages（需显式开启）复用现有适配层。用量记 `realm=raccoon`、上游账号 UID 与 `cost_policy=raccoon:unpriced`；小浣熊没有积分/签到接口，看板不显示积分。 / **Protocols and usage**: non-streaming and SSE chat, tool calls, image input on vision models, Responses and Anthropic Messages (when explicitly enabled) reuse the existing adapters. Usage rows carry `realm=raccoon`, the upstream account UID and `cost_policy=raccoon:unpriced`; Raccoon exposes no credits or check-in, so the panel shows no credit column.
+- **限制**：v1.6.0 不支持扫码或手机号/密码登录（后续版本再补）；回环 OAuth 要求浏览器与网关共享 loopback，远程部署请导入 `auth.json`。原有三个出口的行为不变。 / **Limitations**: v1.6.0 does not include QR or phone/password login (deferred); loopback OAuth requires the browser and gateway to share loopback, so remote deployments should import `auth.json`. The existing three exits are unchanged.
+- **测试**：284 个套件全过（212 Python + 72 JS）；Raccoon 链路用本机假小浣熊上游覆盖。 / **Tests**: all 284 suites pass (212 Python + 72 JS); the Raccoon path is covered with a local fake upstream.
 
 ## v1.5.0
 
