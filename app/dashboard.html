@@ -427,7 +427,7 @@ table.account-cards tr.cool-row .cool-pill{display:inline-block;width:auto;max-w
 .acct-name-row{display:flex;align-items:center;gap:6px;min-width:0}
 /* 移动端专用徽章组：桌面表格视图隐藏（版本/状态有自己的两列）。 */
 .acct-mobile-badges{display:none}
-.acct-mobile-badges .badge,.acct-mobile-badges .realm-badge-intl,.acct-mobile-badges .realm-badge-cn,.acct-mobile-badges .realm-badge-codearts{flex-shrink:0}
+.acct-mobile-badges .badge,.acct-mobile-badges .realm-badge-intl,.acct-mobile-badges .realm-badge-cn,.acct-mobile-badges .realm-badge-codearts,.acct-mobile-badges .realm-badge-raccoon{flex-shrink:0}
 .credit-summary{white-space:nowrap}
 .credit-kind{font-size:11px;font-weight:500;color:var(--dim)}
 .credit-stack{display:flex;flex-direction:column;align-items:flex-start;gap:3px;white-space:nowrap;min-width:0}
@@ -520,6 +520,7 @@ a:hover{text-decoration:underline}
 .realm-badge-intl{color:#2c6e9e;background:rgba(106,155,204,.14);border:1px solid rgba(106,155,204,.35);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-cn{color:#a03c32;background:rgba(201,100,66,.12);border:1px solid rgba(201,100,66,.32);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-codearts{color:#5b3fa0;background:rgba(124,92,214,.13);border:1px solid rgba(124,92,214,.34);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+.realm-badge-raccoon{color:#0f766e;background:rgba(15,118,110,.12);border:1px solid rgba(15,118,110,.30);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .badge-effort{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:var(--think-soft);color:var(--think);border:1px solid rgba(138,106,150,.3);font-weight:600}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
 .realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
@@ -645,6 +646,7 @@ a:hover{text-decoration:underline}
 [data-theme="dark"] .realm-badge-intl{color:#8ab4d9;background:rgba(106,155,204,.2);border-color:rgba(106,155,204,.4)}
 [data-theme="dark"] .realm-badge-cn{color:#e09a80;background:rgba(201,100,66,.22);border-color:rgba(201,100,66,.42)}
 [data-theme="dark"] .realm-badge-codearts{color:#c4b1f5;background:rgba(124,92,214,.24);border-color:rgba(124,92,214,.46)}
+[data-theme="dark"] .realm-badge-raccoon{color:#5eead4;background:rgba(20,184,166,.20);border-color:rgba(20,184,166,.42)}
 [data-theme="dark"] .realm-switch button.active#accountsRealmCn{color:var(--bad);border-color:var(--bad)}
 [data-theme="dark"] .modal-mask{background:rgba(0,0,0,.65)}
 /* The page sections are toggled by a class so the inline head script can
@@ -1475,6 +1477,7 @@ table.account-cards .acct-actions .id-btn{padding:2px 5px;font-size:10px}
 .realm-badge-intl{color:var(--think);background:var(--think-soft);border-color:transparent}
 .realm-badge-cn{color:var(--accent);background:var(--accent-soft);border-color:transparent}
 .realm-badge-codearts{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.realm-badge-raccoon{color:#0f766e;background:rgba(15,118,110,.12);border-color:transparent}
 .credit-main b{color:var(--accent2)}
 
 /* Keep the panel usable at tablet/mobile widths after removing the sidebar. */
@@ -4835,12 +4838,14 @@ html[data-ui="next"] .realm-card.active{
 html[data-ui="next"] .realm-card .credit-summary span[style*="font-size:22px"]{font-size:21px!important}
 html[data-ui="next"] .realm-badge-intl,
 html[data-ui="next"] .realm-badge-cn,
-html[data-ui="next"] .realm-badge-codearts{
+html[data-ui="next"] .realm-badge-codearts,
+html[data-ui="next"] .realm-badge-raccoon{
   border-radius:999px!important;padding:3px 8px!important;font-size:9.5px!important;font-weight:700!important;
 }
 html[data-ui="next"] .realm-badge-intl{background:var(--accent-soft)!important;color:var(--accent)!important;border:1px solid rgba(79,70,229,.18)!important}
 html[data-ui="next"] .realm-badge-cn{background:var(--warn-soft)!important;color:var(--warn)!important;border:1px solid rgba(247,144,9,.2)!important}
 html[data-ui="next"] .realm-badge-codearts{background:var(--accent2-soft)!important;color:#047857!important;border:1px solid rgba(18,183,106,.2)!important}
+html[data-ui="next"] .realm-badge-raccoon{background:rgba(15,118,110,.12)!important;color:#0f766e!important;border:1px solid rgba(15,118,110,.22)!important}
 html[data-ui="next"] .badge{
   border-radius:999px!important;font-size:9.5px!important;padding:3px 7px!important;font-weight:650!important;
 }
@@ -5381,7 +5386,25 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       </div>
     </div>
 
-    <!-- 卡片 4: 网关出口控制 -->
+    <!-- 卡片 4: 小浣熊 (Raccoon) -->
+    <div id="tabRaccoon" class="realm-card" onclick="switchViewRealm('raccoon')" style="display:none">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="realm-badge-raccoon">小浣熊 (Raccoon)</span>
+        <span id="tabRaccoonHost" class="mono" style="font-size:11px;color:var(--dim)">xiaohuanxiong.com</span>
+        <span id="tabRaccoonDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
+        <span id="tabRaccoonViewBadge" class="badge s mini" style="display:none">当前视图</span>
+        <span id="tabRaccoonOffline" class="badge bad mini" style="display:none">离线</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
+          <span id="tabRaccoonHealthy" style="font-size:22px;font-weight:700;color:#0f766e;letter-spacing:-.5px" title="健康账号数 / 账号总数">—</span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabRaccoonTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabRaccoonModels" style="color:var(--fg);font-weight:600">0</span> 模型</span>
+        </div>
+        <span id="tabRaccoonKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
+      </div>
+    </div>
+
+    <!-- 卡片 5: 网关出口控制 -->
     <div id="cardGatewayCtrl" class="realm-card gateway-ctrl" style="cursor:default">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
         <span style="font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">网关默认出口</span>
@@ -5418,6 +5441,10 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   <!-- CodeArts 视图的统计条：WorkBuddy 的积分/调度口径不适用，单独一块。 -->
   <div id="codeartsSummary" style="display:none;margin-bottom:18px">
     <div class="cards" id="codeartsCards"></div>
+  </div>
+  <!-- 小浣熊视图的统计条：没有积分/签到，只看账号、模型与冷却。 -->
+  <div id="raccoonSummary" style="display:none;margin-bottom:18px">
+    <div class="cards" id="raccoonCards"></div>
   </div>
 
   <div class="console-insights" id="consoleInsights">
@@ -5553,6 +5580,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button type="button" id="accountsRealmIntl" onclick="switchViewRealm('intl')" aria-pressed="false">国际版</button>
       <button type="button" id="accountsRealmCn" onclick="switchViewRealm('cn')" aria-pressed="false">国内版</button>
       <button type="button" id="accountsRealmCodearts" onclick="switchViewRealm('codearts')" aria-pressed="false" style="display:none">CodeArts</button>
+      <button type="button" id="accountsRealmRaccoon" onclick="switchViewRealm('raccoon')" aria-pressed="false" style="display:none">小浣熊</button>
     </div>
   </div>
   <!-- 拆分模式下三个区块的落点（页头之后、原顺序）；合并模式搬走之后这里就空着 -->
@@ -5571,6 +5599,19 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button class="sec" onclick="loadCodeartsOverview(true)">刷新</button>
     </div>
     <div id="codeartsAccounts"></div>
+  </section>
+  <!-- 小浣熊视图：账号池由本进程直接管理，没有积分 / 签到。 -->
+  <section id="raccoonAccountsSection" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <h2 style="margin:0">小浣熊账号<em id="raccoonAcctCount"></em></h2>
+      <div class="legend" style="margin:0">导入 auth.json 添加账号；Token 续期、模型目录、冷却与出口都由本进程直接管理。</div>
+    </div>
+    <div class="toolbar">
+      <button onclick="openRaccoonAuth()">添加账号</button>
+      <button class="sec" onclick="refreshModelCatalog(this)">刷新模型目录</button>
+      <button class="sec" onclick="loadRaccoonOverview(true)">刷新</button>
+    </div>
+    <div id="raccoonAccounts"></div>
   </section>
   <section id="workbuddyAccountsSection">
     <h2 title="多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个">
@@ -7919,15 +7960,22 @@ function updateUI(){
   const isIntlView = (window.VIEW_REALM === "intl");
   const isCnView = (window.VIEW_REALM === "cn");
   const isCodeartsView = (window.VIEW_REALM === "codearts");
+  const isRaccoonView = (window.VIEW_REALM === "raccoon");
   const caEnabled = (window.REALM_OPTIONS || []).includes("codearts");
+  const raccoonEnabled = (window.REALM_OPTIONS || []).includes("raccoon");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
   const tCa = document.getElementById("tabCodearts");
+  const tRc = document.getElementById("tabRaccoon");
   if(tIntl) tIntl.className = "realm-card" + (isIntlView ? " active" : "");
   if(tCn) tCn.className = "realm-card" + (isCnView ? " active" : "");
   if(tCa){
     tCa.style.display = caEnabled ? "" : "none";
     tCa.className = "realm-card" + (isCodeartsView ? " active" : "");
+  }
+  if(tRc){
+    tRc.style.display = raccoonEnabled ? "" : "none";
+    tRc.className = "realm-card" + (isRaccoonView ? " active" : "");
   }
   const vbIntl = document.getElementById("tabIntlViewBadge");
   if(vbIntl) vbIntl.style.display = isIntlView ? "inline-block" : "none";
@@ -7935,6 +7983,8 @@ function updateUI(){
   if(vbCn) vbCn.style.display = isCnView ? "inline-block" : "none";
   const vbCa = document.getElementById("tabCodeartsViewBadge");
   if(vbCa) vbCa.style.display = isCodeartsView ? "inline-block" : "none";
+  const vbRc = document.getElementById("tabRaccoonViewBadge");
+  if(vbRc) vbRc.style.display = isRaccoonView ? "inline-block" : "none";
 
   // 账号页页头的版本切换与上面两张卡片同一份状态（VIEW_REALM），所以两边永远
   // 一起亮：在账号页切过去，回网关页看到的就是刚切的那一版，反之亦然。
@@ -7954,11 +8004,18 @@ function updateUI(){
     rsCa.classList.toggle("active", isCodeartsView);
     rsCa.setAttribute("aria-pressed", isCodeartsView ? "true" : "false");
   }
+  const rsRc = document.getElementById("accountsRealmRaccoon");
+  if(rsRc){
+    rsRc.style.display = raccoonEnabled ? "" : "none";
+    rsRc.classList.toggle("active", isRaccoonView);
+    rsRc.setAttribute("aria-pressed", isRaccoonView ? "true" : "false");
+  }
 
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
   // 最近请求、模型清单），标出来免得把国际版的数字看成全局的。用 <em> 承载：
   // 侧栏导航由 h2 生成时会剥掉 <em>，所以标签不会串进导航项。
-  const sectionRealm = isIntlView ? "（国际版）" : (isCnView ? "（国内版）" : "（CodeArts）");
+  const sectionRealm = isIntlView ? "（国际版）"
+    : (isCnView ? "（国内版）" : (isRaccoonView ? "（小浣熊）" : "（CodeArts）"));
   ["disabledRealmTag", "recentRealmTag", "modelsRealmTag"].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.textContent = sectionRealm;
@@ -7972,43 +8029,53 @@ function updateUI(){
   const isIntlGw = (gwRealm === "intl");
   const isCnGw = (gwRealm === "cn");
   const isCaGw = (gwRealm === "codearts");
+  const isRcGw = (gwRealm === "raccoon");
   const dbIntl = document.getElementById("tabIntlDefaultBadge");
   if(dbIntl) dbIntl.style.display = isIntlGw ? "inline-block" : "none";
   const dbCn = document.getElementById("tabCnDefaultBadge");
   if(dbCn) dbCn.style.display = isCnGw ? "inline-block" : "none";
   const dbCa = document.getElementById("tabCodeartsDefaultBadge");
   if(dbCa) dbCa.style.display = isCaGw ? "inline-block" : "none";
+  const dbRc = document.getElementById("tabRaccoonDefaultBadge");
+  if(dbRc) dbRc.style.display = isRcGw ? "inline-block" : "none";
 
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
     gwName.textContent = isIntlGw ? "国际版 (Global)"
-      : (isCnGw ? "国内版 (China)" : "CodeArts (华为云)");
+      : (isCnGw ? "国内版 (China)"
+        : (isCaGw ? "CodeArts (华为云)" : "小浣熊 (Raccoon)"));
     gwName.style.color = isIntlGw ? "var(--accent)"
-      : (isCnGw ? "var(--bad)" : "#5b3fa0");
+      : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : "#0f766e"));
   }
   const ep = document.getElementById("activeEndpoint");
   if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2"
     : (isCnGw ? "https://copilot.tencent.com/v2"
-              : ((window.CODEARTS_OVERVIEW || {}).base_url || "华为云 CodeArts"));
+              : (isCaGw ? ((window.CODEARTS_OVERVIEW || {}).base_url || "华为云 CodeArts")
+                        : ((window.RACCOON_OVERVIEW || {}).base_url || "https://xiaohuanxiong.com")));
 
   const gwOptions = (window.REALM_OPTIONS && window.REALM_OPTIONS.length)
     ? window.REALM_OPTIONS : ["intl", "cn"];
   let gwIdx = gwOptions.indexOf(gwRealm);
   if(gwIdx < 0) gwIdx = 0;
   const nextGw = gwOptions[(gwIdx + 1) % gwOptions.length];
-  const nextGwName = (nextGw === "intl") ? "国际版" : (nextGw === "cn" ? "国内版" : "CodeArts");
+  const nextGwName = (nextGw === "intl") ? "国际版"
+    : (nextGw === "cn" ? "国内版" : (nextGw === "codearts" ? "CodeArts" : "小浣熊"));
+  const gwColor = isIntlGw ? "var(--accent)"
+    : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : "#0f766e"));
   const btnToggle = document.getElementById("btnToggleRealm");
   if(btnToggle) {
     btnToggle.textContent = "切换默认出口为【" + nextGwName + "】";
-    btnToggle.style.borderColor = isIntlGw ? "var(--accent)" : (isCnGw ? "var(--bad)" : "#5b3fa0");
-    btnToggle.style.color = isIntlGw ? "var(--accent)" : (isCnGw ? "var(--bad)" : "#5b3fa0");
+    btnToggle.style.borderColor = gwColor;
+    btnToggle.style.color = gwColor;
   }
   const cardGw = document.getElementById("cardGatewayCtrl");
   if(cardGw){
     cardGw.style.borderColor = isIntlGw ? "rgba(37,99,235,.28)"
-      : (isCnGw ? "rgba(220,38,38,.28)" : "rgba(124,92,214,.30)");
+      : (isCnGw ? "rgba(220,38,38,.28)"
+        : (isCaGw ? "rgba(124,92,214,.30)" : "rgba(15,118,110,.28)"));
     cardGw.style.background = isIntlGw ? "rgba(37,99,235,.03)"
-      : (isCnGw ? "rgba(220,38,38,.03)" : "rgba(124,92,214,.04)");
+      : (isCnGw ? "rgba(220,38,38,.03)"
+        : (isCaGw ? "rgba(124,92,214,.04)" : "rgba(15,118,110,.03)"));
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
@@ -8022,9 +8089,11 @@ function updateUI(){
   const intlKeys = keys.filter(k => k.enabled !== false && k.realm === 'intl').length;
   const cnKeys = keys.filter(k => k.enabled !== false && k.realm === 'cn').length;
   const caKeys = keys.filter(k => k.enabled !== false && k.realm === 'codearts').length;
+  const rcKeys = keys.filter(k => k.enabled !== false && k.realm === 'raccoon').length;
   const followKeys = keys.filter(k => k.enabled !== false && !k.realm).length;
   const activeKeysTotal = isIntlGw ? (intlKeys + followKeys)
-    : (isCnGw ? (cnKeys + followKeys) : (caKeys + followKeys));
+    : (isCnGw ? (cnKeys + followKeys)
+      : (isCaGw ? (caKeys + followKeys) : (rcKeys + followKeys)));
 
   const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
@@ -8036,6 +8105,8 @@ function updateUI(){
   if(elCnKey) elCnKey.textContent = cnKeys + ' 个 Key';
   const elCaKey = document.getElementById("tabCodeartsKeyBadge");
   if(elCaKey) elCaKey.textContent = caKeys + ' 个 Key';
+  const elRcKey = document.getElementById("tabRaccoonKeyBadge");
+  if(elRcKey) elRcKey.textContent = rcKeys + ' 个 Key';
 
   // 左侧卡片账号数与积分统计：大数字是「总剩余」（含停用账号），副行的
   // 「可用」只算 isAcctActive（启用且未触发保留/限额护栏）的账号——与旁边
@@ -8104,20 +8175,45 @@ function updateUI(){
     catch(e) { elCaHost.textContent = ca.base_url; }
   }
 
-  // CodeArts 视图隐藏 WorkBuddy 专属区块，避免把两套账号/积分读混。
+  // 小浣熊卡片：健康/总数、模型数、离线标记；同样没有积分。
+  const rc = window.RACCOON_OVERVIEW || {};
+  const rcStats = rc.stats || {};
+  const rcHealthy = (rcStats.healthy != null) ? rcStats.healthy : "—";
+  const rcTotal = (rcStats.total != null) ? rcStats.total : 0;
+  const rcModels = (rc.models || []).length;
+  const elRcHealthy = document.getElementById("tabRaccoonHealthy");
+  if(elRcHealthy) elRcHealthy.textContent = rcHealthy;
+  const elRcTotal = document.getElementById("tabRaccoonTotal");
+  if(elRcTotal) elRcTotal.textContent = rcTotal;
+  const elRcModels = document.getElementById("tabRaccoonModels");
+  if(elRcModels) elRcModels.textContent = rcModels;
+  const elRcOffline = document.getElementById("tabRaccoonOffline");
+  if(elRcOffline) elRcOffline.style.display = (rc.online === false) ? "inline-block" : "none";
+  const elRcHost = document.getElementById("tabRaccoonHost");
+  if(elRcHost && rc.base_url){
+    try { elRcHost.textContent = new URL(rc.base_url).host; }
+    catch(e) { elRcHost.textContent = rc.base_url; }
+  }
+
+  // CodeArts / 小浣熊视图隐藏 WorkBuddy 专属区块，避免把两套账号/积分读混。
+  const hideWorkbuddy = isCodeartsView || isRaccoonView;
   ["workbuddyAccountsSection", "workbuddyDisabledSection",
    "workbuddyActivitySection"].forEach(function(id){
     const el = document.getElementById(id);
-    if(el) el.style.display = isCodeartsView ? "none" : "";
+    if(el) el.style.display = hideWorkbuddy ? "none" : "";
   });
   const caSection = document.getElementById("codeartsAccountsSection");
   if(caSection) caSection.style.display = isCodeartsView ? "" : "none";
   const caSummary = document.getElementById("codeartsSummary");
   if(caSummary) caSummary.style.display = isCodeartsView ? "" : "none";
+  const rcSection = document.getElementById("raccoonAccountsSection");
+  if(rcSection) rcSection.style.display = isRaccoonView ? "" : "none";
+  const rcSummary = document.getElementById("raccoonSummary");
+  if(rcSummary) rcSummary.style.display = isRaccoonView ? "" : "none";
   const wbCards = document.getElementById("cards");
-  if(wbCards) wbCards.style.display = isCodeartsView ? "none" : "";
+  if(wbCards) wbCards.style.display = hideWorkbuddy ? "none" : "";
   const wbSched = document.getElementById("schedulerBar");
-  if(wbSched) wbSched.style.display = isCodeartsView ? "none" : "";
+  if(wbSched) wbSched.style.display = hideWorkbuddy ? "none" : "";
 };
 
 // 切换视图的唯一入口：改完 VIEW_REALM 立刻用**已经加载好的**全量 window.ACCOUNTS
@@ -8141,6 +8237,12 @@ async function switchViewRealm(r){
                        loadAnalytics(), refresh()]);
     return;
   }
+  if(r === "raccoon"){
+    // 小浣熊同样没有 WorkBuddy 的成长任务/调度器，只刷它自己的概览与用量。
+    await Promise.all([loadRaccoonOverview(true), loadModels(),
+                       loadAnalytics(), refresh()]);
+    return;
+  }
   // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
   // 串行排队时后面那些毫秒级的用量接口全被它堵着，切过去看着就是"过几秒才刷新"。
   await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
@@ -8148,7 +8250,10 @@ async function switchViewRealm(r){
 };
 
 function realmLabel(r){
-  return r === "intl" ? "国际版" : (r === "cn" ? "国内版" : "CodeArts");
+  if(r === "intl") return "国际版";
+  if(r === "cn") return "国内版";
+  if(r === "raccoon") return "小浣熊";
+  return "CodeArts";
 }
 
 async function toggleActiveGatewayRealm(){
@@ -8165,6 +8270,9 @@ async function toggleActiveGatewayRealm(){
     window.updateUI();
     if(window.ACTIVE_GATEWAY_REALM === "codearts"){
       await Promise.all([loadCodeartsOverview(true), loadModels(),
+                         loadAnalytics(), refresh()]);
+    }else if(window.ACTIVE_GATEWAY_REALM === "raccoon"){
+      await Promise.all([loadRaccoonOverview(true), loadModels(),
                          loadAnalytics(), refresh()]);
     }else{
       await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
@@ -8390,6 +8498,155 @@ function openCodeartsConsole(){
   window.open(base, "_blank", "noopener,noreferrer");
 }
 
+/* ---- 小浣熊第四出口 ---- */
+window.RACCOON_OVERVIEW = null;
+
+async function loadRaccoonOverview(force){
+  const box = document.getElementById("raccoonAccounts");
+  try{
+    const r = await getJSON("/raccoon/overview");
+    window.RACCOON_OVERVIEW = r;
+    await loadProxySlots();
+    renderRaccoonCards(r);
+    renderRaccoonAccounts(r);
+    window.updateUI();
+  }catch(e){
+    if(box){
+      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
+        + escapeHtml(e.message || "读取小浣熊账号失败")
+        + '<div style="margin-top:8px;color:var(--dim);font-size:12px">检查「设置 → 小浣熊接入」是否已启用，或先导入 auth.json。</div></div>';
+    }
+    window.updateUI();
+  }
+}
+
+function renderRaccoonCards(r){
+  const box = document.getElementById("raccoonCards");
+  if(!box) return;
+  const st = r.stats || {};
+  const healthy = (st.healthy != null) ? st.healthy : "—";
+  const total = (st.total != null) ? st.total : 0;
+  box.innerHTML =
+    card("健康账号", healthy + "/" + total, "由本进程直接管理")
+    + card("模型", (r.models || []).length, "小浣熊目录")
+    + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
+    + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
+}
+
+function raccoonSlotSelectHtml(a){
+  const current = a.proxy_slot || '';
+  const opts = ['<option value=""' + (current ? '' : ' selected') + '>直连</option>'];
+  const known = PROXY_SLOTS.some(s => s.id === current);
+  if(current && !known){
+    opts.push('<option value="" selected>已删除的槽位（直连）</option>');
+  }
+  opts.push.apply(opts, PROXY_SLOTS.map(s =>
+    '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
+    + esc(s.label || s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>'));
+  const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
+  return '<select class="slot-select" onchange="raccoonSetProxy(&quot;' + uidAttr + '&quot;, this.value, this)">'
+    + opts.join('') + '</select>';
+}
+
+async function raccoonSetProxy(uid, slotId, el){
+  if(el) el.disabled = true;
+  try{
+    await postJSON('/raccoon/accounts/proxy', {uid: uid, slot_id: slotId});
+    toast('出口已更新', 'ok');
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('出口更新失败: ' + e.message, 'bad');
+  }finally{
+    if(el) el.disabled = false;
+  }
+}
+
+function renderRaccoonAccounts(r){
+  const box = document.getElementById("raccoonAccounts");
+  const count = document.getElementById("raccoonAcctCount");
+  const accounts = r.accounts || [];
+  if(count) count.textContent = accounts.length ? (" · " + accounts.length) : "";
+  if(!box) return;
+  if(!accounts.length){
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">还没有小浣熊账号。导入 auth.json 或点「添加账号」开始。</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table><thead><tr>'
+    + '<th>账号</th><th>状态</th><th>Token</th><th>出口</th><th>并发</th><th>模型</th><th>操作</th>'
+    + '</tr></thead><tbody>';
+  accounts.forEach(function(a){
+    const uid = escapeHtml(a.uid || "");
+    const uidSafe = esc(String(a.uid || "").replace(/[^\w.@-]/g, ""));
+    const name = escapeHtml(a.nickname || a.uid || "");
+    const note = a.note
+      ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.note) + '</div>'
+      : '';
+    let status = '<span class="badge ok mini">正常</span>';
+    if(a.disabled) status = '<span class="badge bad mini">已停用</span>';
+    else if(a.cooling) status = '<span class="badge warn mini">冷却中</span>';
+    const token = escapeHtml((a.token_remaining || "—") + (a.expires_at ? " · " + a.expires_at : ""));
+    const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
+      + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
+    const models = (a.models != null) ? a.models : "—";
+    const legacyProxy = (!a.proxy_slot && a.proxy)
+      ? '<div class="mono" style="font-size:11px;color:var(--dim);max-width:180px;overflow:hidden;text-overflow:ellipsis">'
+        + escapeHtml(a.proxy) + '</div>'
+      : '';
+    const actions = [];
+    if(a.disabled){
+      actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'enable\',\'' + uidSafe + '\')">启用</button>');
+    }else{
+      actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'disable\',\'' + uidSafe + '\')">停用</button>');
+    }
+    actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'clear-cooldown\',\'' + uidSafe + '\')">清冷却</button>');
+    actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'test\',\'' + uidSafe + '\')">测试</button>');
+    actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'tasks\',\'' + uidSafe + '\',' + (!a.tasks_enabled) + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
+    actions.push('<button class="sec mini" onclick="raccoonEditNote(\'' + uidSafe + '\')">备注</button>');
+    actions.push('<button class="sec mini" onclick="raccoonAccountAction(\'delete\',\'' + uidSafe + '\')">删除</button>');
+    html += '<tr><td><b>' + name + '</b>' + note + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
+      + '<td>' + status + (a.reason ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.reason) + '</div>' : '') + '</td>'
+      + '<td class="mono" style="font-size:11px">' + token + '</td>'
+      + '<td>' + raccoonSlotSelectHtml(a) + legacyProxy + '</td>'
+      + '<td>' + conc + '</td><td>' + models + '</td>'
+      + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
+}
+
+async function raccoonAccountAction(action, uid, extra){
+  if(action === "delete"){
+    if(!confirm("删除小浣熊账号 " + uid + "？\n\n会删除凭据并移出账号池，不可恢复。")) return;
+  }
+  const payload = {uid: uid};
+  if(action === "tasks") payload.enabled = !!extra;
+  if(action === "note") payload.note = String(extra == null ? "" : extra);
+  try{
+    const r = await postJSON("/raccoon/accounts/" + action, payload);
+    if(action === "test" && r && r.ok === false){
+      toast("测试失败: " + (r.message || "未知错误"), "bad");
+      return;
+    }
+    toast((r && r.message) || "操作成功", "ok");
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast("操作失败: " + e.message, "bad");
+  }
+}
+
+function raccoonEditNote(uid){
+  const acct = ((window.RACCOON_OVERVIEW || {}).accounts || [])
+    .find(a => a.uid === uid) || {};
+  const note = prompt("备注", acct.note || "");
+  if(note === null) return;
+  raccoonAccountAction("note", uid, note);
+}
+
+// 添加账号弹窗由后续任务接入；先给内联入口一个可调用的落点，避免点了没反应。
+function openRaccoonAuth(){
+  toast("小浣熊添加账号弹窗尚未接入；可先通过 /raccoon/accounts/import 导入 auth.json。", "warn");
+}
+
 let CODEARTS_OAUTH_SESSION = "";
 let CODEARTS_OAUTH_TIMER = null;
 
@@ -8574,26 +8831,31 @@ async function initRealm(){
   window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
   const viewFromUrl = new URLSearchParams(window.location.search).get('view');
   if(viewFromUrl && ['intl', 'cn', 'codearts'].includes(viewFromUrl)) window.VIEW_REALM = viewFromUrl;
+  if(viewFromUrl === 'raccoon') window.VIEW_REALM = viewFromUrl;
   const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
   if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
   window.updateUI();
   if(window.VIEW_REALM === 'codearts') loadCodeartsOverview(true);
+  if(window.VIEW_REALM === 'raccoon') loadRaccoonOverview(true);
 }
 
 async function refreshModelCatalog(btn){
   // 手动刷新模型清单：强制走一次上游 /v3/config（服务端执行，绕过 300s 缓存），
   // 只刷当前视图版本——这张表显示的是哪个版本，刷新按钮就只拉哪个版本，绝
   // 不跨区（服务端会挑该版本自己的账号发请求）。完成后立即重载表格。
-  if(window.VIEW_REALM === 'codearts'){
+  if(window.VIEW_REALM === 'codearts' || window.VIEW_REALM === 'raccoon'){
+    const isRaccoon = window.VIEW_REALM === 'raccoon';
+    const label = isRaccoon ? '小浣熊' : 'CodeArts';
     if(btn) btn.disabled = true;
     const prevText = btn ? btn.textContent : '';
     if(btn) btn.textContent = '刷新中...';
     try{
-      const r = await postJSON('/codearts/models/refresh', {});
-      toast('CodeArts 模型目录：' + ((r && r.models) || 0) + ' 个模型', 'ok');
+      const r = await postJSON(isRaccoon ? '/raccoon/models/refresh' : '/codearts/models/refresh', {});
+      toast(label + '模型目录：' + ((r && r.models) || 0) + ' 个模型', 'ok');
       await loadModels();
+      if(isRaccoon) await loadRaccoonOverview(true);
     }catch(e){
-      toast('CodeArts 模型目录刷新失败：' + e.message, 'bad');
+      toast(label + '模型目录刷新失败：' + e.message, 'bad');
     }finally{
       if(btn){ btn.disabled = false; btn.textContent = prevText; }
     }
@@ -8851,6 +9113,16 @@ function renderModelsSourceLine(meta){
       + 'background:var(--accent2-soft);border:1px solid rgba(94,140,79,.28);color:var(--accent2)';
     el.title = 'CodeArts 模型目录来自本进程的 agent-center / builtin / 福利三路发现；缓存过期后自动重取，失败时回退到上次成功的目录。';
     el.innerHTML = '<b>✓ 当前为 CodeArts 模型目录</b>'
+      + '<span style="color:var(--dim)">刷新时间 ' + esc(at || '—')
+      + (meta.stale ? ' · 上游暂时不可达，显示上次成功的目录' : '')
+      + '</span>';
+    return;
+  }
+  if(meta.source === 'raccoon'){
+    el.style.cssText = CATALOG_BANNER_BASE
+      + 'background:rgba(15,118,110,.10);border:1px solid rgba(15,118,110,.25);color:#0f766e';
+    el.title = '小浣熊模型目录来自上游 /api/web/llm/v2/model_catalog；缓存过期后自动重取，失败时回退到内置种子目录。';
+    el.innerHTML = '<b>✓ 当前为小浣熊模型目录</b>'
       + '<span style="color:var(--dim)">刷新时间 ' + esc(at || '—')
       + (meta.stale ? ' · 上游暂时不可达，显示上次成功的目录' : '')
       + '</span>';
@@ -21425,6 +21697,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
   function nextRealmLabel(){
     var realm = window.VIEW_REALM || 'intl';
     if(realm === 'codearts') return 'CodeArts';
+    if(realm === 'raccoon') return '小浣熊';
     if(realm === 'cn') return '国内版';
     return '国际版';
   }
