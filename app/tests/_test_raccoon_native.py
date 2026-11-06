@@ -97,6 +97,27 @@ def test_config_defaults_and_clamping():
         wb_settings.load(ACCOUNTS).get("unrelated") == {"keep": [1, 2]},
     )
 
+    # Unknown subkeys describe future settings; a save must not erase them.
+    wb_settings.save(
+        ACCOUNTS,
+        {
+            "raccoon": {
+                "enabled": True,
+                "timeout_seconds": 30,
+                "future_raccoon_flag": {"keep": 1},
+            }
+        },
+    )
+    saved = R.save_config(ACCOUNTS, {"max_concurrent": 2})
+    raw = wb_settings.load(ACCOUNTS)["raccoon"]
+    check(
+        "save keeps unknown raccoon subkeys",
+        raw.get("future_raccoon_flag") == {"keep": 1},
+        raw,
+    )
+    check("save keeps existing known value", saved["timeout_seconds"] == 30.0)
+    check("save applies patched known value", saved["max_concurrent"] == 2)
+
     saved = R.save_config(
         ACCOUNTS,
         {
@@ -110,6 +131,37 @@ def test_config_defaults_and_clamping():
     check("invalid stream timeout falls back", saved["stream_timeout_seconds"] == 900.0)
     check("invalid models ttl falls back", saved["models_ttl_seconds"] == 600.0)
     check("invalid max concurrent falls back", saved["max_concurrent"] == 1)
+
+    saved = R.save_config(
+        ACCOUNTS,
+        {
+            "timeout_seconds": float("nan"),
+            "stream_timeout_seconds": float("inf"),
+            "models_ttl_seconds": float("-inf"),
+            "max_concurrent": float("inf"),
+        },
+    )
+    check("nan timeout falls back", saved["timeout_seconds"] == 60.0)
+    check("infinite stream timeout falls back", saved["stream_timeout_seconds"] == 900.0)
+    check("negative infinite ttl falls back", saved["models_ttl_seconds"] == 600.0)
+    check("infinite max concurrent falls back", saved["max_concurrent"] == 1)
+
+    wb_settings.save(
+        ACCOUNTS,
+        {
+            "raccoon": {
+                "timeout_seconds": float("nan"),
+                "stream_timeout_seconds": float("inf"),
+                "models_ttl_seconds": float("-inf"),
+                "max_concurrent": float("inf"),
+            }
+        },
+    )
+    cfg = R.load_config(ACCOUNTS)
+    check("load rejects nan timeout", cfg["timeout_seconds"] == 60.0)
+    check("load rejects infinite stream timeout", cfg["stream_timeout_seconds"] == 900.0)
+    check("load rejects negative infinite ttl", cfg["models_ttl_seconds"] == 600.0)
+    check("load rejects infinite max concurrent", cfg["max_concurrent"] == 1)
 
     # load_config must clamp hand-edited settings too, not only save_config.
     wb_settings.save(
@@ -525,6 +577,139 @@ def test_terminal_error_marks_disabled_and_soft_marks_cooldown():
     check("repeated errors cool down", soft.cool_until > time.time(), soft.cool_until)
 
 
+def test_upstream_error_redacts_known_secrets():
+    reset()
+    secret = "opaque-refresh-secret-12345"
+    reset_fake(expires_in=-10, refresh_token=secret)
+    auth = R.save_auth(
+        ACCOUNTS,
+        R.auth_from_payload(
+            {
+                "access_token": state.token,
+                "refresh_token": state.refresh_token,
+            }
+        ),
+    )
+    acct = R.pool_for(ACCOUNTS).add(auth)
+    state.refresh_status = 400
+    state.refresh_body = {"message": "invalid refresh token: " + secret}
+
+    message = ""
+    try:
+        R.ensure_token(acct)
+    except R.RaccoonAuthError as exc:
+        message = str(exc)
+    check("refresh error raised", bool(message))
+    check("error does not echo refresh token", secret not in message, message)
+    check("error does not echo access token", state.token not in message, message)
+    view_blob = json.dumps(acct.view(), ensure_ascii=False)
+    check("view does not echo refresh token", secret not in view_blob, view_blob)
+    check("view still explains the failure", "invalid refresh token" in view_blob, view_blob)
+    check("terminal state kept", acct.disabled is True)
+
+    labels = R._redact(
+        "authorization_code=auth-code-secret code=plain-code-secret "
+        "access_token=access-token-secret refresh_token=refresh-token-secret"
+    )
+    for value in (
+        "auth-code-secret",
+        "plain-code-secret",
+        "access-token-secret",
+        "refresh-token-secret",
+    ):
+        check("label pattern redacts %s" % value, value not in labels, labels)
+    quoted = R._redact('{"authorization_code": "json-auth-code", "code": "json-code"}')
+    check("quoted code redacted", "json-code" not in quoted, quoted)
+    check("quoted authorization_code redacted", "json-auth-code" not in quoted, quoted)
+
+    state.refresh_status = 200
+    state.refresh_body = None
+
+
+def test_pool_bypass_keeps_account_proxy():
+    from unittest import mock
+    import wb_accounts
+    import wb_upstream_pool
+
+    seen = {}
+
+    class FakeResponse(object):
+        status = 200
+
+        def read(self, size=None):
+            return b'{"ok": true}'
+
+        def close(self):
+            pass
+
+    class FakeOpener(object):
+        def open(self, req, timeout=None):
+            seen["url"] = req.full_url
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+    def fake_for_proxy(proxy):
+        seen["proxy"] = proxy
+        return FakeOpener()
+
+    proxy = "http://127.0.0.1:7899"
+    with mock.patch.object(
+        wb_upstream_pool,
+        "urlopen",
+        side_effect=wb_upstream_pool.PoolBypass("forced"),
+    ):
+        with mock.patch.object(
+            wb_accounts, "opener_for_proxy", side_effect=fake_for_proxy
+        ):
+            payload = R._request_json(
+                "POST",
+                R.BASE_URL + R.EP_REFRESH,
+                {"Content-Type": "application/json"},
+                b"{}",
+                proxy=proxy,
+            )
+    check("bypass returns parsed json", payload == {"ok": True}, payload)
+    check("bypass retains account proxy", seen.get("proxy") == proxy, seen)
+    check(
+        "bypass opens the same url",
+        seen.get("url") == R.BASE_URL + R.EP_REFRESH,
+        seen,
+    )
+
+
+def test_health_cache_tracks_config_and_accounts():
+    reset()
+    first = R.health(R.load_config(ACCOUNTS))
+    check(
+        "health starts empty",
+        first["accounts"] == 0 and first["healthy"] == 0,
+        first,
+    )
+    check("health starts unconfigured", first["configured"] is False)
+
+    R.import_auth(
+        R.load_config(ACCOUNTS),
+        {
+            "access_token": make_jwt("pu-health", 3600),
+            "refresh_token": "rt-health",
+            "office_org_name": "Health Test",
+        },
+    )
+    second = R.health(R.load_config(ACCOUNTS))
+    check("health sees the imported account", second["accounts"] == 1, second)
+    check("health sees enabled config", second["configured"] is True, second)
+
+    pool = R.pool_for(ACCOUNTS)
+    pool.disable("pu-health", "manual")
+    third = R.health(R.load_config(ACCOUNTS))
+    check(
+        "health sees disabled state",
+        third["healthy"] == 0 and third["accounts"] == 1,
+        third,
+    )
+    check("health cache key changed with state", second != third)
+
+
 try:
     srv, base, state = start_server()
     R.BASE_URL = base
@@ -542,6 +727,11 @@ try:
     print("== views ==")
     test_view_never_contains_secret()
     test_terminal_error_marks_disabled_and_soft_marks_cooldown()
+    test_health_cache_tracks_config_and_accounts()
+    print("== redaction ==")
+    test_upstream_error_redacts_known_secrets()
+    print("== proxy fallback ==")
+    test_pool_bypass_keeps_account_proxy()
 finally:
     stop_server(srv)
 

@@ -16,6 +16,7 @@ Python 3.9+ 标准库。所有出站 HTTP 都走 `wb_upstream_pool.urlopen`，�
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -108,7 +109,9 @@ class RaccoonUpstreamError(RaccoonError):
 def _positive_float(value, default, low, high):
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+    if not math.isfinite(out):
         return float(default)
     return min(max(out, float(low)), float(high))
 
@@ -116,7 +119,7 @@ def _positive_float(value, default, low, high):
 def _positive_int(value, default, low, high):
     try:
         out = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return int(default)
     return min(max(out, int(low)), int(high))
 
@@ -182,7 +185,11 @@ def save_config(accounts_dir, patch):
         )
 
         data = wb_settings.load(accounts_dir)
-        data["raccoon"] = {key: merged[key] for key in DEFAULTS}
+        stored = data.get("raccoon")
+        section = dict(stored) if isinstance(stored, dict) else {}
+        for key in DEFAULTS:
+            section[key] = merged[key]
+        data["raccoon"] = section
         wb_settings.save(accounts_dir, data)
         return load_config(accounts_dir)
 
@@ -422,17 +429,49 @@ def delete_auth(accounts_dir, uid):
 # ---------------------------------------------------------------------------
 
 
-def _redact(text):
-    """Defensive redaction so upstream error text cannot leak credentials."""
+_SECRET_AUTH_FIELDS = ("access_token", "refresh_token", "authorization_code", "code")
+
+
+def _auth_secrets(auth):
+    """Known credentials on an auth document, longest first for replacement."""
+    if not isinstance(auth, dict):
+        return []
+    out = []
+    for key in _SECRET_AUTH_FIELDS:
+        value = _clean_token(auth.get(key))
+        if value and value not in out:
+            out.append(value)
+    out.sort(key=len, reverse=True)
+    return out
+
+
+def _redact(text, secrets=None):
+    """Remove known tokens and credential-shaped labels from upstream text."""
     text = str(text or "")
+    # Literal replacement first: an opaque token has no recognizable shape, so
+    # only the caller's known values can identify it.
+    ordered = sorted(
+        {str(item) for item in (secrets or ()) if str(item)},
+        key=len,
+        reverse=True,
+    )
+    for secret in ordered:
+        text = text.replace(secret, "<redacted>")
     text = re.sub(r"(?i)bearer\s+[^\s,;\"']+", "Bearer <redacted>", text)
+    # Query/form style and unquoted JSON-ish pairs: code=..., access_token=...
     text = re.sub(
-        r"(?i)(access_token|refresh_token|authorization)(\s*[=:]\s*)"
-        r"[^\s,;\"'}]+",
+        r"(?i)\b(authorization_code|access_token|refresh_token|authorization|code)"
+        r"(\s*[=:]\s*)([^\s,;\"'}&]+)",
         r"\1\2<redacted>",
         text,
     )
-    # An error body that echoes a token still must not reach an admin response.
+    # Quoted JSON keys: {"code": "...", "authorization_code": "..."}.
+    text = re.sub(
+        r"(?i)([\"'](?:authorization_code|access_token|refresh_token|"
+        r"authorization|code)[\"']\s*:\s*)([\"'])([^\"']*)\2",
+        r"\1\2<redacted>\2",
+        text,
+    )
     text = re.sub(
         r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*",
         "<redacted-jwt>",
@@ -441,7 +480,7 @@ def _redact(text):
     return text
 
 
-def _error_text(raw):
+def _error_text(raw, secrets=None):
     try:
         parsed = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
@@ -465,11 +504,11 @@ def _error_text(raw):
                 message = "error_code=%s" % code
     if not message:
         message = raw.decode("utf-8", "replace")[:500]
-    return _redact(message)[:500]
+    return _redact(message, secrets)[:500]
 
 
-def _raise_for_status(status, raw):
-    message = _error_text(raw)
+def _raise_for_status(status, raw, secrets=None):
+    message = _error_text(raw, secrets)
     if status in (401, 403):
         raise RaccoonAuthError(message, status=status)
     if status == 400:
@@ -487,7 +526,9 @@ def _raise_for_status(status, raw):
     )
 
 
-def _request_json(method, url, headers=None, body=None, timeout=30.0, proxy=""):
+def _request_json(
+    method, url, headers=None, body=None, timeout=30.0, proxy="", secrets=None
+):
     """One pooled JSON request; maps transport/HTTP failures to Raccoon*."""
     merged = {"Accept": "application/json"}
     merged.update(headers or {})
@@ -496,7 +537,16 @@ def _request_json(method, url, headers=None, body=None, timeout=30.0, proxy=""):
         try:
             resp = wb_upstream_pool.urlopen(req, timeout=timeout, proxy=proxy)
         except wb_upstream_pool.PoolBypass:
-            resp = urllib.request.urlopen(req, timeout=timeout)
+            # A bypass must keep the same exit IP as the pooled path. Import
+            # lazily: wb_accounts is a large module and only this rare fallback
+            # needs it.
+            import wb_accounts
+
+            opener = wb_accounts.opener_for_proxy(proxy)
+            if opener is None:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+            else:
+                resp = opener.open(req, timeout=timeout)
         try:
             status = getattr(resp, "status", 200)
             raw = resp.read(ERROR_BODY_MAX)
@@ -510,7 +560,7 @@ def _request_json(method, url, headers=None, body=None, timeout=30.0, proxy=""):
             raw = exc.read(ERROR_BODY_MAX)
         except Exception:
             raw = b""
-        _raise_for_status(exc.code, raw)
+        _raise_for_status(exc.code, raw, secrets)
         return {}
     except (
         urllib.error.URLError,
@@ -520,9 +570,11 @@ def _request_json(method, url, headers=None, body=None, timeout=30.0, proxy=""):
         OSError,
     ) as exc:
         reason = getattr(exc, "reason", None) or exc
-        raise RaccoonUnavailable("cannot reach Raccoon: %s" % (reason,))
+        raise RaccoonUnavailable(
+            _redact("cannot reach Raccoon: %s" % (reason,), secrets)
+        )
     if status < 200 or status >= 300:
-        _raise_for_status(status, raw)
+        _raise_for_status(status, raw, secrets)
     try:
         parsed = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
@@ -555,14 +607,21 @@ def refresh_auth(auth, timeout=30.0, proxy=""):
     if access:
         headers["Authorization"] = "Bearer " + access
     body = json.dumps({"refresh_token": refresh_token}).encode("utf-8")
+    secrets = [access, refresh_token]
     try:
         payload = _request_json(
-            "POST", BASE_URL + EP_REFRESH, headers, body, timeout=timeout, proxy=proxy
+            "POST",
+            BASE_URL + EP_REFRESH,
+            headers,
+            body,
+            timeout=timeout,
+            proxy=proxy,
+            secrets=secrets,
         )
     except RaccoonBadRequest as exc:
         # The refresh endpoint reports an invalid grant as 400; it is an auth
         # failure for the account, not a client request error.
-        raise RaccoonAuthError(str(exc), status=exc.status)
+        raise RaccoonAuthError(_redact(str(exc), secrets), status=exc.status)
     root = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     new_access = _clean_token(root.get("access_token"))
     if not new_access:
@@ -619,7 +678,10 @@ def ensure_token(acct, force=False):
         try:
             data = refresh_auth(acct.auth, timeout=timeout, proxy=acct.proxy)
         except RaccoonAuthError as exc:
-            acct.pool.note_error(acct, str(exc), terminal=True)
+            message = _redact(str(exc), _auth_secrets(acct.auth))
+            if message != str(exc):
+                exc.args = (message,)
+            acct.pool.note_error(acct, message, terminal=True)
             raise
         except RaccoonError:
             if force or acct.expired():
@@ -732,7 +794,9 @@ class RaccoonAccount(object):
     def view(self):
         now = time.time()
         cooling = (not self.disabled) and now < self.cool_until
-        reason = self.disabled_reason or self.last_error
+        secrets = _auth_secrets(self.auth)
+        reason = _redact(self.disabled_reason or self.last_error, secrets)
+        last_error = _redact(self.last_error, secrets)
         return {
             "name": self.uid,
             "uid": self.uid,
@@ -747,7 +811,7 @@ class RaccoonAccount(object):
             ),
             "err_count": self.err_count,
             "reason": reason,
-            "last_error": self.last_error,
+            "last_error": last_error,
             "active_concurrent": self.active_concurrent,
             "max_concurrent": self.max_concurrent,
             "token_remaining": _fmt_duration(self.token_remaining()),
@@ -1081,7 +1145,9 @@ class RaccoonPool(object):
     def note_error(self, acct, message, soft=False, terminal=False):
         if acct is None:
             return
-        acct.last_error = str(message or "")[:200]
+        acct.last_error = _redact(
+            str(message or ""), _auth_secrets(acct.auth)
+        )[:200]
         if terminal:
             acct.disabled = True
             acct.disabled_reason = acct.last_error
@@ -1179,16 +1245,29 @@ def health(config, force=False):
         config = load_config(
             config.get("accounts_dir") if isinstance(config, dict) else "."
         )
+    pool = pool_for(config["accounts_dir"])
+    stats = pool.stats()
     now = time.time()
+    key = (
+        os.path.abspath(str(config["accounts_dir"])),
+        BASE_URL,
+        bool(config.get("enabled")),
+        config.get("timeout_seconds"),
+        config.get("stream_timeout_seconds"),
+        config.get("models_ttl_seconds"),
+        config.get("max_concurrent"),
+        stats["total"],
+        stats["healthy"],
+        stats["disabled"],
+        stats["cooling"],
+    )
     with _health_lock:
         if (
             not force
-            and _health_cache.get("base") == BASE_URL
+            and _health_cache.get("key") == key
             and now - _health_cache["at"] < 5.0
         ):
             return dict(_health_cache["value"])
-    pool = pool_for(config["accounts_dir"])
-    stats = pool.stats()
     value = {
         "ok": bool(config.get("enabled")),
         "configured": bool(config.get("enabled")),
@@ -1199,10 +1278,10 @@ def health(config, force=False):
         "models": 0,
     }
     with _health_lock:
-        _health_cache.update({"at": now, "base": BASE_URL, "value": value})
+        _health_cache.update({"at": now, "key": key, "value": value})
     return dict(value)
 
 
 def invalidate_health():
     with _health_lock:
-        _health_cache["at"] = 0.0
+        _health_cache.update({"at": 0.0, "key": None, "value": {}})
