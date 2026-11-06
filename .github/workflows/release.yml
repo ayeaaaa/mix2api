@@ -517,7 +517,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-bundle
+          # The writer verifies SHA256SUMS against every asset it uploads, so
+          # the bundle must carry the assets themselves, not just the manifest.
+          # portable/openwrt artifacts are also downloaded by the writer; the
+          # duplicate names merge cleanly and keep this job's source ZIP and
+          # checksum list in one place.
           path: |
+            dist/*.zip
+            dist/*.ipk
+            dist/*.apk
             dist/SHA256SUMS
             dist/release-body.md
           if-no-files-found: error
