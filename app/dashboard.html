@@ -22,15 +22,22 @@ const PANEL_REMEMBER_KEY = 'wb-proxy-panel-remember';
   try { panelToken = panelToken || localStorage.getItem(PANEL_STORE) || ''; } catch(e){}
   if(panelToken) document.documentElement.classList.add('wb-panel-session');
 })();
-/* 新面板默认；/classic 保留旧壳，方便回退。 */
+/* 新导航使用显式 URL 参数启用，默认保留用户现有布局。 */
 (function(){
   var next = true;
   try {
-    var p = (typeof location !== 'undefined' && location.pathname) || '';
-    if(p === '/classic' || p === '/classic/') next = false;
-    var ui = new URLSearchParams(location.search).get('ui');
-    if(ui === 'classic') next = false;
-    if(ui === 'next') next = true;
+    var path = (typeof location !== 'undefined' && location.pathname) || '';
+    var p = new URLSearchParams(location.search).get('ui');
+    var pref = '';
+    if(path === '/classic' || path === '/classic/') next = false;
+    try { pref = localStorage.getItem('wb-ui-mode') || ''; } catch(e){}
+    if(p === 'classic' || p === 'legacy' || p === '0'){
+      next = false;
+    } else if(p === 'next' || p === '1'){
+      next = true;
+    } else if(pref === 'classic' || pref === '0'){
+      next = false;
+    }
   } catch(e){}
   if(typeof window !== 'undefined') window.__NEXT_UI__ = next;
   if(next && typeof document !== 'undefined' && document.documentElement) document.documentElement.setAttribute('data-ui', 'next');
@@ -2445,6 +2452,12 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。': 'When a Global account checks in, besides the light desktop-identity chat it also runs one web-channel session. On by default.',
     '在家待命中': 'At home, idle',
     '在浏览器里打开下方链接并完成登录授权': 'Open the link below in a browser and finish the sign-in authorization',
+    '登录出口代理（申请授权链接与等待回调都走它）：': 'Login exit proxy (used to request the authorization link and to wait for the callback):',
+    '直连（不走代理槽）': 'Direct (no proxy slot)',
+    '自动（随机挑选未使用的代理槽）': 'Auto (a random unused proxy slot)',
+    '本次登录出口：': 'Exit for this login: ',
+    '本次登录直连': 'This login goes direct',
+    '没有空闲的代理槽，本次登录直连': 'No free proxy slot; this login goes direct',
     '域名': 'Domain',
     '备注名称': 'Label',
     '复制': 'Copy',
@@ -3268,6 +3281,8 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '账号当日消耗的 token 达到该值后暂停接单，请求自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示不限（不限额）；与「保留积分」各自独立，任一命中都会暂停接单。': 'Once the token use of an account for the day reaches this, it stops taking orders and requests switch to other accounts; it recovers after local midnight. 0 means no limit; it is independent of Reserved credits, and either one pauses order taking.',
     '账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示关闭（默认）。': 'Once the credit spend of an account for the day reaches this, only free models are allowed (those marked x0.00 in the catalog) and models that cost credits switch to other accounts; it recovers after local midnight. 0 turns it off (default).',
     '账号，之后相关请求都会走该账号': 'account; requests will then go through it',
+    '定时自动打卡': 'scheduled check-in',
+    '关闭后调度器不再自动打卡（定时、启动补跑、立即巡检保活都跳过）；账号上的手动打卡不受影响': 'When off, the scheduler no longer runs the check-in (scheduled slots, startup catch-up and the keep-alive check-now all skip it); the manual check-in on each account still works',
     '走网页通道': 'use the web channel',
     '证书失败改走活跃上报': 'report activity when the certificate fails',
     '活跃使用的模型': 'Model for the daily activity',
@@ -3619,6 +3634,12 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     "导入密钥": "匯入金鑰",
     "国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。": "國際版帳號每日打卡時，除桌面端身分的輕量對話外，再走一次網頁通道的會話。預設開啟。",
     "在浏览器里打开下方链接并完成登录授权": "在瀏覽器裡開啟下方連結並完成登入授權",
+    "登录出口代理（申请授权链接与等待回调都走它）：": "登入出口代理（申請授權連結與等待回呼都走它）：",
+    "直连（不走代理槽）": "直連（不走代理槽）",
+    "自动（随机挑选未使用的代理槽）": "自動（隨機挑選未使用的代理槽）",
+    "本次登录出口：": "本次登入出口：",
+    "本次登录直连": "本次登入直連",
+    "没有空闲的代理槽，本次登录直连": "沒有空閒的代理槽，本次登入直連",
     "备注名称": "備註名稱",
     "复制": "複製",
     "复制失败:": "複製失敗:",
@@ -3676,6 +3697,8 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     "已启用：429 时自动切换出站身份": "已啟用：429 時自動切換出站身份",
     "已启用：余额低于": "已啟用：餘額低於",
     "已启用：国际版打卡走网页通道": "已啟用：國際版打卡走網頁通道",
+    "定时自动打卡": "定時自動打卡",
+    "关闭后调度器不再自动打卡（定时、启动补跑、立即巡检保活都跳过）；账号上的手动打卡不受影响": "關閉後排程器不再自動打卡（定時、啟動補跑、立即巡檢保活都跳過）；帳號上的手動打卡不受影響",
     "证书失败改走活跃上报": "憑證失敗改走活躍上報",
     "失败重试": "失敗重試",
     "最多尝试次数": "最多嘗試次數",
@@ -4287,9 +4310,11 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     [/有 (\d+) 把 Key 没有绑定出口/, function(m, n){ return n + ' keys have no exit bound'; }],
     [/共 (\d+) 条记录/, function(m, n){ return n + ' records'; }],
     [/第 (\d+) \/ (\d+) 页 · 共 ([\d,]+) 条记录/, function(m, a, b, c){ return 'Page ' + a + ' / ' + b + ' · ' + c + ' records'; }],
+    [/第 (\d+) \/ (\d+) 页 · 共 ([\d,]+) 个账号/, function(m, a, b, c){ return 'Page ' + a + ' / ' + b + ' · ' + c + ' accounts'; }],
     [/共 (\d+) 个，启用 (\d+) 个/, function(m, a, b){ return a + ' total, ' + b + ' enabled'; }],
     [/含失败共 ([\d,]+) 次/, function(m, n){ return n + ' calls including failures'; }],
-    [/失败 ([\d,]+) 次/, function(m, n){ return n + ' failed'; }]
+    [/失败 ([\d,]+) 次/, function(m, n){ return n + ' failed'; }],
+    [/已绑定 (\d+) 个账号/, function(m, n){ return n + ' accounts bound'; }]
   ];
   var KEYS = Object.keys(DICT);
   KEYS.sort(function(a, b){ return b.length - a.length; });
@@ -5093,7 +5118,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           <button type="button" class="theme-option" data-theme-style-option="miuix" onclick="selectStyle('miuix', event)" role="menuitem">MiuiX</button>
         </div>
         <div class="theme-sep" role="separator"></div>
-        <button type="button" class="theme-option" id="nextLayoutOption" onclick="toggleNextLayout()" role="menuitem">新导航布局</button>
+        <button type="button" class="theme-option" id="nextLayoutOption" onclick="toggleNextLayout()" role="menuitem">返回传统布局</button>
         <button type="button" class="theme-option" id="consoleLayoutOption" onclick="toggleConsoleLayout(event)" role="menuitemcheckbox" aria-checked="false">控制台布局</button>
         <div class="theme-sep" role="separator"></div>
         <button type="button" class="theme-option" id="themeOptLight" onclick="selectTheme('light', event)" role="menuitem">
@@ -5255,7 +5280,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   <nav class="main-nav">
     <div class="console-nav-group">
       <div class="console-nav-caption">工作台</div>
-      <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')"><span id="navGatewayLabel">网关</span></button>
+      <button class="main-nav-btn active" id="btnNavGateway" aria-current="page" onclick="switchMainTab('gateway')"><span id="navGatewayLabel">网关</span></button>
     </div>
     <div class="console-nav-group">
       <div class="console-nav-caption">资源管理</div>
@@ -5562,9 +5587,12 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <select id="accountStatusFilter" aria-label="账号状态" onchange="ACCOUNT_FILTERS.status=this.value;renderAccounts()">
         <option value="">全部状态</option><option value="healthy">可用</option><option value="attention">需关注</option><option value="disabled">本地停用</option>
       </select>
+      <select id="accountGroupFilter" aria-label="账号分组" onchange="ACCOUNT_FILTERS.group=this.value;renderAccounts()">
+        <option value="">全部分组</option>
+      </select>
       <span class="console-filter-count" id="accountFilterCount">全部账号</span>
       <button type="button" class="sec mini" onclick="clearAccountFilters()">清除筛选</button>
-      <span style="font-size:11px;color:var(--dim)">筛选仅影响显示，批量操作仍按原账号范围执行</span>
+      <span style="font-size:11px;color:var(--dim)">选中分组后，刷新、测试、补积分和启停都只作用于该分组</span>
     </div>
     <div class="toolbar">
     <button onclick="openLoginModal()">添加</button>
@@ -5601,6 +5629,8 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     <button class="sec" id="btnProductAll" onclick="cycleAllProducts(this)" title="把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI">一键切换所有出站身份：<span id="productAllLabel">WB</span></button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
+    <button class="sec" onclick="setCurrentGroup(true, this)">当前分组启用</button>
+    <button class="sec" onclick="setCurrentGroup(false, this)">当前分组停用</button>
     </div>
   </div>
     <div id="accounts"></div>
@@ -6233,6 +6263,27 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         <button onclick="addApiKeyRow()">+ 添加 API Key</button>
       </div>
       <div id="keyList"></div>
+      <details id="apiKeyExamples" style="margin-top:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:10px 12px">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--fg)">配置示例（Base URL / cURL / 各协议端点）</summary>
+        <div style="font-size:12px;color:var(--dim);margin-top:8px">
+          Base URL 固定为当前面板地址加 <code>/v1</code>；鉴权统一使用 <code>Authorization: Bearer &lt;API_KEY&gt;</code>。
+          <div id="apiKeyExampleBase" class="mono" style="margin:6px 0;color:var(--fg);word-break:break-all"></div>
+          <pre id="apiKeyExampleCurl" class="mono" style="white-space:pre-wrap;word-break:break-all;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--fg);font-size:11px;line-height:1.55"></pre>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="sec mini" type="button" onclick="copyApiKeyExample('base', this)">复制 Base URL</button>
+            <button class="sec mini" type="button" onclick="copyApiKeyExample('curl', this)">复制 cURL</button>
+          </div>
+          <div style="margin-top:10px;line-height:1.75">
+            <div><code>GET /v1/models</code> · 模型清单</div>
+            <div><code>POST /v1/chat/completions</code> · OpenAI Chat Completions</div>
+            <div><code>POST /v1/responses</code> · OpenAI Responses</div>
+            <div><code>POST /v1/messages</code> · Anthropic Messages（需先在「智能体接入」中开启）</div>
+          </div>
+          <div style="font-size:11px;color:var(--dim);margin-top:8px">
+            LAN 模式下把 Base URL 换成其他设备可访问的网关地址，端口与路径保持不变。
+          </div>
+        </div>
+      </details>
       <!-- 已删除的 Key 只留名字和日期：密钥已抹掉，所以这里没有「复制」。
            历史用量按 id 记账，删掉这一行会让那些请求变成「未知 key」。 -->
       <div id="deletedKeySection"></div>
@@ -6660,6 +6711,11 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px" title="关闭后调度器不再自动打卡（定时、启动补跑、立即巡检保活都跳过）；账号上的手动打卡不受影响">
+              <input id="setDailyActivity" type="checkbox" checked style="width:16px;height:16px">
+              定时自动打卡
+              <em id="setDailyActivityState" style="font-style:normal;font-size:12px;color:var(--dim)"></em>
+            </label>
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
               <input id="setDailyChatWeb" type="checkbox" style="width:16px;height:16px">
               走网页通道
@@ -6918,6 +6974,27 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           </div>
         </div>
       </section>
+      <section data-cat="stability">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">风控连坐暂停保护 <em id="setRestrictionHoldState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              当上游检测到异常行为（403 / code 11140）时，为防同一设备或 IP 下其他账号连坐封禁，网关自动对该区域暂停派发。默认 1800 秒（30 分钟），填 0 可彻底关闭该熔断。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
+              暂停时长（秒，0 为关闭）
+              <input id="setRestrictionHoldSeconds" type="number" min="0" max="604800" step="1" style="width:130px" placeholder="1800">
+            </label>
+            <button onclick="saveRestrictionHold(this)">保存时长</button>
+            <button class="btn-warn" onclick="resetRestrictionHold(this)" title="立即清除正在生效的暂停倒计时">立即解除暂停</button>
+          </div>
+        </div>
+        <div id="restrictionHoldAlert" style="display:none;padding:10px 14px;background:var(--card-bg, #1e1e24);border:1px solid var(--accent, #e5a00d);border-radius:6px;font-size:13px;color:var(--accent, #e5a00d);margin-top:8px">
+          ⚠️ <span id="restrictionHoldDetails">当前处于风控连坐暂停中</span>。若需立即继续请求，可点击上方「立即解除暂停」。
+        </div>
+      </section>
 
       <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -7114,6 +7191,19 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         </div>
         <div style="margin-top:10px">
           <button onclick="saveUpdateCheckEnabled(this)">保存</button>
+        </div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">检查更新使用的出口</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="setUpdateProxySlot"
+                    style="min-width:220px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+              <option value="">直连（不使用代理槽）</option>
+            </select>
+            <button onclick="saveUpdateProxySlot(this)">保存</button>
+          </div>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px">
+            仅影响 GitHub 更新检查，不会改变账号请求或媒体请求的出口。代理槽停用或删除后自动回退直连。
+          </div>
         </div>
         <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">保留历史版本备份</div>
@@ -7413,6 +7503,13 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           </label>
         </div>
       </div>
+      <div id="loginProxyBox" style="display:none;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600">登录出口代理（申请授权链接与等待回调都走它）：</div>
+        <select id="loginProxySlot" onchange="restartLogin()" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);font-size:13px">
+          <option value="">直连（不走代理槽）</option>
+        </select>
+        <div class="hint" id="loginProxyHint" style="margin-top:6px"></div>
+      </div>
       <div class="step" id="step1"><div class="n">1</div><div class="t" id="step1Text">正在申请授权登录链接…</div></div>
       <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下方链接并完成登录授权</div></div>
       <div id="loginLinkBox"></div>
@@ -7477,6 +7574,11 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         选择一个账号 JSON 文件。支持本网关导出的文件、账号数组、单个账号对象，
         以及桌面客户端的 <code>{"account":…,"auth":…}</code> 格式。
       </p>
+      <div class="field" style="margin-bottom:12px">
+        <label for="importGroup">导入到分组（可选）</label>
+        <input id="importGroup" type="text" maxlength="64" autocomplete="off"
+               placeholder="例如：Team A；留空则使用文件里的分组" style="width:100%">
+      </div>
       <div id="importBody"><p class="hint">尚未选择文件。</p></div>
     </div>
     <div class="modal-ft">
@@ -7682,8 +7784,35 @@ function closeLogin(){
   if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
 }
 
-function openLoginModal(targetRealm){
+// 登录出口代理下拉：没有启用的代理槽时整块隐藏，登录与以前一样直连。
+// 默认选「直连」；「自动」(value=auto) 由后端随机挑一个没绑定、没被其他登录占着的槽。
+async function loadLoginProxyOptions(){
+  const sel = document.getElementById("loginProxySlot");
+  const box = document.getElementById("loginProxyBox");
+  if(!sel) return;
+  const keep = sel.value || "";
+  try{
+    const r = await getJSON("/proxy/slots");
+    const slots = ((r && r.slots) || []).filter(s => s.enabled !== false);
+    const opts = ['<option value="">直连（不走代理槽）</option>'];
+    if(slots.length) opts.push('<option value="auto">自动（随机挑选未使用的代理槽）</option>');
+    for(const s of slots){
+      const label = (s.label || s.name || s.id) + (s.ip ? " · " + s.ip : "") + (s.bound ? " · 已绑定 " + s.bound + " 个账号" : "");
+      opts.push('<option value="' + esc(s.id) + '">' + esc(label) + '</option>');
+    }
+    sel.innerHTML = opts.join("");
+    if(keep === "auto" && slots.length) sel.value = "auto";
+    else if(keep && slots.some(x => x.id === keep)) sel.value = keep;
+    if(box) box.style.display = slots.length ? "" : "none";
+  }catch(e){
+    console.warn("loadLoginProxyOptions failed", e);
+  }
+}
+
+async function openLoginModal(targetRealm){
   openLogin();
+  // 先刷新下拉再发起登录：上次选的槽若已删除/停用，这里会回落到「直连」。
+  await loadLoginProxyOptions();
   const realm = targetRealm || window.VIEW_REALM || "intl";
   const isCn = (realm === "cn");
   const rCn = document.getElementById("radioCn");
@@ -7725,8 +7854,14 @@ async function triggerLoginForSelectedRealm(){
   if(s1Text) s1Text.textContent = isCn ? "正在向 copilot.tencent.com (国内版) 申请授权..." : "正在向 www.workbuddy.ai (国际版) 申请授权...";
 
   try{
-    const r = await postJSON("/accounts/login/start", {platform: "CLI", realm: realm});
+    const proxySel = document.getElementById("loginProxySlot");
+    const proxySlot = proxySel ? proxySel.value : "";
+    const r = await postJSON("/accounts/login/start", {platform: "CLI", realm: realm, proxySlot: proxySlot});
     loginState = r.state;
+    const ph = document.getElementById("loginProxyHint");
+    // r.proxy 只有 host:port（后端已去掉用户名密码）。
+    if(ph) ph.textContent = r.proxy ? ("本次登录出口：" + (r.proxySlot ? r.proxySlot + " · " : "") + r.proxy)
+      : (proxySlot === "auto" ? "没有空闲的代理槽，本次登录直连" : "本次登录直连");
     if(s1) s1.className = "step done";
     if(s2) s2.className = "step active";
     if(linkBox) linkBox.innerHTML =
@@ -9587,10 +9722,12 @@ function colKind(id, i, rows, nCols){
   return inferColKind(rows, i);
 }
 
-/* 按当前选中的列重排表体。 */
-function applyTableSort(id){
+/* 按当前选中的列重排表体。返回各列的类型（给账号表分页记下全量口径用）。 */
+function applyTableSort(id, rootEl){
   if(SORT_DENY_TABLES.has(id)) return;
-  const root = document.getElementById(id);
+  // rootEl：账号表分页时先在一个游离节点里把全部账号排好再切页（见 renderAccounts），
+  // 那张表不在文档里，按 id 取不到。
+  const root = rootEl || document.getElementById(id);
   const table = !root ? null
     : (root.tagName === 'TABLE' ? root : root.querySelector('table'));
   if(!table) return;
@@ -9613,7 +9750,12 @@ function applyTableSort(id){
   }
   const body = units.slice(pinN).map(u => u.row);
   const ths = Array.from(thead.querySelectorAll('th'));
-  const kinds = ths.map((th, i) => colKind(id, i, body, ths.length));
+  /* 账号表分页且有表头排序时，全量已在 renderAccounts 里排好、这一页只是切片：
+     页内只挂表头装饰、不重排，列类型沿用全量推断的那份——只看这 50 行推断，
+     某列这一页全是「—」就会被判成不可排，箭头被摘、顺序也可能跟全量对不上。 */
+  const fixedKinds = (id === 'accounts' && !rootEl) ? ACCT_FIXED_KINDS : null;
+  const kinds = (fixedKinds && fixedKinds.length === ths.length)
+    ? fixedKinds : ths.map((th, i) => colKind(id, i, body, ths.length));
   const st = SORT_STATE[id] || null;
   ths.forEach((th, i) => {
     const kind = kinds[i];
@@ -9652,7 +9794,7 @@ function applyTableSort(id){
         '<span class="' + cls + '" aria-hidden="true">' + want + '</span>');
     }
   });
-  if(!st || !kinds[st.col]) return;
+  if(fixedKinds || !st || !kinds[st.col]) return kinds;
   const kind = kinds[st.col];
   const dir = st.dir === 'asc' ? 1 : -1;
   const sorted = units.slice(pinN)
@@ -9676,6 +9818,7 @@ function applyTableSort(id){
     // appendChild 对已在册的子节点是「移动」，所以这一遍就把顺序定下来了。
     ordered.forEach(r => tbody.appendChild(r));
   }
+  return kinds;
 }
 
 /* 扫一遍页面上所有数据表，把排序接上。挂在每 5 秒那条轮询上，新加一张表只要带
@@ -9713,6 +9856,13 @@ function toggleTableSort(id, col){
   if(st && st.col === col) st.dir = st.dir === 'desc' ? 'asc' : 'desc';
   else SORT_STATE[id] = {col: col, dir: 'desc'};
   try { localStorage.setItem(SORT_KEY_PREFIX + id, col + ':' + SORT_STATE[id].dir); } catch(e) {}
+  // 账号表是分页的：只重排 DOM 只能排当前这一页。改成整表重画（全部账号先排序
+  // 再切页），并回到第一页。
+  if(id === 'accounts' && typeof renderAccounts === 'function'){
+    ACCT_PAGE = 1;
+    renderAccounts();
+    return;
+  }
   applyTableSort(id);
 }
 
@@ -10731,6 +10881,9 @@ function accountRow(a){
     +     (a.note
           ? '<span class="note-chip has" title="点击编辑备注" onclick="editAccountNote(&quot;' + uidAttr + '&quot;)">' + esc(a.note) + '</span>'
           : '<span class="note-chip" title="点击添加备注，比如「批量」/「自用」" onclick="editAccountNote(&quot;' + uidAttr + '&quot;)">+ 备注</span>')
+        + (a.group
+          ? '<span class="note-chip has" title="点击编辑账号分组" onclick="editAccountGroup(&quot;' + uidAttr + '&quot;)">' + esc(a.group) + '</span>'
+          : '<span class="note-chip" title="点击设置账号分组" onclick="editAccountGroup(&quot;' + uidAttr + '&quot;)">+ 分组</span>')
     // API Key 账号没有个人成长体系，签到/任务开关对它没有意义：上游一律拒绝，
     // 画出来只会让人以为点了能开。
     +     (a.apiKey ? ''
@@ -10851,10 +11004,11 @@ function accountIsHealthy(a){
     && !a.inCooldown && !a.breakerFor && !a.degradeFor
     && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
 }
-const ACCOUNT_FILTERS = {query: '', status: ''};
+const ACCOUNT_FILTERS = {query: '', status: '', group: ''};
 function accountMatchesFilters(a){
   const q = ACCOUNT_FILTERS.query.trim().toLowerCase();
   if(q && ![a.nickname, a.note, a.uid].some(v => String(v || '').toLowerCase().includes(q))) return false;
+  if(ACCOUNT_FILTERS.group && String(a.group || '') !== ACCOUNT_FILTERS.group) return false;
   if(ACCOUNT_FILTERS.status === 'disabled') return !a.enabled;
   const attention = !accountIsHealthy(a);
   if(ACCOUNT_FILTERS.status === 'healthy') return !attention;
@@ -10864,10 +11018,13 @@ function accountMatchesFilters(a){
 function clearAccountFilters(){
   ACCOUNT_FILTERS.query = '';
   ACCOUNT_FILTERS.status = '';
+  ACCOUNT_FILTERS.group = '';
   const q = document.getElementById('accountSearchFilter');
   const s = document.getElementById('accountStatusFilter');
+  const g = document.getElementById('accountGroupFilter');
   if(q) q.value = '';
   if(s) s.value = '';
+  if(g) g.value = '';
   renderAccounts();
 }
 
@@ -11137,6 +11294,60 @@ async function loadActivityBoard(showToast, more){
   }
 }
 
+// 账号表客户端分页（上百个号时整表重画是面板卡顿的主因之一）。排序在全部账号上
+// 做完再切页；页码跨轮询保留，账号变少时夹回最后一页，切换视图区域回第一页。
+const ACCT_PAGE_SIZE = 50;
+let ACCT_PAGE = 1;
+let ACCT_TOTAL_PAGES = 1;
+let ACCT_PAGE_REALM = null;
+let ACCT_PAGE_FILTER = null;
+// 账号表上次真正画进 DOM 的内容指纹（同最近请求表的 lastRecentFp）：轮询拿回来
+// 的数据没变就整段跳过，不重拼 HTML、不重排。
+let lastAccountsFp = null;
+// 分页 + 表头排序时，全量排序那一遍推断出的列类型；页内的 applyTableSort（含每 5
+// 秒的 applyAllTableSorts）照它挂表头、且不再重排。其余情况为 null，照常推断。
+let ACCT_FIXED_KINDS = null;
+function accountsRenderFp(){
+  // 行里用到的全部输入：账号本身、按账号用量、代理槽（出口下拉）、今日活动
+  // （今日活动列）、视图区域、页码、表头排序、筛选条件、本地日期（「今日」口径）。
+  // 筛选也进指纹：不靠「改筛选一定无参调用 renderAccounts()」这条约定兜底。
+  return [
+    window.VIEW_REALM || 'intl', ACCT_PAGE, JSON.stringify(SORT_STATE.accounts || null),
+    JSON.stringify(ACCOUNT_FILTERS),
+    new Date().toDateString(),
+    JSON.stringify(window.ACCOUNTS || []), JSON.stringify(USAGE_BY_ACCOUNT || {}),
+    JSON.stringify(PROXY_SLOTS || []), JSON.stringify(ACTIVITY_TODAY || null),
+  ].join('\u0002');
+}
+function changeAcctPage(delta){
+  const next = ACCT_PAGE + delta;
+  if(next < 1 || next > ACCT_TOTAL_PAGES) return;
+  ACCT_PAGE = next;
+  renderAccounts();
+}
+function gotoAcctPage(p){
+  if(p < 1 || p > ACCT_TOTAL_PAGES || p === ACCT_PAGE) return;
+  ACCT_PAGE = p;
+  renderAccounts();
+}
+function acctPagerHtml(total){
+  // 与最近请求表的分页条同一套样式（generatePageList + range-btn）。
+  const pages = generatePageList(ACCT_PAGE, ACCT_TOTAL_PAGES);
+  return '<div id="acctPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);flex-wrap:wrap;gap:8px">'
+    + '<div id="acctPageInfo">第 ' + ACCT_PAGE + ' / ' + ACCT_TOTAL_PAGES + ' 页 · 共 ' + fmt(total) + ' 个账号</div>'
+    + '<div style="display:inline-flex;gap:5px;align-items:center">'
+    +   '<button class="sec mini" id="btnAcctPrev" onclick="changeAcctPage(-1)"' + (ACCT_PAGE <= 1 ? ' disabled' : '') + '>上一页</button>'
+    +   '<div style="display:inline-flex;gap:3px;align-items:center">'
+    +     pages.map(p => p === '...'
+            ? '<span style="color:var(--dim);padding:0 3px">…</span>'
+            : '<button class="range-btn' + (p === ACCT_PAGE ? ' active' : '') + '" style="min-width:26px;padding:3px 6px;font-size:11px" onclick="gotoAcctPage(' + p + ')">' + p + '</button>').join('')
+    +   '</div>'
+    +   '<button class="sec mini" id="btnAcctNext" onclick="changeAcctPage(1)"' + (ACCT_PAGE >= ACCT_TOTAL_PAGES ? ' disabled' : '') + '>下一页</button>'
+    + '</div></div>';
+}
+// 第一个参数严格等于 true（只有轮询这么传）——数据与视图都没变就不重画表格。
+// 用户操作（启停、排序、翻页、切区域）一律无参调用，照常重画；只认 === true，
+// 免得被当回调时传进来的事件/数据对象误触发跳过。
 function renderAccounts(){
   // Same data source as the account cards, so the two views can never disagree.
   renderDisabled();
@@ -11144,6 +11355,20 @@ function renderAccounts(){
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "intl");
   let list = accountsInView();
+  const skipIfSame = arguments[0] === true;
+  if(ACCT_PAGE_REALM !== currentView){ ACCT_PAGE_REALM = currentView; ACCT_PAGE = 1; }
+  const filterKey = ACCOUNT_FILTERS.query + '\u0001' + ACCOUNT_FILTERS.status
+    + '\u0001' + ACCOUNT_FILTERS.group;
+  const groupSelect = document.getElementById('accountGroupFilter');
+  if(groupSelect){
+    const groups = Array.from(new Set(list.map(a => String(a.group || '')).filter(Boolean))).sort();
+    const current = ACCOUNT_FILTERS.group;
+    groupSelect.innerHTML = '<option value="">全部分组</option>'
+      + groups.map(g => '<option value="' + esc(g) + '">' + esc(g) + '</option>').join('');
+    groupSelect.value = groups.includes(current) ? current : '';
+    if(groupSelect.value !== current) ACCOUNT_FILTERS.group = '';
+  }
+  if(ACCT_PAGE_FILTER !== filterKey){ ACCT_PAGE_FILTER = filterKey; ACCT_PAGE = 1; }
   const unfilteredCount = list.length;
   list = list.filter(accountMatchesFilters);
   const filterCount = document.getElementById('accountFilterCount');
@@ -11163,6 +11388,12 @@ function renderAccounts(){
     .map(pair => pair[0]);
   const usable = list.filter(a => a.enabled).length;
   const viewName = currentView === 'cn' ? '国内版' : '国际版';
+  ACCT_TOTAL_PAGES = Math.max(1, Math.ceil(list.length / ACCT_PAGE_SIZE));
+  if(ACCT_PAGE > ACCT_TOTAL_PAGES) ACCT_PAGE = ACCT_TOTAL_PAGES;
+  if(ACCT_PAGE < 1) ACCT_PAGE = 1;
+  const fp = accountsRenderFp();
+  if(skipIfSame && fp === lastAccountsFp) return;
+  lastAccountsFp = fp;
   document.getElementById('acctCount').textContent =
     list.length ? ('（' + viewName + '共 ' + list.length + ' 个，启用 ' + usable + ' 个）') : '';
   if(!list.length){
@@ -11182,7 +11413,7 @@ function renderAccounts(){
       + '</div>';
     return;
   }
-  box.innerHTML = '<div class="table-wrap"><table class="data-cards account-cards"><thead><tr>'
+  const tableHtml = body => '<div class="table-wrap"><table class="data-cards account-cards"><thead><tr>'
     + '<th style="text-align:center;width:76px">版本</th>'
     + '<th style="text-align:left">账号</th>'
     + '<th style="text-align:center;width:84px">状态</th>'
@@ -11194,13 +11425,60 @@ function renderAccounts(){
     + '<th style="text-align:right;width:88px">总 token</th>'
     + '<th style="text-align:right;width:80px">缓存</th>'
     + '<th style="text-align:center;width:232px">操作</th>'
-    + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table></div>';
+    + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  const pager = ACCT_TOTAL_PAGES > 1 ? acctPagerHtml(list.length) : '';
+  const lo = (ACCT_PAGE - 1) * ACCT_PAGE_SIZE;
+  ACCT_FIXED_KINDS = null;
+  if(ACCT_TOTAL_PAGES > 1 && SORT_STATE.accounts){
+    // 有表头排序时按单元格排（applyTableSort 的口径），而它只认 DOM：先在游离
+    // 节点里画出全部账号排好序（不进文档、不触发布局），再把这一页的行搬进来。
+    const tmp = document.createElement('div');
+    tmp.innerHTML = tableHtml(list.map(accountRow).join(''));
+    ACCT_FIXED_KINDS = applyTableSort('accounts', tmp) || null;
+    const units = [];
+    Array.from(tmp.querySelector('tbody').children).forEach(r => {
+      if(units.length && r.classList.contains('cool-row')) units[units.length - 1].push(r);
+      else units.push([r]);
+    });
+    box.innerHTML = tableHtml('') + pager;
+    const tbody = box.querySelector('tbody');
+    units.slice(lo, lo + ACCT_PAGE_SIZE).forEach(u => u.forEach(r => tbody.appendChild(r)));
+  } else {
+    box.innerHTML = tableHtml(list.slice(lo, lo + ACCT_PAGE_SIZE).map(accountRow).join('')) + pager;
+  }
   // 表下不再堆两行说明图例（出站身份解释留在每行身份按钮组的悬停提示里，
   // 轮询/粘性说明挂到「账号列表」标题上），表格底部保持干净。
   applyTableSort('accounts');
 }
 
-async function loadAccounts(){
+// 自动补积分快照：每个账号每次页面加载最多补一次，只补缺积分的那几个号。原来
+// 只要有一个号缺积分就 POST 不带参数的 /accounts/credits——服务端把整池逐个
+// 刷一遍（上百个号要几分钟），刷不到的号（失效 / API Key）每 15 秒再触发一轮。
+// 手动「一键刷新积分」不走这里，行为不变。
+const CREDITS_AUTO_TRIED = new Set();
+let CREDITS_AUTO_BUSY = false;
+function autoFetchMissingCredits(){
+  if(CREDITS_AUTO_BUSY) return;
+  const uids = (window.ACCOUNTS || [])
+    .filter(a => a && a.uid && !a.credits && !CREDITS_AUTO_TRIED.has(a.uid))
+    .map(a => a.uid);
+  if(!uids.length) return;
+  uids.forEach(u => CREDITS_AUTO_TRIED.add(u));
+  CREDITS_AUTO_BUSY = true;
+  postJSON('/accounts/credits', {uids: uids}).then(r => {
+    // 撞上别人正在跑的全量刷（busy）：这一次什么都没刷，放回去下一轮再补。
+    if(r && r.busy){ uids.forEach(u => CREDITS_AUTO_TRIED.delete(u)); return; }
+    window.ACCOUNTS = r.accounts || ACCOUNTS;
+    renderAccounts();
+  }).catch(e => {
+    console.log('[wb] 自动补积分失败: ' + (e && e.message));
+  }).finally(() => { CREDITS_AUTO_BUSY = false; });
+}
+
+// poll=true 只给定时轮询 / 切页签 / 回到前台用：数据没变时不重画表格。操作之后
+// 的回读一律不带参数，整表重画。/accounts 始终 no-store：响应里有带凭据的代理
+// 地址，不能落浏览器磁盘缓存。
+async function loadAccounts(poll){
   try{
     const [acct, byAcct] = await Promise.all([
       getJSON('/accounts?realm=all'),
@@ -11212,27 +11490,24 @@ async function loadAccounts(){
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     await loadProxySlots();
-    renderAccounts();
+    renderAccounts(!!poll);
     renderConsoleAccountHealth(window.ACCOUNTS || []);
     updateUI();
     // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
     if(LAST_CREDIT_DATA) renderCreditHistory();
-    // Auto-fetch credits once if not present
-    if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
-      postJSON('/accounts/credits', {}).then(r => {
-        window.ACCOUNTS = r.accounts || ACCOUNTS;
-        renderAccounts();
-      }).catch(()=>{});
-    }
+    autoFetchMissingCredits();
   }catch(e){ toast('账号加载失败: ' + e.message); }
 }
 
 async function fetchCredits(btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
   const currentView = (window.VIEW_REALM || "intl");
-  const viewName = currentView === 'cn' ? '国内版' : '国际版';
+  const group = String(ACCOUNT_FILTERS.group || '').trim();
+  const viewName = group ? ('分组「' + group + '」') : (currentView === 'cn' ? '国内版' : '国际版');
   try{
-    const r = await postJSON('/accounts/credits', {realm: currentView});
+    const payload = {realm: currentView};
+    if(group) payload.group = group;
+    const r = await postJSON('/accounts/credits', payload);
     await loadAccounts();
     refresh();
     const count = (r.results || []).length;
@@ -11290,6 +11565,20 @@ async function editAccountNote(uid){
     toast(next.trim() ? '备注已保存' : '备注已清除', 'ok');
   }catch(e){
     toast('备注保存失败: ' + e.message, 'bad');
+  }
+}
+
+async function editAccountGroup(uid){
+  const cur = (window.ACCOUNTS || []).find(a => a.uid === uid);
+  const next = prompt('账号分组（留空取消分组；同组账号可批量启停）:',
+                      (cur && cur.group) || '');
+  if(next === null) return;
+  try{
+    await postJSON('/accounts/set', {uid: uid, group: next});
+    await loadAccounts();
+    toast(next.trim() ? '分组已保存' : '已取消分组', 'ok');
+  }catch(e){
+    toast('分组保存失败: ' + e.message, 'bad');
   }
 }
 
@@ -11507,7 +11796,9 @@ async function testAccounts(btn){
   if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
   openTestAll();
   try{
-    const r = await postJSON('/accounts/test', {realm: window.VIEW_REALM});
+    const payload = {realm: window.VIEW_REALM};
+    if(ACCOUNT_FILTERS.group) payload.group = ACCOUNT_FILTERS.group;
+    const r = await postJSON('/accounts/test', payload);
     renderTestAll(r);
     const s = r.summary || {};
     if(s.networkDown){
@@ -11580,7 +11871,9 @@ function renderTestAll(r){
 async function refreshAccounts(btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
   try{
-    const r = await postJSON('/accounts/refresh', {});
+    const payload = {};
+    if(ACCOUNT_FILTERS.group) payload.group = ACCOUNT_FILTERS.group;
+    const r = await postJSON('/accounts/refresh', payload);
     const results = r.results || [];
     const okc = results.filter(x=>x.ok).length;
     const bad = results.filter(x=>!x.ok);
@@ -11603,6 +11896,21 @@ async function setAll(enable, btn){
     toast(enable ? '已全部启用所有账号' : '已全部停用所有账号', 'ok');
   }catch(e){
     toast('批量操作失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+async function setCurrentGroup(enable, btn){
+  const group = String(ACCOUNT_FILTERS.group || '').trim();
+  if(!group){ toast('请先在账号筛选栏选择分组', 'warn'); return; }
+  if(!confirm((enable ? '启用' : '停用') + '分组「' + group + '」中的全部账号？')) return;
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/accounts/set-all', {enabled: enable, group: group});
+    await loadAccounts();
+    toast((enable ? '已启用' : '已停用') + '分组「' + group + '」', 'ok');
+  }catch(e){
+    toast('分组操作失败: ' + e.message, 'bad');
   }finally{
     if(btn) btn.disabled = false;
   }
@@ -11684,7 +11992,9 @@ function openImport(){
   const m = document.getElementById('importModal');
   const body = document.getElementById('importBody');
   const ow = document.getElementById('importOverwrite');
+  const group = document.getElementById('importGroup');
   if(ow) ow.checked = false;
+  if(group) group.value = String(ACCOUNT_FILTERS.group || '');
   if(body) body.innerHTML = '<p class="hint">正在打开文件…</p>';
   if(m) m.classList.add('show');
   // The picker is created per call so choosing the same file twice still fires.
@@ -11784,7 +12094,9 @@ async function readImportFile(file){
     importRows = rows;
 
     // Dry-run first so the user sees exactly what will happen.
-    const r = await postJSON('/accounts/import', {data: doc, dryRun: true});
+    const group = String((document.getElementById('importGroup') || {}).value || '').trim();
+    const r = await postJSON('/accounts/import',
+      {data: doc, dryRun: true, group: group});
     renderImportPreview(file.name, r.result || {}, rows.length);
   }catch(e){
     importRows = null;
@@ -11837,11 +12149,13 @@ async function commitImport(btn){
   if(!importRows) return;
   const ow = document.getElementById('importOverwrite');
   const overwrite = !!(ow && ow.checked);
+  const group = String((document.getElementById('importGroup') || {}).value || '').trim();
   if(overwrite && !confirm('将覆盖同 UID 的现有账号（含其凭证），确定继续？')) return;
 
   if(btn){ btn.disabled = true; btn.textContent = '导入中...'; }
   try{
-    const r = await postJSON('/accounts/import', {data: importRows, overwrite: overwrite});
+    const r = await postJSON('/accounts/import',
+      {data: importRows, overwrite: overwrite, group: group});
     const res = r.result || {};
     const n = (res.added || []).length + (res.updated || []).length;
     toast('导入完成：新增 ' + (res.added || []).length
@@ -13158,6 +13472,16 @@ async function bootPanel(){
 
 let PANEL_READY = false;
 let PANEL_TIMERS = [];
+// 显示账号数据（window.ACCOUNTS）、需要 15 秒轮询跟着刷的页签：网关页（出口卡片
+// 的账号数 / Key 数；合并模式下账号表也在这一页）、账号页、任务页（签到 /
+// 每日活跃卡片与未完成名单）。数据看板（积分历史的昵称）与设置页（Key 绑定、
+// 一键分配代理）只用名单本身，启动时那一次加载与操作后的回读就够了。
+function accountsTabActive(tab){
+  const t = tab || currentMainTab;
+  // 新导航（?ui=next）的总览页：账号区块合并在这一页，且健康卡总在这一页
+  return t === 'gateway' || t === 'accounts' || t === 'tasks' ||
+    (t === 'overview' && !!window.__NEXT_UI__);
+}
 let visHookInstalled = false;
 
 async function startDashboard(){
@@ -13202,7 +13526,8 @@ async function startDashboard(){
     // 一张表不必在它的 render 函数里再写一行，下一轮自己就接上了。
     setInterval(() => { if(!document.hidden){ refresh(); applyAllTableSorts(); } }, 5000),
     setInterval(() => { if(!document.hidden) loadSchedulerStatus(); }, 30000),
-    setInterval(() => { if(!document.hidden) loadAccounts(); }, 15000),
+    // 账号轮询只在显示账号数据的页签上跑（见 accountsTabActive）。
+    setInterval(() => { if(!document.hidden && accountsTabActive()) loadAccounts(true); }, 15000),
   ];
   if(!visHookInstalled){
     visHookInstalled = true;
@@ -13211,7 +13536,7 @@ async function startDashboard(){
     document.addEventListener('visibilitychange', () => {
       if(document.hidden || !PANEL_READY) return;
       refresh();
-      loadAccounts();
+      if(accountsTabActive()) loadAccounts(true);
       loadSchedulerStatus();
       if(currentMainTab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
       if(currentMainTab === 'logs' && logAutoRefresh) fetchNewLogs(false);
@@ -14090,14 +14415,19 @@ async function saveAccountsSeparateTab(btn){
 // Layout and color theme are independent; use the console layout by default.
 function toggleNextLayout(){
   const url = new URL(window.location.href);
-  if(window.__NEXT_UI__) url.searchParams.delete('ui');
-  else url.searchParams.set('ui', 'next');
+  if(window.__NEXT_UI__){
+    try { localStorage.setItem('wb-ui-mode', 'classic'); } catch(e){}
+    url.searchParams.set('ui', 'classic');
+  } else {
+    try { localStorage.removeItem('wb-ui-mode'); } catch(e){}
+    url.searchParams.delete('ui');
+  }
   url.searchParams.delete('tab');
   window.location.assign(url.toString());
 }
 function initConsoleLayout(){
   const nextOption = document.getElementById('nextLayoutOption');
-  if(nextOption && window.__NEXT_UI__) nextOption.textContent = '返回原布局';
+  if(nextOption) nextOption.textContent = window.__NEXT_UI__ ? '返回传统布局' : '新导航布局';
   const on = document.documentElement.getAttribute('data-console-layout') === 'on';
   const nav = document.querySelector('.main-nav');
   const sidebar = document.getElementById('consoleSidebar');
@@ -14221,25 +14551,44 @@ function initConsoleShell(){
 function syncConsoleContext(tab){
   const label = document.getElementById('consoleCurrentPage');
   if(label) label.textContent = CONSOLE_PAGE_LABELS[tab] || '控制台';
-  document.querySelectorAll('.console-nav-link').forEach(function(item){ item.classList.remove('active'); });
+  // 视觉高亮与 aria-current 必须由「同一个函数」一起清、一起设。
+  // 原先这里只摘 active 类、不管 aria-current，而 setConsoleNavActive() 又只给
+  // console-nav-link 设 aria-current —— 结果切到任务/媒体/看板/日志/智能体时，
+  // 屏幕上高亮的是新页，屏幕阅读器读到的仍是「运行概览」，两套状态分叉。
+  document.querySelectorAll('.console-nav-link').forEach(function(item){
+    item.classList.remove('active');
+    item.removeAttribute('aria-current');
+  });
 }
 // 内容入口（模型管理 / 请求记录）与「运行概览」是三个互斥视图：
 // 进入其中一个时，只显示它自己的区块，其余隐藏——不是在同一页里滚动定位。
 let CONSOLE_VIEW = 'overview';
 function setConsoleNavActive(linkId, label){
-  document.querySelectorAll('.console-sidebar .main-nav-btn.active').forEach(function(btn){
-    btn.classList.remove('active');
-    btn.removeAttribute('aria-current');
-  });
+  // 只清「网关页内部」的三个视图入口（运行概览 / 模型管理 / 请求记录）。
+  // 原先是 .console-sidebar .main-nav-btn.active —— 那条选择器会命中侧栏里
+  // 所有一级页面按钮（设置、日志…），而这个函数在每次网关视图重算时都会跑，
+  // 于是切到设置页后它刚被 switchMainTab() 点亮的 active 与 aria-current
+  // 会在几帧之内被这里摘掉，表现为「点设置没有任何高亮」。
+  document.querySelectorAll('#btnNavGateway.active, #btnNavModels.active, #btnNavRequests.active')
+    .forEach(function(btn){
+      btn.classList.remove('active');
+      btn.removeAttribute('aria-current');
+    });
   document.querySelectorAll('.console-nav-link').forEach(function(item){
     const on = !!linkId && item.id === linkId;
     item.classList.toggle('active', on);
     if(on) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   });
+  // 只有真的停在网关页时才把「当前页」还给网关按钮。
+  // 这个函数由 applyConsoleView() 在网关页内部切换 模型管理/请求记录/运行概览
+  // 三个视图时调用；如果不管当前 tab 就无条件点亮网关门，切到任务/媒体/看板
+  // 时它会和 switchMainTab() 刚设好的 aria-current 打架——屏幕上高亮的是新页，
+  // 读屏软件却仍报「网关」。
   if(!linkId){
     const gw = document.getElementById('btnNavGateway');
-    if(gw){ gw.classList.add('active'); gw.setAttribute('aria-current', 'page'); }
+    const onGateway = (typeof currentMainTab === 'undefined' || currentMainTab === 'gateway');
+    if(gw && onGateway){ gw.classList.add('active'); gw.setAttribute('aria-current', 'page'); }
   }
   const ctx = document.getElementById('consoleCurrentPage');
   if(ctx && label) ctx.textContent = label;
@@ -14492,6 +14841,18 @@ async function loadSettings(showToast){
         privateDataState.style.color = privateData === 'auto'
           ? 'var(--dim)' : 'var(--accent2)';
       }
+      const dailyActivity = data.daily_activity !== false;
+      const dailyActivityInput = document.getElementById('setDailyActivity');
+      if(dailyActivityInput){
+        dailyActivityInput.checked = dailyActivity;
+        // 只有真读到过 /settings 才允许保存时带上总开关（见 saveDailyChatModule）。
+        dailyActivityInput.dataset.loaded = '1';
+      }
+      const dailyActivityState = document.getElementById('setDailyActivityState');
+      if(dailyActivityState){
+        dailyActivityState.textContent = dailyActivity ? '(已启用)' : '(未启用)';
+        dailyActivityState.style.color = dailyActivity ? 'var(--accent2)' : 'var(--dim)';
+      }
       const dailyWeb = data.daily_chat_web !== false;
       const dailyWebInput = document.getElementById('setDailyChatWeb');
       if(dailyWebInput) dailyWebInput.checked = dailyWeb;
@@ -14633,6 +14994,35 @@ async function loadSettings(showToast){
         egressBackoffState.textContent = egressBackoff ? '(已启用)' : '(未启用)';
         egressBackoffState.style.color = egressBackoff ? 'var(--accent2)' : 'var(--dim)';
       }
+      const holdSec = typeof data.restriction_hold_seconds === 'number' ? data.restriction_hold_seconds : 1800;
+      const holdInput = document.getElementById('setRestrictionHoldSeconds');
+      if(holdInput) holdInput.value = holdSec;
+      const holdState = document.getElementById('setRestrictionHoldState');
+      if(holdState){
+        if(holdSec <= 0){
+          holdState.textContent = '(已关闭熔断)';
+          holdState.style.color = 'var(--dim)';
+        } else {
+          holdState.textContent = '(' + holdSec + 's 保护中)';
+          holdState.style.color = 'var(--accent2)';
+        }
+      }
+      const activeHolds = data.restriction_holds || {};
+      const holdAlert = document.getElementById('restrictionHoldAlert');
+      const holdDetails = document.getElementById('restrictionHoldDetails');
+      const activeRealms = Object.keys(activeHolds).filter(function(k){ return activeHolds[k] > 0; });
+      if(holdAlert && holdDetails){
+        if(activeRealms.length > 0){
+          const desc = activeRealms.map(function(r){
+            const name = r === 'international' ? '国际版' : (r === 'domestic' ? '国内版' : r);
+            return name + ' 剩余 ' + activeHolds[r] + ' 秒';
+          }).join('，');
+          holdDetails.textContent = '当前 ' + desc + ' 触发了连坐暂停';
+          holdAlert.style.display = 'block';
+        } else {
+          holdAlert.style.display = 'none';
+        }
+      }
       const accountConcurrent = (typeof data.account_max_concurrent === 'number') ? data.account_max_concurrent : 0;
       const accountConcurrentInput = document.getElementById('setAccountConcurrent');
       if(accountConcurrentInput) accountConcurrentInput.value = accountConcurrent;
@@ -14727,6 +15117,20 @@ async function loadSettings(showToast){
       keepSelect.value = String((typeof data.keep_backups === 'number') ? data.keep_backups : 1);
     }
     loadUpdateBackups();
+    const updateProxy = document.getElementById('setUpdateProxySlot');
+    if(updateProxy){
+      const choices = Array.isArray(data.update_check_proxy_slots)
+        ? data.update_check_proxy_slots : [];
+      const current = String(data.update_check_proxy_slot || '');
+      updateProxy.innerHTML = '<option value="">直连（不使用代理槽）</option>'
+        + choices.map(slot =>
+            '<option value="' + esc(slot.id) + '">'
+            + esc(slot.label || slot.id)
+            + (slot.enabled === false ? '（已停用）' : '')
+            + '</option>').join('');
+      // A deleted slot must not remain visually selected as if it were active.
+      updateProxy.value = choices.some(slot => slot.id === current) ? current : '';
+    }
       // 用量聚合保留窗口：没改过时后端给的就是内置默认（小时层 48 / 日桶 32），
       // 所以「等于默认」按默认态显示，只有被调过才标出实际值。
       const usageKeep = data.usage || {};
@@ -15618,6 +16022,7 @@ function resetDailyChatTimes(){
 }
 
 async function saveDailyChatModule(btn){
+  const activityEl = document.getElementById('setDailyActivity');
   const webEl = document.getElementById('setDailyChatWeb');
   const budgetEl = document.getElementById('setDailyChatBudget');
   const turnEl = document.getElementById('setDailyChatTurnTimeout');
@@ -15636,6 +16041,11 @@ async function saveDailyChatModule(btn){
     daily_chat_web_fallback_activity: !!(fallbackEl && fallbackEl.checked),
     schedule: {daily_chat: DAILY_CHAT_TIMES_SELECTED.slice()}
   };
+  // 总开关只在勾选框已按 /settings 回填过时才提交：设置没读到（或页面上没有
+  // 这个元素）时不能凭默认状态把它悄悄写成关闭——缺省是开，不提交就保持原值。
+  if(activityEl && activityEl.dataset && activityEl.dataset.loaded === '1'){
+    payload.daily_activity = !!activityEl.checked;
+  }
   if(btn) btn.disabled = true;
   const state = document.getElementById('setDailyChatSaveState');
   try {
@@ -15861,6 +16271,37 @@ async function saveEgressBackoff(btn){
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+async function saveRestrictionHold(btn){
+  const el = document.getElementById('setRestrictionHoldSeconds');
+  const val = parseInt(el ? el.value : '1800', 10);
+  if(isNaN(val) || val < 0){
+    toast('暂停时长必须为非负整数', 'bad');
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {restriction_hold_seconds: val});
+    toast(val <= 0 ? '已关闭风控连坐暂停' : '已保存连坐暂停时长: ' + val + ' 秒', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function resetRestrictionHold(btn){
+  if(btn) btn.disabled = true;
+  try {
+    const res = await postJSON('/settings/restriction/reset', {});
+    toast(res.message || '风控连坐暂停已立即解除', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('解除失败: ' + e.message, 'bad');
   } finally {
     if(btn) btn.disabled = false;
   }
@@ -16134,6 +16575,22 @@ async function saveUpdateCheckEnabled(btn){
     await postJSON('/settings/save', {update_check_enabled: value});
     toast(value ? '已启用：每天自动检查更新' : '已关闭：不再自动检查更新', 'ok');
     loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function saveUpdateProxySlot(btn){
+  const el = document.getElementById('setUpdateProxySlot');
+  const value = String((el && el.value) || '');
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {update_check_proxy_slot: value});
+    toast(value ? '已保存：更新检查走所选代理槽'
+                : '已保存：更新检查直连', 'ok');
+    await loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
   } finally {
@@ -16499,6 +16956,7 @@ function renderDeletedKeyRows(){
 
 function renderKeyRows(){
   renderDeletedKeyRows();
+  renderApiKeyExamples();
   const box = document.getElementById('keyList');
   if(!box) return;
   if(!API_KEY_ROWS.length){
@@ -16558,6 +17016,9 @@ function renderKeyRows(){
         +     '<div id="editKeyAccountPicker_' + i + '" style="display:none;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px">'
         +       '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'
         +         '<input id="editKeyAccountSearch_' + i + '" placeholder="搜索昵称或 UID" oninput="filterKeyAccountPicker(' + i + ')" style="flex:1;min-width:160px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit;color:var(--fg)">'
+        +         '<select id="editKeyAccountGroup_' + i + '" onchange="filterKeyAccountPicker(' + i + ')" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit;color:var(--fg)"><option value="">全部分组</option></select>'
+        +         '<button class="sec mini" onclick="addKeyAccountsFromGroup(' + i + ',true)">按组选入</button>'
+        +         '<button class="sec mini" onclick="addKeyAccountsFromGroup(' + i + ',false)">按组移除</button>'
         +         '<button class="sec mini" onclick="setKeyAccountsAll(' + i + ',true)">全选</button>'
         +         '<button class="sec mini" onclick="setKeyAccountsAll(' + i + ',false)">全不选</button>'
         +       '</div>'
@@ -16629,6 +17090,33 @@ function renderKeyRows(){
       + '</div>';
   }).join('');
   API_KEY_ROWS.forEach((row, i) => { if(row._editing) renderKeyPickers(i); });
+}
+
+function apiKeyExampleText(kind){
+  const base = String(location.origin || '').replace(/\/+$/, '') + '/v1';
+  if(kind === 'base') return base;
+  const enabled = API_KEY_ROWS.find(row => row.enabled !== false && row.key);
+  const key = (enabled && enabled.key) || API_KEY_ROWS[0] && API_KEY_ROWS[0].key || '<API_KEY>';
+  return 'curl ' + base + '/chat/completions \\\n'
+    + '  -H "Authorization: Bearer ' + key + '" \\\n'
+    + '  -H "Content-Type: application/json" \\\n'
+    + '  -d \'{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}\'';
+}
+
+function renderApiKeyExamples(){
+  const base = document.getElementById('apiKeyExampleBase');
+  if(base) base.textContent = apiKeyExampleText('base');
+  const curl = document.getElementById('apiKeyExampleCurl');
+  if(curl) curl.textContent = apiKeyExampleText('curl');
+}
+
+async function copyApiKeyExample(kind, btn){
+  try{
+    await writeClipboard(apiKeyExampleText(kind));
+    toast(kind === 'base' ? 'Base URL 已复制' : 'cURL 示例已复制', 'ok');
+  }catch(e){
+    toast('复制失败: ' + e.message, 'bad');
+  }
 }
 
 function keyModelWildcards(row){
@@ -16719,13 +17207,22 @@ async function renderKeyPickers(i){
       try { await loadAccounts(); } catch(e) { /* keep the empty hint */ }
     }
     const accts = window.ACCOUNTS || [];
+    const groupSelect = document.getElementById('editKeyAccountGroup_' + i);
+    if(groupSelect){
+      const groups = Array.from(new Set(accts.map(a => String((a && a.group) || '').trim()).filter(Boolean))).sort();
+      const current = String(groupSelect.value || '');
+      groupSelect.innerHTML = '<option value="">全部分组</option>' + groups.map(g =>
+        '<option value="' + esc(g) + '">' + esc(g) + '</option>').join('');
+      groupSelect.value = groups.indexOf(current) >= 0 ? current : '';
+    }
     accountList.innerHTML = accts.map(a => {
       const uid = String((a && a.uid) || '');
       if(!uid) return '';
       const note = String(a.note || '').trim();
-      const label = (a.nickname || uid.slice(0, 8)) + (note ? ' · ' + note : '') + ' · ' + uid.slice(0, 8) + (a.realm ? ' · ' + a.realm : '');
+      const group = String(a.group || '').trim();
+      const label = (a.nickname || uid.slice(0, 8)) + (note ? ' · ' + note : '') + ' · ' + uid.slice(0, 8) + (a.realm ? ' · ' + a.realm : '') + (group ? ' · ' + group : '');
       const checked = (row.accounts || []).indexOf(uid) >= 0 ? ' checked' : '';
-      return '<label class="key-pick-row" data-search="' + esc((label + ' ' + uid).toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(uid) + '"' + checked + ' onchange="toggleKeyAccount(' + i + ',this)">' + esc(label) + '</label>';
+      return '<label class="key-pick-row" data-group="' + esc(group) + '" data-search="' + esc((label + ' ' + uid).toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(uid) + '"' + checked + ' onchange="toggleKeyAccount(' + i + ',this)">' + esc(label) + '</label>';
     }).join('') || '<div style="font-size:12px;color:var(--warn);padding:4px">账号列表为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     updateKeyAccountSummary(i);
   }
@@ -16767,6 +17264,22 @@ function setKeyAccountsAll(i, on){
     : [];
   updateKeyAccountSummary(i);
 }
+function addKeyAccountsFromGroup(i, on){
+  const row = API_KEY_ROWS[i];
+  const list = document.getElementById('editKeyAccountList_' + i);
+  const picker = document.getElementById('editKeyAccountGroup_' + i);
+  if(!row || !list || !picker || !picker.value) return;
+  const group = picker.value;
+  const set = new Set(row.accounts || []);
+  list.querySelectorAll('input[type=checkbox]').forEach(el => {
+    const item = el.closest('.key-pick-row');
+    if(!item || item.getAttribute('data-group') !== group) return;
+    el.checked = on;
+    if(on) set.add(el.value); else set.delete(el.value);
+  });
+  row.accounts = Array.from(set).sort();
+  updateKeyAccountSummary(i);
+}
 function filterKeyModelPicker(i){
   const input = document.getElementById('editKeyModelSearch_' + i);
   const list = document.getElementById('editKeyModelList_' + i);
@@ -16778,11 +17291,15 @@ function filterKeyModelPicker(i){
 }
 function filterKeyAccountPicker(i){
   const input = document.getElementById('editKeyAccountSearch_' + i);
+  const picker = document.getElementById('editKeyAccountGroup_' + i);
   const list = document.getElementById('editKeyAccountList_' + i);
   if(!list) return;
   const q = String((input && input.value) || '').trim().toLowerCase();
+  const group = String((picker && picker.value) || '');
   list.querySelectorAll('.key-pick-row').forEach(el => {
-    el.style.display = !q || (el.getAttribute('data-search') || '').indexOf(q) >= 0 ? 'flex' : 'none';
+    const searchHit = !q || (el.getAttribute('data-search') || '').indexOf(q) >= 0;
+    const groupHit = !group || el.getAttribute('data-group') === group;
+    el.style.display = searchHit && groupHit ? 'flex' : 'none';
   });
 }
 
@@ -17348,8 +17865,11 @@ function switchMainTab(tab){
   // ?tab=accounts 的书签与上次停留的页签都退回总览页——区块就在那一页里。
   if(tab === 'accounts' && !_accountsSeparateTab) tab = window.__NEXT_UI__ ? 'overview' : 'gateway';
   if(!window.__NEXT_UI__ && tab === 'overview') tab = 'gateway';
+  const prevTab = currentMainTab;
   currentMainTab = tab;
   syncConsoleContext(tab);
+  // 从不轮询账号的页签切过来：立刻拉一次，不等下一轮 15 秒。
+  if(PANEL_READY && accountsTabActive(tab) && !accountsTabActive(prevTab)) loadAccounts(true);
   // Remember the page across reloads. The URL is updated so the address bar
   // matches what is on screen and a copied link reopens the same page;
   // storage covers a plain reload and the ?key= link, which strips the
@@ -17392,7 +17912,13 @@ function switchMainTab(tab){
   tabs.forEach(([name, btn, page]) => {
     if(!page) return;
     const on = (name === tab);
-    if(btn) btn.classList.toggle('active', on);
+    if(btn){
+      btn.classList.toggle('active', on);
+      // active 类只影响颜色，读屏软件不看它；aria-current 才是「当前页」的
+      // 语义标记。两者必须在同一处一起更新，否则视觉与语义会分叉。
+      if(on) btn.setAttribute('aria-current', 'page');
+      else btn.removeAttribute('aria-current');
+    }
     page.classList.toggle('active', on);
     // 每个页面各自按自己的区块重建侧栏；非当前页的区块变化在切过来时补上
     if(on) initPageNav(page);
@@ -21082,7 +21608,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     stability: {
       title: '稳定性',
       desc: '额度探针、退避、超时、并发上限和会话粘滞。',
-      items: ['模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '单请求体上限', '更稳的会话粘滞键']
+      items: ['风控连坐暂停保护', '模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '用量聚合保留窗口', '上游响应头超时', '账号级并发上限', '单请求体上限', '更稳的会话粘滞键']
     },
     system: {
       title: '日志与系统',
@@ -21192,11 +21718,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
       + '<button type="button" id="nextSchedSwitch" class="next-switch" role="switch" aria-checked="true" onclick="toggleScheduler(this)" title="暂停或恢复后台调度器"><span class="next-switch-knob"></span></button></div>';
     schedSection.appendChild(schedHead);
     schedSection.appendChild(sched);
-    if(typeof tasksPage.insertBefore === 'function'){
-      tasksPage.insertBefore(schedSection, tasksPage.firstChild);
-    }else{
-      tasksPage.appendChild(schedSection);
-    }
+    tasksPage.insertBefore(schedSection, tasksPage.firstChild);
   }
 
   /* 旧页签的 switchMainTab 是唯一入口：包一层，让新导航始终跟着真实页面走。 */

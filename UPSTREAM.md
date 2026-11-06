@@ -4,7 +4,7 @@
 
 | 目录 | 上游 | 基线 commit | 基线版本 |
 |---|---|---|---|
-| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `077fb2f` | v1.10.9 |
+| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `6e1e548` | v1.10.11 |
 | `reference/codearts2api/` | https://github.com/HITZY2002/codearts2api | `8d1e43d` | — |
 
 ## 本仓库相对上游的改动
@@ -24,7 +24,7 @@
 
 ## 已同步的上游版本（v1.10.x）
 
-本仓库已整体同步到上游 `077fb2f` / v1.10.9，保留 mix2api 自己的品牌、面板、发布体系和本地默认配置。上游的媒体生成模块（`wb_media.py` / `wb_media_client.py` / `wb_media_tasks.py`）、CodeArts 新签到活动、设置并发保护、目录/价格快照以及 v1.10.5–v1.10.9 的修复均已进入本仓库。
+本仓库已整体同步到上游 `6e1e548` / v1.10.11，保留 mix2api 自己的品牌、面板、发布体系和本地默认配置。上游的媒体生成模块（`wb_media.py` / `wb_media_client.py` / `wb_media_tasks.py`）、CodeArts 新签到活动、设置并发保护、目录/价格快照、账号分组与分页、登录出口代理槽、413 响应以及 v1.10.5–v1.10.11 的修复均已进入本仓库。
 
 以下为 v1.10.0 – v1.10.4 的 CodeArts 修复记录（保留作历史说明）：
 

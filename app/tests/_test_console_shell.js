@@ -71,7 +71,11 @@ check(/function applyConsoleView\(view\)/.test(script), '缺少内容入口的�
 const view = script.slice(script.indexOf('function setConsoleNavActive('),
                           script.indexOf('function openModelCatalog('));
 check(/console-view-hidden/.test(view), '切换视图要把非当前区块收起');
-check(/main-nav-btn\.active[\s\S]{0,160}classList\.remove\('active'\)/.test(view),
+// 选中内容入口时要先清掉父级主导航的选中态。断言的是「清」这个动作，不是某个
+// 具体选择器：原先这里匹配 `.console-sidebar .main-nav-btn.active`，而那条选择器
+// 会连带命中侧栏里的设置/日志等一级按钮，网关视图每重算一次就把它们的高亮摘掉
+// （详见 _test_nav_aria_current.js）。现在收窄成三个视图入口的 id，语义没变。
+check(/(?:main-nav-btn|#btnNav(?:Gateway|Models|Requests))[\s\S]{0,200}classList\.remove\('active'\)/.test(view),
   '选中内容入口时必须先清掉父级主导航的选中态');
 check(/classList\.toggle\('active', on\)/.test(view), '内容入口之间应当互斥，只保留一个选中');
 check(/openModelCatalog\(\)\{[\s\S]{0,200}applyConsoleView\('models'\)/.test(script),
@@ -99,7 +103,7 @@ check(/onclick="toggleConsoleNav\(\)"/.test(html), '手机端缺少功能菜单�
 
 // ---- 2. 筛选：只改显示，不改批量操作的原始范围 -----------------------
 
-check(/const ACCOUNT_FILTERS = \{query: '', status: ''\}/.test(script),
+check(/const ACCOUNT_FILTERS = \{query: '', status: '', group: ''\}/.test(script),
   '账号筛选状态应当是独立的一份');
 check(/function accountMatchesFilters\(a\)/.test(script), '缺少账号筛选判定');
 check(/function clearAccountFilters\(\)/.test(script), '缺少账号筛选清除');

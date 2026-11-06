@@ -19,6 +19,7 @@ import base64
 import bisect
 import calendar
 import errno
+import gzip
 import hashlib
 import heapq
 import http.client
@@ -195,6 +196,9 @@ def port_owner_hint(port):
     if IS_WINDOWS:
         return "netstat -ano | findstr :%d" % port
     return "lsof -nP -iTCP:%d -sTCP:LISTEN" % port
+def restart_hint():
+    """Launcher that stops every running copy first."""
+    return "restart-wb-proxy.bat" if IS_WINDOWS else "./restart-wb-proxy.sh"
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
 def detect_model_realm(model_id):
     if not model_id:
@@ -10793,6 +10797,23 @@ def _usage_cache_series_entry(realm, state):
             "hits_overflow": bool(state["hits_overflow"])}
 
 
+class _lock_if_free(object):
+    """Hold `lock` if it is free right now; `as` gives whether it was taken."""
+
+    def __init__(self, lock):
+        self.lock = lock
+        self.held = False
+
+    def __enter__(self):
+        self.held = self.lock.acquire(blocking=False)
+        return self.held
+
+    def __exit__(self, *exc):
+        if self.held:
+            self.lock.release()
+        return False
+
+
 def _usage_cache_collect_kind(kind):
     """逐把取一类状态，做锁外可序列化的深拷贝；返回 (entries, offset) 或 None。
 
@@ -10803,11 +10824,18 @@ def _usage_cache_collect_kind(kind):
 
     entries 为空（状态都归零/不可复现）时返回 None：没得写就不写，等下一次
     折叠成功再落盘。offset 是该类各 realm 状态里的最远位置。
+
+    状态锁只做非阻塞尝试：拿不到（别的线程正在这把锁里全量重折）同样返回
+    None，这一类留到下次再写。全量重折会在锁里扫完整个日志（GB 级日志要几十
+    分钟），而调用方持着 _usage_cache_write_lock、往往还持着自己视图的缓存锁
+    （如 _byacct_lock）——阻塞等待会把别的视图一起拖死（面板 by-account 524）。
     """
     if kind == "snapshot":
         entries = []
         done = 0
-        with _usage_snap_state_lock:
+        with _lock_if_free(_usage_snap_state_lock) as held:
+            if not held:
+                return None
             for realm, state in _usage_snap_state.items():
                 entry = _usage_cache_snapshot_entry(realm, state)
                 if entry is not None:
@@ -10815,7 +10843,9 @@ def _usage_cache_collect_kind(kind):
                     done = max(done, state["offset"])
         return (entries, done) if entries else None
     if kind == "by_account":
-        with _byacct_state_lock:
+        with _lock_if_free(_byacct_state_lock) as held:
+            if not held:
+                return None
             entry = _usage_cache_by_account_entry(_byacct_state)
             if entry is None:
                 return None
@@ -10823,7 +10853,9 @@ def _usage_cache_collect_kind(kind):
     if kind == "analytics":
         entries = []
         done = 0
-        with _analytics_state_lock:
+        with _lock_if_free(_analytics_state_lock) as held:
+            if not held:
+                return None
             for realm, state in _analytics_state.items():
                 entry = _usage_cache_analytics_entry(realm, state)
                 if entry is not None:
@@ -10833,7 +10865,9 @@ def _usage_cache_collect_kind(kind):
     if kind == "series":
         entries = []
         done = 0
-        with _series_state_lock:
+        with _lock_if_free(_series_state_lock) as held:
+            if not held:
+                return None
             for realm, state in _series_state.items():
                 entry = _usage_cache_series_entry(realm, state)
                 if entry is not None:
@@ -10841,7 +10875,9 @@ def _usage_cache_collect_kind(kind):
                     done = max(done, state["offset"])
         return (entries, done) if entries else None
     if kind == "remaining":
-        with _remaining_state_lock:
+        with _lock_if_free(_remaining_state_lock) as held:
+            if not held:
+                return None
             entry = _usage_cache_remaining_entry(_remaining_state)
             if entry is None:
                 return None
@@ -11031,6 +11067,7 @@ def runtime_settings_view():
         "identity": wb_settings.identity_config(ACCOUNTS_DIR),
         "identity_version_defaults": wb_identity.default_versions(),
         "codearts": wb_codearts.masked_config(ACCOUNTS_DIR),
+        "daily_activity": wb_settings.daily_activity_enabled(ACCOUNTS_DIR),
         "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
         "daily_chat_web_timeout":
             wb_settings.daily_chat_web_timeout(ACCOUNTS_DIR,
@@ -11066,6 +11103,10 @@ def runtime_settings_view():
             wb_settings.remaining_priority_enabled(ACCOUNTS_DIR),
         "egress_backoff_enabled":
             wb_settings.egress_backoff_enabled(ACCOUNTS_DIR),
+        "restriction_hold_seconds":
+            int(wb_settings.restriction_hold_seconds(ACCOUNTS_DIR)),
+        "restriction_holds":
+            all_restriction_holds(),
         "realm_fallback_enabled":
             wb_settings.realm_fallback_enabled(ACCOUNTS_DIR),
         "account_max_concurrent":
@@ -11090,6 +11131,15 @@ def runtime_settings_view():
         "key_before_hidden": wb_settings.key_before_hidden(ACCOUNTS_DIR),
         "hidden_pages": wb_settings.hidden_pages(ACCOUNTS_DIR),
         "update_check_enabled": wb_settings.update_check_enabled(ACCOUNTS_DIR),
+        "update_check_proxy_slot": wb_settings.update_check_proxy_slot(ACCOUNTS_DIR),
+        "update_check_proxy_slots": [
+            {
+                "id": slot.get("id") or "",
+                "label": slot.get("label") or slot.get("name") or slot.get("id") or "",
+                "enabled": slot.get("enabled", True) is not False,
+            }
+            for slot in proxy_slots_view()
+        ],
         "keep_backups": wb_settings.keep_backups(ACCOUNTS_DIR),
         "keep_backups_max": wb_settings.MAX_KEEP_BACKUPS,
         "upstream": wb_settings.upstream_config(ACCOUNTS_DIR),
@@ -11107,7 +11157,7 @@ def runtime_settings_view():
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
         "project": "mix2api",
-        "version": "1.3.0",
+        "version": "1.4.0",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -11753,7 +11803,15 @@ def merge_catalog(primary, realm=None, extras=False):
         if meta:
             base = merged.get(mid) or {}
             base_reasoning = base.get("reasoning")
-            base.update(meta)
+            live = dict(meta)
+            # A live/cache catalogue can report x0.00 while the bundled table
+            # knows the model is paid (issue #774). Do not let that placeholder
+            # downgrade a known-paid model to "free"; all other fields update.
+            if (credits_is_free(live.get("credits"))
+                    and base.get("credits")
+                    and not credits_is_free(base.get("credits"))):
+                live.pop("credits", None)
+            base.update(live)
             if isinstance(meta.get("reasoning"), dict):
                 base["reasoning"] = merge_reasoning(base_reasoning, meta["reasoning"])
             merged[mid] = base
@@ -12646,11 +12704,9 @@ SANITIZE_FEATURES = (
     "11128",
 )
 SANITIZE_REWRITES = (
-    ("You are Claude Code, Anthropic's official CLI for Claude",
-     "You are Claude Code, Anthropic's official CLI tool for Claude"),
-    ("Default branch (you will usually use this for PRs)",
+    ("Main branch (you will usually use this for PRs)",
      "Default branch (you will usually use this for PRs)"),
-    ("To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+    ("To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
      "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
     ("11128", "11-128"),
 )
@@ -12661,6 +12717,14 @@ SANITIZE_CODEX_INTRO_RE = re.compile(
     r"(?i)You are a coding agent running in the Codex CLI(?: tool)?"
     r"[^.\n]*\.")
 SANITIZE_CODEX_INTRO_REPLACEMENT = "You are a helpful AI assistant."
+# Claude Code 的自述首段（#733）：报告者把提示词模式改成「替换」后 400 消失，
+# 说明指纹在 system 文本里。这里按 #743 处理 Codex 自述句的同一套办法整句
+# 中性化；只锚定这一句，其余 Claude Code 提示词原样保留。
+SANITIZE_CLAUDE_CODE_INTRO_RE = re.compile(
+    r"(?i)You are Claude Code,\s*Anthropic['’]s official CLI"
+    r"(?: tool)? for Claude(?: Code)?\.?")
+SANITIZE_CLAUDE_CODE_INTRO_REPLACEMENT = "You are a helpful AI assistant."
+SANITIZE_CLAUDE_CODE_LOWER = "you are claude code,"
 SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
 SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
 SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
@@ -12779,6 +12843,10 @@ def has_fingerprint(text, identity=True):
         return True
     if not identity:
         return False
+    # SANITIZE_FEATURES 只登记了首字母大写的 "You are Claude Code"；这里用
+    # 小写字面量补齐大小写混排的 system 文本，命中后才走 sanitize_text 的正则。
+    if SANITIZE_CLAUDE_CODE_LOWER in low:
+        return True
     # 品牌词缩减：`harness` 是廉价前置筛，真命中交给正则。
     if (SANITIZE_BRAND_LOWER in low
             and SANITIZE_BRAND_RE.search(text) is not None):
@@ -12808,6 +12876,9 @@ def sanitize_text(text, identity=True):
     # neutralized.
     text = SANITIZE_OMO_JUNIOR_RE.sub("Sisyphus-Junior - Focused executor", text)
     if identity:
+        # Claude Code 自述首段先整句换掉：它本身就是 SANITIZE_FEATURES 里的指纹。
+        text = SANITIZE_CLAUDE_CODE_INTRO_RE.sub(
+            SANITIZE_CLAUDE_CODE_INTRO_REPLACEMENT, text)
         # Codex 自述首段先整句换掉：它本身就是 SANITIZE_FEATURES 里的指纹。
         text = SANITIZE_CODEX_INTRO_RE.sub(SANITIZE_CODEX_INTRO_REPLACEMENT, text)
         text = SANITIZE_IDENTITY_RE.sub(SANITIZE_IDENTITY_REPLACEMENT, text)
@@ -15019,6 +15090,368 @@ def read_http_error(exc, limit=600):
         return b""
 
 
+# ---------------------------------------------------------------- 11-128 取证
+# 上游回 400 / code 11-128 时，日志里只有 600 字节错误体，无法判断是出站
+# body 的哪一段触发了渠道校验。这里提供一个**默认关闭**的本地取证开关：
+#
+#   WB_DUMP_11_128=1      只写摘要：消息结构、长度、哈希、已知指纹命中、头
+#   WB_DUMP_11_128=full   摘要 + 实际发往上游的 body（含对话明文，仅本机）
+#
+# 摘要不含任何提示词文本；full 会写明文，用来和另一台机器 / 另一个客户端做
+# 逐字节对比。两种模式都不写 Authorization、API Key、Cookie 或设备 token。
+DUMP_11_128_DIR = "11-128-dumps"
+_DUMP_11_128_SEEN = deque()
+_DUMP_11_128_SEEN_MAX = 64
+_DUMP_11_128_LOCK = threading.Lock()
+_DUMP_11_128_SECRET_PARTS = (
+    "authorization", "api-key", "apikey", "token", "cookie", "secret",
+    "signature", "password",
+)
+_DUMP_11_128_KEEP_HEADERS = frozenset((
+    "user-agent", "content-type", "content-encoding", "accept",
+    "accept-encoding", "anthropic-version", "anthropic-beta",
+    "anthropic-dangerous-direct-browser-access", "x-model-id",
+))
+
+
+def dump_11_128_mode():
+    """Return "", "summary" or "full" for the current process environment."""
+    raw = str(os.environ.get("WB_DUMP_11_128", "")).strip().lower()
+    if raw in ("full", "body", "2"):
+        return "full"
+    if raw in ("1", "true", "yes", "on", "summary"):
+        return "summary"
+    return ""
+
+
+def is_channel_rejection(status, detail):
+    """True for the upstream channel check that returns 400 / 11-128."""
+    if status is not None:
+        try:
+            if int(status) not in (400, 403):
+                return False
+        except (TypeError, ValueError):
+            return False
+    text = detail if isinstance(detail, str) else ""
+    low = text.lower()
+    return "11-128" in low or "unapproved channel" in low
+
+
+def _dump_sha12(value):
+    if isinstance(value, bytes):
+        blob = value
+    else:
+        blob = str(value).encode("utf-8", "replace")
+    return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def _dump_url(url):
+    """Drop the query / fragment: it can carry a token even on a fixed URL."""
+    return str(url or "").split("?", 1)[0].split("#", 1)[0]
+
+
+def _dump_text_meta(value):
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            text = str(value)
+    return {"chars": len(text), "sha12": _dump_sha12(text)}
+
+
+def _dump_message_shape(messages):
+    """Per-message role / content shape without storing the text itself."""
+    out = []
+    for index, message in enumerate(messages or []):
+        if not isinstance(message, dict):
+            out.append({"i": index, "type": type(message).__name__})
+            continue
+        item = {"i": index, "role": message.get("role", "")}
+        content = message.get("content")
+        if isinstance(content, str):
+            item["content"] = {"type": "text", "chars": len(content),
+                               "sha12": _dump_sha12(content)}
+        elif isinstance(content, list):
+            parts = []
+            for part in content[:20]:
+                if not isinstance(part, dict):
+                    parts.append({"type": type(part).__name__})
+                    continue
+                shape = {"type": part.get("type", "")}
+                if isinstance(part.get("text"), str):
+                    shape.update(_dump_text_meta(part["text"]))
+                elif part.get("image_url") is not None:
+                    shape.update(_dump_text_meta(part.get("image_url")))
+                parts.append(shape)
+            item["content"] = {"type": "parts", "n_parts": len(content),
+                               "parts": parts}
+        elif content is None:
+            item["content"] = {"type": "none"}
+        else:
+            item["content"] = {"type": type(content).__name__}
+        if message.get("tool_calls"):
+            names = []
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict) and function.get("name"):
+                    names.append(str(function["name"])[:80])
+            item["tool_calls"] = names[:20]
+        if message.get("name"):
+            item["name"] = str(message["name"])[:80]
+        out.append(item)
+    return out
+
+
+def _dump_tool_names(tools):
+    names = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        source = function if isinstance(function, dict) else tool
+        name = source.get("name")
+        if name:
+            names.append(str(name)[:80])
+    return names[:100]
+
+
+def _dump_fingerprint_hits(messages):
+    """Which known channel fingerprints still occur in identity messages."""
+    hits = set()
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") not in ("system", "developer", "assistant"):
+            continue
+        content = message.get("content")
+        texts = []
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+        for text in texts:
+            for feature in SANITIZE_FEATURES:
+                if feature in text:
+                    hits.add(feature)
+    return sorted(hits)
+
+
+def _dump_safe_headers(headers):
+    """Keep identity headers, redact credentials, hash the rest."""
+    if not headers:
+        return {}
+    pairs = headers.items() if hasattr(headers, "items") else headers
+    out = {}
+    for name, value in pairs:
+        name = str(name)
+        low = name.lower()
+        text = "" if value is None else str(value)
+        if any(part in low for part in _DUMP_11_128_SECRET_PARTS):
+            out[name] = "<redacted>"
+        elif low in _DUMP_11_128_KEEP_HEADERS or low.startswith("x-stainless-"):
+            out[name] = text[:300]
+        else:
+            out[name] = "<%d chars, sha256:%s>" % (len(text), _dump_sha12(text))
+    return out
+
+
+def _dump_request_id(detail):
+    try:
+        payload = json.loads(detail or "")
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("requestId", "request_id", "request-id", "reqId"):
+            if payload.get(key):
+                return str(payload[key])[:120]
+        for key in ("data", "error", "result"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                for inner in ("requestId", "request_id", "request-id", "reqId"):
+                    if nested.get(inner):
+                        return str(nested[inner])[:120]
+    match = re.search(
+        r'"?request[_-]?id"?\s*[:=]\s*"?([A-Za-z0-9._:-]{6,120})',
+        detail or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _dump_response_request_id(exc):
+    headers = getattr(exc, "headers", None)
+    if not headers:
+        return ""
+    for key in ("x-request-id", "x-requestid", "request-id", "x-trace-id"):
+        try:
+            value = headers.get(key)
+        except Exception:
+            value = None
+        if value:
+            return str(value)[:120]
+    return ""
+
+
+def _dump_outbound_body(exc):
+    raw = getattr(exc, "wb_outbound_body", None)
+    if raw is None:
+        return b""
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = str(raw).encode("utf-8", "replace")
+    raw = bytes(raw)
+    if str(getattr(exc, "wb_outbound_encoding", "")).lower() == "gzip":
+        try:
+            raw = gzip.decompress(raw)
+        except Exception:
+            pass
+    return raw
+
+
+def _dump_filename_part(value):
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or ""))
+    return text[:64].strip("._-") or "unknown"
+
+
+def _dump_write_bytes(path, data):
+    """Atomic write with owner-only permissions where the OS supports it."""
+    tmp = "%s.%d.%s.tmp" % (path, os.getpid(), uuid.uuid4().hex[:8])
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _dump_write_json(path, payload):
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    _dump_write_bytes(path, (text + "\n").encode("utf-8"))
+
+
+def maybe_dump_11_128(exc, detail, endpoint, model, fp=None, stream=None,
+                      client_headers=None):
+    """Write one local evidence bundle when an upstream 11-128 is seen.
+
+    The outbound body is attached by open_upstream() only while the switch is
+    on, so the disabled path pays nothing and never holds a second copy of a
+    large request. All exceptions are swallowed: a diagnostic must never turn
+    an upstream 400 into a gateway 500.
+    """
+    try:
+        mode = dump_11_128_mode()
+        if not mode:
+            return ""
+        status = getattr(exc, "code", None)
+        if not is_channel_rejection(status, detail):
+            return ""
+        body = _dump_outbound_body(exc)
+        body_key = "%s|%s|%s|%s" % (
+            hashlib.sha256(body).hexdigest() if body else _dump_sha12(detail),
+            endpoint, getattr(exc, "wb_outbound_product", ""),
+            getattr(exc, "wb_outbound_realm", ""))
+        with _DUMP_11_128_LOCK:
+            if body_key in _DUMP_11_128_SEEN:
+                return ""
+            if len(_DUMP_11_128_SEEN) >= _DUMP_11_128_SEEN_MAX:
+                _DUMP_11_128_SEEN.popleft()
+
+        parsed = None
+        if body:
+            try:
+                parsed = json.loads(body.decode("utf-8"))
+            except Exception:
+                parsed = None
+        messages = parsed.get("messages") if isinstance(parsed, dict) else None
+        if not isinstance(messages, list):
+            messages = []
+        tools = parsed.get("tools") if isinstance(parsed, dict) else None
+        if not isinstance(tools, list):
+            tools = []
+        request_id = _dump_request_id(detail)
+        if not request_id:
+            request_id = _dump_response_request_id(exc)
+
+        outbound_fp = (prompt_fingerprint(messages)
+                       if isinstance(parsed, dict) else (fp or {}))
+        summary = {
+            "schema": 1,
+            "at": time.time(),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "endpoint": endpoint,
+            "status": status,
+            "model": model,
+            "stream": bool(stream) if stream is not None else None,
+            "request_id": request_id,
+            "account": {
+                "uid8": str(getattr(exc, "account_uid", "") or "")[:8],
+                "product": str(getattr(exc, "wb_outbound_product", "") or ""),
+                "realm": str(getattr(exc, "wb_outbound_realm", "") or ""),
+                "proxy_slot": str(getattr(exc, "proxy_slot", "") or ""),
+                "proxy_exit": str(getattr(exc, "proxy_exit", "") or ""),
+            },
+            "upstream_url": _dump_url(getattr(exc, "wb_outbound_url", "")),
+            "body": {
+                "available": bool(body),
+                "encoding": str(getattr(exc, "wb_outbound_encoding", "") or ""),
+                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest() if body else "",
+                "json": bool(isinstance(parsed, dict)),
+                "n_messages": len(messages),
+                "n_tools": len(tools),
+                "tool_names": _dump_tool_names(tools),
+                "fingerprint_hits": _dump_fingerprint_hits(messages),
+            },
+            "prompt_fingerprint": outbound_fp,
+            "handler_fingerprint": fp or {},
+            "messages": _dump_message_shape(messages),
+            "headers": _dump_safe_headers(
+                getattr(exc, "wb_outbound_headers", None)),
+            "client_headers": _dump_safe_headers(client_headers),
+            "upstream_error": (detail or "")[:2000],
+        }
+
+        outdir = os.path.join(USAGE_DIR, DUMP_11_128_DIR)
+        os.makedirs(outdir, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        base = "%s-%s-%s" % (stamp, _dump_filename_part(endpoint),
+                             _dump_filename_part(request_id or body_key[:12]))
+        path = os.path.join(outdir, base + ".json")
+        suffix = 2
+        while os.path.exists(path):
+            path = os.path.join(outdir, "%s-%d.json" % (base, suffix))
+            suffix += 1
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if mode == "full" and body:
+            body_name = stem + (".body.json" if isinstance(parsed, dict)
+                                else ".body.bin")
+            _dump_write_bytes(os.path.join(outdir, body_name), body)
+            summary["body"]["file"] = body_name
+        _dump_write_json(path, summary)
+        with _DUMP_11_128_LOCK:
+            _DUMP_11_128_SEEN.append(body_key)
+        log("11-128 dump: %s (mode=%s, body=%d bytes)"
+            % (os.path.basename(path), mode, len(body)), level="WARNING",
+            tag="upstream")
+        return path
+    except Exception as exc2:
+        try:
+            log("11-128 dump failed: %s" % exc2, level="WARNING",
+                tag="upstream")
+        except Exception:
+            pass
+        return ""
+
+
 def model_scoped_errors_penalize_account():
     """Escape hatch: restore the old "any 5xx charges the account" behaviour."""
     raw = os.environ.get("WB_MODEL_SCOPED_ERRORS_PENALIZE", "")
@@ -15214,53 +15647,78 @@ def _env_number(name, default, cast=float):
 RESTRICTED_403_ROTATE_MAX = int(_env_number("WB_RESTRICTED_403_ROTATE_MAX", 0, int))
 RESTRICTION_WAVE_MIN = max(1, int(_env_number("WB_RESTRICTION_WAVE_MIN", 2, int)))
 RESTRICTION_WAVE_WINDOW = _env_number("WB_RESTRICTION_WAVE_WINDOW", 900.0)
-RESTRICTION_HOLD_SECONDS = _env_number("WB_RESTRICTION_HOLD_SECONDS", 1800.0)
-
 _RESTRICTION_LOCK = threading.Lock()
 _RESTRICTION_EVENTS = {}   # realm -> {uid: epoch}（窗口内被限制的账号）
 _RESTRICTION_HOLD = {}     # realm -> 暂停到哪个 epoch
 
 
-def reset_restriction_state():
-    """清空连坐保护状态（测试，以及人工确认「已申诉、可以恢复派发」时用）。"""
+def reset_restriction_state(realm=None):
+    """重置风控连坐状态。若指定 realm 则清空该区域，否则全部清空。"""
     with _RESTRICTION_LOCK:
-        _RESTRICTION_EVENTS.clear()
-        _RESTRICTION_HOLD.clear()
+        if realm:
+            _RESTRICTION_EVENTS.pop(realm, None)
+            _RESTRICTION_HOLD.pop(realm, None)
+        else:
+            _RESTRICTION_EVENTS.clear()
+            _RESTRICTION_HOLD.clear()
 
 
 def restriction_hold_remaining(realm, now=None):
-    """该区域整池暂停还剩多少秒（0 = 没有暂停）。"""
+    """查询指定区域连坐暂停的剩余秒数（0 = 没有暂停）。"""
     now = time.time() if now is None else now
     with _RESTRICTION_LOCK:
         return max(0.0, _RESTRICTION_HOLD.get(realm, 0.0) - now)
 
 
-def note_account_restriction(realm, uid="", now=None):
-    """记一次账号级风控限制；返回整池暂停的到期 epoch（0 = 尚未触发）。
+def all_restriction_holds(now=None):
+    """返回所有处于连坐暂停中的 realm 及剩余秒数（整数）。"""
+    now = time.time() if now is None else now
+    with _RESTRICTION_LOCK:
+        return {
+            realm: max(0, int(until - now))
+            for realm, until in _RESTRICTION_HOLD.items()
+            if until > now
+        }
 
-    同一窗口内达到 RESTRICTION_WAVE_MIN 个**不同**账号被限制，就认为上游在
-    按设备 / 出口做连坐清扫：把整个区域暂停 RESTRICTION_HOLD_SECONDS，期间
-    不再向上游发任何请求（open_upstream 直接快速失败），等人工确认或时间到
-    再恢复。按 uid 去重，所以同一个号被反复探测 / 测试不会把暂停骗出来。
+
+def clamp_restriction_holds(max_seconds, now=None):
+    """当用户调整了暂停时长，实时截断当前现存的暂停倒计时。"""
+    now = time.time() if now is None else now
+    with _RESTRICTION_LOCK:
+        if max_seconds <= 0:
+            _RESTRICTION_HOLD.clear()
+            return
+        for realm, until in list(_RESTRICTION_HOLD.items()):
+            if until > now + max_seconds:
+                _RESTRICTION_HOLD[realm] = now + max_seconds
+
+
+def note_account_restriction(realm, uid="", now=None):
+    """记一次账号级风控限制；若触发连坐暂停则返回暂停到的 epoch（0 = 尚未触发）。
+
+    同一个区域内达到 RESTRICTION_WAVE_MIN 个**不同**账号被限制，判定为该区域
+    遭到了设备 / 出口级别的风控连坐扫荡，全区域紧急暂停配置的 hold_seconds 秒；期间
+    所有发往该区域的任何请求（open_upstream）直接快速失败，直到人工确认或时间到
+    才恢复。按 uid 去重，避免同一个账号被重复探测 / 重试反复把暂停骗长。
     """
     now = time.time() if now is None else now
     uid = str(uid or "").strip() or "-"
+    hold_sec = wb_settings.restriction_hold_seconds(ACCOUNTS_DIR)
     with _RESTRICTION_LOCK:
         events = {key: at for key, at in _RESTRICTION_EVENTS.get(realm, {}).items()
                   if now - at <= RESTRICTION_WAVE_WINDOW}
         events[uid] = now
         _RESTRICTION_EVENTS[realm] = events
-        if len(events) < RESTRICTION_WAVE_MIN or RESTRICTION_HOLD_SECONDS <= 0:
+        if len(events) < RESTRICTION_WAVE_MIN or hold_sec <= 0:
             return 0.0
         until = max(_RESTRICTION_HOLD.get(realm, 0.0),
-                    now + RESTRICTION_HOLD_SECONDS)
+                    now + hold_sec)
         _RESTRICTION_HOLD[realm] = until
     log("upstream restriction wave on %s: %d account(s) restricted within %.0fs; "
         "pausing dispatch for %.0fs to avoid cross-account bans (uid %s)"
         % (realm, len(events), RESTRICTION_WAVE_WINDOW,
-           RESTRICTION_HOLD_SECONDS, uid[:8]))
+           hold_sec, uid[:8]))
     return until
-
 
 def restriction_hold_message(realm, remaining):
     """整池暂停期间交给客户端的说明。"""
@@ -15881,6 +16339,14 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 exc.account_uid = account.uid
                 exc.proxy_slot = account.proxy_slot
                 exc.proxy_exit = egress_exit(account.proxy)
+                if dump_11_128_mode():
+                    exc.wb_outbound_body = attempt_data
+                    exc.wb_outbound_encoding = (
+                        "gzip" if (cli_identity or vscode_identity) else "identity")
+                    exc.wb_outbound_headers = dict(req_headers)
+                    exc.wb_outbound_url = chat_url
+                    exc.wb_outbound_product = getattr(account, "product", "")
+                    exc.wb_outbound_realm = getattr(account, "realm", "")
             except Exception:
                 pass
             if exc.code == 429:
@@ -19379,7 +19845,8 @@ def _release_key_slot(key_entry):
 # /shutdown 修好之后，/updates/check、/updates/install、/quota-scan/run 又漏了。
 # 新增这类「不读 body」的面板路由，请加进这个元组，别在路由里另写一份。
 BODYLESS_PANEL_POSTS = ("/console/toggle", "/shutdown", "/updates/check",
-                        "/updates/install", "/quota-scan/run")
+                        "/updates/install", "/quota-scan/run",
+                        "/settings/restriction/reset")
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -19468,7 +19935,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.3.0"
+    server_version = "mix2api/1.4.0"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -19612,6 +20079,8 @@ class Handler(BaseHTTPRequestHandler):
         transfer_encoding = (headers.get("Transfer-Encoding") or "").lower()
         try:
             if "chunked" in transfer_encoding:
+                if getattr(self, "_reject_body_after_reply", False):
+                    return
                 self._drain_chunked_body()
                 return
             length = int(headers.get("Content-Length") or 0)
@@ -19619,11 +20088,11 @@ class Handler(BaseHTTPRequestHandler):
             length = 0
         if length <= 0:
             return
-        if length > MAX_PAYLOAD_BYTES:
-            # The client announced a body we refuse (413). Reading it would
-            # block until it finishes sending gigabytes, so close instead and
-            # let it see the reply plus the disconnect.
-            self.close_connection = True
+        if (length > MAX_PAYLOAD_BYTES
+                or getattr(self, "_reject_body_after_reply", False)):
+            # The client announced a body we refuse (413). The caller writes the
+            # response first, then uses _drain_rejected_body() to make that
+            # response survive the peer's remaining upload (issue #799).
             return
         remaining = length
         try:
@@ -19661,6 +20130,93 @@ class Handler(BaseHTTPRequestHandler):
                 self.rfile.read(2)  # trailing CRLF after each chunk
         except Exception:
             self.close_connection = True
+
+    def _drain_rejected_body(self, length=0, budget_seconds=2.0):
+        """Drain an oversized body after its 413 has been written.
+
+        Closing a socket while the peer is still sending makes the OS send an
+        RST; that discards the already-buffered 413, so the client sees only a
+        connection reset. Half-close the write side first, then consume what the
+        peer has already put on the wire within a small time budget. This is a
+        bounded drain, not an invitation to wait for gigabytes.
+        """
+        sock = getattr(self, "connection", None)
+        if sock is None:
+            return
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except Exception:
+            pass
+        try:
+            old_timeout = sock.gettimeout()
+        except Exception:
+            old_timeout = None
+        deadline = time.monotonic() + max(0.0, float(budget_seconds))
+        remaining = max(0, int(length or 0))
+        chunked = False
+        headers = getattr(self, "headers", None)
+        if headers is not None:
+            try:
+                chunked = "chunked" in (headers.get("Transfer-Encoding") or "").lower()
+            except Exception:
+                chunked = False
+        try:
+            while time.monotonic() < deadline and not chunked:
+                if remaining > 0:
+                    want = min(remaining, 65536)
+                else:
+                    want = 65536
+                sock.settimeout(max(0.01, deadline - time.monotonic()))
+                chunk = self.rfile.read(want)
+                if not chunk:
+                    break
+                if remaining > 0:
+                    remaining -= len(chunk)
+                    if remaining <= 0:
+                        break
+            if chunked:
+                # The exact byte count is unknown for chunked uploads. Read
+                # framing only until the zero chunk or the same time budget;
+                # never buffer the payload itself.
+                while time.monotonic() < deadline:
+                    sock.settimeout(max(0.01, deadline - time.monotonic()))
+                    line = self.rfile.readline(65536)
+                    if not line:
+                        break
+                    size_field = line.split(b";", 1)[0].strip()
+                    if not size_field:
+                        continue
+                    size = int(size_field, 16)
+                    if size == 0:
+                        while time.monotonic() < deadline:
+                            sock.settimeout(max(0.01, deadline - time.monotonic()))
+                            trailer = self.rfile.readline(65536)
+                            if not trailer or trailer in (b"\r\n", b"\n"):
+                                break
+                        break
+                    left = size
+                    while left > 0 and time.monotonic() < deadline:
+                        sock.settimeout(max(0.01, deadline - time.monotonic()))
+                        data = self.rfile.read(min(left, 65536))
+                        if not data:
+                            break
+                        left -= len(data)
+                    if left > 0:
+                        break
+                    sock.settimeout(max(0.01, deadline - time.monotonic()))
+                    self.rfile.read(2)
+        except Exception:
+            pass
+        finally:
+            try:
+                sock.settimeout(old_timeout)
+            except Exception:
+                pass
+        self._body_consumed = True
     # How much of an over-long request line to read before giving up. The peer
     # is already misbehaving; this only needs to be enough that a normal client
     # (which sent one line and is waiting for an answer) sees the reply.
@@ -20928,14 +21484,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self._read_payload(max_bytes=limit, allow_list=allow_list)
         except BodyTooLarge as exc:
-            self.close_connection = True
-            self._body_consumed = True
+            self._reject_body_after_reply = True
             message = ("payload too large (%d bytes > %d limit)"
                        % (exc.length, limit))
             if self._anthropic_route():
                 self._anthropic_error(413, message, "invalid_request_error")
             else:
                 self._error(413, message, "invalid_request_error")
+            self._drain_rejected_body(exc.length)
+            self.close_connection = True
             return None
         except BadJSON:
             if self._anthropic_route():
@@ -20957,10 +21514,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self._read_payload(max_bytes=limit, allow_list=False)
         except BodyTooLarge as exc:
-            self.close_connection = True
-            self._body_consumed = True
+            self._reject_body_after_reply = True
             self._error(413, "payload too large (%d bytes > %d limit)" % (exc.length, limit),
                         "invalid_request_error")
+            self._drain_rejected_body(exc.length)
+            self.close_connection = True
             return None
         except BadJSON:
             self._error(400, "invalid JSON body", "invalid_request_error")
@@ -22044,6 +22602,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._error(400, str(exc), "invalid_request_error")
             reply["auto_switch_products"] = clean
+        if "daily_activity" in payload:
+            # Strictly a JSON boolean, like the other switches: a string "false"
+            # must not be read as "on" (or the other way round).
+            raw = payload.get("daily_activity")
+            if not isinstance(raw, bool):
+                return self._error(400, "daily_activity must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_daily_activity_enabled(ACCOUNTS_DIR, raw)
+            reply["daily_activity"] = raw
         if "daily_chat_web" in payload:
             raw = payload.get("daily_chat_web")
             if not isinstance(raw, bool):
@@ -22181,6 +22748,18 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_realm_fallback_enabled(ACCOUNTS_DIR, raw)
             reply["realm_fallback_enabled"] = raw
+        if "restriction_hold_seconds" in payload:
+            raw = payload.get("restriction_hold_seconds")
+            try:
+                val = float(raw)
+                if val < 0:
+                    raise ValueError("negative")
+                saved = wb_settings.set_restriction_hold_seconds(ACCOUNTS_DIR, val)
+                clamp_restriction_holds(saved)
+                reply["restriction_hold_seconds"] = saved
+            except (ValueError, TypeError):
+                return self._error(400, "restriction_hold_seconds must be a non-negative number",
+                                   "invalid_request_error")
         if "account_max_concurrent" in payload:
             # 账号级并发上限：0 = 不限（默认，与上游一字不差）；1..10 = 每账号
             # 同时最多几个 chat 请求。严格整数，字符串 "1" 不算数（它会被当成
@@ -22280,6 +22859,20 @@ class Handler(BaseHTTPRequestHandler):
             reply["update_check_enabled"] = raw
             if UPDATES and raw:
                 # Turning it on should not wait out the rest of the poll sleep.
+                UPDATES.wake()
+        if "update_check_proxy_slot" in payload:
+            raw = payload.get("update_check_proxy_slot")
+            if not isinstance(raw, str):
+                return self._error(400, "update_check_proxy_slot must be a string",
+                                   "invalid_request_error")
+            slot_id = raw.strip()
+            if slot_id and not wb_settings.find_proxy_slot(ACCOUNTS_DIR, slot_id):
+                return self._error(400, "update_check_proxy_slot does not exist",
+                                   "invalid_request_error")
+            reply["update_check_proxy_slot"] = (
+                wb_settings.set_update_check_proxy_slot(ACCOUNTS_DIR, slot_id))
+            if UPDATES:
+                # Apply the new route on the next check without a restart.
                 UPDATES.wake()
         if "keep_backups" in payload:
             # An integer count, not a boolean-ish string: "2" would otherwise
@@ -23129,13 +23722,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_accounts_credits_fetch(self, payload):
         uid = payload.get("uid")
+        uids = payload.get("uids")
         realm = payload.get("realm")
+        group = str(payload.get("group") or "").strip()
+        if "uids" in payload and not isinstance(uids, list):
+            # 写坏了的 uids（字符串 / 对象 / null）不能落到下面的全池扫。
+            return self._error(400, "uids must be a list", "invalid_request_error")
         if uid:
             targets = [POOL.get(uid)]
+        elif isinstance(uids, list):
+            # 面板自动补快照：只补点名的这几个号（缺积分的），空列表就是什么都不刷，
+            # 绝不退化成全池扫。多于一个号时照样吃下面的单飞与拟人间隔。
+            targets = [POOL.get(u) for u in dict.fromkeys(str(x) for x in uids if x)]
         elif realm and realm != "all":
             targets = [a for a in POOL.accounts if a.realm == realm]
         else:
             targets = list(POOL.accounts)
+        if group:
+            targets = [a for a in targets if a is not None and a.group == group]
         # 多账号目标才吃单飞与拟人间隔：单账号刷新本来就只发一次请求，不该被别人的
         # 全量刷挡住，也不该为它空等一个间隔。
         multi = len([t for t in targets if t is not None]) > 1
@@ -23566,15 +24170,37 @@ class Handler(BaseHTTPRequestHandler):
     def _route_accounts_login_start(self, payload):
         platform = payload.get("platform") or "CLI"
         target_realm = payload.get("realm") or CURRENT_REALM
+        slot_id = payload.get("proxySlot")
+        if slot_id is not None and not isinstance(slot_id, str):
+            return self._error(400, "proxySlot must be a string", "invalid_request_error")
+        taken = set()
+        if slot_id == wb_accounts.LOGIN_SLOT_AUTO:
+            # "auto" must not hand out a slot a CodeArts account already uses.
+            try:
+                taken = {a.proxy_slot for a in wb_codearts.pool_for(ACCOUNTS_DIR).accounts
+                         if a.proxy_slot}
+            except Exception as exc:
+                log("login auto proxy slot: CodeArts bindings unavailable (%s)" % exc)
         try:
-            started = POOL.start_login(realm=target_realm, platform=platform)
+            started = POOL.start_login(realm=target_realm, platform=platform,
+                                       proxy_slot=slot_id, taken_slots=taken)
+        except wb_accounts.LoginProxySlotError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
         except wb_accounts.TLSVerifyError as exc:
             # The hint already names the file/variable to fix; prefixing it
             # with "could not start login" only buries it.
             return self._error(502, str(exc))
         except Exception as exc:
             return self._error(502, "could not start login: %s" % exc)
-        log("oauth login started (realm=%s, platform=%s, state=%s)" % (target_realm, platform, started["state"][:8]))
+        # A proxy URL may carry user:pass; the log and the panel only ever get
+        # its host:port (egress_exit), never the URL itself.
+        exit_label = egress_exit(started.get("proxy")) if started.get("proxy") else ""
+        started = dict(started, proxy=exit_label)
+        via = "direct"
+        if exit_label:
+            via = ("%s %s" % (started.get("proxySlot") or "", exit_label)).strip()
+        log("oauth login started (realm=%s, platform=%s, state=%s, proxy=%s)"
+            % (target_realm, platform, started["state"][:8], via))
         return self._json(200, started)
 
     def _route_accounts_login_cancel(self, payload):
@@ -23649,6 +24275,9 @@ class Handler(BaseHTTPRequestHandler):
     def _route_accounts_refresh(self, payload):
         uid = payload.get("uid")
         targets = [POOL.get(uid)] if uid else list(POOL.accounts)
+        group = str(payload.get("group") or "").strip()
+        if group:
+            targets = [a for a in targets if a is not None and a.group == group]
         results = []
         for account in targets:
             if account is None:
@@ -23732,6 +24361,9 @@ class Handler(BaseHTTPRequestHandler):
         model = payload.get("model") or TEST_MODEL_DEFAULT
         targets = [a for a in (POOL.accounts if POOL else [])
                    if a.realm == realm and a.enabled]
+        group = str(payload.get("group") or "").strip()
+        if group:
+            targets = [a for a in targets if a.group == group]
         started = time.time()
         network = probe_local_network(realm)
         rows = []
@@ -23799,6 +24431,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "no such account")
             log("account %s note set (%d chars)"
                 % (uid[:8], len(updated.get("note") or "")))
+        if "group" in payload:
+            updated = POOL.set_group(uid, payload.get("group"))
+            if updated is None:
+                return self._error(404, "no such account")
+            log("account %s group set to %r"
+                % (uid[:8], updated.get("group") or ""))
         if "disabledModels" in payload:
             # 人工黑名单：这些模型不再派给该账号，其他模型与别的账号都不受影响。
             # 传空数组 = 清空禁用。
@@ -23812,12 +24450,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(
                 400,
                 "nothing to update: pass 'enabled', 'tasksEnabled', 'proxy', "
-                "'proxySlot', 'weight' or 'note'"
+                "'proxySlot', 'weight', 'note' or 'group'"
             )
         return self._json_panel(200, {"account": updated})
 
     def _route_accounts_set_all(self, payload):
-        POOL.set_all_enabled(bool(payload.get("enabled")))
+        group = str(payload.get("group") or "").strip()
+        if group:
+            raw_enabled = payload.get("enabled")
+            if not isinstance(raw_enabled, bool):
+                return self._error(400, "enabled must be true or false",
+                                   "invalid_request_error")
+            changed = POOL.set_group_enabled(group, raw_enabled)
+            log("accounts in group %r: %d %s"
+                % (group, len(changed),
+                   "enabled" if raw_enabled else "disabled"))
+        else:
+            raw_enabled = payload.get("enabled")
+            if not isinstance(raw_enabled, bool):
+                return self._error(400, "enabled must be true or false",
+                                   "invalid_request_error")
+            POOL.set_all_enabled(raw_enabled)
         return self._json_panel(200, {"accounts": account_views()})
 
     def _route_accounts_delete(self, payload):
@@ -23922,8 +24575,14 @@ class Handler(BaseHTTPRequestHandler):
         dry_run = bool(payload.get("dryRun"))
         overwrite = bool(payload.get("overwrite"))
         forced_realm = (payload.get("realm") or "").strip().lower() or None
+        forced_group = str(payload.get("group") or "").strip()[:64]
         if forced_realm and forced_realm not in ("intl", "cn"):
             return self._error(400, "realm must be intl or cn", "invalid_request_error")
+        if forced_group:
+            # An import-level group applies to every row and wins over any stale
+            # label inside the file, just like an explicitly forced realm.
+            rows = [dict(row, group=forced_group)
+                    if isinstance(row, dict) else row for row in rows]
         if dry_run:
             # Validate every row without touching the pool so the caller can
             # see exactly what an import would do before committing to it.
@@ -24045,6 +24704,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._rate_limited(exc)
         except urllib.error.HTTPError as exc:
             detail = read_http_error(exc, 600).decode("utf-8", "replace")
+            maybe_dump_11_128(exc, detail, "responses", model, fp=fp,
+                              stream=want_stream,
+                              client_headers=getattr(self, "headers", None))
             record_error(model, exc.code, detail,
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=getattr(exc, "account_uid", None),
@@ -24399,6 +25061,9 @@ class Handler(BaseHTTPRequestHandler):
                 detail = read_http_error(exc, 600).decode("utf-8", "replace")
             except Exception:
                 detail = str(exc)
+            maybe_dump_11_128(exc, detail, "messages", model, fp=fp,
+                              stream=want_stream,
+                              client_headers=getattr(self, "headers", None))
             record_error(model, exc.code, detail,
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=getattr(exc, "account_uid", None),
@@ -24534,6 +25199,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self._panel_ok():
                 return self._error(401, "panel password required", "invalid_request_error")
             return self._handle_settings_save()
+        if path == "/settings/restriction/reset":
+            if not self._panel_ok():
+                return self._error(401, "panel password required", "invalid_request_error")
+            reset_restriction_state()
+            return self._json(200, {
+                "ok": True,
+                "message": "风控连坐暂停已立即解除 / Restriction hold cleared",
+                "restriction_holds": {},
+            })
         if path == "/updates/check":
             # Panel-only management write, like the pricing ones. No body to
             # read: the action takes no parameters, so a button that posts
@@ -24826,6 +25500,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._rate_limited(exc)
         except urllib.error.HTTPError as exc:
             detail = read_http_error(exc, 600).decode("utf-8", "replace")
+            maybe_dump_11_128(exc, detail, "chat", model, fp=fp,
+                              stream=want_stream,
+                              client_headers=getattr(self, "headers", None))
             record_error(model, exc.code, detail,
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=getattr(exc, "account_uid", None),
@@ -25355,18 +26032,89 @@ def _apply_cli_overrides(args):
     # 的第一轮巡检不能落在 --usage-dir 生效之前，否则记录会写进默认目录。
     wb_activity.set_data_dir(USAGE_DIR)
 
+class _SilentListener(Exception):
+    """A port that accepts TCP connections but never answers HTTP.
+
+    A stuck instance holds the port exactly like a healthy one: the kernel
+    completes the handshake (the listen backlog) but no thread ever writes a
+    reply. Reading that timeout as "nothing here, the port is free" let the
+    launcher start yet another copy on top of it, and on Windows -
+    SO_REUSEADDR - both sockets then keep LISTENING while the kernel hands
+    every new connection to the stuck one. The dashboard and the log viewer
+    just hang.
+    """
+
+
+def _probe_health(host, port, timeout=2.0):
+    """GET /health and return its JSON, or None when nothing answers HTTP.
+
+    Raises _SilentListener when the port accepts the connection but says
+    nothing (see above). Plain sockets, not urllib: a loopback probe must not
+    be routed through a proxy set in the environment.
+    """
+    try:
+        conn = socket.create_connection((host, port), timeout=timeout)
+    except OSError:
+        return None  # nothing listening - let the bind below decide
+    raw = b""
+    try:
+        conn.settimeout(timeout)
+        conn.sendall(("GET /health HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                      "Connection: close\r\n\r\n" % port).encode("ascii"))
+        while True:
+            try:
+                chunk = conn.recv(65536)
+            except (socket.timeout, TimeoutError):
+                if not raw:
+                    raise _SilentListener()
+                break
+            if not chunk:
+                break
+            raw += chunk
+            if len(raw) > 1 << 20:
+                break
+    except _SilentListener:
+        raise
+    except OSError:
+        # The successful TCP connection proves something owns the port.
+        return {"service": "an unknown TCP service"}
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+    if not raw:
+        raise _SilentListener()  # accepted, then hung up without a word
+    if b" 200 " not in raw.split(b"\r\n", 1)[0]:
+        return {"service": "an unknown HTTP service"}
+    body = raw.partition(b"\r\n\r\n")[2]
+    try:
+        result = json.loads(body.decode("utf-8"))
+        return result if isinstance(result, dict) else {"service": "an unknown HTTP service"}
+    except (UnicodeDecodeError, ValueError):
+        return {"service": "an unknown HTTP service"}
+
+
 def _probe_running_instance(args):
     # Refuse to start a second copy. On Windows SO_REUSEADDR lets two sockets
     # bind the same port, which silently splits incoming connections between
     # them - confusing and hard to diagnose.
+    host = args.host if args.host != "0.0.0.0" else "127.0.0.1"
     try:
-        probe = urllib.request.urlopen(
-            f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}/health",
-            timeout=2,
-        )
-        existing = json.loads(probe.read().decode("utf-8"))
-    except Exception:
-        existing = None  # nothing answering /health - let the bind below decide
+        existing = _probe_health(host, args.port)
+    except _SilentListener:
+        print()
+        print(f"  [ERROR] port {args.port} accepts connections but answers nothing:")
+        print("          a stuck wb-proxy (or another silent program) is holding it.")
+        print("          wb-proxy itself did NOT start - a second copy would only")
+        print("          split the port and leave every request hanging.")
+        print()
+        print("  Fix: stop whatever holds the port, then start again.")
+        print("          %s   (shows the PID)" % port_owner_hint(args.port))
+        print("          %s   (stops every wb-proxy on this machine)"
+              % restart_hint())
+        print()
+        raise SystemExit(1)
     if isinstance(existing, dict):
         # Only OUR /health carries the account-pool fields ("accounts"). Other
         # services can occupy the same port and also answer /health with JSON

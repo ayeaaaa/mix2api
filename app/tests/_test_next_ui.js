@@ -17,7 +17,7 @@ const proxy = fs.readFileSync(path.join(__dirname, '..', 'wb_proxy.py'), 'utf8')
 /* ---- 1. 路由与首帧标记 ---- */
 assert.ok(/path in \("\/", "\/dashboard", "\/ui", "\/classic", "\/classic\/"\)/.test(proxy),
   'wb_proxy.py 的 do_GET 应把 /、/classic 指到看板');
-assert.ok(/p === '\/classic'/.test(html) && /var next = true/.test(html) && /data-ui/.test(html),
+assert.ok(/path === '\/classic'/.test(html) && /var next = true/.test(html) && /data-ui/.test(html),
   '首帧脚本应默认新面板、仅 /classic 保留旧壳');
 assert.ok(/window\.__NEXT_UI__ = next/.test(html), '首帧脚本应暴露 window.__NEXT_UI__');
 

@@ -87,8 +87,9 @@ SEED_KNOWN_MODELS = (
 )
 SEED_MODELS = tuple(SEED_KNOWN_MODELS) + tuple(SEED_BENEFIT_MODELS)
 
-#: 华为云控制台列出的 CodeArts 对话模型。即使账号目录只发现了一部分，
-#: 模型清单也始终带上这份官方列表，保证面板能显示官方倍率。
+#: Models the Huawei Cloud console lists for the CodeArts chat backend. The
+#: account-level discovery can return only a subset; the model list still shows
+#: this official set so the panel can display the published rates.
 CODEARTS_OFFICIAL_MODELS = (
     "Kimi-K3.1-Pro", "GLM-5.3-Flash", "Kimi-K3",
     "DeepSeek-V4.1-Flash", "DeepSeek-V4.1-Flash-1017",
@@ -96,8 +97,9 @@ CODEARTS_OFFICIAL_MODELS = (
     "GLM-5.2-ArkTS-SPARK", "OpenPangu-2.0-Pro",
 )
 
-#: CodeArts 官方积分消耗系数。值为「每 1 token 的积分倍率」，
-#: 与 WorkBuddy 的 credits 字段同口径，只用于面板展示与估算。
+#: Published CodeArts credit multiplier per model. The value has the same
+#: shape as the WorkBuddy `credits` field; it is metadata for the panel and
+#: does not change token accounting.
 CODEARTS_CREDITS = {
     "kimi-k3.1-pro": "1.63",
     "glm-5.3-flash": "0.08",
@@ -109,8 +111,8 @@ CODEARTS_CREDITS = {
     "openpangu-2.0-pro": "0.7",
 }
 
-#: 分时计价的模型：(高峰倍率, 错峰倍率)。高峰 08:00–20:59，
-#: 错峰 21:00–次日 07:59，按本机时区计算。
+#: Time-of-day rates: (peak, off-peak). Peak is 08:00-20:59 local time;
+#: off-peak is 21:00-07:59.
 CODEARTS_PEAK_CREDITS = {
     "deepseek-v4.1-flash": ("0.18", "0.09"),
     "deepseek-v4.1-flash-1017": ("0.18", "0.12"),
@@ -118,20 +120,13 @@ CODEARTS_PEAK_CREDITS = {
 
 
 def codearts_credit_info(mid, now=None):
-    """Return (current_rate, note, peak_rate, offpeak_rate) for a model.
-
-    The note is empty for flat-rate models. Peak/off-peak rates are returned
-    separately so API consumers can show the full schedule without parsing
-    the note.
-    """
+    """Return (current_rate, note, peak_rate, offpeak_rate) for a model."""
     key = str(mid or "").strip().lower()
     peak = CODEARTS_PEAK_CREDITS.get(key)
     if peak:
         hour = time.localtime(now if now is not None else time.time()).tm_hour
-        is_peak = 8 <= hour <= 20
-        rate = peak[0] if is_peak else peak[1]
-        note = "高峰 %sx / 错峰 %sx" % peak
-        return rate, note, peak[0], peak[1]
+        rate = peak[0] if 8 <= hour <= 20 else peak[1]
+        return rate, "peak %sx / off-peak %sx" % peak, peak[0], peak[1]
     rate = CODEARTS_CREDITS.get(key, "")
     return rate, "", rate, rate
 
@@ -175,6 +170,12 @@ REASONING_EFFORTS = {
     # Always-thinking model: upstream explicitly says only low/high/max.
     "glm-5.3-flash": ["low", "high", "max"],
 }
+
+#: The upstream rejects an output-token request above the model's advertised
+#: limit with "The request param is invalid" instead of clamping it. When the
+#: catalogue has no limit (discovery failed), 65536 is the conservative cap
+#: verified for the CodeArts chat models.
+DEFAULT_MAX_OUTPUT_TOKENS = 65536
 
 
 def _requested_effort(payload):
@@ -1201,6 +1202,7 @@ def _merge_models(sets):
                                         if isinstance(item.get("supports_images"), bool)
                                         else None),
                     "model_category": str(item.get("model_category") or ""),
+                    "credits": str(item.get("credits") or ""),
                 }
                 continue
             if not current.get("context_window") and item.get("context_window"):
@@ -1218,6 +1220,8 @@ def _merge_models(sets):
                 current["supports_images"] = False
             if not current.get("model_category") and item.get("model_category"):
                 current["model_category"] = item["model_category"]
+            if not current.get("credits") and item.get("credits"):
+                current["credits"] = item["credits"]
     return list(merged.values())
 
 
@@ -1270,6 +1274,30 @@ def _fetch_agent_models(acct, timeout):
     return out
 
 
+def _credit_label(rows):
+    """The multiplier a request normally pays, in the catalogue's `x0.18` form.
+
+    `credit` holds one row per input-length tier and, on some models, one per
+    time slot. An `off_peak` row is a discount (its `before_display_ratio` is
+    the regular rate), so it must not be advertised as the model's price. A
+    model without a usable row stays blank: no multiplier does not mean free.
+    """
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        if row.get("time_slot_id") not in (None, "", "default"):
+            continue
+        text = str(row.get("ratio_display") or "").strip().lower()
+        if not text.endswith("x"):
+            continue
+        try:
+            float(text[:-1])
+        except ValueError:
+            continue
+        return "x" + text[:-1]
+    return ""
+
+
 def _fetch_builtin_models(acct, timeout):
     data = signed_get(acct, SNAP_HOST + EP_MODEL_BUILTIN,
                       timeout=timeout, agent_type="PromptCenter")
@@ -1289,6 +1317,7 @@ def _fetch_builtin_models(acct, timeout):
                                 if isinstance(item.get("supports_images"), bool)
                                 else None),
             "model_category": str(item.get("model_category") or ""),
+            "credits": _credit_label(item.get("credit")),
         })
     return out
 
@@ -1449,11 +1478,13 @@ def model_entries(config):
             entry["benefit"] = True
         rate, rate_note, peak_rate, offpeak_rate = codearts_credit_info(item["id"])
         if rate:
-            entry["credits"] = rate
-            entry["credits_peak"] = peak_rate
-            entry["credits_offpeak"] = offpeak_rate
+            entry["credits"] = "x" + rate
+            entry["credits_peak"] = "x" + peak_rate
+            entry["credits_offpeak"] = "x" + offpeak_rate
             if rate_note:
                 entry["credits_note"] = rate_note
+        elif item.get("credits"):
+            entry["credits"] = item["credits"]
         supports = item.get("supports_images")
         if not isinstance(supports, bool):
             supports = _known_vision(item["id"])
@@ -1705,6 +1736,9 @@ def build_chat_body(payload, session_key=None):
             body.pop("tool_choice", None)
     if not body.get("tools"):
         body.pop("tool_choice", None)
+    stop = body.get("stop")
+    if isinstance(stop, str):
+        body["stop"] = [stop]
     if body.get("max_completion_tokens") is not None and body.get("max_tokens") is None:
         body["max_tokens"] = body.pop("max_completion_tokens")
     chat_id = payload.get("conversation_id")
@@ -1798,9 +1832,14 @@ class CodeArtsStream(object):
             return
         code = payload.get("error_code") or payload.get("code")
         if code not in (None, "", 0, "0"):
-            raise CodeArtsUpstreamError(
-                str(payload.get("error_msg") or payload.get("message") or text)[:300],
-                code=str(code))
+            message = str(payload.get("error_msg") or payload.get("message")
+                          or text)[:300]
+            lowered = message.lower()
+            if ("request param is invalid" in lowered
+                    or "request model is not multimodal" in lowered
+                    or "tool function cannot empty" in lowered):
+                raise CodeArtsBadRequest(message, status=400, code=str(code))
+            raise CodeArtsUpstreamError(message, code=str(code))
 
     def _chunk(self, delta, finish=None):
         payload = {
@@ -1947,6 +1986,53 @@ def _is_concurrency_message(message):
             in text)
 
 
+def _model_output_limit(acct, model):
+    """Advertised output limit for the canonical CodeArts model."""
+    key = str(model or "").strip().lower()
+    for item in acct.models or ():
+        if str(item.get("id") or "").strip().lower() != key:
+            continue
+        for field in ("max_tokens", "max_output_tokens",
+                      "max_completion_tokens"):
+            try:
+                value = int(item.get(field) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+    try:
+        _ctx, value = _wb_catalog_limits(model)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _clamp_output_tokens(acct, model, body):
+    """Keep an explicit output limit within what CodeArts advertises."""
+    key = "max_tokens" if body.get("max_tokens") is not None else (
+        "max_completion_tokens" if body.get("max_completion_tokens") is not None
+        else "")
+    if not key:
+        return
+    raw = body.get(key)
+    if isinstance(raw, bool):
+        raise CodeArtsBadRequest("%s must be a positive integer" % key,
+                                 status=400)
+    try:
+        requested = int(raw)
+    except (TypeError, ValueError):
+        raise CodeArtsBadRequest("%s must be a positive integer" % key,
+                                 status=400)
+    if requested <= 0:
+        raise CodeArtsBadRequest("%s must be a positive integer" % key,
+                                 status=400)
+    limit = _model_output_limit(acct, model)
+    if requested > limit:
+        body[key] = limit
+
+
 def _client_chat(acct, body, session_key):
     model = _canonical_model(acct, body.get("model"))
     chat_id = body.get("chat_id") or _derive_chat_id(session_key, body.get("messages"))
@@ -1960,6 +2046,7 @@ def _client_chat(acct, body, session_key):
     upstream_body["prompt_cache_key"] = chat_id
     upstream_body["stream"] = True
     upstream_body["tool_stream"] = True
+    _clamp_output_tokens(acct, model, upstream_body)
     raw = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
     headers = _chat_headers(acct, chat_id, session_id, acct.is_benefit(model))
     headers = _signed_headers(acct, "POST", SNAP_HOST + EP_CHAT, headers, raw)
