@@ -30,9 +30,11 @@ import urllib.request
 
 import wb_settings
 
-# 默认仍指向官方仓库。自建 fork 的 systemd 服务可通过 WB_UPDATE_REPO 指定
-# 自己的 Release 源；该值只允许 owner/repo 形状，避免把更新请求导向任意主机。
-DEFAULT_REPOSITORY = "ardeyouxipianyi/workbuddy2api-hub"
+# 默认指向 mix2api 自己的 Release 源（公开仓库，匿名可读）。配置 GITHUB_TOKEN
+# 可把 API 配额从 60 次/小时提高到 5000 次/小时；未配置也不影响检查。部署方可
+# 通过 WB_UPDATE_REPO 指定其它 Release 源；该值只允许 owner/repo 形状，避免把
+# 更新请求导向任意主机。
+DEFAULT_REPOSITORY = "ayeaaaa/mix2api"
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 

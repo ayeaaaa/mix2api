@@ -4,11 +4,11 @@
 > `deploy/docker-compose.yml`（本地构建）或本仓库发布的镜像。
 
 > [!IMPORTANT]
-> **项目进入低频维护（2026-10-23） / Low-frequency maintenance**
+> **上游已归档，mix2api 继续维护（2026-11-06）**
 >
-> 大幅降低更新频率与 Issue / PR 处理速度。请先阅读风险说明，再决定是否继续使用。
+> WorkBuddy2API-Hub 已发布 v2.0.0 后停止维护；mix2api 自 v1.5.0 起以 v2.0.0 为基线继续维护。
 >
-> Updates and responses to issues / pull requests will be significantly reduced. Read the risk notice below before continuing.
+> The upstream project ended at v2.0.0; mix2api continues maintenance from v1.5.0.
 
 > [!WARNING]
 > **WorkBuddy 上游正在收紧对非官方客户端的识别与拦截。**
@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.4.0-2496ED?style=flat-square" alt="Version 1.4.0"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.5.0-2496ED?style=flat-square" alt="Version 1.5.0"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -213,7 +213,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 273 个套件：205 个 Python + 68 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 274 个套件：206 个 Python + 68 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -519,6 +519,10 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.5.0
+
+- **接管上游最终版**：WorkBuddy2API-Hub 发布 v2.0.0 后停止维护，mix2api 自本版本起以 v2.0.0 为基线继续维护。并入用量聚合缓存补写（#805）、设置页分组语言切换修复（#804）与缺失文档；更新检查默认仓库改为 `ayeaaaa/mix2api`。 / **Takes over the final upstream release**: WorkBuddy2API-Hub ended at v2.0.0, and mix2api continues from that baseline. Includes the usage aggregate cache retry/backfill (#805), settings-group i18n fix (#804) and missing docs; update checks now target `ayeaaaa/mix2api`.
 
 - **CodeArts 第三出口（单进程）**：新增 `codearts` 出口，看板可在 `国际版 / 国内版 / CodeArts` 之间切换；`/v1/models`、`/v1/chat/completions`、`/v1/responses` 与 Anthropic Messages 都由本进程直连华为云。CodeArts 的 OAuth（PKCE + DPoP）、token 续期、账号池、模型发现（含限时福利）、聊天 SSE 与签到全部在 Python 进程内完成，不再依赖独立的 codearts2api 服务。看板「账号」页新增 CodeArts 视图，支持 OAuth 添加、启用/停用、清冷却、签到、删除；管理端点只接受面板会话，华为云凭据不出本机。默认关闭，未启用时行为与旧版一致。 / **CodeArts as a third exit, single process**: a new `codearts` realm that the panel can switch to alongside Global and China; `/v1/models`, `/v1/chat/completions`, `/v1/responses` and Anthropic Messages all talk to Huawei Cloud directly from this process. CodeArts OAuth (PKCE + DPoP), token renewal, the account pool, model discovery (including benefit models), the chat SSE stream and check-in all run inside the Python process, with no separate codearts2api service. The Accounts page gains a CodeArts view with OAuth add, enable/disable, cooldown clearing, check-in and delete; the management endpoints require a panel session and Huawei credentials never leave the machine. Off by default, so an unenabled install behaves exactly as before.
 - **CodeArts 账号代理槽**：CodeArts 账号可像 WorkBuddy 账号一样绑定「账号代理槽」，聊天、模型发现、token 续期、签到和积分查询都走绑定的出口；槽位地址变化自动跟随，禁用/删除槽位回退直连。首次 OAuth 换取 token 时还没有账号，仍直连。 / **CodeArts proxy slots**: CodeArts accounts can bind to the same account proxy slots as WorkBuddy accounts; chat, model discovery, token renewal, check-in and credit queries all use the bound exit. Slot URL changes follow automatically, while disabling/deleting a slot falls back to direct. The initial OAuth token exchange has no account yet and stays direct.

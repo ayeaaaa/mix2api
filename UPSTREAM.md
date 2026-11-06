@@ -1,11 +1,17 @@
-# 上游快照与同步
+# 上游快照与维护状态
 
 本仓库只有一个运行中的服务：`app/`（Python）。`reference/codearts2api/` 是 Go 版 codearts2api 的源码快照，仅用于协议移植对照，**不参与构建、不运行**。
 
 | 目录 | 上游 | 基线 commit | 基线版本 |
 |---|---|---|---|
-| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `6e1e548` | v1.10.11 |
+| `app/` | https://github.com/ardeyouxipianyi/workbuddy2api-hub | `d234396` | v2.0.0（最终版） |
 | `reference/codearts2api/` | https://github.com/HITZY2002/codearts2api | `8d1e43d` | — |
+
+## 维护状态
+
+WorkBuddy2API-Hub 已于 **2026-11-06** 发布 v2.0.0 后停止维护：不再更新代码、不跟进上游变化、不再处理新的 issue / PR。
+
+**mix2api 自 v1.5.0 起接管维护。** 后续功能、修复与发布都在本仓库进行，不再有“同步上游”流程。上游 v2.0.0 的用量聚合缓存补写（#805）与设置页分组语言切换修复（#804）已并入本仓库；更早的 v1.9.3–v1.10.11 变更记录已补进 `app/docs/CHANGELOG.md`。
 
 ## 本仓库相对上游的改动
 
@@ -22,9 +28,9 @@
 - 仅保留源码与测试作为协议参考；本仓库的 Python 实现按它的 `signer.go`、`dpop.go`、`client.go`、`sse.go`、`models.go`、`checkin.go`、`pool.go`、`oauth.go` 移植。
 - 不再构建、不再部署；根目录 compose 只有 `hub` 一个服务。
 
-## 已同步的上游版本（v1.10.x）
+## 已同步的上游版本（历史）
 
-本仓库已整体同步到上游 `6e1e548` / v1.10.11，保留 mix2api 自己的品牌、面板、发布体系和本地默认配置。上游的媒体生成模块（`wb_media.py` / `wb_media_client.py` / `wb_media_tasks.py`）、CodeArts 新签到活动、设置并发保护、目录/价格快照、账号分组与分页、登录出口代理槽、413 响应以及 v1.10.5–v1.10.11 的修复均已进入本仓库。
+本仓库已整体同步到上游最终版 `d234396` / v2.0.0，保留 mix2api 自己的品牌、面板、发布体系和本地默认配置。上游的媒体生成模块（`wb_media.py` / `wb_media_client.py` / `wb_media_tasks.py`）、CodeArts 新签到活动、设置并发保护、目录/价格快照、账号分组与分页、登录出口代理槽、413 响应、用量聚合缓存补写以及 v1.10.5–v2.0.0 的修复均已进入本仓库。
 
 以下为 v1.10.0 – v1.10.4 的 CodeArts 修复记录（保留作历史说明）：
 
@@ -42,12 +48,12 @@
 
 本仓库的 `wb_scheduler.py` 仍保留 CodeArts 独立保活/签到巡检；`wb_codearts.py` 保留单进程 CodeArts 实现与本地视觉支持，只回移上游的协议修复，不做整文件替换。
 
-## 同步上游
+## 维护约定（接管后）
 
-1. 拉上游最新 tag/commit，先跑上游自己的测试。
-2. 用 `git diff <基线>..<上游新版本>` 看上游改了什么。
-3. 把上游改动重放到 `app/`；冲突时**两边都留**：上游的新行为不能丢，本仓库的 CodeArts 集成也不能丢。
-4. 更新本文件的基线 commit 与版本。
-5. 跑 `cd app && python3 tests/run_all.py`。
+1. 新功能、修复直接在本仓库 `app/` 进行；不再从上游同步。
+2. 改动必须带回归测试；提交前跑 `cd app && python3 tests/run_all.py`。
+3. 版本号写在 `app/wb_proxy.py` 的两处（`runtime_settings_view()` 的 `version` 与 `Handler.server_version`）。打 `v<version>` tag 时，CI 会断言 tag 与源码版本一致；Docker 镜像由 `.github/workflows/docker.yml` 发布。
+4. `app/dashboard.html` 是单文件，修改尽量小步；改完跑 JS 套件。
+5. 发布说明写在 `docs/releases/`。
 
-不要用「取一侧」的方式解冲突；`app/dashboard.html` 是单文件，整块覆盖最容易把上游的修复弄丢。
+历史同步流程（已停用）：先跑上游测试，再看 `git diff <基线>..<新版本>`，把改动重放到 `app/`；冲突时两边都留，不要用「取一侧」的方式解冲突。
