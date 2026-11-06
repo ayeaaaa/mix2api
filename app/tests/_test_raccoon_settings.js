@@ -201,6 +201,29 @@ const byId = id => document.getElementById(id);
   assert.equal(api.i18n.translate('固定小浣熊出口'), 'Raccoon exit only', 'Key 出口');
   assert.equal(api.i18n.translate('保存小浣熊设置'), 'Save Raccoon settings', '设置保存');
 
+  // 新页面的说明 / 帮助 / 动态提示也必须能整句翻译，不能只覆盖按钮。
+  assert.equal(api.i18n.translate(
+    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。'),
+    'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. Raccoon exposes no credits or check-in API.',
+    '设置说明');
+  assert.equal(api.i18n.translate(
+    '浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。'),
+    'The browser and this gateway must share loopback (the same machine). Remote users should import auth.json; QR-code and password login are not available in v1.6.0.',
+    'loopback 提示');
+  assert.equal(api.i18n.translate(
+    '粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。'),
+    'Paste the full auth.json from the desktop client, or the {"data": {...}} object from an auth response.',
+    '导入帮助');
+  assert.equal(api.i18n.translate(
+    '点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。'),
+    'Click Start browser authorization to create a link; this page polls for the result automatically once authorization finishes.',
+    '浏览器授权帮助');
+  assert.equal(api.i18n.translate('2 个账号，1 个健康；账号在「账号」页的小浣熊视图管理。'),
+    '2 accounts, 1 healthy; manage accounts in the Raccoon view on the Accounts page.',
+    '账号提示');
+  assert.equal(api.i18n.translate('登录成功'), 'Signed in', '成功提示');
+  assert.equal(api.i18n.translate('授权失败'), 'Authorization failed', '失败提示');
+
   console.log('raccoon settings/label assertions passed');
 })().catch(error => {
   console.log = realLog;

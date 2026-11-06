@@ -520,6 +520,9 @@ a:hover{text-decoration:underline}
 .realm-badge-intl{color:#2c6e9e;background:rgba(106,155,204,.14);border:1px solid rgba(106,155,204,.35);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-cn{color:#a03c32;background:rgba(201,100,66,.12);border:1px solid rgba(201,100,66,.32);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-codearts{color:#5b3fa0;background:rgba(124,92,214,.13);border:1px solid rgba(124,92,214,.34);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+.raccoon-auth-tabs{display:flex;gap:8px;margin-bottom:14px}
+.raccoon-auth-tabs button{border:1px solid var(--line);background:var(--panel2);color:var(--dim);padding:6px 14px;border-radius:8px;font:inherit;cursor:pointer}
+.raccoon-auth-tabs button.active{border-color:var(--accent);color:var(--accent);background:var(--panel);font-weight:600}
 .realm-badge-raccoon{color:#0f766e;background:rgba(15,118,110,.12);border:1px solid rgba(15,118,110,.30);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .badge-effort{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:var(--think-soft);color:var(--think);border:1px solid rgba(138,106,150,.3);font-weight:600}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
@@ -1212,11 +1215,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .realm-tag{font-size:10px;font-weight:650;border-radius:5px;padding:1px 6px;line-height:15px;letter-spacing:.02em}
 #pageAnalytics .realm-intl{color:#17527e;background:#d9e9f7;border:1px solid #b3d0e8}
 #pageAnalytics .realm-cn{color:#8a3a22;background:#f7ded2;border:1px solid #eabfa9}
-#pageAnalytics .realm-codearts{color:#5b3fa0;background:#ece7fa;border:1px solid #d6c9f4}
 #pageAnalytics .realm-raccoon{color:#0f766e;background:#ccfbf1;border:1px solid #99f6e4}
 [data-theme="dark"] #pageAnalytics .realm-intl{color:#b5d6f5;background:rgba(106,155,204,.32);border-color:rgba(106,155,204,.5)}
 [data-theme="dark"] #pageAnalytics .realm-cn{color:#f5bd9f;background:rgba(201,100,66,.32);border-color:rgba(201,100,66,.55)}
-[data-theme="dark"] #pageAnalytics .realm-codearts{color:#c4b1f5;background:rgba(124,92,214,.30);border-color:rgba(124,92,214,.5)}
 [data-theme="dark"] #pageAnalytics .realm-raccoon{color:#5eead4;background:rgba(20,184,166,.28);border-color:rgba(20,184,166,.5)}
 #pageAnalytics .minibar{position:relative;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:70px}
 #pageAnalytics .minibar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-color,var(--accent));opacity:.75}
@@ -2466,6 +2467,12 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '停任务': 'Pause tasks',
     '开任务': 'Enable tasks',
     '浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。': 'The browser and this gateway must share loopback (the same machine). Remote users should import auth.json; QR-code and password login are not available in v1.6.0.',
+    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。': 'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. Raccoon exposes no credits or check-in API.',
+    '粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。': 'Paste the full auth.json from the desktop client, or the {"data": {...}} object from an auth response.',
+    '点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。': 'Click Start browser authorization to create a link; this page polls for the result automatically once authorization finishes.',
+    '登录成功': 'Signed in',
+    '授权失败': 'Authorization failed',
+    '查询失败: ': 'Poll failed: ',
     '保存失败: ': 'Save failed: ',
     '操作失败: ': 'Action failed: ',
     '签到失败: ': 'Check-in failed: ',
@@ -4358,7 +4365,8 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     [/共 (\d+) 个，启用 (\d+) 个/, function(m, a, b){ return a + ' total, ' + b + ' enabled'; }],
     [/含失败共 ([\d,]+) 次/, function(m, n){ return n + ' calls including failures'; }],
     [/失败 ([\d,]+) 次/, function(m, n){ return n + ' failed'; }],
-    [/已绑定 (\d+) 个账号/, function(m, n){ return n + ' accounts bound'; }]
+    [/已绑定 (\d+) 个账号/, function(m, n){ return n + ' accounts bound'; }],
+    [/^(\d+) 个账号，(\d+) 个健康；账号在「账号」页的小浣熊视图管理。$/, function(m, a, b){ return a + ' accounts, ' + b + ' healthy; manage accounts in the Raccoon view on the Accounts page.'; }]
   ];
   var KEYS = Object.keys(DICT);
   KEYS.sort(function(a, b){ return b.length - a.length; });
@@ -6418,10 +6426,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
 
     <section data-cat="network" id="raccoonSettingsSection">
       <h2>小浣熊接入 <em id="setRaccoonState"></em></h2>
-      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
-        第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、
-        token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。
-      </div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
           <input id="raccoonEnabled" type="checkbox" style="width:16px;height:16px">
@@ -7607,41 +7612,42 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button class="modal-x" onclick="closeRaccoonAuth()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <div style="font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.7">
-        浏览器授权要求浏览器和本网关共享 loopback（同一台机器）。远程用户请导入 auth.json；
-        v1.6.0 暂不支持扫码或密码登录。
+      <div style="font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.7">浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。</div>
+      <div class="raccoon-auth-tabs" role="tablist">
+        <button type="button" id="raccoonAuthTabImport" class="active" role="tab" aria-selected="true" onclick="switchRaccoonAuthTab('import')">导入 auth.json</button>
+        <button type="button" id="raccoonAuthTabBrowser" role="tab" aria-selected="false" onclick="switchRaccoonAuthTab('browser')">浏览器授权</button>
       </div>
-      <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px">导入 auth.json</div>
-        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
-          粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 <code>{"data": {...}}</code>。
-        </div>
-        <textarea id="raccoonAuthInput" rows="5" placeholder="粘贴 auth.json 原文（JSON）"
-                  style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:12px/1.5 var(--mono,monospace);resize:vertical"></textarea>
-        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <button onclick="importRaccoonAuth(this)">导入 auth.json</button>
+      <div id="raccoonAuthPaneImport" role="tabpanel">
+        <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px">导入 auth.json</div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:8px">粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。</div>
+          <textarea id="raccoonAuthInput" rows="5" placeholder="粘贴 auth.json 原文（JSON）"
+                    style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:12px/1.5 var(--mono,monospace);resize:vertical"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button onclick="importRaccoonAuth(this)">导入 auth.json</button>
+          </div>
         </div>
       </div>
-      <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px">浏览器授权</div>
-        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
-          点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。
-        </div>
-        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-          <button class="sec" onclick="startRaccoonOauth(this)">开始浏览器授权</button>
-        </div>
-        <div style="font-size:12px;color:var(--dim);margin-bottom:4px">授权链接</div>
-        <div id="raccoonAuthUrl" class="mono" style="word-break:break-all;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:38px"></div>
-        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-          <button class="sec" onclick="openRaccoonAuthUrl()">打开授权页</button>
-          <button class="sec" onclick="copyRaccoonAuthUrl(this)">复制授权链接</button>
-          <button class="sec" onclick="pollRaccoonOauth(false)">我已授权</button>
-        </div>
-        <div style="font-size:12px;color:var(--dim);margin:14px 0 4px">远端回调（可选）</div>
-        <input id="raccoonAuthCallback" type="text" placeholder="http://127.0.0.1:.../raccoon/oauth/callback?..."
-               style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
-        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <button class="sec" onclick="submitRaccoonCallback(this)">中转回调</button>
+      <div id="raccoonAuthPaneBrowser" role="tabpanel" style="display:none">
+        <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px">浏览器授权</div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:8px">点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+            <button class="sec" onclick="startRaccoonOauth(this)">开始浏览器授权</button>
+          </div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">授权链接</div>
+          <div id="raccoonAuthUrl" class="mono" style="word-break:break-all;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:38px"></div>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button class="sec" onclick="openRaccoonAuthUrl()">打开授权页</button>
+            <button class="sec" onclick="copyRaccoonAuthUrl(this)">复制授权链接</button>
+            <button class="sec" onclick="pollRaccoonOauth(false)">我已授权</button>
+          </div>
+          <div style="font-size:12px;color:var(--dim);margin:14px 0 4px">远端回调（可选）</div>
+          <input id="raccoonAuthCallback" type="text" placeholder="http://127.0.0.1:.../raccoon/oauth/callback?..."
+                 style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="sec" onclick="submitRaccoonCallback(this)">中转回调</button>
+          </div>
         </div>
       </div>
       <div id="raccoonAuthStatus" style="font-size:12px;color:var(--dim);margin-top:12px;min-height:18px"></div>
@@ -8785,6 +8791,9 @@ function raccoonEditNote(uid){
 let RACCOON_OAUTH_SESSION = "";
 let RACCOON_OAUTH_TIMER = null;
 let RACCOON_OAUTH_DEADLINE = 0;
+let RACCOON_OAUTH_GEN = 0;
+let RACCOON_OAUTH_ERRORS = 0;
+const RACCOON_OAUTH_MAX_ERRORS = 5;
 
 function setRaccoonOauthStatus(msg, ok){
   const el = document.getElementById("raccoonAuthStatus");
@@ -8797,7 +8806,26 @@ function stopRaccoonOauthPolling(){
   if(RACCOON_OAUTH_TIMER){ clearInterval(RACCOON_OAUTH_TIMER); RACCOON_OAUTH_TIMER = null; }
 }
 
+function switchRaccoonAuthTab(name){
+  const browser = name === "browser";
+  const importPane = document.getElementById("raccoonAuthPaneImport");
+  const browserPane = document.getElementById("raccoonAuthPaneBrowser");
+  if(importPane) importPane.style.display = browser ? "none" : "";
+  if(browserPane) browserPane.style.display = browser ? "" : "none";
+  const importTab = document.getElementById("raccoonAuthTabImport");
+  const browserTab = document.getElementById("raccoonAuthTabBrowser");
+  if(importTab){
+    importTab.classList.toggle("active", !browser);
+    importTab.setAttribute("aria-selected", browser ? "false" : "true");
+  }
+  if(browserTab){
+    browserTab.classList.toggle("active", browser);
+    browserTab.setAttribute("aria-selected", browser ? "true" : "false");
+  }
+}
+
 function openRaccoonAuth(){
+  RACCOON_OAUTH_GEN += 1;
   const modal = document.getElementById("raccoonAuthModal");
   if(modal) modal.classList.add("show");
   const input = document.getElementById("raccoonAuthInput");
@@ -8809,26 +8837,36 @@ function openRaccoonAuth(){
   stopRaccoonOauthPolling();
   RACCOON_OAUTH_SESSION = "";
   RACCOON_OAUTH_DEADLINE = 0;
+  RACCOON_OAUTH_ERRORS = 0;
+  switchRaccoonAuthTab("import");
   setRaccoonOauthStatus("可粘贴 auth.json 导入，或点击「开始浏览器授权」。", null);
 }
 
 function closeRaccoonAuth(){
+  RACCOON_OAUTH_GEN += 1;
   stopRaccoonOauthPolling();
   RACCOON_OAUTH_SESSION = "";
   RACCOON_OAUTH_DEADLINE = 0;
+  RACCOON_OAUTH_ERRORS = 0;
+  const input = document.getElementById("raccoonAuthInput");
+  if(input) input.value = "";
   const modal = document.getElementById("raccoonAuthModal");
   if(modal) modal.classList.remove("show");
 }
 
 async function startRaccoonOauth(btn){
+  const gen = ++RACCOON_OAUTH_GEN;
   stopRaccoonOauthPolling();
   RACCOON_OAUTH_SESSION = "";
   RACCOON_OAUTH_DEADLINE = 0;
+  RACCOON_OAUTH_ERRORS = 0;
   const url = document.getElementById("raccoonAuthUrl");
   if(url) url.textContent = "";
   if(btn) btn.disabled = true;
   try{
     const r = await postJSON("/raccoon/accounts/oauth/start", {});
+    const modal = document.getElementById("raccoonAuthModal");
+    if(gen !== RACCOON_OAUTH_GEN || !modal || !modal.classList.contains("show")) return;
     RACCOON_OAUTH_SESSION = r.session_id || "";
     if(!RACCOON_OAUTH_SESSION) throw new Error("服务端没有返回授权会话");
     if(url) url.textContent = r.auth_url || "";
@@ -8836,6 +8874,7 @@ async function startRaccoonOauth(btn){
     RACCOON_OAUTH_DEADLINE = Date.now() + 300000;
     RACCOON_OAUTH_TIMER = setInterval(function(){ pollRaccoonOauth(true); }, 1500);
   }catch(e){
+    if(gen !== RACCOON_OAUTH_GEN) return;
     setRaccoonOauthStatus("授权发起失败: " + e.message, false);
   }finally{
     if(btn) btn.disabled = false;
@@ -8844,6 +8883,7 @@ async function startRaccoonOauth(btn){
 
 async function pollRaccoonOauth(silent){
   if(!RACCOON_OAUTH_SESSION) return;
+  const gen = RACCOON_OAUTH_GEN;
   if(RACCOON_OAUTH_DEADLINE && Date.now() > RACCOON_OAUTH_DEADLINE){
     stopRaccoonOauthPolling();
     RACCOON_OAUTH_SESSION = "";
@@ -8853,7 +8893,9 @@ async function pollRaccoonOauth(silent){
   try{
     const r = await postJSON("/raccoon/accounts/oauth/poll",
                              {session_id: RACCOON_OAUTH_SESSION});
+    if(gen !== RACCOON_OAUTH_GEN) return;
     if(r.status === "pending"){
+      RACCOON_OAUTH_ERRORS = 0;
       setRaccoonOauthStatus(r.message || "等待浏览器完成授权…", null);
       return;
     }
@@ -8861,7 +8903,9 @@ async function pollRaccoonOauth(silent){
       stopRaccoonOauthPolling();
       RACCOON_OAUTH_SESSION = "";
       RACCOON_OAUTH_DEADLINE = 0;
+      RACCOON_OAUTH_ERRORS = 0;
       setRaccoonOauthStatus("✓ " + (r.message || "登录成功"), true);
+      toast("✓ " + (r.message || "登录成功"), "ok");
       await Promise.all([
         loadRaccoonOverview(true).catch(function(){}),
         loadAccounts().catch(function(){}),
@@ -8874,8 +8918,21 @@ async function pollRaccoonOauth(silent){
     stopRaccoonOauthPolling();
     RACCOON_OAUTH_SESSION = "";
     RACCOON_OAUTH_DEADLINE = 0;
+    RACCOON_OAUTH_ERRORS = 0;
     setRaccoonOauthStatus("✗ " + (r.message || "授权失败"), false);
   }catch(e){
+    if(gen !== RACCOON_OAUTH_GEN) return;
+    RACCOON_OAUTH_ERRORS += 1;
+    const fatal = (e && e.status >= 400 && e.status < 500)
+      || RACCOON_OAUTH_ERRORS >= RACCOON_OAUTH_MAX_ERRORS;
+    if(fatal){
+      stopRaccoonOauthPolling();
+      RACCOON_OAUTH_SESSION = "";
+      RACCOON_OAUTH_DEADLINE = 0;
+      RACCOON_OAUTH_ERRORS = 0;
+      setRaccoonOauthStatus("✗ " + (e.message || "查询失败"), false);
+      return;
+    }
     if(!silent) setRaccoonOauthStatus("查询失败: " + e.message, false);
   }
 }
@@ -8953,6 +9010,7 @@ async function importRaccoonAuth(btn){
   const parsed = parseRaccoonAuthText(input ? input.value : "");
   if(parsed.error){
     setRaccoonOauthStatus(parsed.error, false);
+    toast(parsed.error, "bad");
     return;
   }
   if(btn) btn.disabled = true;
@@ -10924,8 +10982,17 @@ async function postJSON(url, body){
   const t = await r.text();
   let parsed = {};
   try { parsed = t ? JSON.parse(t) : {}; } catch(e) { parsed = {raw: t}; }
-  if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
-  if(!r.ok) throw new Error((parsed.error && parsed.error.message) || r.status);
+  if(r.status === 401 || r.status === 403){
+    panelSessionLost();
+    const err = new Error('unauthorized');
+    err.status = r.status;
+    throw err;
+  }
+  if(!r.ok){
+    const err = new Error((parsed.error && parsed.error.message) || r.status);
+    err.status = r.status;
+    throw err;
+  }
   return parsed;
 }
 function toast(msg, kind){
@@ -20308,7 +20375,6 @@ function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
-  if(k.realm === 'codearts') return '<span class="realm-tag realm-codearts" style="font-size:10px">CodeArts</span>';
   if(k.realm === 'raccoon') return '<span class="realm-tag realm-raccoon" style="font-size:10px">小浣熊</span>';
   // realm 为空的 Key 不绑出口，而是跟着模型走：它可能两个出口都用过，
   // 那时代理返回的积分是两个价格体系相加的结果，必须说出来。
@@ -21052,11 +21118,10 @@ const dimDefs = {
       const a = state.analytics; if (!a) return [];
       return (a.accounts || []).map(acc => {
         const realm = acc.realm === 'cn' ? ['cn', '国内版']
-          : (acc.realm === 'codearts' ? ['codearts', 'CodeArts']
-          : (acc.realm === 'raccoon' ? ['raccoon', '小浣熊'] : ['intl', '国际版']));
+          : (acc.realm === 'raccoon' ? ['raccoon', '小浣熊'] : ['intl', '国际版']);
         return {
           key: acc.uid,
-          who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag realm-${realm[0]}">${realm[1]}</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
+          who: `<div class="who"><b>${esc(acc.nickname || String(acc.uid || '').slice(0,8))} <span class="realm-tag realm-${realm[0]}">${realm[1]}</span></b><span data-tip="UID：${esc(acc.uid || '')}">${esc(String(acc.uid || '').slice(0,13))}…</span></div>`,
           req: acc.window.requests,
           tok: acc.window.total_tokens,
           tokSub: `思考 ${fmtCompact(acc.window.reasoning_tokens)} · 缓存 ${fmtCompact(acc.window.cached_tokens)}`,

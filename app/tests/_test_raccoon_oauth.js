@@ -16,9 +16,14 @@ const script = dashboardScript();
 
 /* ---- 1. 结构 ---- */
 for(const id of ['raccoonAuthModal', 'raccoonAuthInput', 'raccoonAuthUrl',
-                 'raccoonAuthStatus', 'raccoonAuthCallback']){
+                 'raccoonAuthStatus', 'raccoonAuthCallback',
+                 'raccoonAuthTabImport', 'raccoonAuthTabBrowser',
+                 'raccoonAuthPaneImport', 'raccoonAuthPaneBrowser']){
   assert.ok(html.includes('id="' + id + '"'), '缺少 #' + id);
 }
+assert.ok(/switchRaccoonAuthTab\('import'\)/.test(html)
+  && /switchRaccoonAuthTab\('browser'\)/.test(html),
+  '弹窗应提供导入 / 浏览器授权两个页签');
 for(const endpoint of ['/raccoon/accounts/import',
                        '/raccoon/accounts/oauth/start',
                        '/raccoon/accounts/oauth/poll',
@@ -48,10 +53,25 @@ assert.ok(!/type="password"/.test(modalHtml), '弹窗不能出现密码输入框
 let POSTS = [];
 let GETS = [];
 let oauthReply = {status: 'pending', ok: false, message: '等待浏览器完成授权…'};
+let importStatus = 200;
+let importReply = null;
+let pollHttpStatus = 200;
+let pollHttpReply = null;
+let deferStart = false;
+let deferStartResolve = null;
 let intervalId = 100;
 const intervals = [];
 const cleared = [];
 const AUTH_URL = 'https://xiaohuanxiong.com/authorize?state=abc';
+const START_PAYLOAD = {
+  ok: true, session_id: 'sess-1', auth_url: AUTH_URL,
+  redirect: 'http://127.0.0.1:8787/raccoon/oauth/callback', expires_in: 300,
+};
+const reply = (status, payload) => Promise.resolve({
+  status, ok: status >= 200 && status < 300,
+  json: () => Promise.resolve(payload),
+  text: () => Promise.resolve(JSON.stringify(payload)),
+});
 
 dom.installDom({
   fetch: (url, opts) => {
@@ -65,12 +85,21 @@ dom.installDom({
     else GETS.push(target);
     let payload = {};
     if(target === '/raccoon/accounts/import'){
-      payload = {ok: true, uid: 'u1', enabled: true, message: '账号已导入'};
+      if(importStatus !== 200) return reply(importStatus, importReply || {});
+      payload = importReply || {ok: true, uid: 'u1', enabled: true, message: '账号已导入'};
     } else if(target === '/raccoon/accounts/oauth/start'){
-      payload = {ok: true, session_id: 'sess-1', auth_url: AUTH_URL,
-                 redirect: 'http://127.0.0.1:8787/raccoon/oauth/callback',
-                 expires_in: 300};
+      if(deferStart){
+        return new Promise(resolve => {
+          deferStartResolve = () => resolve({
+            status: 200, ok: true,
+            json: () => Promise.resolve(START_PAYLOAD),
+            text: () => Promise.resolve(JSON.stringify(START_PAYLOAD)),
+          });
+        });
+      }
+      payload = START_PAYLOAD;
     } else if(target === '/raccoon/accounts/oauth/poll'){
+      if(pollHttpStatus !== 200) return reply(pollHttpStatus, pollHttpReply || {});
       payload = oauthReply;
     } else if(target === '/raccoon/accounts/oauth/callback'){
       payload = {ok: true, message: '回调已接收'};
@@ -82,11 +111,7 @@ dom.installDom({
     } else if(target === '/realm'){
       payload = {current: 'raccoon', options: ['intl', 'cn', 'codearts', 'raccoon']};
     }
-    return Promise.resolve({
-      status: 200, ok: true,
-      json: () => Promise.resolve(payload),
-      text: () => Promise.resolve(JSON.stringify(payload)),
-    });
+    return reply(200, payload);
   },
 });
 
@@ -111,6 +136,7 @@ try {
     return {
       openRaccoonAuth: openRaccoonAuth,
       closeRaccoonAuth: closeRaccoonAuth,
+      switchRaccoonAuthTab: switchRaccoonAuthTab,
       importRaccoonAuth: importRaccoonAuth,
       startRaccoonOauth: startRaccoonOauth,
       pollRaccoonOauth: pollRaccoonOauth,
@@ -130,12 +156,29 @@ const byId = id => document.getElementById(id);
 const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
 
 (async () => {
-  // 2a. 打开 / 关闭：关闭必须清掉轮询定时器与会话。
+  // 2a. 打开 / 关闭：两个页签、关闭清定时器/会话/textarea。
   api.openRaccoonAuth();
   assert.ok(isOpen(), '点击添加账号应打开小浣熊弹窗');
   assert.equal(byId('raccoonAuthUrl').textContent, '', '打开时应清空旧授权链接');
+  assert.equal(byId('raccoonAuthPaneImport').style.display, '',
+    '默认应显示导入页签');
+  assert.equal(byId('raccoonAuthPaneBrowser').style.display, 'none',
+    '浏览器授权页签默认隐藏');
+  api.switchRaccoonAuthTab('browser');
+  assert.equal(byId('raccoonAuthPaneBrowser').style.display, '',
+    '切到浏览器授权后应显示该页');
+  assert.equal(byId('raccoonAuthPaneImport').style.display, 'none',
+    '切到浏览器授权后应隐藏导入页');
+  assert.equal(byId('raccoonAuthTabBrowser').getAttribute('aria-selected'), 'true',
+    '浏览器授权页签应标记为选中');
+  api.switchRaccoonAuthTab('import');
+  assert.equal(byId('raccoonAuthPaneImport').style.display, '',
+    '切回导入页后应恢复显示');
+  byId('raccoonAuthInput').value = '{"access_token":"lingering-secret"}';
   api.closeRaccoonAuth();
   assert.ok(!isOpen(), '关闭按钮应隐藏弹窗');
+  assert.equal(byId('raccoonAuthInput').value, '',
+    '关闭时应清空 auth.json textarea，避免 token 留在隐藏 DOM');
 
   // 2b. 导入校验：空内容 / 缺 access_token 都不能发请求。
   POSTS = [];
@@ -153,6 +196,8 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
     0, '缺 access_token 不应发导入请求');
   assert.ok(byId('raccoonAuthStatus').textContent.includes('access_token'),
     '缺 access_token 应给出可读提示');
+  assert.ok(toasts.some(t => t[0].includes('access_token') && t[1] === 'bad'),
+    '解析错误应同时 toast，不能只写状态行');
 
   // 2c. 合法 auth.json：POST {auth: {...}}，回读概览 / 账号并关闭。
   POSTS = [];
@@ -169,6 +214,26 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
   assert.ok(GETS.some(u => u.indexOf('/accounts') === 0), '导入后应刷新账号列表');
   assert.ok(!isOpen(), '导入成功后应关闭弹窗');
   assert.ok(toasts.some(t => t[1] === 'ok'), '导入成功应给出成功提示');
+
+  // 2c2. 服务端拒绝导入：保留弹窗 / 内容，状态与 toast 都要报错。
+  importStatus = 400;
+  importReply = {error: {message: 'auth payload requires access_token'}};
+  api.openRaccoonAuth();
+  byId('raccoonAuthInput').value = JSON.stringify(auth);
+  POSTS = [];
+  toasts.length = 0;
+  await api.importRaccoonAuth(null);
+  assert.ok(POSTS.some(p => p.url === '/raccoon/accounts/import'),
+    '服务端导入失败前仍应发出导入请求');
+  assert.ok(isOpen(), '导入失败时弹窗应保留');
+  assert.ok(byId('raccoonAuthInput').value.includes('tok-import-1'),
+    '导入失败时 textarea 应保留内容供用户修改');
+  assert.ok(byId('raccoonAuthStatus').textContent.includes('导入失败'),
+    '导入失败应写入状态行');
+  assert.ok(toasts.some(t => t[1] === 'bad' && t[0].includes('导入失败')),
+    '导入失败应 toast');
+  importStatus = 200;
+  importReply = null;
 
   // 2d. 浏览器授权：start 渲染链接并启动 1500ms 轮询。
   api.openRaccoonAuth();
@@ -212,6 +277,8 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
   assert.ok(!isOpen(), '授权成功后应关闭弹窗');
   assert.ok(byId('raccoonAuthStatus').textContent.includes('登录成功'),
     '授权成功后状态行应显示成功');
+  assert.ok(toasts.some(t => t[1] === 'ok' && t[0].includes('登录成功')),
+    '授权成功应 toast，避免状态行被立即关闭藏掉');
 
   // 2g. error：停止轮询、保留弹窗显示原因。
   oauthReply = {status: 'error', ok: false, message: '授权失败：state 已过期'};
@@ -224,6 +291,22 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
   assert.ok(isOpen(), 'error 时弹窗应保留');
   assert.ok(byId('raccoonAuthStatus').textContent.includes('state 已过期'),
     'error 时应显示服务端原因');
+
+  // 2g2. HTTP 404：会话已不存在时必须停止轮询，不能永远显示等待。
+  api.openRaccoonAuth();
+  await api.startRaccoonOauth(null);
+  const httpErrorTimer = intervals[intervals.length - 1].id;
+  pollHttpStatus = 404;
+  pollHttpReply = {error: {message: 'OAuth session not found or expired'}};
+  cleared.length = 0;
+  await api.pollRaccoonOauth(true);
+  assert.ok(cleared.includes(httpErrorTimer), 'HTTP 404 后必须清掉轮询定时器');
+  assert.equal(api.getSession(), '', 'HTTP 404 后应清掉 OAuth 会话');
+  assert.ok(byId('raccoonAuthStatus').textContent.includes('not found or expired'),
+    'HTTP 404 错误信息应显示在状态行');
+  assert.ok(isOpen(), 'HTTP 404 时弹窗应保留，让用户重新发起');
+  pollHttpStatus = 200;
+  pollHttpReply = null;
 
   // 2h. 300 秒上限：超时后不再请求，并停止轮询。
   await api.startRaccoonOauth(null);
@@ -252,6 +335,23 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
   assert.ok(POSTS.some(p => p.url === '/raccoon/accounts/oauth/poll'),
     '手工回调后应继续轮询');
   assert.ok(!isOpen(), '手工回调成功后应关闭弹窗');
+
+  // 2i2. 关闭与 /oauth/start 响应竞态：响应回来时弹窗已关，不能启动轮询。
+  deferStart = true;
+  api.openRaccoonAuth();
+  intervals.length = 0;
+  cleared.length = 0;
+  const pendingStart = api.startRaccoonOauth(null);
+  api.closeRaccoonAuth();
+  assert.ok(deferStartResolve, '测试桩应挂起 /oauth/start 响应');
+  deferStartResolve();
+  await pendingStart;
+  assert.equal(intervals.length, 0,
+    '关闭后才返回的 /oauth/start 不应启动后台轮询');
+  assert.equal(api.getSession(), '', '关闭后才返回的 /oauth/start 不应保存会话');
+  assert.ok(!isOpen(), '关闭状态不应被迟到的 start 响应重新打开');
+  deferStart = false;
+  deferStartResolve = null;
 
   // 2j. 关闭清定时器：start 之后直接关闭，不再保留轮询。
   api.openRaccoonAuth();
