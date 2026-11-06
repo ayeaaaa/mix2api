@@ -20875,6 +20875,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/codearts"):
             return True
+        if path.startswith("/raccoon"):
+            return True
         return False
     def _strip_pinned_prefix_only(self):
         """Strip /u/<ref> from self.path; returns False for a malformed ref."""
@@ -20940,6 +20942,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/oauth/callback":
             # 华为云 OAuth 浏览器回调：不带面板会话，靠 ticket_id/secret 匹配会话。
             return self._get_codearts_oauth_callback(query)
+        if path == "/raccoon/oauth/callback":
+            # 小浣熊回环 OAuth：不带面板会话，靠一次性 state 匹配会话。
+            return self._get_raccoon_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
         if path in ("/", "/dashboard", "/ui", "/classic", "/classic/"):
@@ -20956,6 +20961,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_codearts_overview()
         if path == "/codearts/accounts":
             return self._get_codearts_accounts()
+        if path == "/raccoon/overview":
+            return self._get_raccoon_overview()
+        if path == "/raccoon/accounts":
+            return self._get_raccoon_accounts()
         if path == "/v1/balance-summary":
             return self._get_v1_balance_summary()
         if path in ("/v1/models", "/models"):
@@ -23881,6 +23890,150 @@ class Handler(BaseHTTPRequestHandler):
             "base_url": wb_codearts.SNAP_HOST,
         })
 
+    def _get_raccoon_oauth_callback(self, query):
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        try:
+            status, html = wb_raccoon.oauth_callback_get(cfg, query)
+        except Exception:
+            # The provider redacts known secrets; never append a raw traceback
+            # or exception text to a public HTML page.
+            status, html = 400, "<h3>登录失败：回调处理异常。</h3>"
+        raw = (
+            '<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;'
+            'padding:32px;line-height:1.7">' + html + "</body>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _get_raccoon_overview(self):
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        try:
+            data = wb_raccoon.overview(cfg)
+        except wb_raccoon.RaccoonError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        out = dict(data)
+        health = wb_raccoon.health(cfg)
+        out["online"] = health.get("ok") is True
+        out["health"] = health
+        out["base_url"] = wb_raccoon.BASE_URL
+        return self._json(200, out)
+
+    def _get_raccoon_accounts(self):
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        try:
+            data = wb_raccoon.overview(cfg)
+        except wb_raccoon.RaccoonError as exc:
+            return self._error(502, str(exc), "invalid_request_error")
+        return self._json(
+            200,
+            {
+                "provider": "raccoon",
+                "accounts": data.get("accounts") or [],
+                "stats": data.get("stats") or {},
+                "models": data.get("models") or [],
+                "base_url": wb_raccoon.BASE_URL,
+                "health": data.get("health") or {},
+            },
+        )
+
+    def _raccoon_admin_error(self, exc):
+        message = str(exc)
+        if isinstance(exc, wb_raccoon.RaccoonNotFound):
+            if "account not found" in message.lower():
+                return self._error(404, message, "invalid_request_error")
+            return self._error(409, message, "invalid_request_error")
+        if isinstance(exc, wb_raccoon.RaccoonBadRequest):
+            return self._error(400, message, "invalid_request_error")
+        if isinstance(exc, wb_raccoon.RaccoonRateLimited):
+            return self._error(429, message, "rate_limit_error")
+        if isinstance(exc, wb_raccoon.RaccoonUnavailable):
+            return self._error(503, message, "invalid_request_error")
+        return self._error(502, message, "invalid_request_error")
+
+    def _handle_raccoon(self, path, payload):
+        """`/raccoon/*` admin API: panel session required."""
+        if not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
+        if not isinstance(payload, dict):
+            return self._error(400, "expected a JSON object", "invalid_request_error")
+        cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
+        uid = str(payload.get("uid") or "").strip()
+        try:
+            if path == "/raccoon/accounts/import":
+                result = wb_raccoon.import_auth(cfg, payload)
+                wb_raccoon.invalidate_health()
+                return self._json(200, result)
+            if path == "/raccoon/accounts/oauth/start":
+                port = int(self.server.server_address[1])
+                return self._json(200, wb_raccoon.oauth_start(cfg, port))
+            if path == "/raccoon/accounts/oauth/poll":
+                return self._json(
+                    200, wb_raccoon.oauth_poll(cfg, payload.get("session_id"))
+                )
+            if path == "/raccoon/accounts/oauth/callback":
+                return self._json(
+                    200,
+                    wb_raccoon.oauth_callback(
+                        cfg,
+                        session_id=payload.get("session_id"),
+                        callback_url=payload.get("callback_url") or "",
+                        code=payload.get("code") or "",
+                        state=payload.get("state") or "",
+                    ),
+                )
+            if path == "/raccoon/keepalive":
+                result = wb_raccoon.keepalive(cfg)
+                wb_raccoon.invalidate_health()
+                return self._json(200, result)
+            if path == "/raccoon/models/refresh":
+                return self._json(200, wb_raccoon.refresh_models(cfg))
+            account_actions = (
+                "/raccoon/accounts/proxy",
+                "/raccoon/accounts/note",
+                "/raccoon/accounts/tasks",
+                "/raccoon/accounts/test",
+                "/raccoon/accounts/enable",
+                "/raccoon/accounts/disable",
+                "/raccoon/accounts/delete",
+                "/raccoon/accounts/clear-cooldown",
+            )
+            if path not in account_actions:
+                return self._error(
+                    404, "unknown raccoon endpoint", "invalid_request_error"
+                )
+            if not uid:
+                return self._error(400, "uid required", "invalid_request_error")
+            if path == "/raccoon/accounts/proxy":
+                result = wb_raccoon.set_proxy_slot(cfg, uid, payload.get("slot_id"))
+            elif path == "/raccoon/accounts/note":
+                result = wb_raccoon.set_note(cfg, uid, payload.get("note"))
+            elif path == "/raccoon/accounts/tasks":
+                result = wb_raccoon.set_tasks_enabled(
+                    cfg, uid, payload.get("enabled", True)
+                )
+            elif path == "/raccoon/accounts/test":
+                result = wb_raccoon.test_account(cfg, uid)
+            elif path == "/raccoon/accounts/enable":
+                result = wb_raccoon.enable(cfg, uid)
+            elif path == "/raccoon/accounts/disable":
+                result = wb_raccoon.disable(cfg, uid, payload.get("reason") or "")
+            elif path == "/raccoon/accounts/delete":
+                result = wb_raccoon.remove(cfg, uid)
+            elif path == "/raccoon/accounts/clear-cooldown":
+                result = wb_raccoon.clear_cooldown(cfg, uid)
+            else:
+                return self._error(
+                    404, "unknown raccoon endpoint", "invalid_request_error"
+                )
+            wb_raccoon.invalidate_health()
+            return self._json(200, result)
+        except wb_raccoon.RaccoonError as exc:
+            return self._raccoon_admin_error(exc)
+
     def _codearts_admin_error(self, exc):
         if isinstance(exc, wb_codearts.CodeArtsNotFound):
             message = str(exc)
@@ -23974,6 +24127,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""
+        if path.startswith("/raccoon"):
+            return self._handle_raccoon(path, payload)
         if path.startswith("/codearts"):
             return self._handle_codearts(path, payload)
         if path == "/realm":
@@ -25694,6 +25849,7 @@ class Handler(BaseHTTPRequestHandler):
             or path.startswith("/scheduler")
             or path.startswith("/logs")
             or path.startswith("/codearts")
+            or path.startswith("/raccoon")
         )
         # 媒体路由（生图 / 改图 / 生视频）与 chat 并列：同一个 API Key 门，但不占
         # chat 的并发槽，也不进 chat 的模型别名与 body 改写。不在这行放行，它们

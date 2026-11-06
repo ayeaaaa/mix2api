@@ -15,15 +15,18 @@ Python 3.9+ 标准库。所有出站 HTTP 都走 `wb_upstream_pool.urlopen`，�
 
 import base64
 import hashlib
+import html as html_module
 import json
 import math
 import os
 import re
+import secrets
 import socket
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import wb_settings
@@ -41,6 +44,15 @@ EP_LOGIN = "/api/web/auth/v1/login_with_authorization_code"
 EP_REFRESH = "/api/web/auth/v1/refresh"
 EP_CATALOG = "/api/web/llm/v2/model_catalog"
 EP_CHAT = "/api/web/llm/v2/chat/completions"
+
+#: Browser authorization page. This is deliberately independent of `BASE_URL`:
+#: `BASE_URL` points at the API host (and tests monkeypatch it), while the
+#: desktop browser always authorizes on the public site.
+AUTHORIZE_URL = os.environ.get("WB_RACCOON_AUTHORIZE_URL") or (
+    "https://xiaohuanxiong.com/authorize"
+)
+OAUTH_REDIRECT_PATH = "/raccoon/oauth/callback"
+OAUTH_TTL_SECONDS = 300
 
 #: Desktop-client headers. The catalog accepts the same client identity as
 #: chat; Task 3 reuses these constants for the SSE request.
@@ -1787,6 +1799,433 @@ def refresh_models(config):
 
 
 # ---------------------------------------------------------------------------
+# 浏览器回环 OAuth
+# ---------------------------------------------------------------------------
+
+
+_OAUTH_SESSIONS = {}
+_OAUTH_LOCK = threading.Lock()
+
+
+class RaccoonOAuthSession(object):
+    """One browser authorization attempt.
+
+    `state` is the browser-visible single-use nonce; `id` is the panel handle
+    used for polling. Neither `state` nor the exchange code is ever returned by
+    `public()`, so an admin response cannot leak the credential.
+    """
+
+    def __init__(self, session_id, state, port):
+        self.id = session_id
+        self.state = state
+        self.port = int(port)
+        self.created_at = time.time()
+        self.status = "pending"
+        self.message = "等待浏览器完成授权…"
+        self.auth_url = ""
+        self.account = None
+
+    def public(self):
+        status = "pending" if self.status == "exchanging" else self.status
+        out = {
+            "ok": status != "error",
+            "status": status,
+            "message": self.message,
+            "session_id": self.id,
+            "auth_url": self.auth_url,
+            "expires_in": max(
+                0, int(OAUTH_TTL_SECONDS - (time.time() - self.created_at))
+            ),
+        }
+        if self.account:
+            out["account"] = dict(self.account)
+        return out
+
+
+def _gc_oauth(now=None):
+    now = time.time() if now is None else now
+    with _OAUTH_LOCK:
+        for key, session in list(_OAUTH_SESSIONS.items()):
+            if now - session.created_at > OAUTH_TTL_SECONDS:
+                _OAUTH_SESSIONS.pop(key, None)
+
+
+def _find_oauth_session(session_id=None):
+    _gc_oauth()
+    with _OAUTH_LOCK:
+        return _OAUTH_SESSIONS.get(str(session_id or ""))
+
+
+def _find_pending_oauth_state(state):
+    _gc_oauth()
+    text = str(state or "").strip()
+    if not text:
+        return None
+    with _OAUTH_LOCK:
+        for session in _OAUTH_SESSIONS.values():
+            if session.state == text and session.status == "pending":
+                return session
+    return None
+
+
+def _claim_oauth_session(session_id=None, state=None):
+    """Atomically move a pending session to `exchanging`.
+
+    The state is single-use: a second callback (or a callback against a done
+    or error session) gets `None` and can no longer reach the exchange.
+    """
+    _gc_oauth()
+    with _OAUTH_LOCK:
+        if session_id:
+            session = _OAUTH_SESSIONS.get(str(session_id or ""))
+        else:
+            session = None
+            for candidate in _OAUTH_SESSIONS.values():
+                if (
+                    candidate.state == str(state or "")
+                    and candidate.status == "pending"
+                ):
+                    session = candidate
+                    break
+        if session is None or session.status != "pending":
+            return None
+        if state and session.state != str(state):
+            return None
+        session.status = "exchanging"
+        return session
+
+
+def _loopback_host(host):
+    return str(host or "").lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def _parse_loopback_callback(url):
+    """Validate a manually pasted callback URL; return (parsed, port)."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url or "").strip())
+    except ValueError:
+        raise RaccoonBadRequest("invalid callback URL")
+    if parsed.scheme != "http":
+        raise RaccoonBadRequest("callback URL must use http")
+    if parsed.username or parsed.password:
+        raise RaccoonBadRequest("callback URL must not contain credentials")
+    if not _loopback_host(parsed.hostname):
+        raise RaccoonBadRequest("callback URL must point at loopback")
+    if parsed.path != OAUTH_REDIRECT_PATH:
+        raise RaccoonBadRequest("callback URL path must be %s" % OAUTH_REDIRECT_PATH)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise RaccoonBadRequest("callback URL has an invalid port")
+    if port is None:
+        raise RaccoonBadRequest("callback URL must include the gateway port")
+    return parsed, port
+
+
+def _query_value(query, key):
+    raw = query.get(key) if hasattr(query, "get") else None
+    if isinstance(raw, list):
+        return str(raw[0] if raw else "")
+    return str(raw or "")
+
+
+def _oauth_html(message):
+    return "<h3>%s</h3>" % html_module.escape(str(message), quote=True)
+
+
+def _redact_oauth_error(exc, code="", state=""):
+    secrets = [value for value in (code, state) if value]
+    return _redact(str(exc), secrets)[:500]
+
+
+def exchange_code(config, code, timeout=None):
+    """Redeem a browser authorization code for a Raccoon account.
+
+    The code is passed to `_request_json` as a literal redaction secret: a
+    hostile upstream error body that echoes `{"code": "<auth code>"}` (which
+    `_error_text` would otherwise render as `error_code=...`) cannot leak it
+    into a panel response, HTML callback page, poll message, or account state.
+    """
+    config = _config_or_load(config)
+    accounts_dir = config.get("accounts_dir")
+    if not accounts_dir:
+        raise RaccoonBadRequest("raccoon config is missing accounts_dir")
+    code = _clean_token(code)
+    if not code:
+        raise RaccoonBadRequest("authorization code is required")
+    if timeout is None:
+        timeout = float(config.get("timeout_seconds") or DEFAULTS["timeout_seconds"])
+    body = json.dumps({"authorization_code": code}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        payload = _request_json(
+            "POST",
+            BASE_URL + EP_LOGIN,
+            headers,
+            body,
+            timeout=timeout,
+            secrets=[code],
+        )
+    except RaccoonError as exc:
+        message = _redact_oauth_error(exc, code)
+        raise type(exc)(
+            message,
+            status=getattr(exc, "status", None),
+            code=getattr(exc, "code", None),
+        )
+    auth = auth_from_payload(payload)
+    auth = save_auth(accounts_dir, auth)
+    save_config(accounts_dir, {"enabled": True})
+    acct = pool_for(accounts_dir).add(auth)
+    invalidate_health()
+    return acct
+
+
+def _exchange_session(config, session, code):
+    try:
+        acct = exchange_code(config, code)
+    except RaccoonError as exc:
+        message = _redact_oauth_error(exc, code, session.state)
+        session.status = "error"
+        session.message = message
+        if message != str(exc):
+            exc.args = (message,)
+        raise
+    except Exception:
+        session.status = "error"
+        session.message = "OAuth exchange failed"
+        raise RaccoonUpstreamError(session.message)
+    session.status = "done"
+    session.message = "登录成功：%s" % acct.nickname
+    session.account = {"uid": acct.uid, "nickname": acct.nickname}
+    return acct
+
+
+def oauth_start(config, port=8788):
+    """Start a loopback OAuth session and return the exact browser URL."""
+    _config_or_load(config)
+    try:
+        port = int(port)
+    except (TypeError, ValueError, OverflowError):
+        raise RaccoonBadRequest("gateway port must be an integer")
+    if port < 1024 or port > 65535:
+        raise RaccoonBadRequest("gateway port must be between 1024 and 65535")
+    _gc_oauth()
+    with _OAUTH_LOCK:
+        state = secrets.token_hex(32)
+        while any(item.state == state for item in _OAUTH_SESSIONS.values()):
+            state = secrets.token_hex(32)
+        session_id = secrets.token_hex(8)
+        while session_id in _OAUTH_SESSIONS:
+            session_id = secrets.token_hex(8)
+        redirect = "http://127.0.0.1:%d%s" % (port, OAUTH_REDIRECT_PATH)
+        auth_url = (
+            "%s?login_source=desktop&appname=办公小浣熊客户端"
+            "&desktop_callback=loopback&redirect=%s&state=%s"
+            % (AUTHORIZE_URL, redirect, state)
+        )
+        session = RaccoonOAuthSession(session_id, state, port)
+        session.auth_url = auth_url
+        _OAUTH_SESSIONS[session_id] = session
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "auth_url": auth_url,
+        "expires_in": int(OAUTH_TTL_SECONDS),
+        "message": "请在浏览器打开授权链接，完成后等待自动检测",
+    }
+
+
+def oauth_poll(config, session_id):
+    """Panel poll; done/error sessions stay readable until the TTL expires."""
+    _config_or_load(config)
+    session = _find_oauth_session(session_id)
+    if session is None:
+        raise RaccoonNotFound("OAuth session not found or expired; start again")
+    return session.public()
+
+
+def oauth_callback_get(config, query):
+    """Handle `GET /raccoon/oauth/callback`; return `(status, html)`.
+
+    Only a pending, exactly matching state is accepted. The claim happens
+    before the exchange so two concurrent callbacks cannot both redeem the
+    same state, and the state stays consumed after success or failure.
+    """
+    config = _config_or_load(config)
+    state = _query_value(query, "state").strip()
+    code = _clean_token(_query_value(query, "code"))
+    if not state:
+        return 400, _oauth_html("回调缺少 state，请回到看板重新发起授权。")
+    session = _claim_oauth_session(state=state)
+    if session is None:
+        return 400, _oauth_html("登录会话不存在或已过期，请回到看板重新发起。")
+    if not code:
+        session.status = "error"
+        session.message = "回调缺少 code"
+        return 400, _oauth_html("登录失败：回调缺少 code。")
+    try:
+        _exchange_session(config, session, code)
+    except RaccoonError as exc:
+        return 400, _oauth_html("登录失败：%s" % exc)
+    except Exception:
+        session.status = "error"
+        session.message = "OAuth exchange failed"
+        return 400, _oauth_html("登录失败：OAuth exchange failed")
+    return 200, _oauth_html("Raccoon 登录成功，可以关闭此页面。")
+
+
+def oauth_callback(config, session_id=None, callback_url="", code="", state=""):
+    """Panel-side manual callback: a full loopback URL or a raw code.
+
+    A URL must be `http://127.0.0.1:<session-port>/raccoon/oauth/callback`,
+    carry the session's exact `state`, and include a code. No redirect target
+    is ever returned, so the callback cannot become an open redirect.
+    """
+    config = _config_or_load(config)
+    session_id = str(session_id or "").strip()
+    callback_url = str(callback_url or "").strip()
+    code = _clean_token(code)
+    state = str(state or "").strip()
+    parsed = None
+    url_state = ""
+
+    if callback_url:
+        parsed, callback_port = _parse_loopback_callback(callback_url)
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        url_state = _query_value(query, "state").strip()
+        url_code = _clean_token(_query_value(query, "code"))
+        if not url_state:
+            raise RaccoonBadRequest("callback URL is missing state")
+        if state and state != url_state:
+            raise RaccoonBadRequest("callback state does not match the session")
+        state = url_state
+        if not code:
+            code = url_code
+
+    if session_id:
+        session = _find_oauth_session(session_id)
+        if session is None:
+            raise RaccoonNotFound("OAuth session not found or expired; start again")
+    elif state:
+        session = _find_pending_oauth_state(state)
+        if session is None:
+            raise RaccoonNotFound("OAuth session not found or expired; start again")
+        session_id = session.id
+    else:
+        raise RaccoonBadRequest("session_id or state is required")
+
+    if parsed is not None:
+        if callback_port != session.port:
+            raise RaccoonBadRequest(
+                "callback port does not match the authorization session"
+            )
+        if url_state != session.state:
+            raise RaccoonBadRequest("callback state does not match the session")
+    if state and state != session.state:
+        raise RaccoonBadRequest("callback state does not match the session")
+    if not code:
+        raise RaccoonBadRequest("callback is missing code")
+
+    claimed = _claim_oauth_session(session_id=session_id, state=session.state)
+    if claimed is None:
+        raise RaccoonNotFound(
+            "OAuth session is no longer pending; start a new authorization"
+        )
+    _exchange_session(config, claimed, code)
+    return claimed.public()
+
+
+# ---------------------------------------------------------------------------
+# 管理操作
+# ---------------------------------------------------------------------------
+
+
+def invalidate_overview():
+    invalidate_health()
+
+
+def enable(config, uid):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.enable(uid):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {"ok": True, "uid": uid, "message": "已启用 %s" % uid}
+
+
+def disable(config, uid, reason=""):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.disable(uid, reason or "manual disable"):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {"ok": True, "uid": uid, "message": "已停用 %s" % uid}
+
+
+def remove(config, uid):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.remove(uid):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {"ok": True, "deleted": True, "message": "已删除 %s" % uid}
+
+
+def clear_cooldown(config, uid):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.clear_cooldown(uid):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {"ok": True, "uid": uid, "message": "已清冷却 %s" % uid}
+
+
+def set_note(config, uid, note):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.set_note(uid, note):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {"ok": True, "uid": uid, "note": pool.get(uid).note}
+
+
+def set_tasks_enabled(config, uid, enabled):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    if not pool.set_tasks_enabled(uid, enabled):
+        raise RaccoonNotFound("account not found")
+    invalidate_health()
+    return {
+        "ok": True,
+        "uid": uid,
+        "tasks_enabled": bool(pool.get(uid).tasks_enabled),
+    }
+
+
+def set_proxy_slot(config, uid, slot_id):
+    """Bind one account to a proxy slot (empty string = direct)."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    acct = pool.get(uid)
+    if acct is None:
+        raise RaccoonNotFound("account not found")
+    pool.set_proxy_slot(uid, slot_id)
+    acct = pool.get(uid)
+    invalidate_health()
+    return {
+        "ok": True,
+        "uid": acct.uid,
+        "proxy_slot": acct.proxy_slot,
+        "proxy": acct.proxy,
+        "message": "出口已更新",
+    }
+
+
+# ---------------------------------------------------------------------------
 # 导入 / 概览 / 健康
 # ---------------------------------------------------------------------------
 
@@ -1804,6 +2243,7 @@ def import_auth(config, payload):
     auth = save_auth(accounts_dir, auth)
     save_config(accounts_dir, {"enabled": True})
     acct = pool_for(accounts_dir).add(auth)
+    invalidate_health()
     return {
         "ok": True,
         "uid": acct.uid,
@@ -1834,7 +2274,7 @@ def overview(config, force=False):
         "base_url": BASE_URL,
         "stats": pool.stats(),
         "accounts": pool.list(),
-        "health": health(config, force=True),
+        "health": health(config, force=bool(force)),
         "models": models,
     }
 

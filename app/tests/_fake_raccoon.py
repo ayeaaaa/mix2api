@@ -91,6 +91,9 @@ class FakeState(object):
         self.catalog_error_body = None
         self.exchange_status = 200
         self.exchange_body = None
+        # When set, the exchange fails even though `exchange_status` is 200.
+        # A dict is sent verbatim; any other value becomes {"message": ...}.
+        self.exchange_error = None
         # Chat SSE controls. `chat_status` is the HTTP status; a negative
         # `chat_status_remaining` means "always", 0 recovers, and a positive
         # value fails that many times. `chat_status_by_token` overrides the
@@ -110,6 +113,7 @@ class FakeState(object):
         self.code = "test-code"
         self.office_identity = "personal"
         self.office_org_name = "Raccoon Test"
+        self.office_org_role = ""
         self.catalog = default_catalog()
         self.last_header_names = None
         self.lock = threading.Lock()
@@ -127,6 +131,7 @@ class FakeState(object):
             "token_type": "Bearer",
             "office_identity": self.office_identity,
             "office_org_name": self.office_org_name,
+            "office_org_role": self.office_org_role,
         }
 
     def rotate(self):
@@ -336,6 +341,12 @@ class _Handler(BaseHTTPRequestHandler):
                         state.exchange_status,
                         state.exchange_body or {"message": "exchange rejected"},
                     )
+                    return
+                if state.exchange_error is not None:
+                    payload = state.exchange_error
+                    if not isinstance(payload, dict):
+                        payload = {"message": str(payload)}
+                    self._send_json(400, payload)
                     return
                 supplied = str((body or {}).get("authorization_code") or "")
                 if supplied != state.code:
