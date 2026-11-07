@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.3-2496ED?style=flat-square" alt="Version 1.6.3"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.4-2496ED?style=flat-square" alt="Version 1.6.4"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -559,7 +559,9 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
-## v1.6.3
+## v1.6.4
+
+> 原 v1.6.3 是未发布草稿；本节汇总 Raccoon 积分、精确 per-request credit 与 WorkBuddy 护栏，统一以 v1.6.4 发布。
 
 - **小浣熊积分接入**：发现并接入网页端积分接口 `GET /api/web/points/v1/balance` 与 `GET /api/web/points/v2/bills?paging.limit=100&type=all`。账号表和出口卡片显示可用积分、今日消耗、近 7 天消耗；账号表保留最近账单摘要，新增「刷新积分」按钮。
 - **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。每次请求完成后只认本次请求开始后新增、且尚未归因的账单，把 `points` 写入该请求 usage 行的 `credit`，与 WorkBuddy 的 credit 字段对齐；连续请求不会把上一笔账单算进来。`cost_policy` 仍为 `raccoon:unpriced`（积分不是 CNY 价格）。如果同一时间窗口内出现多条**新**账单（外部桌面端/网页端或并发请求），不猜测，`credit` 留空；账号总额/今日/近 7 天仍精确。
