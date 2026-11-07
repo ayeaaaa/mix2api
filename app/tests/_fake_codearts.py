@@ -35,6 +35,7 @@ class FakeState(object):
         self.chat_mode = "delta"  # delta | text
         self.chat_error = None    # (status, body_dict) 或 None
         self.chat_error_remaining = -1  # -1 = 一直失败；N = 失败 N 次后恢复
+        self.credit_error_once = False  # 下一次聊天返回积分耗尽 400
         self.embedded_error = None  # {"error_code": ..., "error_msg": ...}
         self.require_benefit_header = False
         self.omit_identity = False
@@ -223,6 +224,14 @@ class _Handler(BaseHTTPRequestHandler):
             if state.require_benefit_header and self.headers.get("maas_type") != "benefit":
                 self._send_json(200, {"error_code": "InferHub.002002009.404",
                                       "error_msg": "model is not registered"})
+                return
+            if state.credit_error_once:
+                state.credit_error_once = False
+                self._send_json(400, {
+                    "message": "您的积分已耗尽，请关注活动积分领取活动或者升级套餐。",
+                    "type": "invalid_request_error",
+                    "code": 400,
+                })
                 return
             if state.chat_error:
                 if state.chat_error_remaining == 0:

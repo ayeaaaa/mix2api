@@ -66,6 +66,7 @@ def reset_fake(expires_in=3600, refresh_token="refresh-1"):
     state.bills_calls = 0
     state.balance_status = 200
     state.bills_status = 200
+    state.reset_points()
     state.exchange_status = 200
     state.exchange_body = None
     state.chat_status = 501
@@ -88,6 +89,7 @@ def test_config_defaults_and_clamping():
     check("default stream timeout 900", cfg["stream_timeout_seconds"] == 900.0)
     check("default models ttl 600", cfg["models_ttl_seconds"] == 600.0)
     check("default max concurrent 1", cfg["max_concurrent"] == 1)
+    check("default auto claim off", cfg["auto_claim_login"] is False)
     check("accounts dir attached", cfg["accounts_dir"] == ACCOUNTS)
     check("configured false", R.configured(ACCOUNTS) is False)
     check("configured_config false", R.configured_config(cfg) is False)
@@ -124,7 +126,7 @@ def test_config_defaults_and_clamping():
             }
         },
     )
-    saved = R.save_config(ACCOUNTS, {"max_concurrent": 2})
+    saved = R.save_config(ACCOUNTS, {"max_concurrent": 2, "auto_claim_login": True})
     raw = wb_settings.load(ACCOUNTS)["raccoon"]
     check(
         "save keeps unknown raccoon subkeys",
@@ -133,6 +135,7 @@ def test_config_defaults_and_clamping():
     )
     check("save keeps existing known value", saved["timeout_seconds"] == 30.0)
     check("save applies patched known value", saved["max_concurrent"] == 2)
+    check("save enables auto claim", saved["auto_claim_login"] is True, saved)
 
     saved = R.save_config(
         ACCOUNTS,
@@ -1047,6 +1050,159 @@ def test_credits_balance_and_bills():
     )
 
 
+def test_points_tasks_and_desktop_login_grant():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    tasks = R.fetch_point_tasks(acct, force=True)
+    check("tasks calls upstream once", state.tasks_calls == 1, state.tasks_calls)
+    check(
+        "tasks normalize new-user states",
+        [item.get("key") for item in tasks.get("new_user") or []]
+        == ["register_pack", "desktop_login", "mobile_login"],
+        tasks,
+    )
+    check(
+        "tasks desktop starts unfinished",
+        (tasks.get("new_user") or [{}])[1].get("status") == "unfinished",
+        tasks,
+    )
+    check("tasks invitee empty", tasks.get("invitee") == [], tasks)
+    check(
+        "tasks invite summary is public",
+        (tasks.get("invite") or {}).get("registered_invitee_count") == 0,
+        tasks,
+    )
+    check(
+        "tasks hide the invite code",
+        "fake-invite-code" not in json.dumps(tasks, ensure_ascii=False),
+        tasks,
+    )
+    check("tasks have fetched timestamp", tasks.get("fetched_at", 0) > 0, tasks)
+    check(
+        "tasks surface in account view",
+        (acct.view().get("points_tasks") or {}).get("new_user"),
+        acct.view(),
+    )
+    cached = R.fetch_point_tasks(acct)
+    check("tasks cache avoids upstream", state.tasks_calls == 1, state.tasks_calls)
+    check("tasks cache returns same states", cached.get("new_user") == tasks.get("new_user"), cached)
+
+    granted = R.grant_desktop_login(acct)
+    check("desktop grant succeeds", granted.get("granted") is True, granted)
+    check("desktop grant points", granted.get("points") == 3000, granted)
+    check("desktop grant calls upstream once", state.grant_calls == 1, state.grant_calls)
+    credits = R.fetch_credits(acct, force=True)
+    check("desktop grant updates balance", credits.get("available") == 4234, credits)
+    tasks = R.fetch_point_tasks(acct, force=True)
+    check(
+        "desktop grant completes task",
+        (tasks.get("new_user") or [{}])[1].get("status") == "completed",
+        tasks,
+    )
+    again = R.grant_desktop_login(acct)
+    check("desktop grant is idempotent", again.get("granted") is False, again)
+    check(
+        "desktop grant does not double-pay",
+        R.fetch_credits(acct, force=True).get("available") == 4234,
+        R.fetch_credits(acct, force=True),
+    )
+
+
+def test_mobile_login_grant():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    tasks = R.fetch_point_tasks(acct, force=True)
+    mobile = next(
+        (
+            item
+            for item in tasks.get("new_user") or []
+            if item.get("key") == "mobile_login"
+        ),
+        {},
+    )
+    check("mobile task starts unfinished", mobile.get("status") == "unfinished", tasks)
+    granted = R.grant_mobile_login(acct)
+    check("mobile grant succeeds", granted.get("granted") is True, granted)
+    check("mobile grant points", granted.get("points") == 3000, granted)
+    check(
+        "mobile grant calls upstream once",
+        state.mobile_grant_calls == 1,
+        state.mobile_grant_calls,
+    )
+    headers = state.last_headers or {}
+    check(
+        "mobile grant sends app-android",
+        headers.get("x-client-platform") == "app-android",
+        headers,
+    )
+    check(
+        "mobile grant sends v1.1.0",
+        headers.get("x-client-version") == "v1.1.0",
+        headers,
+    )
+    credits = R.fetch_credits(acct, force=True)
+    check("mobile grant updates balance", credits.get("available") == 4234, credits)
+    tasks = R.fetch_point_tasks(acct, force=True)
+    mobile = next(
+        (
+            item
+            for item in tasks.get("new_user") or []
+            if item.get("key") == "mobile_login"
+        ),
+        {},
+    )
+    check("mobile grant completes task", mobile.get("status") == "completed", tasks)
+    again = R.grant_mobile_login(acct)
+    check("mobile grant is idempotent", again.get("granted") is False, again)
+    check(
+        "mobile grant does not double-pay",
+        R.fetch_credits(acct, force=True).get("available") == 4234,
+        R.fetch_credits(acct, force=True),
+    )
+
+
+def test_auto_claim_login_rewards():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    result = R.auto_claim_login(acct)
+    check(
+        "auto claim grants both rewards",
+        result.get("desktop") is True and result.get("mobile") is True,
+        result,
+    )
+    check("auto claim desktop call", state.grant_calls == 1, state.grant_calls)
+    check(
+        "auto claim mobile call",
+        state.mobile_grant_calls == 1,
+        state.mobile_grant_calls,
+    )
+    credits = R.fetch_credits(acct, force=True)
+    check("auto claim balance", credits.get("available") == 7234, credits)
+    tasks = R.fetch_point_tasks(acct, force=True)
+    by_key = {item.get("key"): item.get("status") for item in tasks.get("new_user") or []}
+    check(
+        "auto claim completes both tasks",
+        by_key.get("desktop_login") == "completed"
+        and by_key.get("mobile_login") == "completed",
+        tasks,
+    )
+    again = R.auto_claim_login(acct)
+    check(
+        "auto claim does not repeat",
+        again.get("desktop") is False and again.get("mobile") is False,
+        again,
+    )
+    check("auto claim no second desktop call", state.grant_calls == 1, state.grant_calls)
+    check(
+        "auto claim no second mobile call",
+        state.mobile_grant_calls == 1,
+        state.mobile_grant_calls,
+    )
+
+
 def test_credits_401_refreshes_once():
     reset()
     reset_fake()
@@ -1339,6 +1495,9 @@ try:
     test_proxy_slot_binding()
     print("== credits ==")
     test_credits_balance_and_bills()
+    test_points_tasks_and_desktop_login_grant()
+    test_mobile_login_grant()
+    test_auto_claim_login_rewards()
     test_credits_401_refreshes_once()
     test_workbuddy_style_credit_guards()
     print("== views ==")

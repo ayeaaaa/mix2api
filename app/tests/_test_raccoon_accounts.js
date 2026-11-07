@@ -65,6 +65,8 @@ try {
             raccoonAccountAction: raccoonAccountAction,
             raccoonSetProxy: raccoonSetProxy,
             raccoonEditNote: raccoonEditNote,
+            raccoonGrantDesktop: raccoonGrantDesktop,
+            raccoonGrantMobile: raccoonGrantMobile,
             setSlots: function(v){ PROXY_SLOTS = v; }};
   `)();
 } catch (e) {
@@ -85,6 +87,14 @@ api.renderRaccoonAccounts({
      active_concurrent: 0, max_concurrent: 3, proxy_slot: 'slot-1', proxy: '',
      note: '备注一', tasks_enabled: true, models: 9,
      credits: {available: 1234, today_used: 3, week_used: 7, unit: 'points'},
+     points_tasks: {
+       new_user: [
+         {key: 'register_pack', status: 'completed'},
+         {key: 'desktop_login', status: 'unfinished'},
+         {key: 'mobile_login', status: 'unfinished'},
+       ],
+       invitee: [], invite: {registered_invitee_count: 0}, fetched_at: 1,
+     },
      access_token: 'SECRET_ACCESS', refresh_token: 'SECRET_REFRESH'},
     {uid: 'u2', nickname: '浣熊二号', disabled: true, cooling: false,
      reason: 'manual', token_remaining: '1d0h0m', expires_at: '',
@@ -128,6 +138,9 @@ assert.ok(box.innerHTML.includes('<th>积分</th>'), '小浣熊账号表应有�
 assert.ok(box.innerHTML.includes('1234'), '应显示积分余额');
 assert.ok(box.innerHTML.includes('今日 -3'), '应显示今日消耗');
 assert.ok(box.innerHTML.includes('7天 -7'), '应显示近 7 天消耗');
+assert.ok(!box.innerHTML.includes('任务：'), '任务状态应放在任务与福利页');
+assert.ok(!box.innerHTML.includes('领取桌面奖励'), '桌面奖励入口应在任务与福利页');
+assert.ok(!box.innerHTML.includes('领取移动端奖励'), '移动奖励入口应在任务与福利页');
 assert.ok(!box.innerHTML.includes('签到'), '小浣熊账号表不应有签到列');
 assert.ok(!box.innerHTML.includes('签到'), '小浣熊账号表不应有签到列');
 
@@ -213,6 +226,7 @@ assert.ok(box.innerHTML.includes('小浣熊'), '空状态应说明是小浣熊�
   assert.ok(tasks, '任务开关应 POST /raccoon/accounts/tasks');
   assert.equal(tasks.body.enabled, false, '任务开关应带上 enabled');
 
+  POSTS = [];
   POSTS = [];
   await api.raccoonAccountAction('note', 'u1', 'hello');
   const note = POSTS.find(p => p.url.indexOf('/raccoon/accounts/note') >= 0);

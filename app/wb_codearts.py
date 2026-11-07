@@ -153,6 +153,7 @@ DEFAULTS = {
     "max_concurrent": 1,
     "benefit_auto_claim": True,
     "credits_auto_claim": True,
+    "credits_expiring_priority": True,
 }
 
 #: Verified with the upstream validation error: reasoning_effort must be one of
@@ -275,6 +276,7 @@ def load_config(accounts_dir):
             raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20),
         "benefit_auto_claim": raw.get("benefit_auto_claim", True) is not False,
         "credits_auto_claim": raw.get("credits_auto_claim", True) is not False,
+        "credits_expiring_priority": raw.get("credits_expiring_priority", True) is not False,
         "accounts_dir": accounts_dir,
     }
 
@@ -314,6 +316,9 @@ def save_config(accounts_dir, patch):
             merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 20)
         merged["benefit_auto_claim"] = merged.get("benefit_auto_claim", True) is not False
         merged["credits_auto_claim"] = merged.get("credits_auto_claim", True) is not False
+        merged["credits_expiring_priority"] = (
+            merged.get("credits_expiring_priority", True) is not False
+        )
         # 重新读 settings：`load_config` 只返回收敛后的 codearts 段，写回去要
         # 保留其它段（api_keys / realm / 媒体配置…），所以必须拿整份再合并。
         data = wb_settings.load(accounts_dir)
@@ -448,6 +453,7 @@ class CodeArtsAccount(object):
         self.proxy = ""
         self.disabled = False
         self.disabled_reason = ""
+        self.manual_disabled = False
         self.cool_until = 0.0
         self.err_count = 0
         self.last_error = ""
@@ -515,9 +521,10 @@ class CodeArtsAccount(object):
             "updated_at": int(time.time()),
         })
         self.auth = save_auth(self.pool.accounts_dir, self.auth)
-        self.disabled = False
-        self.disabled_reason = ""
-        self.last_error = ""
+        if not self.manual_disabled:
+            self.disabled = False
+            self.disabled_reason = ""
+            self.last_error = ""
 
     # ---- 状态快照 ----
     def view(self):
@@ -547,6 +554,7 @@ class CodeArtsAccount(object):
             "package": info.get("package_name") or "",
             "checkin": self.checkin,
             "disabled": self.disabled,
+            "manual_disabled": bool(self.manual_disabled),
             "cooling": cooling,
             "until": (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.cool_until))
                       if cooling else ""),
@@ -566,14 +574,55 @@ class CodeArtsAccount(object):
             "tasks_enabled": bool(self.tasks_enabled),
         }
 
+    def credit_exhausted(self):
+        """True when the last account-info snapshot says no credits remain."""
+        info = self.info if isinstance(self.info, dict) else {}
+        total = (info.get("credits") or {}).get("total")
+        if not isinstance(total, dict):
+            return False
+        try:
+            return float(total.get("remain") or 0) <= 0
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def expiring_credit_remain(self):
+        """The aggregate expiring-credit amount from the last snapshot."""
+        info = self.info if isinstance(self.info, dict) else {}
+        total = (info.get("credits") or {}).get("total")
+        if not isinstance(total, dict):
+            return 0.0
+        try:
+            return max(0.0, float(total.get("expiring") or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    def mark_credit_exhausted(self):
+        """Remember a zero-credit upstream response until info is refreshed."""
+        info = self.info if isinstance(self.info, dict) else {}
+        credits = info.get("credits")
+        if not isinstance(credits, dict):
+            credits = {}
+        total = credits.get("total")
+        if not isinstance(total, dict):
+            total = {}
+        total["remain"] = 0.0
+        credits["total"] = total
+        info["credits"] = credits
+        self.info = info
+        self.info_fetched_at = time.time()
+        self.last_error = "积分已耗尽"
+        self.pool.save_state()
+
     def healthy(self, now=None):
         """能否被选中。
 
         故意不检查 token 是否过期：过期账号仍要被选中，交给 `_ensure_token`
         刷新；把过期号直接过滤掉会让整池过期时一个号都选不到、也无法续期。
+        已知积分为 0 的账号不再参与调度，等待刷新积分或签到入账。
         """
         now = now or time.time()
-        return (not self.disabled) and now >= self.cool_until
+        return (not self.disabled) and now >= self.cool_until \
+            and not self.credit_exhausted()
 
     def checked_in_today(self, now=None):
         """Whether this account already completed a successful check-in today.
@@ -630,6 +679,10 @@ class CodeArtsPool(object):
             acct.cool_until = float(entry.get("cool_until") or 0)
             acct.disabled = bool(entry.get("disabled"))
             acct.disabled_reason = str(entry.get("reason") or "")
+            acct.manual_disabled = bool(entry.get("manual_disabled"))
+            if acct.disabled and not acct.manual_disabled:
+                if acct.disabled_reason == "manual disable":
+                    acct.manual_disabled = True
             acct.last_error = str(entry.get("last_error") or "")
             acct.note = str(entry.get("note") or "")[:200]
             acct.tasks_enabled = bool(entry.get("tasks_enabled", True))
@@ -665,6 +718,7 @@ class CodeArtsPool(object):
                 "err_count": acct.err_count,
                 "cool_until": acct.cool_until,
                 "disabled": acct.disabled,
+                "manual_disabled": acct.manual_disabled,
                 "reason": acct.disabled_reason,
                 "last_error": acct.last_error,
                 "checkin": acct.checkin,
@@ -739,11 +793,12 @@ class CodeArtsPool(object):
                     existing.auth = acct.auth
                     existing.proxy_slot = acct.proxy_slot
                     existing.nickname = acct.nickname
-                    existing.disabled = False
-                    existing.disabled_reason = ""
-                    existing.last_error = ""
-                    existing.err_count = 0
-                    existing.cool_until = 0
+                    if not existing.manual_disabled:
+                        existing.disabled = False
+                        existing.disabled_reason = ""
+                        existing.last_error = ""
+                        existing.err_count = 0
+                        existing.cool_until = 0
                     existing.models_fetched_at = 0
                     self.accounts[index] = existing
                     self.save_state()
@@ -770,6 +825,7 @@ class CodeArtsPool(object):
             return False
         acct.disabled = False
         acct.disabled_reason = ""
+        acct.manual_disabled = False
         acct.last_error = ""
         acct.err_count = 0
         acct.cool_until = 0
@@ -781,6 +837,7 @@ class CodeArtsPool(object):
         if acct is None:
             return False
         acct.disabled = True
+        acct.manual_disabled = True
         acct.disabled_reason = reason
         acct.last_error = reason
         self.save_state()
@@ -833,7 +890,11 @@ class CodeArtsPool(object):
         pool = capable or candidates
         if not pool:
             return None
-        pool.sort(key=lambda a: (a.active_concurrent, a.last_used or 0))
+        expiring_first = bool(self.config.get("credits_expiring_priority", True))
+        def rank(account):
+            urgent = 0 if (expiring_first and account.expiring_credit_remain() > 0) else 1
+            return (account.active_concurrent, urgent, account.last_used or 0)
+        pool.sort(key=rank)
         return pool[0]
 
     _affinity = {}
@@ -871,6 +932,7 @@ class CodeArtsPool(object):
         acct.last_error = str(message or "")[:200]
         if terminal:
             acct.disabled = True
+            acct.manual_disabled = False
             acct.disabled_reason = acct.last_error
         elif soft:
             acct.cool_until = time.time() + SOFT_COOLDOWN
@@ -1425,6 +1487,8 @@ def model_entries(config):
     pool = pool_for(config["accounts_dir"])
     sets = []
     for acct in list(pool.accounts):
+        if acct.disabled:
+            continue
         try:
             _ensure_token(acct)
         except CodeArtsError:
@@ -1986,6 +2050,16 @@ def _is_concurrency_message(message):
             in text)
 
 
+def _is_credit_exhausted_message(message):
+    """Recognize the account-level credit empty 400 from CodeArts."""
+    text = str(message or "").lower()
+    return any(term in text for term in (
+        "积分已耗尽", "积分不足", "余额不足",
+        "insufficient credit", "credit exhausted", "credits exhausted",
+        "no credit", "not enough credit",
+    ))
+
+
 def _model_output_limit(acct, model):
     """Advertised output limit for the canonical CodeArts model."""
     key = str(model or "").strip().lower()
@@ -2121,6 +2195,7 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
     model = body.get("model") or ""
     exclude = set()
     last_error = None
+    credit_error = None
     attempts = max(2, len(pool.accounts) + 1)
     for _ in range(attempts):
         acct = pool.pick(model, session_key=session_key, exclude=exclude,
@@ -2143,8 +2218,14 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
             pool.note_success(acct)
             pool.bind_session(session_key, acct.uid)
             return stream, acct, used
-        except CodeArtsBadRequest:
+        except CodeArtsBadRequest as exc:
             pool.release(acct)
+            if _is_credit_exhausted_message(str(exc)):
+                acct.mark_credit_exhausted()
+                exclude.add(acct.uid)
+                last_error = exc
+                credit_error = exc
+                continue
             raise
         except CodeArtsAuthError as exc:
             pool.note_error(acct, str(exc), terminal=True)
@@ -2171,12 +2252,19 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
             pool.release(acct)
             raise
     if last_error is not None:
+        if credit_error is not None and last_error is credit_error:
+            raise CodeArtsBadRequest(
+                "所有可用的 CodeArts 账号积分已耗尽，请领取积分或升级套餐。",
+                status=400,
+            )
         raise last_error
     reasons = []
     now = time.time()
     for acct in list(pool.accounts):
         if acct.disabled:
             reasons.append("%s 已停用：%s" % (acct.nickname, acct.disabled_reason or "手动停用"))
+        elif acct.credit_exhausted():
+            reasons.append("%s 积分已耗尽" % acct.nickname)
         elif acct.cool_until > now:
             reasons.append("%s 冷却中：%s" % (acct.nickname, acct.last_error or "稍后重试"))
     if reasons:
@@ -2952,6 +3040,10 @@ def _checkin_account(acct, timeout=30.0):
               "campaigns": results}
     acct.checkin = {"ok": result["ok"], "message": message,
                     "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    if total_credits > 0:
+        # A zero-credit snapshot must not keep the account parked after the
+        # check-in actually added credits; the next overview refetches it.
+        acct.info = None
     acct.info_fetched_at = 0.0
     acct.pool.save_state()
     return result

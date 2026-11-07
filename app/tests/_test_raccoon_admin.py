@@ -115,6 +115,7 @@ def reset_fake():
     state.bills_calls = 0
     state.balance_status = 200
     state.bills_status = 200
+    state.reset_points()
     state.chat_bill_points = 0
     state.office_identity = "personal"
     state.office_org_name = "Raccoon Test"
@@ -718,6 +719,185 @@ def test_credits_refresh():
     check("credits no refresh token", state.refresh_token not in blob, overview)
 
 
+def test_desktop_login_grant_and_tasks():
+    print("== points tasks ==")
+    reset_accounts()
+    reset_fake()
+    import_current_account()
+    status, result = call(
+        "POST",
+        "/raccoon/accounts/grant-desktop",
+        {"uid": state.uid},
+        token=TOKEN,
+    )
+    check("desktop grant status", status == 200, (status, result))
+    check("desktop grant flag", result.get("granted") is True, result)
+    check("desktop grant points", result.get("points") == 3000, result)
+    check("desktop grant calls upstream", state.grant_calls == 1, state.grant_calls)
+    credits = result.get("credits") or {}
+    check("desktop grant balance", credits.get("available") == 4234, credits)
+    tasks = result.get("tasks") or {}
+    desktop = next(
+        (
+            item
+            for item in tasks.get("new_user") or []
+            if item.get("key") == "desktop_login"
+        ),
+        {},
+    )
+    check("desktop grant task completed", desktop.get("status") == "completed", tasks)
+    blob = json.dumps(result, ensure_ascii=False)
+    check("desktop grant hides access token", state.token not in blob, result)
+    check("desktop grant hides refresh token", state.refresh_token not in blob, result)
+    check("desktop grant hides invite code", "fake-invite-code" not in blob, result)
+
+    overview = call("GET", "/raccoon/overview?force=1", token=TOKEN)[1]
+    account = (overview.get("accounts") or [{}])[0]
+    overview_tasks = account.get("points_tasks") or {}
+    check(
+        "overview carries task states",
+        any(
+            item.get("key") == "desktop_login"
+            and item.get("status") == "completed"
+            for item in overview_tasks.get("new_user") or []
+        ),
+        account,
+    )
+
+    status, again = call(
+        "POST",
+        "/raccoon/accounts/grant-desktop",
+        {"uid": state.uid},
+        token=TOKEN,
+    )
+    check("second desktop grant status", status == 200, (status, again))
+    check("second desktop grant not granted", again.get("granted") is False, again)
+    check("second desktop grant no points", again.get("points") == 0, again)
+    check(
+        "second desktop grant no double-pay",
+        (again.get("credits") or {}).get("available") == 4234,
+        again,
+    )
+
+    status, missing = call(
+        "POST", "/raccoon/accounts/grant-desktop", {}, token=TOKEN
+    )
+    check("desktop grant requires uid", status == 400, (status, missing))
+
+
+def test_mobile_login_grant_and_tasks():
+    print("== mobile points ==")
+    reset_accounts()
+    reset_fake()
+    import_current_account()
+    status, result = call(
+        "POST",
+        "/raccoon/accounts/grant-mobile",
+        {"uid": state.uid},
+        token=TOKEN,
+    )
+    check("mobile grant status", status == 200, (status, result))
+    check("mobile grant flag", result.get("granted") is True, result)
+    check("mobile grant points", result.get("points") == 3000, result)
+    check(
+        "mobile grant calls upstream",
+        state.mobile_grant_calls == 1,
+        state.mobile_grant_calls,
+    )
+    credits = result.get("credits") or {}
+    check("mobile grant balance", credits.get("available") == 4234, credits)
+    tasks = result.get("tasks") or {}
+    mobile = next(
+        (
+            item
+            for item in tasks.get("new_user") or []
+            if item.get("key") == "mobile_login"
+        ),
+        {},
+    )
+    check("mobile grant task completed", mobile.get("status") == "completed", tasks)
+    headers = state.last_headers or {}
+    check(
+        "mobile grant app header",
+        headers.get("x-client-platform") == "app-android",
+        headers,
+    )
+    check(
+        "mobile grant version header",
+        headers.get("x-client-version") == "v1.1.0",
+        headers,
+    )
+    status, again = call(
+        "POST",
+        "/raccoon/accounts/grant-mobile",
+        {"uid": state.uid},
+        token=TOKEN,
+    )
+    check("second mobile grant status", status == 200, (status, again))
+    check("second mobile grant not granted", again.get("granted") is False, again)
+    check("second mobile grant no points", again.get("points") == 0, again)
+    check(
+        "second mobile grant no double-pay",
+        (again.get("credits") or {}).get("available") == 4234,
+        again,
+    )
+    status, missing = call(
+        "POST", "/raccoon/accounts/grant-mobile", {}, token=TOKEN
+    )
+    check("mobile grant requires uid", status == 400, (status, missing))
+
+
+def test_auto_claim_login_setting():
+    print("== auto claim ==")
+    reset_accounts()
+    reset_fake()
+    import_current_account()
+    status, result = call(
+        "POST",
+        "/settings/save",
+        {"raccoon": {"auto_claim_login": True}},
+        token=TOKEN,
+    )
+    check("auto claim save status", status == 200, (status, result))
+    check(
+        "auto claim setting persists",
+        ((result.get("raccoon") or {}).get("auto_claim_login") is True),
+        result,
+    )
+    overview = call("GET", "/raccoon/overview?force=1", token=TOKEN)[1]
+    check("overview auto claim flag", overview.get("auto_claim_login") is True, overview)
+    check("auto claim desktop call", state.grant_calls == 1, state.grant_calls)
+    check("auto claim mobile call", state.mobile_grant_calls == 1, state.mobile_grant_calls)
+    account = (overview.get("accounts") or [{}])[0]
+    check(
+        "auto claim balance",
+        (account.get("credits") or {}).get("available") == 7234,
+        account,
+    )
+    states = {
+        item.get("key"): item.get("status")
+        for item in ((account.get("points_tasks") or {}).get("new_user") or [])
+    }
+    check(
+        "auto claim tasks completed",
+        states.get("desktop_login") == "completed"
+        and states.get("mobile_login") == "completed",
+        account,
+    )
+    status, result = call(
+        "POST",
+        "/settings/save",
+        {"raccoon": {"auto_claim_login": False}},
+        token=TOKEN,
+    )
+    check("auto claim off status", status == 200, (status, result))
+    check(
+        "auto claim off persists",
+        ((result.get("raccoon") or {}).get("auto_claim_login") is False),
+        result,
+    )
+
+
 def test_models_refresh_and_keepalive():
     print("== refresh/keepalive ==")
     reset_accounts()
@@ -1127,6 +1307,9 @@ try:
     test_import_rolls_back_auth_file_when_enable_fails()
     test_manual_disable_survives_admin_catalog_and_refresh()
     test_credits_refresh()
+    test_desktop_login_grant_and_tasks()
+    test_mobile_login_grant_and_tasks()
+    test_auto_claim_login_setting()
     test_models_refresh_and_keepalive()
     test_admin_errors_are_readable_and_secret_free()
     test_callback_requests_are_redacted_and_nostore()

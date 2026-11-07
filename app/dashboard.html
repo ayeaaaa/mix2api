@@ -2467,7 +2467,30 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '停任务': 'Pause tasks',
     '开任务': 'Enable tasks',
     '浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。': 'The browser and this gateway must share loopback (the same machine). Remote users should import auth.json; QR-code and password login are not available in v1.6.0.',
-    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。': 'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. Raccoon exposes no credits or check-in API.',
+    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。支持积分余额、积分任务和桌面端/移动端登录奖励，没有签到接口。': 'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. It exposes credit balance, points tasks and the desktop/mobile login rewards, but no check-in API.',
+    '任务：': 'Tasks: ',
+    '领取桌面奖励': 'Claim desktop reward',
+    '领取桌面端奖励失败: ': 'Claiming the desktop reward failed: ',
+    '桌面端登录奖励已处理': 'Desktop login reward handled',
+    '领取移动端奖励': 'Claim mobile reward',
+    '领取移动端奖励失败: ': 'Claiming the mobile reward failed: ',
+    '移动端登录奖励已处理': 'Mobile login reward handled',
+    '小浣熊任务与福利': 'Raccoon tasks & rewards',
+    '注册、桌面端、移动端登录奖励，以及积分任务状态；桌面端和移动端奖励可在下方直接领取。': 'Registration, desktop and mobile login rewards, plus points-task status; claim the desktop and mobile rewards directly below.',
+    '自动领取登录奖励': 'Auto-claim login rewards',
+    '已开启自动领取登录奖励': 'Auto-claim login rewards on',
+    '已关闭自动领取登录奖励': 'Auto-claim login rewards off',
+    '保存自动领取设置失败: ': 'Saving auto-claim setting failed: ',
+    '刷新任务与积分': 'Refresh tasks and credits',
+    '小浣熊积分任务、登录奖励与账号积分总览。': 'Raccoon points tasks, login rewards and account credit overview.',
+    '小浣熊账号池': 'Raccoon account pool',
+    '待领取登录奖励': 'Login rewards to claim',
+    '桌面/移动各 3000 分': '3000 credits each for desktop/mobile',
+    '注册礼包': 'Registration pack',
+    '桌面登录': 'Desktop login',
+    '移动登录': 'Mobile login',
+    '专属任务': 'Exclusive tasks',
+    '已领完': 'All claimed',
     '粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。': 'Paste the full auth.json from the desktop client, or the {"data": {...}} object from an auth response.',
     '点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。': 'Click Start browser authorization to create a link; this page polls for the result automatically once authorization finishes.',
     '登录成功': 'Signed in',
@@ -5491,7 +5514,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   <div id="codeartsSummary" style="display:none;margin-bottom:18px">
     <div class="cards" id="codeartsCards"></div>
   </div>
-  <!-- 小浣熊视图的统计条：没有积分/签到，只看账号、模型与冷却。 -->
+  <!-- 小浣熊视图的统计条：看账号、模型、积分与冷却。 -->
   <div id="raccoonSummary" style="display:none;margin-bottom:18px">
     <div class="cards" id="raccoonCards"></div>
   </div>
@@ -5650,11 +5673,11 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     </div>
     <div id="codeartsAccounts"></div>
   </section>
-  <!-- 小浣熊视图：账号池由本进程直接管理，没有积分 / 签到。 -->
+  <!-- 小浣熊视图：账号池、积分与积分任务由本进程直接管理，没有签到。 -->
   <section id="raccoonAccountsSection" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <h2 style="margin:0">小浣熊账号<em id="raccoonAcctCount"></em></h2>
-      <div class="legend" style="margin:0">导入 auth.json 添加账号；Token 续期、模型目录、冷却与出口都由本进程直接管理。</div>
+      <div class="legend" style="margin:0">导入 auth.json 添加账号；Token 续期、模型目录、积分任务、登录奖励、冷却与出口都由本进程直接管理。</div>
     </div>
     <div class="toolbar">
       <button onclick="openRaccoonAuth()">添加账号</button>
@@ -5783,8 +5806,29 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
     <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">任务与福利</h2>
-    <div style="font-size:12px;color:var(--dim);margin-top:4px">每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。</div>
+    <div id="tasksPageSubtitle" style="font-size:12px;color:var(--dim);margin-top:4px">每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。</div>
   </div>
+
+  <!-- 小浣熊积分任务与登录奖励（仅小浣熊视图） -->
+  <section id="sectionRaccoonTasks" style="display:none;margin-bottom:24px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">小浣熊任务与福利</h2>
+        <div style="font-size:12px;color:var(--dim)">注册、桌面端、移动端登录奖励，以及积分任务状态；桌面端和移动端奖励可在下方直接领取。</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:5px"
+               title="开启后，刷新小浣熊概览时自动领取未领取的桌面端/移动端登录奖励">
+          <input id="raccoonAutoClaim" type="checkbox" style="width:15px;height:15px"
+                 onchange="saveRaccoonAutoClaim(this.checked)"> 自动领取登录奖励
+        </label>
+        <button class="primary" onclick="raccoonRefreshCredits(this)">刷新任务与积分</button>
+      </div>
+    </div>
+    <div class="cards" id="raccoonTaskCards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(185px,1fr))"></div>
+    <div id="raccoonTasksTable"></div>
+  </section>
+
   <!-- 国际版每日活跃福利 -->
   <section id="sectionIntlTasks" style="margin-bottom:24px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -6397,6 +6441,11 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           <input id="setCodeartsAutoCheckin" type="checkbox" style="width:16px;height:16px">
           每天自动签到
         </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px"
+               title="有临期积分（含每日签到 24h 积分）的账号优先接请求；只影响账号调度，不改变上游积分包扣减顺序">
+          <input id="setCodeartsExpiringPriority" type="checkbox" style="width:16px;height:16px">
+          临期积分优先
+        </label>
         <div>
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
           <input id="setCodeartsMaxConcurrent" type="number" min="1" max="20" value="1"
@@ -6427,7 +6476,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
 
     <section data-cat="network" id="raccoonSettingsSection">
       <h2>小浣熊接入 <em id="setRaccoonState"></em></h2>
-      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。</div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。支持积分余额、积分任务和桌面端/移动端登录奖励，没有签到接口。</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
           <input id="raccoonEnabled" type="checkbox" style="width:16px;height:16px">
@@ -8332,7 +8381,7 @@ function updateUI(){
     catch(e) { elCaHost.textContent = ca.base_url; }
   }
 
-  // 小浣熊卡片：健康/总数、模型数、离线标记；同样没有积分。
+  // 小浣熊卡片：健康/总数、模型数、积分余额与离线标记。
   const rc = window.RACCOON_OVERVIEW || {};
   const rcStats = rc.stats || {};
   const rcHealthy = (rcStats.healthy != null) ? rcStats.healthy : "—";
@@ -8361,6 +8410,23 @@ function updateUI(){
     const el = document.getElementById(id);
     if(el) el.style.display = hideWorkbuddy ? "none" : "";
   });
+  const wbTaskSections = ["sectionIntlTasks", "sectionGrowthTasks"];
+  wbTaskSections.forEach(function(id){
+    const el = document.getElementById(id);
+    if(el) el.style.display = hideWorkbuddy ? "none" : "";
+  });
+  const rcTaskSection = document.getElementById("sectionRaccoonTasks");
+  if(rcTaskSection){
+    rcTaskSection.style.display = (isRaccoonView && raccoonEnabled) ? "" : "none";
+  }
+  const tasksSubtitle = document.getElementById("tasksPageSubtitle");
+  if(tasksSubtitle){
+    tasksSubtitle.textContent = isRaccoonView
+      ? "小浣熊积分任务、登录奖励与账号积分总览。"
+      : (isCodeartsView
+        ? "CodeArts 没有任务与福利接口。"
+        : "每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。");
+  }
   const caSection = document.getElementById("codeartsAccountsSection");
   if(caSection) caSection.style.display = isCodeartsView ? "" : "none";
   const caSummary = document.getElementById("codeartsSummary");
@@ -8678,11 +8744,19 @@ async function loadRaccoonOverview(force){
     await loadProxySlots();
     renderRaccoonCards(r);
     renderRaccoonAccounts(r);
+    renderRaccoonTasks(r);
     window.updateUI();
   }catch(e){
     window.RACCOON_OVERVIEW = null;
     const cards = document.getElementById("raccoonCards");
     if(cards) cards.innerHTML = "";
+    const taskCards = document.getElementById("raccoonTaskCards");
+    if(taskCards) taskCards.innerHTML = "";
+    const taskTable = document.getElementById("raccoonTasksTable");
+    if(taskTable){
+      taskTable.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
+        + escapeHtml(e.message || "读取小浣熊任务失败") + '</div>';
+    }
     const count = document.getElementById("raccoonAcctCount");
     if(count) count.textContent = "";
     if(box){
@@ -8692,6 +8766,11 @@ async function loadRaccoonOverview(force){
     }
     window.updateUI();
   }
+}
+
+async function loadRaccoonTasks(force){
+  if(window.VIEW_REALM !== "raccoon") return;
+  await loadRaccoonOverview(force !== false);
 }
 
 function renderRaccoonCards(r){
@@ -8760,6 +8839,172 @@ async function raccoonRefreshCredits(btn){
   }finally{
     if(btn) btn.disabled = false;
   }
+}
+
+async function raccoonGrantDesktop(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/raccoon/accounts/grant-desktop', {uid: uid});
+    toast((r && r.message) || '桌面端登录奖励已处理', 'ok');
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('领取桌面端奖励失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function raccoonGrantMobile(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/raccoon/accounts/grant-mobile', {uid: uid});
+    toast((r && r.message) || '移动端登录奖励已处理', 'ok');
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('领取移动端奖励失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function saveRaccoonAutoClaim(checked){
+  try{
+    await postJSON('/settings/save', {raccoon: {auto_claim_login: !!checked}});
+    toast(checked ? '已开启自动领取登录奖励' : '已关闭自动领取登录奖励', 'ok');
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('保存自动领取设置失败: ' + e.message, 'bad');
+    const el = document.getElementById("raccoonAutoClaim");
+    if(el) el.checked = !checked;
+  }
+}
+
+function raccoonTaskMark(status){
+  if(status === "completed") return "✓";
+  if(status === "unfinished") return "—";
+  if(status === "in_progress") return "…";
+  if(status === "expired") return "×";
+  return "?";
+}
+
+const RACCOON_TASK_LABELS = [
+  ["register_pack", "注册"],
+  ["desktop_login", "桌面"],
+  ["mobile_login", "移动"],
+  ["active_7d", "7日"],
+  ["first_payment", "首付"],
+];
+const RACCOON_TASK_POINTS = {
+  register_pack: 3000,
+  desktop_login: 3000,
+  mobile_login: 3000,
+  active_7d: 1000,
+  first_payment: 2000,
+};
+
+function raccoonTaskMap(tasks, group){
+  const states = {};
+  const list = (tasks && Array.isArray(tasks[group])) ? tasks[group] : [];
+  list.forEach(function(item){
+    if(item && item.key) states[item.key] = item.status;
+  });
+  return states;
+}
+
+function raccoonTaskCell(states, key){
+  if(!states[key]) return '<span style="color:var(--dim)">—</span>';
+  const color = states[key] === "completed" ? "var(--accent2)" : "var(--warn)";
+  return '<b style="color:' + color + '">' + raccoonTaskMark(states[key]) + '</b>'
+    + ' <span style="font-size:11px;color:var(--dim)">'
+    + (RACCOON_TASK_POINTS[key] || 0) + ' 分</span>';
+}
+
+function renderRaccoonTasks(r){
+  const cards = document.getElementById("raccoonTaskCards");
+  const box = document.getElementById("raccoonTasksTable");
+  if(!cards || !box) return;
+  const autoClaim = document.getElementById("raccoonAutoClaim");
+  if(autoClaim && r.auto_claim_login !== undefined){
+    autoClaim.checked = r.auto_claim_login === true;
+  }
+  const accounts = r.accounts || [];
+  let available = 0;
+  let today = 0;
+  let claimable = 0;
+  let hasCredits = false;
+  accounts.forEach(function(a){
+    const cr = a.credits || {};
+    if(cr.available != null){
+      hasCredits = true;
+      available += Number(cr.available) || 0;
+      today += Number(cr.today_used) || 0;
+    }
+    const states = raccoonTaskMap(a.points_tasks, "new_user");
+    if(states.desktop_login === "unfinished") claimable += 3000;
+    if(states.mobile_login === "unfinished") claimable += 3000;
+  });
+  cards.innerHTML =
+    card("账号", accounts.length, "小浣熊账号池")
+    + card("可用积分", hasCredits ? available : "—", "全部账号")
+    + card("今日消耗", hasCredits ? today : "—", "按账单汇总")
+    + card("待领取登录奖励", claimable, "桌面/移动各 3000 分");
+  if(!accounts.length){
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">还没有小浣熊账号。先在「账号」页导入 auth.json 或添加账号。</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table><thead><tr>'
+    + '<th>账号</th><th>积分</th><th>注册礼包</th><th>桌面登录</th>'
+    + '<th>移动登录</th><th>专属任务</th><th>操作</th>'
+    + '</tr></thead><tbody>';
+  accounts.forEach(function(a){
+    const uid = escapeHtml(a.uid || "");
+    const uidSafe = esc(String(a.uid || "").replace(/[^\w.@-]/g, ""));
+    const name = escapeHtml(a.nickname || a.uid || "");
+    const cr = a.credits || {};
+    const credits = cr.available != null
+      ? '<b>' + escapeHtml(String(cr.available)) + '</b>'
+        + '<div style="font-size:11px;color:var(--dim)">今日 -'
+        + escapeHtml(String(cr.today_used || 0)) + '</div>'
+      : '<span style="color:var(--dim)">—</span>';
+    const newUser = raccoonTaskMap(a.points_tasks, "new_user");
+    const invitee = raccoonTaskMap(a.points_tasks, "invitee");
+    const exclusive = [];
+    if(invitee.active_7d) exclusive.push("7日 " + raccoonTaskMark(invitee.active_7d));
+    if(invitee.first_payment) exclusive.push("首付 " + raccoonTaskMark(invitee.first_payment));
+    const exclusiveHtml = exclusive.length
+      ? escapeHtml(exclusive.join(" · "))
+      : '<span style="color:var(--dim)">—</span>';
+    const actions = [];
+    if(newUser.desktop_login === "unfinished"){
+      actions.push('<button class="sec mini"'
+        + ' title="调用小浣熊桌面端登录奖励接口"'
+        + ' onclick="raccoonGrantDesktop(\'' + uidSafe + '\',this)">'
+        + '领取桌面奖励</button>');
+    }
+    if(newUser.mobile_login === "unfinished"){
+      actions.push('<button class="sec mini"'
+        + ' title="调用小浣熊移动端登录奖励接口（app-android, v1.1.0）"'
+        + ' onclick="raccoonGrantMobile(\'' + uidSafe + '\',this)">'
+        + '领取移动端奖励</button>');
+    }
+    if(!actions.length){
+      actions.push(newUser.desktop_login === "completed"
+        && newUser.mobile_login === "completed"
+        ? '<span class="badge ok mini">已领完</span>'
+        : '<span style="color:var(--dim)">—</span>');
+    }
+    html += '<tr><td><b>' + name + '</b>'
+      + (a.disabled ? ' <span class="badge bad mini">已停用</span>' : '')
+      + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
+      + '<td>' + credits + '</td>'
+      + '<td>' + raccoonTaskCell(newUser, "register_pack") + '</td>'
+      + '<td>' + raccoonTaskCell(newUser, "desktop_login") + '</td>'
+      + '<td>' + raccoonTaskCell(newUser, "mobile_login") + '</td>'
+      + '<td style="font-size:12px">' + exclusiveHtml + '</td>'
+      + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
 }
 
 function renderRaccoonAccounts(r){
@@ -9206,10 +9451,13 @@ function openCodeartsAuthUrl(){
 
 function renderCodeartsSettings(cfg){
   if(!cfg) return;
+  const enabledOn = cfg.enabled === true || cfg.configured === true;
   const enabled = document.getElementById("setCodeartsEnabled");
-  if(enabled) enabled.checked = cfg.enabled === true;
+  if(enabled) enabled.checked = enabledOn;
   const auto = document.getElementById("setCodeartsAutoCheckin");
   if(auto) auto.checked = cfg.credits_auto_claim === true;
+  const expiring = document.getElementById("setCodeartsExpiringPriority");
+  if(expiring) expiring.checked = cfg.credits_expiring_priority !== false;
   const conc = document.getElementById("setCodeartsMaxConcurrent");
   if(conc) conc.value = cfg.max_concurrent || 1;
   const timeout = document.getElementById("setCodeartsTimeout");
@@ -9220,8 +9468,8 @@ function renderCodeartsSettings(cfg){
   if(ttl) ttl.value = cfg.models_ttl_seconds || 300;
   const state = document.getElementById("setCodeartsState");
   if(state){
-    state.textContent = cfg.configured ? "(已启用)" : "(未启用)";
-    state.style.color = cfg.configured ? "var(--accent2)" : "var(--dim)";
+    state.textContent = enabledOn ? "(已启用)" : "(未启用)";
+    state.style.color = enabledOn ? "var(--accent2)" : "var(--dim)";
   }
   const hint = document.getElementById("setCodeartsHint");
   if(hint){
@@ -9235,6 +9483,7 @@ async function saveCodeartsSettings(btn){
   const payload = {
     enabled: !!(document.getElementById("setCodeartsEnabled") || {}).checked,
     credits_auto_claim: !!(document.getElementById("setCodeartsAutoCheckin") || {}).checked,
+    credits_expiring_priority: !!(document.getElementById("setCodeartsExpiringPriority") || {}).checked,
     max_concurrent: parseInt(val("setCodeartsMaxConcurrent"), 10) || 1,
     timeout_seconds: parseFloat(val("setCodeartsTimeout")) || 30,
     stream_timeout_seconds: parseFloat(val("setCodeartsStreamTimeout")) || 600,
@@ -9899,8 +10148,14 @@ async function loadIntlTasks(){
 }
 
 async function loadGrowthTasks(){
-  loadIntlTasks();
+  const realm = window.VIEW_REALM || "intl";
   const sec = document.getElementById("sectionGrowthTasks");
+  if(realm === "raccoon" || realm === "codearts"){
+    if(sec) sec.style.display = "none";
+    if(realm === "raccoon") loadRaccoonTasks().catch(function(){});
+    return;
+  }
+  loadIntlTasks();
   if(!sec) return;
   sec.style.display = 'block';
   try{

@@ -207,9 +207,27 @@ const byId = id => document.getElementById(id);
 
   // 新页面的说明 / 帮助 / 动态提示也必须能整句翻译，不能只覆盖按钮。
   assert.equal(api.i18n.translate(
-    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。小浣熊没有积分或签到接口。'),
-    'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. Raccoon exposes no credits or check-in API.',
+    '第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。支持积分余额、积分任务和桌面端/移动端登录奖励，没有签到接口。'),
+    'The fourth exit connects directly to SenseTime Raccoon: after importing auth.json or authorizing through the local loopback, model discovery, token refresh, cooldown and failover all happen in this process. It exposes credit balance, points tasks and the desktop/mobile login rewards, but no check-in API.',
     '设置说明');
+  assert.equal(api.i18n.translate('任务：'), 'Tasks: ', '任务状态');
+  assert.equal(api.i18n.translate('领取桌面奖励'), 'Claim desktop reward', '领取按钮');
+  assert.equal(api.i18n.translate('领取桌面端奖励失败: '), 'Claiming the desktop reward failed: ', '领取失败');
+  assert.equal(api.i18n.translate('桌面端登录奖励已处理'), 'Desktop login reward handled', '领取提示');
+  assert.equal(api.i18n.translate('领取移动端奖励'), 'Claim mobile reward', '移动领取按钮');
+  assert.equal(api.i18n.translate('领取移动端奖励失败: '), 'Claiming the mobile reward failed: ', '移动领取失败');
+  assert.equal(api.i18n.translate('移动端登录奖励已处理'), 'Mobile login reward handled', '移动领取提示');
+  assert.equal(api.i18n.translate('小浣熊任务与福利'), 'Raccoon tasks & rewards', '任务页标题');
+  assert.equal(api.i18n.translate('刷新任务与积分'), 'Refresh tasks and credits', '任务页刷新');
+  assert.equal(api.i18n.translate('待领取登录奖励'), 'Login rewards to claim', '待领取卡');
+  assert.equal(api.i18n.translate('注册礼包'), 'Registration pack', '任务表头');
+  assert.equal(api.i18n.translate('桌面登录'), 'Desktop login', '桌面任务表头');
+  assert.equal(api.i18n.translate('移动登录'), 'Mobile login', '移动任务表头');
+  assert.equal(api.i18n.translate('专属任务'), 'Exclusive tasks', '专属任务表头');
+  assert.equal(api.i18n.translate('已领完'), 'All claimed', '已领完状态');
+  assert.equal(api.i18n.translate('自动领取登录奖励'), 'Auto-claim login rewards', '自动领取');
+  assert.equal(api.i18n.translate('已开启自动领取登录奖励'), 'Auto-claim login rewards on', '自动领取开启');
+  assert.equal(api.i18n.translate('已关闭自动领取登录奖励'), 'Auto-claim login rewards off', '自动领取关闭');
   assert.equal(api.i18n.translate(
     '浏览器和本网关必须共享 loopback（同一台机器）。远程用户请导入 auth.json；v1.6.0 暂不支持扫码或密码登录。'),
     'The browser and this gateway must share loopback (the same machine). Remote users should import auth.json; QR-code and password login are not available in v1.6.0.',

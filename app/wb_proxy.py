@@ -11468,7 +11468,7 @@ def runtime_settings_view():
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
         "project": "mix2api",
-        "version": "1.6.4",
+        "version": "1.6.5",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -20257,7 +20257,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.6.4"
+    server_version = "mix2api/1.6.5"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -23599,6 +23599,18 @@ class Handler(BaseHTTPRequestHandler):
                     if levels:
                         entry["reasoning_efforts"] = levels
                 models.append(entry)
+            # CodeArts-only ids (notably deepseek-v4.1-flash-1017) are not in
+            # the WorkBuddy desktop catalogue, but the one-click/agent model
+            # picker still needs them when the CodeArts exit is configured.
+            # Use the live-observed lower-case spelling so the id matches
+            # /v1/models?realm=codearts.
+            if wb_codearts.configured(ACCOUNTS_DIR):
+                for mid in wb_codearts.CODEARTS_OFFICIAL_MODELS:
+                    key = str(mid or "").strip().lower()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    models.append({"id": key, "name": mid})
         except Exception:
             pass
         return models
@@ -24086,6 +24098,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/raccoon/accounts/note",
                 "/raccoon/accounts/tasks",
                 "/raccoon/accounts/test",
+                "/raccoon/accounts/grant-desktop",
+                "/raccoon/accounts/grant-mobile",
                 "/raccoon/accounts/enable",
                 "/raccoon/accounts/disable",
                 "/raccoon/accounts/delete",
@@ -24107,6 +24121,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/raccoon/accounts/test":
                 result = wb_raccoon.test_account(cfg, uid)
+            elif path == "/raccoon/accounts/grant-desktop":
+                result = wb_raccoon.grant_desktop_login_points(cfg, uid)
+            elif path == "/raccoon/accounts/grant-mobile":
+                result = wb_raccoon.grant_mobile_login_points(cfg, uid)
             elif path == "/raccoon/accounts/enable":
                 result = wb_raccoon.enable(cfg, uid)
             elif path == "/raccoon/accounts/disable":

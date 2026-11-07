@@ -55,6 +55,30 @@ def default_catalog():
     return json.loads(json.dumps(CATALOG_FIXTURE))
 
 
+def points_tasks_fixture():
+    """Points tasks with the desktop reward still unclaimed."""
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "invite": {
+                "granted_points": 0,
+                "invite_code": "fake-invite-code",
+                "marketing_text": "",
+                "register_reward_points": 1500,
+                "registered_invitee_count": 0,
+                "remaining_reward_invitees": 20,
+            },
+            "invitee_task_states": [],
+            "new_user_task_states": [
+                {"key": "register_pack", "status": "completed"},
+                {"key": "desktop_login", "status": "unfinished"},
+                {"key": "mobile_login", "status": "unfinished"},
+            ],
+        },
+    }
+
+
 def _b64url(raw):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -124,6 +148,17 @@ class FakeState(object):
         self.bills_calls = 0
         self.balance_status = 200
         self.bills_status = 200
+        self.tasks_calls = 0
+        self.tasks_status = 200
+        self.tasks = points_tasks_fixture()
+        self.grant_calls = 0
+        self.grant_status = 200
+        self.desktop_granted = False
+        self.grant_points = 3000
+        self.mobile_grant_calls = 0
+        self.mobile_grant_status = 200
+        self.mobile_granted = False
+        self.mobile_grant_points = 3000
         now = datetime.datetime.now().astimezone()
         def when(days=0):
             return (now - datetime.timedelta(days=days)).isoformat(timespec="seconds")
@@ -177,6 +212,23 @@ class FakeState(object):
         self.last_headers = None
         self.last_header_names = None
         self.last_body = None
+
+    def reset_points(self):
+        self.tasks_calls = 0
+        self.tasks_status = 200
+        self.tasks = points_tasks_fixture()
+        self.grant_calls = 0
+        self.grant_status = 200
+        self.desktop_granted = False
+        self.grant_points = 3000
+        self.mobile_grant_calls = 0
+        self.mobile_grant_status = 200
+        self.mobile_granted = False
+        self.mobile_grant_points = 3000
+        data = self.balance.setdefault("data", {})
+        data["available_points"] = 1234
+        data["reward_points"] = 1000
+        data["total_chargeable_points"] = 1234
 
     def token_payload(self):
         return {
@@ -373,6 +425,16 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, state.bills)
             return
+        if path == "/api/web/points/v1/tasks":
+            state.tasks_calls += 1
+            if not self._authorized():
+                self._send_json(401, {"message": "invalid access token"})
+                return
+            if state.tasks_status != 200:
+                self._send_json(state.tasks_status, {"message": "tasks failed"})
+                return
+            self._send_json(200, state.tasks)
+            return
         if path == "/api/web/llm/v2/model_catalog":
             state.catalog_calls += 1
             if not self._authorized():
@@ -435,6 +497,113 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 payload = state.rotate()
             self._send_json(200, {"code": 0, "data": payload})
+            return
+        if path == "/api/web/desktop/v1/login/points/grant":
+            with state.lock:
+                state.grant_calls += 1
+                if not self._authorized():
+                    self._send_json(401, {"message": "invalid access token"})
+                    return
+                if state.grant_status != 200:
+                    self._send_json(
+                        state.grant_status, {"message": "grant failed"}
+                    )
+                    return
+                if state.desktop_granted:
+                    self._send_json(
+                        200, {"code": 0, "message": "success",
+                              "data": {"granted": False}}
+                    )
+                    return
+                state.desktop_granted = True
+                points = int(state.grant_points)
+                data = state.balance.setdefault("data", {})
+                data["available_points"] = int(
+                    data.get("available_points") or 0
+                ) + points
+                data["reward_points"] = int(
+                    data.get("reward_points") or 0
+                ) + points
+                data["total_chargeable_points"] = int(
+                    data.get("total_chargeable_points") or 0
+                ) + points
+                for item in state.tasks.get("data", {}).get(
+                    "new_user_task_states", []
+                ):
+                    if item.get("key") == "desktop_login":
+                        item["status"] = "completed"
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "message": "success",
+                    "data": {
+                        "granted": True,
+                        "popup": {
+                            "source": "desktop_login",
+                            "display_name": "桌面端登录奖励",
+                            "points": points,
+                            "expire_at": "2027-11-07T23:00:39+08:00",
+                        },
+                    },
+                },
+            )
+            return
+        if path == "/api/web/mobile/v1/login/points/grant":
+            with state.lock:
+                state.mobile_grant_calls += 1
+                if not self._authorized():
+                    self._send_json(401, {"message": "invalid access token"})
+                    return
+                if str(self.headers.get("X-Client-Platform") or "") != "app-android" or str(
+                    self.headers.get("X-Client-Version") or ""
+                ) != "v1.1.0":
+                    self._send_json(400, {"message": "mobile client required"})
+                    return
+                if state.mobile_grant_status != 200:
+                    self._send_json(
+                        state.mobile_grant_status, {"message": "mobile grant failed"}
+                    )
+                    return
+                if state.mobile_granted:
+                    self._send_json(
+                        200, {"code": 0, "message": "success",
+                              "data": {"granted": False}}
+                    )
+                    return
+                state.mobile_granted = True
+                points = int(state.mobile_grant_points)
+                data = state.balance.setdefault("data", {})
+                data["available_points"] = int(
+                    data.get("available_points") or 0
+                ) + points
+                data["reward_points"] = int(
+                    data.get("reward_points") or 0
+                ) + points
+                data["total_chargeable_points"] = int(
+                    data.get("total_chargeable_points") or 0
+                ) + points
+                for item in state.tasks.get("data", {}).get(
+                    "new_user_task_states", []
+                ):
+                    if item.get("key") == "mobile_login":
+                        item["status"] = "completed"
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "message": "success",
+                    "data": {
+                        "granted": True,
+                        "popup": {
+                            "source": "mobile_login",
+                            "display_name": "移动端登录奖励",
+                            "points": points,
+                            "expire_at": "2027-11-07T23:00:39+08:00",
+                        },
+                    },
+                },
+            )
             return
         if path == "/api/web/llm/v2/chat/completions":
             with state.lock:

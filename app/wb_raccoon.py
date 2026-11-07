@@ -47,9 +47,13 @@ EP_CATALOG = "/api/web/llm/v2/model_catalog"
 EP_CHAT = "/api/web/llm/v2/chat/completions"
 EP_POINTS_BALANCE = "/api/web/points/v1/balance"
 EP_POINTS_BILLS = "/api/web/points/v2/bills"
+EP_POINTS_TASKS = "/api/web/points/v1/tasks"
+EP_POINTS_LOGIN_GRANT = "/api/web/desktop/v1/login/points/grant"
+EP_POINTS_MOBILE_LOGIN_GRANT = "/api/web/mobile/v1/login/points/grant"
 CREDITS_TTL = 60.0
 CREDITS_BILL_LIMIT = 100
 CREDITS_MAX_PAGES = 3
+POINTS_TASKS_TTL = 300.0
 
 #: Browser authorization page. This is deliberately independent of `BASE_URL`:
 #: `BASE_URL` points at the API host (and tests monkeypatch it), while the
@@ -71,6 +75,9 @@ OAUTH_MAX_SESSIONS = 64
 CLIENT_PLATFORM = "desktop-linux-x64"
 CLIENT_VERSION = "v1.1.5"
 CLIENT_LANGUAGE = "zh"
+#: The mobile app's login-reward endpoint is gated by these client headers.
+MOBILE_CLIENT_PLATFORM = "app-android"
+MOBILE_CLIENT_VERSION = "v1.1.0"
 
 ACCOUNTS_SUBDIR = "raccoon"
 STATE_FILE = "state.json"
@@ -90,6 +97,7 @@ DEFAULTS = {
     "stream_timeout_seconds": 900.0,
     "models_ttl_seconds": 600.0,
     "max_concurrent": 1,
+    "auto_claim_login": False,
 }
 
 _LOCK = threading.RLock()
@@ -207,6 +215,7 @@ def load_config(accounts_dir):
         "max_concurrent": _positive_int(
             raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 10
         ),
+        "auto_claim_login": raw.get("auto_claim_login") is True,
         "accounts_dir": accounts_dir,
     }
 
@@ -244,6 +253,7 @@ def save_config(accounts_dir, patch):
         merged["max_concurrent"] = _positive_int(
             merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 10
         )
+        merged["auto_claim_login"] = merged.get("auto_claim_login") is True
 
         data = wb_settings.load(accounts_dir)
         stored = data.get("raccoon")
@@ -879,8 +889,11 @@ class RaccoonAccount(object):
         self.models_source = ""
         self.credits = None
         self.credits_fetched_at = 0.0
+        self.points_tasks = None
+        self.points_tasks_fetched_at = 0.0
         self.credit_seen_bills = set()
         self._credit_bill_lock = threading.Lock()
+        self._tasks_lock = threading.Lock()
         self.reserve_credits = 0
         self.daily_credit_limit = 0
         self.daily_token_limit = 0
@@ -890,9 +903,11 @@ class RaccoonAccount(object):
         self.model_daily_tokens = {}
         self.auth_generation = 0
         self.deleted = False
+        self.auto_claim_at = 0.0
         self._lock = threading.RLock()
         self._refresh_lock = threading.RLock()
         self._credits_lock = threading.Lock()
+        self._auto_claim_lock = threading.Lock()
 
     def live(self):
         """True while this object is still the pool's current entry for its uid."""
@@ -1009,6 +1024,7 @@ class RaccoonAccount(object):
             ),
             "models": len(self.models),
             "credits": _public_credits(self.credits),
+            "points_tasks": _public_point_tasks(self.points_tasks),
             "guard": self.guard_blocked(),
             "reserve_credits": int(self.reserve_credits or 0),
             "reserve_blocked": self.reserve_blocked(),
@@ -2712,6 +2728,44 @@ def _public_credits(raw):
     return out
 
 
+def _point_task_states(raw):
+    out = []
+    for item in raw or ():
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()[:80]
+        status = str(item.get("status") or "").strip()[:40]
+        if key and status:
+            out.append({"key": key, "status": status})
+    return out
+
+
+def _public_point_tasks(raw):
+    """JSON-safe task snapshot; the invite code itself never leaves the server."""
+    if not isinstance(raw, dict):
+        return None
+    invite = raw.get("invite")
+    if not isinstance(invite, dict):
+        invite = {}
+    return {
+        "new_user": _point_task_states(raw.get("new_user")),
+        "invitee": _point_task_states(raw.get("invitee")),
+        "invite": {
+            "granted_points": _as_points(invite.get("granted_points")),
+            "register_reward_points": _as_points(
+                invite.get("register_reward_points")
+            ),
+            "registered_invitee_count": _as_points(
+                invite.get("registered_invitee_count")
+            ),
+            "remaining_reward_invitees": _as_points(
+                invite.get("remaining_reward_invitees")
+            ),
+        },
+        "fetched_at": float(raw.get("fetched_at") or 0.0),
+    }
+
+
 def _points_bill_url(cursor="", limit=CREDITS_BILL_LIMIT):
     query = {"paging.limit": str(limit), "type": "all"}
     if cursor:
@@ -2889,6 +2943,290 @@ def fetch_credits(acct, force=False, timeout=15.0):
         return _public_credits(credits)
 
 
+def fetch_point_tasks(acct, force=False, timeout=8.0):
+    """Fetch the points-task states for one account, cached for a short TTL.
+
+    The upstream only exposes task states and invitation counters here; the
+    invite code is deliberately dropped so it cannot leak into the panel.
+    """
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for tasks")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 8.0
+    now = time.time()
+    if (
+        not force
+        and isinstance(acct.points_tasks, dict)
+        and now - float(acct.points_tasks_fetched_at or 0.0) < POINTS_TASKS_TTL
+    ):
+        return _public_point_tasks(acct.points_tasks)
+
+    with acct._tasks_lock:
+        now = time.time()
+        if (
+            not force
+            and isinstance(acct.points_tasks, dict)
+            and now - float(acct.points_tasks_fetched_at or 0.0) < POINTS_TASKS_TTL
+        ):
+            return _public_point_tasks(acct.points_tasks)
+        ensure_token(acct)
+        secrets = _auth_secrets(acct.auth)
+        for attempt in (0, 1):
+            generation = acct.auth_generation
+            try:
+                payload = _request_json(
+                    "GET",
+                    BASE_URL + EP_POINTS_TASKS,
+                    _account_headers(acct),
+                    timeout=timeout,
+                    proxy=acct.proxy,
+                    secrets=secrets,
+                )
+                break
+            except RaccoonAuthError:
+                if attempt:
+                    raise
+                ensure_token(
+                    acct, force=True, expected_generation=generation
+                )
+                secrets = _auth_secrets(acct.auth)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise RaccoonUpstreamError("Raccoon tasks returned no data")
+        invite = data.get("invite")
+        if not isinstance(invite, dict):
+            invite = {}
+        fetched_at = time.time()
+        normalized = {
+            "new_user": _point_task_states(data.get("new_user_task_states")),
+            "invitee": _point_task_states(data.get("invitee_task_states")),
+            "invite": {
+                "granted_points": _as_points(invite.get("granted_points")),
+                "register_reward_points": _as_points(
+                    invite.get("register_reward_points")
+                ),
+                "registered_invitee_count": _as_points(
+                    invite.get("registered_invitee_count")
+                ),
+                "remaining_reward_invitees": _as_points(
+                    invite.get("remaining_reward_invitees")
+                ),
+            },
+            "fetched_at": fetched_at,
+        }
+        acct.points_tasks = normalized
+        acct.points_tasks_fetched_at = fetched_at
+        return _public_point_tasks(normalized)
+
+
+def grant_desktop_login(acct, timeout=15.0):
+    """Claim the one-time desktop-login reward for an account."""
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for grants")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 15.0
+    ensure_token(acct)
+    payload = _request_json(
+        "POST",
+        BASE_URL + EP_POINTS_LOGIN_GRANT,
+        _account_headers(acct),
+        timeout=timeout,
+        proxy=acct.proxy,
+        secrets=_auth_secrets(acct.auth),
+    )
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise RaccoonUpstreamError("Raccoon grant returned no data")
+    popup = data.get("popup")
+    if not isinstance(popup, dict):
+        popup = {}
+    granted = bool(data.get("granted"))
+    return {
+        "granted": granted,
+        "points": _as_points(popup.get("points")) if granted else 0,
+        "source": str(popup.get("source") or ""),
+        "display_name": str(popup.get("display_name") or ""),
+        "expire_at": str(popup.get("expire_at") or ""),
+    }
+
+
+def grant_mobile_login(acct, timeout=15.0):
+    """Claim the mobile-app login reward using the app's client headers."""
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for grants")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 15.0
+    ensure_token(acct)
+    headers = _account_headers(acct)
+    headers["X-Client-Platform"] = MOBILE_CLIENT_PLATFORM
+    headers["X-Client-Version"] = MOBILE_CLIENT_VERSION
+    payload = _request_json(
+        "POST",
+        BASE_URL + EP_POINTS_MOBILE_LOGIN_GRANT,
+        headers,
+        timeout=timeout,
+        proxy=acct.proxy,
+        secrets=_auth_secrets(acct.auth),
+    )
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise RaccoonUpstreamError("Raccoon mobile grant returned no data")
+    popup = data.get("popup")
+    if not isinstance(popup, dict):
+        popup = {}
+    granted = bool(data.get("granted"))
+    return {
+        "granted": granted,
+        "points": _as_points(popup.get("points")) if granted else 0,
+        "source": str(popup.get("source") or ""),
+        "display_name": str(popup.get("display_name") or ""),
+        "expire_at": str(popup.get("expire_at") or ""),
+    }
+
+
+def _mark_point_task_completed(acct, key):
+    tasks = acct.points_tasks if isinstance(acct.points_tasks, dict) else None
+    if not tasks:
+        return
+    for group in ("new_user", "invitee"):
+        for item in tasks.get(group) or []:
+            if isinstance(item, dict) and item.get("key") == key:
+                item["status"] = "completed"
+
+
+def auto_claim_login(acct, force=False):
+    """Claim unfinished desktop/mobile login rewards once per task TTL.
+
+    This is opt-in via `auto_claim_login` in the Raccoon config. It respects
+    the account's task toggle and never raises for a single upstream failure:
+    the caller (overview) should still return the rest of the account list.
+    """
+    if acct is None:
+        return {"desktop": False, "mobile": False}
+    if not bool(getattr(acct, "tasks_enabled", True)):
+        return {"desktop": False, "mobile": False, "skipped": "tasks disabled"}
+    now = time.time()
+    if (
+        not force
+        and now - float(getattr(acct, "auto_claim_at", 0.0) or 0.0)
+        < POINTS_TASKS_TTL
+    ):
+        return {"desktop": False, "mobile": False, "skipped": "recently checked"}
+    with acct._auto_claim_lock:
+        now = time.time()
+        if (
+            not force
+            and now - float(getattr(acct, "auto_claim_at", 0.0) or 0.0)
+            < POINTS_TASKS_TTL
+        ):
+            return {"desktop": False, "mobile": False, "skipped": "recently checked"}
+        errors = []
+        result = {"desktop": False, "mobile": False}
+        try:
+            tasks = fetch_point_tasks(acct)
+        except RaccoonError as exc:
+            return {
+                "desktop": False,
+                "mobile": False,
+                "error": _redact(str(exc), _auth_secrets(acct.auth))[:300],
+            }
+        states = {}
+        for item in tasks.get("new_user") or []:
+            if isinstance(item, dict) and item.get("key"):
+                states[str(item["key"])] = str(item.get("status") or "")
+        changed = False
+        if states.get("desktop_login") == "unfinished":
+            try:
+                granted = grant_desktop_login(acct)
+                result["desktop"] = bool(granted.get("granted"))
+                if granted.get("granted"):
+                    _mark_point_task_completed(acct, "desktop_login")
+                    changed = True
+            except RaccoonError as exc:
+                errors.append("desktop: " + _redact(str(exc), _auth_secrets(acct.auth))[:200])
+        if states.get("mobile_login") == "unfinished":
+            try:
+                granted = grant_mobile_login(acct)
+                result["mobile"] = bool(granted.get("granted"))
+                if granted.get("granted"):
+                    _mark_point_task_completed(acct, "mobile_login")
+                    changed = True
+            except RaccoonError as exc:
+                errors.append("mobile: " + _redact(str(exc), _auth_secrets(acct.auth))[:200])
+        acct.auto_claim_at = now
+        if changed:
+            try:
+                fetch_credits(acct, force=True)
+            except RaccoonError as exc:
+                errors.append("credits: " + _redact(str(exc), _auth_secrets(acct.auth))[:200])
+            try:
+                fetch_point_tasks(acct, force=True)
+            except RaccoonError as exc:
+                errors.append("tasks: " + _redact(str(exc), _auth_secrets(acct.auth))[:200])
+        if errors:
+            result["errors"] = errors
+        return result
+
+
+def _grant_login_points(config, uid, grant, reward_name):
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    acct = pool.get(uid)
+    if acct is None:
+        raise RaccoonNotFound("account not found")
+    result = grant(acct)
+    warnings = []
+    credits = None
+    tasks = None
+    try:
+        credits = fetch_credits(acct, force=True)
+    except RaccoonError as exc:
+        warnings.append(
+            _redact(str(exc), _auth_secrets(acct.auth))[:300]
+        )
+    try:
+        tasks = fetch_point_tasks(acct, force=True)
+    except RaccoonError as exc:
+        warnings.append(
+            _redact(str(exc), _auth_secrets(acct.auth))[:300]
+        )
+    if result["granted"]:
+        message = "已领取 %d %s" % (int(result["points"] or 0), reward_name)
+    else:
+        message = "%s已领取过" % reward_name
+    if warnings:
+        message += "；部分数据刷新失败：" + "；".join(warnings)
+    return {
+        "ok": True,
+        "uid": acct.uid,
+        "granted": bool(result["granted"]),
+        "points": int(result["points"] or 0),
+        "message": message,
+        "credits": credits,
+        "tasks": tasks,
+    }
+
+
+def grant_desktop_login_points(config, uid):
+    """Claim the desktop reward, then refresh the balance and task snapshot."""
+    return _grant_login_points(
+        config, uid, grant_desktop_login, "桌面端登录奖励"
+    )
+
+
+def grant_mobile_login_points(config, uid):
+    """Claim the mobile-app reward, then refresh the balance and task snapshot."""
+    return _grant_login_points(
+        config, uid, grant_mobile_login, "移动端登录奖励"
+    )
+
+
 def refresh_credits(config, uid=""):
     """Force a balance/bills refresh for one account or the whole pool."""
     config = _config_or_load(config)
@@ -2939,6 +3277,15 @@ def overview(config, force=False):
             fetch_credits(acct, force=bool(force), timeout=8.0)
         except RaccoonError:
             pass
+        try:
+            fetch_point_tasks(acct, force=bool(force), timeout=8.0)
+        except RaccoonError:
+            pass
+        if config.get("auto_claim_login"):
+            try:
+                auto_claim_login(acct)
+            except RaccoonError:
+                pass
     models = [
         {"id": item["id"], "name": item.get("name") or item["id"]}
         for item in model_entries(config)
@@ -2948,6 +3295,7 @@ def overview(config, force=False):
         "service": "raccoon",
         "online": bool(config.get("enabled")),
         "base_url": BASE_URL,
+        "auto_claim_login": bool(config.get("auto_claim_login")),
         "stats": pool.stats(),
         "accounts": pool.list(),
         "health": health(config, force=bool(force)),

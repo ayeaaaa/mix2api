@@ -139,6 +139,14 @@ try:
            "GLM-5.2-ArkTS-SPARK"], payload)
     wb_settings.set_filter_models_by_key(ACCOUNTS, False)
 
+    # 一键配置/智能体模型下拉也必须包含 CodeArts 的 1017（小写 ID）。
+    wb_proxy.ACCOUNTS_DIR = ACCOUNTS
+    agent_models = wb_proxy.Handler._agents_models(None)
+    agent_ids = [str(m.get("id") if isinstance(m, dict) else m)
+                 for m in agent_models]
+    check("agents model picker includes CodeArts 1017",
+          "deepseek-v4.1-flash-1017" in agent_ids, agent_ids)
+
     # 未启用 -> 503
     C.save_config(ACCOUNTS, {"enabled": False})
     status, payload = get(HUB + "/v1/models?realm=codearts", "hub-key-1234")

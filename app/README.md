@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.4-2496ED?style=flat-square" alt="Version 1.6.4"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.5-2496ED?style=flat-square" alt="Version 1.6.5"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -230,11 +230,11 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 - chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages 复用现有适配层。
 - 多账号并发、会话粘性、429/5xx 冷却后自动换号；401/403 先强制续期一次再重试同一账号，续期失败再换号；400 不换号。
 - 账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
-- token 在过期前 2 分钟由请求路径自动续期；`/raccoon/keepalive` 可手动续期并刷新模型目录，「测试连接」也会强制刷新目录。小浣熊没有签到 / 成长任务；积分余额、今日/近 7 天消耗和最近账单可在账号页查询。
+- token 在过期前 2 分钟由请求路径自动续期；`/raccoon/keepalive` 可手动续期并刷新模型目录，「测试连接」也会强制刷新目录。小浣熊没有签到 / 成长任务；积分余额、今日/近 7 天消耗和最近账单可在账号页查询，积分任务与桌面端/移动端登录奖励在「任务与福利」页查看和领取（各 3000 分），也可开启「自动领取登录奖励」在概览刷新时自动领取。
 
 **用量与限制**
 
-- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示积分余额和今日/近 7 天消耗；每次请求的积分写入 usage 的 `credit`（与 WorkBuddy 对齐），`cost_policy` 仍为 `raccoon:unpriced`，估算价格显示 `—`。
+- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示积分余额和今日/近 7 天消耗；每次请求的积分写入 usage 的 `credit`（与 WorkBuddy 对齐），`cost_policy` 仍为 `raccoon:unpriced`，估算价格显示 `—`。「任务与福利」页显示注册/桌面/移动积分任务状态，并可领取一次性桌面端/移动端登录奖励；「自动领取登录奖励」默认关闭，开启后在概览刷新时自动处理。
 - Raccoon 参与 WorkBuddy 的全局积分/额度护栏：预留积分、每日积分、每日 token、单模型每日 token；使用全局值（intl/cn 分出口覆盖仍只作用于 WorkBuddy），账号表会显示「限额」状态。跨出口回退不适用于 Raccoon（模型目录不同）；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型。
 - v1.6.0 不支持扫码登录、手机号/密码登录（需要二维码渲染和 AES-128-CFB，后续版本再补）；远程用户请导入 `auth.json`。
 - 出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀；以后同时服务多个出口时再加。
@@ -252,7 +252,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 284 个套件：212 个 Python + 72 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 285 个套件：212 个 Python + 73 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -558,6 +558,15 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.5
+
+- **小浣熊任务与福利**：接入积分任务、桌面端/移动端登录奖励，并在「任务与福利」页提供任务表、领取按钮和可选的自动领取；账号表只保留账号/积分信息。真实账号桌面端和移动端奖励均已领取，余额 9284 分。
+- **CodeArts 状态与调度**：手动停用不再被 token 续期/重登/模型发现自动覆盖；已知零积分账号不参与调度，上游「积分已耗尽」400 会触发换号；签到新增积分后清除零积分快照。
+- **CodeArts 模型选择**：智能体/一键配置模型下拉补入 CodeArts 模型，包括 `deepseek-v4.1-flash-1017`。
+- **临期积分优先**：新增 CodeArts 账号级临期积分优先调度（默认开启）；实测同账号内上游已经优先扣临期积分，网关只负责优先选择有临期积分的账号。
+- **测试**：285 个套件全过（212 Python + 73 JS）。
+  / **Raccoon tasks and rewards**: points-task discovery, desktop/mobile login rewards, a dedicated Tasks & Rewards section with claim buttons and optional auto-claim, and an accounts table limited to account/credit information. Both login rewards were verified on a real account; balance is 9284. **CodeArts state and scheduling**: manual disable survives token refresh/re-login/model discovery; known zero-credit accounts are not dispatched; credit-exhausted 400s fail over; new check-in credits clear the zero-credit snapshot. **CodeArts model picker**: the agent/one-click model list now includes CodeArts models such as `deepseek-v4.1-flash-1017`. **Expiring credits first**: a CodeArts account-level scheduling preference (default on); the upstream already consumes expiring credits within an account. All 285 suites pass (212 Python + 73 JS).
 
 ## v1.6.4
 

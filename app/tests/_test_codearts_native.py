@@ -62,6 +62,7 @@ try:
     cfg = C.load_config(ACCOUNTS)
     check("default disabled", cfg["enabled"] is False)
     check("default max concurrent", cfg["max_concurrent"] == 1)
+    check("default expiring priority", cfg["credits_expiring_priority"] is True)
     C.save_config(ACCOUNTS, {"enabled": True, "max_concurrent": 2})
     check("enabled", C.configured(ACCOUNTS) is True)
     check("max concurrent saved", C.load_config(ACCOUNTS)["max_concurrent"] == 2)
@@ -89,8 +90,46 @@ try:
     check("release", acct.active_concurrent == 0)
     pool.disable("u1", "manual")
     check("disabled", acct.disabled is True and pool.stats()["disabled"] == 1)
+    check("manual disable marked", acct.manual_disabled is True)
+    token = {
+        "user_id": "u1", "user_name": "账号一", "domain_id": "d1",
+        "refresh_token": state.refresh_token,
+        "credentials": {
+            "access_key_id": state.api_key,
+            "secret_access_key": state.secret_key,
+            "security_token": state.token,
+            "expiration": state.expiration,
+        },
+    }
+    acct.update_auth(token)
+    check("token refresh keeps manual disable", acct.disabled is True)
+    check("token refresh keeps manual reason", "manual" in acct.disabled_reason)
+    pool.add(C.save_auth(ACCOUNTS, dict(acct.auth)))
+    check("relogin keeps manual disable", pool.get("u1").disabled is True)
     pool.enable("u1")
     check("enabled again", acct.disabled is False)
+    check("enable clears manual flag", acct.manual_disabled is False)
+    acct.info = {"credits": {"total": {"remain": 0.0}}}
+    check("zero credits are not healthy", acct.healthy() is False)
+    check("zero credits are not picked", pool.pick("GLM-5.2") is None)
+    acct.info = None
+
+    print("== expiring credit priority ==")
+    extra = make_auth(state, uid="u2", name="账号二")
+    extra_acct = pool.add(C.save_auth(ACCOUNTS, extra))
+    acct.info = {"credits": {"total": {"remain": 100.0, "expiring": 0.0}}}
+    extra_acct.info = {"credits": {"total": {"remain": 100.0, "expiring": 100.0}}}
+    acct.last_used = 0
+    extra_acct.last_used = 1
+    pool.config["credits_expiring_priority"] = True
+    check("expiring account picked first",
+          pool.pick("GLM-5.2") is extra_acct, pool.pick("GLM-5.2"))
+    pool.config["credits_expiring_priority"] = False
+    check("expiring priority can be disabled",
+          pool.pick("GLM-5.2") is acct, pool.pick("GLM-5.2"))
+    pool.config["credits_expiring_priority"] = True
+    pool.remove("u2")
+    acct.info = None
     print("== task opt-out ==")
     with mock.patch.object(C, '_maybe_auto_checkin') as auto:
         C.set_tasks_enabled(C.load_config(ACCOUNTS), 'u1', False)
@@ -441,6 +480,35 @@ try:
     state.chat_error = None
     state.chat_error_remaining = -1
 
+    print("== credit exhaustion failover ==")
+    extra = make_auth(state, uid="u2", name="账号二")
+    pool.add(C.save_auth(ACCOUNTS, extra))
+    pool.get("u1").info = {"credits": {"total": {"remain": 4499.19,
+                                                   "expiring": 0}}}
+    pool.get("u2").info = {"credits": {"total": {"remain": 100.0,
+                                                   "expiring": 0}}}
+    state.credit_error_once = True
+    credit_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": False,
+    }, "sess-credit-failover")
+    credit_stream, credit_acct, _credit_model = C.open_chat(
+        C.load_config(ACCOUNTS), credit_body, "sess-credit-failover")
+    credit_raw = b"".join(credit_stream)
+    credit_stream.close()
+    check("credit exhaustion fails over to another account",
+          "你好" in credit_raw.decode("utf-8", "replace"),
+          credit_raw[:200])
+    check("credit failover used the healthy account",
+          credit_acct.uid == "u1", credit_acct.uid)
+    check("exhausted account is blocked",
+          pool.get("u2").credit_exhausted() is True, pool.get("u2").info)
+    check("exhausted account is not picked",
+          pool.pick("GLM-5.2") is not pool.get("u2"), pool.pick("GLM-5.2"))
+    pool.remove("u2")
+    state.credit_error_once = False
+
     print("== session header ==")
 
     def _chat_headers_of(session_key):
@@ -491,9 +559,13 @@ try:
     state.chat_mode = "delta"
 
     print("== checkin ==")
+    acct.info = {"credits": {"total": {"remain": 0.0}}}
+    acct.info_fetched_at = time.time()
     result = C.checkin(C.load_config(ACCOUNTS))
     check("checkin ok", result["ok"] is True, result)
     check("checkin credits", result["credits"] == 1000, result)
+    check("checkin clears zero-credit snapshot", acct.credit_exhausted() is False,
+          acct.info)
     check("checkin stored", acct.checkin and acct.checkin.get("ok") is True)
     pool.save_state()
     reloaded = C.CodeArtsPool(ACCOUNTS, C.load_config(ACCOUNTS))

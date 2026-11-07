@@ -234,6 +234,12 @@ try:
     check("settings save", status == 200, (status, body))
     check("settings max concurrent",
           body["codearts"].get("max_concurrent") == 2, body)
+    status, body = call("POST", "/settings/save", {
+        "codearts": {"credits_expiring_priority": False},
+    }, token=token)
+    check("settings expiring priority save", status == 200, (status, body))
+    check("settings expiring priority value",
+          body["codearts"].get("credits_expiring_priority") is False, body)
     wb_proxy.CURRENT_REALM = "codearts"
     status, body = call("POST", "/settings/save", {
         "codearts": {"enabled": False},

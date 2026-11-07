@@ -29,11 +29,11 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 - **单进程 CodeArts 客户端**：华为云 OAuth2（PKCE + DPoP）、refresh_token 续期、账号池、并发/冷却、模型发现（agent-center / builtin / 限时福利）、聊天 SSE、签到、积分余额。
 - **小浣熊第四出口（原生 Python）**：导入桌面客户端 `auth.json` 或本机回环 OAuth；多账号池、并发/冷却/失败切换、账号级代理槽、备注/任务开关/测试/启停/清冷却/删除、token 自动续期与模型目录刷新。不依赖 Node sidecar，也没有第三方依赖。
 - **纯标准库密码学**：P-256 ECDSA、DPoP JWT、PKCE、华为云 `SDK-HMAC-SHA256` 签名；ECDSA 与 HMAC 都用 Go 侧向量对拍。
-- **看板**：第三张 CodeArts、第四张小浣熊出口卡片、四出口切换、CodeArts / Raccoon 账号表、设置页、CodeArts 积分余额与已用/总额、Raccoon 积分余额与今日/近 7 天消耗、模型描述。
+- **看板**：第三张 CodeArts、第四张小浣熊出口卡片、四出口切换、CodeArts / Raccoon 账号表、设置页、CodeArts 积分余额与已用/总额、Raccoon 积分余额、今日/近 7 天消耗、任务与登录奖励、模型描述。
 - **账号代理槽**：CodeArts 与 Raccoon 账号可绑定与 WorkBuddy 相同的「账号代理槽」，账号表直接选出口；CodeArts 的聊天、模型发现、token 续期、签到和积分查询，以及 Raccoon 的聊天、模型发现和 token 续期都走该槽。出站复用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
 - **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`、Raccoon 记 `realm=raccoon` 且 `cost_policy=raccoon:unpriced`，都不按 WorkBuddy 价目表计价。
 - **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
-- **测试**：284 个套件：212 个 Python + 72 个 JS 全过；CodeArts 链路用本机假华为云上游覆盖，Raccoon 链路用本机假小浣熊上游覆盖，密码学有 Go 对照向量。
+- **测试**：285 个套件：212 个 Python + 73 个 JS 全过；CodeArts 链路用本机假华为云上游覆盖，Raccoon 链路用本机假小浣熊上游覆盖，密码学有 Go 对照向量。
 
 > 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号，不要共享或转售账号。
 
@@ -62,11 +62,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.6.4
+docker pull ghcr.io/ayeaaaa/mix2api:v1.6.5
 docker run -d --name mix2api -p 58675:58675 -e PORT=58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.6.4
+  ghcr.io/ayeaaaa/mix2api:v1.6.5
 ```
 
 ### 发布产物
@@ -130,8 +130,10 @@ CodeArts 账号在 `app/accounts/codearts/` 下，Raccoon 账号在 `app/account
 - 推理档位：`deepseek-v4.1-flash` / `-1017` 支持 `none / low / medium / high / xhigh / max`；`GLM-5.2` / `GLM-5.2-SFT-Harmony` / `GLM-5.3` 支持 `none / minimal / low / medium / high / xhigh / max`；`glm-5.3-flash` 只支持 `low / high / max` 且始终思考。`/v1/models` 会宣告 `reasoning_efforts`；`auto` 或未知值在本地直接 400，并列出允许值。
 - 模型元数据：`/v1/models` 输出 `context_length`、`max_input_tokens`、`max_output_tokens`、`max_completion_tokens`、`max_output` 和工具能力字段；上游没给上下文/输出上限时，用同名 WorkBuddy 目录兜底。
 - 请求兼容：chat 透传 `stop`、`response_format`、`frequency_penalty`、`presence_penalty`、`seed`、`top_k`、`parallel_tool_calls`（上游已实测接受）；`thinking` / `enable_thinking` / camelCase `reasoningEffort` 会归一化成 `reasoning_effort`。
-- 调度：CodeArts 每 30 分钟检查一次 Token 并续期快过期账号；22:00 仍随 WorkBuddy 巡检。自动签到跟随签到时段。CodeArts 账号表新增备注、任务开关（API 停用但继续签到）、单账号测试、重新登录和刷新积分。
-- 错误语义：非视觉模型收到图片返回 400，并提示可用视觉模型；未知参数/图片错误不再统一吞成 502。
+- 账号状态：手动停用会在 token 续期、重新登录和模型发现后保留；已停用账号不再刷新 token。已知积分为 0 的账号不参与调度，上游返回「积分已耗尽」400 时会标记该账号并自动换号；签到拿到新积分后清除旧的零积分快照。
+- 调度：CodeArts 每 30 分钟检查一次 Token 并续期快过期账号；22:00 仍随 WorkBuddy 巡检。自动签到跟随签到时段。CodeArts 账号表新增备注、任务开关（API 停用但继续签到）、单账号测试、重新登录和刷新积分。设置页新增「临期积分优先」（默认开启）：有临期积分（含每日签到 24 小时积分）的账号优先接请求；这只影响账号调度，不改上游积分包扣减顺序。
+- 模型选择：CodeArts `/v1/models` 与智能体/一键配置模型下拉都会包含 `deepseek-v4.1-flash-1017` 等 CodeArts 模型；后者使用小写 ID 与实时目录一致。
+- 错误语义：非视觉模型收到图片返回 400，并提示可用视觉模型；未知参数/图片错误不再统一吞成 502。积分耗尽属于账号级错误，优先换号而不是直接返回 400。
 - 活动历史：CodeArts 签到写入 `/activity/history`，可按区域筛选。
 - 限制：CodeArts 账号不参与 WorkBuddy 的积分/额度护栏和跨出口回退；CodeArts 账号由本进程的 CodeArts 池轮转，不能按 Key 指定；代理槽按 HTTP/HTTPS 代理实现。
 
@@ -143,7 +145,7 @@ Raccoon 是第四个出口，完全在本进程内运行，不需要单独的 No
 - 模型：9 个原始裸 ID —— `raccoon-090dd3`、`raccoon-19b265`、`raccoon-405a1c`、`sn-sensenova-6-8-flash`、`sn-sensenova-6-8-flash-lite`、`sn-glm-5-3`、`sn-kimi-k3`、`sn-glm-5-3-flash`、`sn-deepseek-v4-1-flash-1017`。目录以官方 `model_catalog` 为准，取不到时回落内置种子目录；`/v1/models?realm=raccoon` 只返回这些裸 ID，不加任何提供商前缀。
 - 协议：chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages（需显式开启）复用现有适配层。
 - 账号：多账号池、并发/会话粘性、429/5xx 冷却后自动换号、401/403 先强制续期一次再重试；账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用同一套连接复用、代理认证和 `no_proxy`。
-- 用量：每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示上游积分余额和今日/近 7 天消耗；每次请求完成后按时间窗口匹配最新账单，把积分写入 usage 的 `credit`（与 WorkBuddy 对齐），`cost_policy` 仍为 `raccoon:unpriced`，估算价格显示 `—`。小浣熊没有签到接口，但网页端积分接口可查询余额与账单。
+- 用量：每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示上游积分余额和今日/近 7 天消耗；每次请求完成后按时间窗口匹配最新账单，把积分写入 usage 的 `credit`（与 WorkBuddy 对齐），`cost_policy` 仍为 `raccoon:unpriced`，估算价格显示 `—`。任务与福利页还会读取积分任务状态；注册、桌面端、移动端三项任务中，桌面端和移动端登录奖励可在任务与福利页一次性领取（各 3000 分），也可勾选「自动领取登录奖励」让概览刷新时自动领取。小浣熊没有签到接口。
 - 护栏：预留积分、每日积分、每日 token、单模型每日 token 使用 WorkBuddy 全局值，账号表显示「限额」；跨出口回退不适用于 Raccoon（模型目录不同）。
 - 限制：v1.6.0 不支持扫码登录、手机号/密码登录（后续版本再补）；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型；出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀。
 - 首次配置：

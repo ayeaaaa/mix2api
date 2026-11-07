@@ -95,6 +95,14 @@ assert.equal(byId('raccoonAccountsSection').style.display, '',
   '小浣熊视图应显示小浣熊账号区');
 assert.equal(byId('raccoonSummary').style.display, '',
   '小浣熊视图应显示小浣熊统计条');
+assert.equal(byId('sectionRaccoonTasks').style.display, '',
+  '小浣熊视图应显示任务与福利区块');
+assert.equal(byId('sectionIntlTasks').style.display, 'none',
+  '小浣熊视图应隐藏国际版任务区');
+assert.equal(byId('sectionGrowthTasks').style.display, 'none',
+  '小浣熊视图应隐藏国内版任务区');
+assert.ok(byId('tasksPageSubtitle').textContent.includes('小浣熊'),
+  '任务与福利页说明应切换为小浣熊');
 assert.equal(byId('workbuddyAccountsSection').style.display, 'none',
   '小浣熊视图应隐藏 WorkBuddy 账号区');
 assert.equal(byId('workbuddyDisabledSection').style.display, 'none',
@@ -143,6 +151,12 @@ assert.equal(byId('raccoonSummary').style.display, 'none',
   'WorkBuddy 视图应隐藏小浣熊统计条');
 assert.equal(byId('workbuddyAccountsSection').style.display, '',
   'WorkBuddy 视图应显示 WorkBuddy 账号区');
+assert.equal(byId('sectionRaccoonTasks').style.display, 'none',
+  'WorkBuddy 视图应隐藏小浣熊任务区');
+assert.equal(byId('sectionIntlTasks').style.display, '',
+  'WorkBuddy 视图应显示国际版任务区');
+assert.ok(!byId('tasksPageSubtitle').textContent.includes('小浣熊'),
+  'WorkBuddy 任务页说明不应带小浣熊');
 
 // 默认出口显示与循环：codearts -> raccoon -> intl。
 window.ACTIVE_GATEWAY_REALM = 'codearts';

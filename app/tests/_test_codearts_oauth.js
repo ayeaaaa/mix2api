@@ -21,6 +21,7 @@ assert.ok(/r\.next_url/.test(script), 'OAuth 中转必须处理 next_url');
 assert.ok(/pollCodeartsOAuth\(true\)/.test(script), 'continue 后应继续轮询');
 
 assert.ok(html.includes('id="setCodeartsEnabled"'), '缺少启用开关');
+assert.ok(html.includes('id="setCodeartsExpiringPriority"'), '缺少临期积分优先开关');
 assert.ok(html.includes('id="setCodeartsMaxConcurrent"'), '缺少单账号并发');
 assert.ok(html.includes('id="setCodeartsTimeout"'), '缺少管理超时');
 assert.ok(html.includes('id="setCodeartsStreamTimeout"'), '缺少流式超时');
@@ -49,11 +50,18 @@ api.renderCodeartsSettings({
   enabled: true, max_concurrent: 3, configured: true,
   timeout_seconds: 30, stream_timeout_seconds: 600,
   models_ttl_seconds: 300, accounts: 2, healthy: 1,
+  credits_expiring_priority: false,
 });
 assert.equal(document.getElementById('setCodeartsEnabled').checked, true,
   '启用开关应回填');
+assert.equal(document.getElementById('setCodeartsExpiringPriority').checked, false,
+  '临期积分优先关闭状态应回填');
 assert.equal(document.getElementById('setCodeartsMaxConcurrent').value, 3,
   '并发数应回填');
+api.renderCodeartsSettings({enabled: true, credits_expiring_priority: true,
+                            accounts: 2, healthy: 1});
+assert.equal(document.getElementById('setCodeartsExpiringPriority').checked, true,
+  '临期积分优先开启状态应回填');
 assert.ok(document.getElementById('setCodeartsHint').textContent.includes('2 个账号'),
   '应提示账号数');
 assert.equal(document.getElementById('setCodeartsState').textContent, '(已启用)',
