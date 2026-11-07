@@ -2570,6 +2570,9 @@ def _public_credits(raw):
         return None
     keys = (
         "available",
+        "remain",
+        "amount",
+        "used",
         "daily",
         "monthly",
         "reward",
@@ -2586,11 +2589,28 @@ def _public_credits(raw):
     return out
 
 
-def _points_bill_url(cursor=""):
-    query = {"paging.limit": str(CREDITS_BILL_LIMIT), "type": "all"}
+def _points_bill_url(cursor="", limit=CREDITS_BILL_LIMIT):
+    query = {"paging.limit": str(limit), "type": "all"}
     if cursor:
         query["cursor"] = cursor
     return BASE_URL + EP_POINTS_BILLS + "?" + urllib.parse.urlencode(query)
+
+
+def fetch_bills(acct, limit=20, cursor="", timeout=8.0):
+    """One page of points bills; used for per-request credit matching."""
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for bills")
+    ensure_token(acct)
+    payload = _request_json(
+        "GET",
+        _points_bill_url(cursor, limit),
+        _account_headers(acct),
+        timeout=timeout,
+        proxy=acct.proxy,
+        secrets=_auth_secrets(acct.auth),
+    )
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else {}
 
 
 def fetch_credits(acct, force=False, timeout=15.0):
@@ -2714,8 +2734,19 @@ def fetch_credits(acct, force=False, timeout=15.0):
                     "client_type": str(item.get("client_type") or ""),
                 })
 
+        available = _as_points(data.get("available_points"))
+        consumed_recent = sum(
+            -_as_points(item.get("points"))
+            for item in items
+            if _as_points(item.get("points")) < 0
+        )
         credits = {
-            "available": _as_points(data.get("available_points")),
+            "available": available,
+            # WorkBuddy-compatible aliases: the panel reads remain/amount/used
+            # for the same credit cards across all exits.
+            "remain": available,
+            "amount": available + consumed_recent,
+            "used": consumed_recent,
             "daily": _as_points(data.get("daily_points")),
             "monthly": _as_points(data.get("monthly_points")),
             "reward": _as_points(data.get("reward_points")),
@@ -2992,16 +3023,20 @@ class RaccoonStream(object):
     account slot exactly once.
     """
 
-    def __init__(self, raw, model, acct, pool):
+    def __init__(self, raw, model, acct, pool, started_at=None):
         self.raw = raw
         self.model = model
         self.acct = acct
         self.pool = pool
         self._wb_billed_model = model
+        self.started_at = float(started_at or time.time())
         self._pending = b""
         self._closed = False
         self._saw_done = False
         self._preflighted = False
+        self._last_usage = None
+        self._credit_points = None
+        self._credit_checked = False
 
     def __enter__(self):
         return self
@@ -3148,6 +3183,67 @@ class RaccoonStream(object):
             self._preflighted = True
             return
 
+    def _track_usage(self, data):
+        try:
+            payload = json.loads(data.decode("utf-8", "replace"))
+        except Exception:
+            return
+        if isinstance(payload, dict) and isinstance(payload.get("usage"), dict):
+            self._last_usage = payload["usage"]
+
+    def _credit_frame(self):
+        """Query the latest bill and return a usage frame carrying its points."""
+        credit = self._request_credit()
+        if credit is None:
+            return b""
+        usage = dict(self._last_usage or {})
+        usage["credit"] = credit
+        payload = {
+            "id": "chatcmpl-raccoon-usage",
+            "object": "chat.completion.chunk",
+            "created": int(self.started_at),
+            "model": self.model,
+            "choices": [],
+            "usage": usage,
+        }
+        return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
+
+    def _request_credit(self):
+        if self._credit_checked:
+            return self._credit_points
+        self._credit_checked = True
+        if self.acct is None:
+            return None
+        lower = self.started_at - 5.0
+        for attempt in range(3):
+            try:
+                data = fetch_bills(self.acct, limit=20, timeout=5.0)
+            except Exception:
+                data = {}
+            candidates = []
+            now = time.time()
+            for item in data.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                if _as_points(item.get("points")) >= 0:
+                    continue
+                when = _parse_points_time(item.get("created_at"))
+                if when is None:
+                    continue
+                stamp = when.timestamp()
+                if lower <= stamp <= now + 5.0:
+                    candidates.append(item)
+            if len(candidates) == 1:
+                self._credit_points = -_as_points(candidates[0].get("points"))
+                return self._credit_points
+            if len(candidates) > 1:
+                # A concurrent desktop/web request produced more than one bill
+                # in the window; do not guess which one belongs to this call.
+                return None
+            if attempt < 2:
+                time.sleep(0.35)
+        return None
+
     def __iter__(self):
         try:
             if self._pending:
@@ -3157,6 +3253,7 @@ class RaccoonStream(object):
                     self._saw_done = True
                 if data:
                     self._raise_embedded(data)
+                    self._track_usage(data)
                     yield line
             while True:
                 line = self.raw.readline()
@@ -3167,11 +3264,19 @@ class RaccoonStream(object):
                     continue
                 if data == b"[DONE]":
                     self._saw_done = True
+                    # The upstream bill is the exact per-consumption record.
+                    # Attach its point cost to the final usage frame so the
+                    # gateway's usage row carries the same `credit` field as
+                    # WorkBuddy, without changing the client-visible content.
+                    frame = self._credit_frame()
+                    if frame:
+                        yield frame
                 else:
                     # A 200 stream can carry an error object after some normal
                     # chunks. Raise it here as well; otherwise the gateway would
                     # treat the truncated answer as a clean completion.
                     self._raise_embedded(data)
+                    self._track_usage(data)
                 yield line
             if not self._saw_done:
                 raise RaccoonUpstreamError(
@@ -3219,6 +3324,7 @@ def _client_chat(acct, body, session_key):
         expected_generation = acct.auth_generation
         headers = _chat_headers(acct)
         secrets = _auth_secrets(acct.auth)
+        request_started_at = time.time()
         req = urllib.request.Request(
             BASE_URL + EP_CHAT, data=raw, headers=headers, method="POST"
         )
@@ -3253,7 +3359,9 @@ def _client_chat(acct, body, session_key):
                 _redact("cannot reach Raccoon: %s" % (reason,), secrets)
             )
 
-        stream = RaccoonStream(resp, model, acct, acct.pool)
+        stream = RaccoonStream(
+            resp, model, acct, acct.pool, started_at=request_started_at
+        )
         try:
             stream.preflight()
         except RaccoonAuthError:

@@ -101,6 +101,7 @@ def reset_fake():
     state.chat_status_remaining = -1
     state.chat_status_by_token = {}
     state.chat_text = "你好"
+    state.chat_bill_points = 0
     state.reasoning_text = ""
     state.tool_calls = None
     state.truncate_after = None
@@ -304,6 +305,19 @@ try:
         (event.get("delta") or {}).get("text") or ""
         for event in sse_objects(raw))
     check("messages stream text", "你好" in stream_text, sse_objects(raw)[-4:])
+
+    print("== per-request credit ==")
+    reset_fake()
+    reset_gateway()
+    add_account("pu-a")
+    state.bills["data"]["items"] = []
+    state.chat_bill_points = 3
+    status, raw = post("/v1/chat/completions", chat_body())
+    check("credit chat status", status == 200, (status, raw[:300]))
+    credit_row = rows_for("pu-a")[-1]
+    check("per-request credit in usage", credit_row.get("credit") == 3, credit_row)
+    check("credit row unpriced",
+          credit_row.get("cost_policy") == "raccoon:unpriced", credit_row)
 
     print("== usage ==")
     rows = rows_for("pu-a")

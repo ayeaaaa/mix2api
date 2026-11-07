@@ -106,6 +106,7 @@ class FakeState(object):
         self.chat_status_by_token = {}
         self.chat_calls = 0
         self.chat_text = "你好"
+        self.chat_bill_points = 0
         self.reasoning_text = ""
         self.tool_calls = None
         self.truncate_after = None
@@ -323,9 +324,13 @@ class _Handler(BaseHTTPRequestHandler):
                 "body": body,
             }
         )
-        state.last_headers = headers
-        state.last_header_names = [str(name) for name in self.headers.keys()]
-        state.last_body = body
+        # Point/bill reads happen after a chat request for credit accounting;
+        # they must not clobber the "last chat request" view the transport
+        # tests inspect.
+        if "/api/web/points/" not in path:
+            state.last_headers = headers
+            state.last_header_names = [str(name) for name in self.headers.keys()]
+            state.last_body = body
         return body
 
     def _authorized(self):
@@ -445,6 +450,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"message": "model and messages are required"})
                 return
             state.saw_image = _has_image(body)
+            if state.chat_bill_points:
+                item = {
+                    "event_name": "桌面端 LLM 对话消耗",
+                    "points": -abs(int(state.chat_bill_points)),
+                    "biz_type": "desktop",
+                    "client_type": "desktop",
+                    "created_at": datetime.datetime.now().astimezone().isoformat(
+                        timespec="seconds"
+                    ),
+                }
+                with state.lock:
+                    state.bills.setdefault("data", {}).setdefault("items", []).insert(0, item)
             token = _bearer_token(self)
             with state.lock:
                 status = state.chat_status_by_token.get(token, state.chat_status)

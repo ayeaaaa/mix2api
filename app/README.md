@@ -234,7 +234,7 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 
 **用量与限制**
 
-- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示积分余额和今日/近 7 天消耗；通用用量表沿用字段，积分显示 `0.00`、估算价格显示 `—`。
+- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示积分余额和今日/近 7 天消耗；每次请求的积分写入 usage 的 `credit`（与 WorkBuddy 对齐），`cost_policy` 仍为 `raccoon:unpriced`，估算价格显示 `—`。
 - Raccoon 不参与 WorkBuddy 的积分/额度护栏和跨出口回退；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型（沿用 v1.0.9 的单出口设计）。
 - v1.6.0 不支持扫码登录、手机号/密码登录（需要二维码渲染和 AES-128-CFB，后续版本再补）；远程用户请导入 `auth.json`。
 - 出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀；以后同时服务多个出口时再加。
@@ -562,7 +562,8 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## v1.6.3
 
 - **小浣熊积分接入**：发现并接入网页端积分接口 `GET /api/web/points/v1/balance` 与 `GET /api/web/points/v2/bills?paging.limit=100&type=all`。账号表和出口卡片显示可用积分、今日消耗、近 7 天消耗；账号表保留最近账单摘要，新增「刷新积分」按钮。
-- **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。账单没有直接映射到网关单次请求/模型，因此网关 usage 行仍保持 `raccoon:unpriced`，不伪造每请求积分。
+- **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。每次请求完成后按账号 + 请求时间窗口匹配最新账单，把 `points` 写入该请求 usage 行的 `credit`，与 WorkBuddy 的 credit 字段对齐；`cost_policy` 仍为 `raccoon:unpriced`（积分不是 CNY 价格）。窗口内多于一条账单时不猜测，`credit` 留空；账号总额/今日/近 7 天仍精确。
+- **WorkBuddy 兼容字段**：账号积分快照同时提供 `remain` / `amount` / `used`，面板的积分卡和账号卡可以复用同一套字段；单位是 `points`。
 - **API**：面板新增 `POST /raccoon/credits/refresh`；`/raccoon/overview`/`/raccoon/accounts` 返回账号积分快照，不包含 token。
 
 ## v1.6.2

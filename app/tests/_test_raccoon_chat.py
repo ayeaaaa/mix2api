@@ -61,6 +61,7 @@ def reset_fake():
     state.chat_status_remaining = -1
     state.chat_status_by_token = {}
     state.chat_text = "你好"
+    state.chat_bill_points = 0
     state.reasoning_text = ""
     state.tool_calls = None
     state.truncate_after = None
@@ -617,6 +618,19 @@ def test_preflight_failure_releases_only_its_own_slot():
     check("pre-held slot released", acct.active_concurrent == 0)
 
 
+def test_request_credit_matches_latest_bill():
+    reset()
+    reset_fake()
+    add_account("pu-credit-stream")
+    state.bills["data"]["items"] = []
+    state.chat_bill_points = 2
+    stream, _acct, model = open_stream(chat_body())
+    result = aggregate(stream, model)
+    usage = result.get("usage") or {}
+    check("per-request credit from bill", usage.get("credit") == 2, usage)
+    check("bill was queried", state.bills_calls >= 1, state.bills_calls)
+
+
 def test_open_chat_filters_raw_payload_fields():
     reset()
     reset_fake()
@@ -632,7 +646,11 @@ def test_open_chat_filters_raw_payload_fields():
     }
     stream, _acct, _model = R.open_chat(R.load_config(ACCOUNTS), raw)
     consume(stream)
-    sent = state.last_body or {}
+    chat_requests = [
+        item for item in state.requests
+        if item.get("method") == "POST" and item.get("path") == R.EP_CHAT
+    ]
+    sent = (chat_requests[-1].get("body") if chat_requests else {}) or {}
     check("raw payload still forces stream", sent.get("stream") is True, sent)
     for key in ("api_key", "metadata", "n", "logit_bias"):
         check("raw payload %s filtered" % key, key not in sent, sent)
@@ -1029,6 +1047,7 @@ try:
     test_embedded_error_raises_before_a_stream_is_returned()
     test_preflight_failure_releases_only_its_own_slot()
     print("== payload boundary ==")
+    test_request_credit_matches_latest_bill()
     test_open_chat_filters_raw_payload_fields()
     test_disabled_config_rejects_chat()
     test_chat_pool_bypass_keeps_the_account_proxy()

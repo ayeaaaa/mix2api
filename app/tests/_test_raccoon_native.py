@@ -69,6 +69,7 @@ def reset_fake(expires_in=3600, refresh_token="refresh-1"):
     state.exchange_status = 200
     state.exchange_body = None
     state.chat_status = 501
+    state.chat_bill_points = 0
     state.reset_requests()
 
 

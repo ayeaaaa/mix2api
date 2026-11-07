@@ -115,6 +115,7 @@ def reset_fake():
     state.bills_calls = 0
     state.balance_status = 200
     state.bills_status = 200
+    state.chat_bill_points = 0
     state.office_identity = "personal"
     state.office_org_name = "Raccoon Test"
     state.code = "test-code"
