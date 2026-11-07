@@ -51,7 +51,12 @@ EP_CHAT = "/api/web/llm/v2/chat/completions"
 AUTHORIZE_URL = os.environ.get("WB_RACCOON_AUTHORIZE_URL") or (
     "https://xiaohuanxiong.com/authorize"
 )
-OAUTH_REDIRECT_PATH = "/raccoon/oauth/callback"
+#: The official desktop authorize page only accepts the desktop loopback
+#: callback path "/auth/callback"; a custom path such as
+#: "/raccoon/oauth/callback" is rejected as an invalid authorization link.
+OAUTH_REDIRECT_PATH = "/auth/callback"
+#: Older sessions created before the path was corrected may still be pasted.
+OAUTH_LEGACY_REDIRECT_PATHS = ("/raccoon/oauth/callback",)
 OAUTH_TTL_SECONDS = 300
 OAUTH_MAX_SESSIONS = 64
 
@@ -2141,7 +2146,7 @@ def _parse_loopback_callback(url):
         raise RaccoonBadRequest("callback URL must not contain credentials")
     if not _loopback_host(parsed.hostname):
         raise RaccoonBadRequest("callback URL must point at loopback")
-    if parsed.path != OAUTH_REDIRECT_PATH:
+    if parsed.path not in (OAUTH_REDIRECT_PATH,) + OAUTH_LEGACY_REDIRECT_PATHS:
         raise RaccoonBadRequest("callback URL path must be %s" % OAUTH_REDIRECT_PATH)
     try:
         port = parsed.port
@@ -2290,7 +2295,7 @@ def oauth_poll(config, session_id):
 
 
 def oauth_callback_get(config, query):
-    """Handle `GET /raccoon/oauth/callback`; return `(status, html)`.
+    """Handle `GET /auth/callback`; return `(status, html)`.
 
     Only a pending, exactly matching state is accepted. The claim happens
     before the exchange so two concurrent callbacks cannot both redeem the
@@ -2323,9 +2328,9 @@ def oauth_callback_get(config, query):
 def oauth_callback(config, session_id=None, callback_url="", code="", state=""):
     """Panel-side manual callback: a full loopback URL or a raw code.
 
-    A URL must be `http://127.0.0.1:<session-port>/raccoon/oauth/callback`,
-    carry the session's exact `state`, and include a code. No redirect target
-    is ever returned, so the callback cannot become an open redirect.
+    A URL must be `http://127.0.0.1:<session-port>/auth/callback`, carry the
+    session's exact `state`, and include a code. No redirect target is ever
+    returned, so the callback cannot become an open redirect.
     """
     config = _config_or_load(config)
     session_id = str(session_id or "").strip()

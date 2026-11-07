@@ -562,6 +562,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## v1.6.1
 
 - **小浣熊入口常显**：未启用时也在网关页显示「小浣熊 (Raccoon)」卡片，并标注「未启用 · 点击添加」；点击卡片直接打开添加账号弹窗，首次导入成功后自动启用并切到小浣熊视图。账号页的「小浣熊」按钮和设置页的「添加小浣熊账号」按钮同样常显，不再需要先到设置里手动启用才能找到入口。 / **Raccoon entry is always visible**: the Raccoon card is shown even when the realm is disabled, marked "not enabled - click to add"; clicking it opens the add-account modal directly, and a successful first import auto-enables the realm and switches to the Raccoon view. The Accounts-page Raccoon button and the Settings-page "Add Raccoon account" button are always visible too. This is a UI-only patch; the provider protocol is unchanged.
+- **浏览器授权路径修复**：官方 authorize 页面只接受桌面端回环路径 `/auth/callback`；之前用了 `/raccoon/oauth/callback`，会被判成「授权链接无效」。现在授权链接改用官方路径，旧回调路径保留一个发布周期兼容。 / **Browser-auth callback fix**: the official authorize page only accepts the desktop loopback path `/auth/callback`; the previous `/raccoon/oauth/callback` was rejected as an invalid authorization link. New links use the official path, with the old callback path kept as a one-release compatibility alias.
 
 ## v1.6.0
 

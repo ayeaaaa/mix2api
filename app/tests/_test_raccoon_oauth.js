@@ -65,7 +65,7 @@ const cleared = [];
 const AUTH_URL = 'https://xiaohuanxiong.com/authorize?state=abc';
 const START_PAYLOAD = {
   ok: true, session_id: 'sess-1', auth_url: AUTH_URL,
-  redirect: 'http://127.0.0.1:8787/raccoon/oauth/callback', expires_in: 300,
+  redirect: 'http://127.0.0.1:8787/auth/callback', expires_in: 300,
 };
 const reply = (status, payload) => Promise.resolve({
   status, ok: status >= 200 && status < 300,
@@ -324,7 +324,7 @@ const isOpen = () => byId('raccoonAuthModal').classList.contains('show');
   // 2i. 手工回调：提交完整回调地址，并继续轮询到 done。
   oauthReply = {status: 'done', ok: true, message: '登录成功'};
   await api.startRaccoonOauth(null);
-  const callbackUrl = 'http://127.0.0.1:8787/raccoon/oauth/callback?code=C1&state=S1';
+  const callbackUrl = 'http://127.0.0.1:8787/auth/callback?code=C1&state=S1';
   byId('raccoonAuthCallback').value = callbackUrl;
   POSTS = [];
   await api.submitRaccoonCallback(null);

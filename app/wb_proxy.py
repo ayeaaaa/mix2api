@@ -20252,7 +20252,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         line = fmt % args
-        if "/oauth/callback" in line:
+        if "/oauth/callback" in line or "/auth/callback" in line:
             line = _redact_callback_log_line(line)
         log(line)
     def _json(self, code, obj):
@@ -20955,8 +20955,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/oauth/callback":
             # 华为云 OAuth 浏览器回调：不带面板会话，靠 ticket_id/secret 匹配会话。
             return self._get_codearts_oauth_callback(query)
-        if path == "/raccoon/oauth/callback":
-            # 小浣熊回环 OAuth：不带面板会话，靠一次性 state 匹配会话。
+        if path in ("/auth/callback", "/raccoon/oauth/callback"):
+            # 小浣熊回环 OAuth：官方 authorize 页面只接受 /auth/callback。
+            # 旧路径保留一个发布周期的兼容入口，避免已打开的旧链接直接 404。
             return self._get_raccoon_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")

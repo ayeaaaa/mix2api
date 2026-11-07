@@ -238,7 +238,7 @@ def test_oauth_start_builds_loopback_url_and_state():
     )
     check(
         "redirect is the gateway loopback",
-        info["redirect"] == "http://127.0.0.1:%d/raccoon/oauth/callback" % HUB_PORT,
+        info["redirect"] == "http://127.0.0.1:%d/auth/callback" % HUB_PORT,
         info["redirect"],
     )
     check(
@@ -280,7 +280,7 @@ def test_oauth_callback_creates_account_and_poll_reports_done():
     reset_fake()
     state.code = "oauth-code-success"
     body, info = start_oauth()
-    path = "/raccoon/oauth/callback?" + urllib.parse.urlencode(
+    path = "/auth/callback?" + urllib.parse.urlencode(
         {"code": state.code, "state": info["state"]}
     )
     status, html = get_html(path)
@@ -318,7 +318,7 @@ def test_oauth_callback_rejects_bad_state_replay_and_expiry():
     body, info = start_oauth()
     wrong = "de" * 32
     status, html = get_html(
-        "/raccoon/oauth/callback?"
+        "/auth/callback?"
         + urllib.parse.urlencode({"code": state.code, "state": wrong})
     )
     check("wrong state rejected", status == 400, (status, html[:200]))
@@ -327,7 +327,7 @@ def test_oauth_callback_rejects_bad_state_replay_and_expiry():
     )
     check("wrong state created nothing", R.load_auths(ACCOUNTS) == [])
 
-    path = "/raccoon/oauth/callback?" + urllib.parse.urlencode(
+    path = "/auth/callback?" + urllib.parse.urlencode(
         {"code": state.code, "state": info["state"]}
     )
     status, _ = get_html(path)
@@ -347,7 +347,7 @@ def test_oauth_callback_rejects_bad_state_replay_and_expiry():
     session = R._OAUTH_SESSIONS[expired["session_id"]]
     session.created_at = time.time() - 301
     status, html = get_html(
-        "/raccoon/oauth/callback?"
+        "/auth/callback?"
         + urllib.parse.urlencode({"code": state.code, "state": expired["state"]})
     )
     check("expired state rejected", status == 400, (status, html[:200]))
@@ -363,7 +363,7 @@ def test_oauth_callback_rejects_bad_state_replay_and_expiry():
         "/raccoon/accounts/oauth/callback",
         {
             "session_id": info["session_id"],
-            "callback_url": "http://127.0.0.1:%d/raccoon/oauth/callback?%s"
+            "callback_url": "http://127.0.0.1:%d/auth/callback?%s"
             % (
                 HUB_PORT,
                 urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
@@ -383,7 +383,7 @@ def test_manual_callback_url_creates_account():
     reset_fake()
     state.code = "oauth-code-manual"
     body, info = start_oauth()
-    callback_url = "http://127.0.0.1:%d/raccoon/oauth/callback?%s" % (
+    callback_url = "http://127.0.0.1:%d/auth/callback?%s" % (
         HUB_PORT,
         urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
     )
@@ -430,12 +430,12 @@ def test_manual_callback_url_creates_account():
     state.code = "oauth-code-invalid"
     body, info = start_oauth()
     bad_urls = [
-        "https://127.0.0.1:%d/raccoon/oauth/callback?%s"
+        "https://127.0.0.1:%d/auth/callback?%s"
         % (
             HUB_PORT,
             urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
         ),
-        "http://evil.invalid:%d/raccoon/oauth/callback?%s"
+        "http://evil.invalid:%d/auth/callback?%s"
         % (
             HUB_PORT,
             urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
@@ -445,12 +445,12 @@ def test_manual_callback_url_creates_account():
             HUB_PORT,
             urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
         ),
-        "http://127.0.0.1:%d/raccoon/oauth/callback?%s"
+        "http://127.0.0.1:%d/auth/callback?%s"
         % (
             HUB_PORT + 1,
             urllib.parse.urlencode({"code": state.code, "state": info["state"]}),
         ),
-        "http://127.0.0.1:%d/raccoon/oauth/callback?%s"
+        "http://127.0.0.1:%d/auth/callback?%s"
         % (HUB_PORT, urllib.parse.urlencode({"code": state.code, "state": "ff" * 32})),
     ]
     for url in bad_urls:
@@ -789,7 +789,7 @@ def test_admin_errors_are_readable_and_secret_free():
     state.exchange_error = {"code": state.code}
     body, info = start_oauth()
     status, html = get_html(
-        "/raccoon/oauth/callback?"
+        "/auth/callback?"
         + urllib.parse.urlencode({"code": state.code, "state": info["state"]})
     )
     check("exchange error html 400", status == 400, (status, html[:200]))
@@ -838,7 +838,7 @@ def test_callback_requests_are_redacted_and_nostore():
     with wb_proxy._LOG_LOCK:
         wb_proxy.LOG_BUFFER.clear()
     status, html, headers = get_html_with_headers(
-        "/raccoon/oauth/callback?"
+        "/auth/callback?"
         + urllib.parse.urlencode({"code": state.code, "state": info["state"]})
     )
     check("callback 200", status == 200, (status, html[:120]))
@@ -884,7 +884,7 @@ def test_callback_missing_code_does_not_burn_state():
     state.code = "keep-pending-code"
     body, info = start_oauth()
     status, html = get_html(
-        "/raccoon/oauth/callback?" + urllib.parse.urlencode({"state": info["state"]})
+        "/auth/callback?" + urllib.parse.urlencode({"state": info["state"]})
     )
     check("missing code -> 400", status == 400, (status, html[:120]))
     session = R._OAUTH_SESSIONS[info["session_id"]]
@@ -895,7 +895,7 @@ def test_callback_missing_code_does_not_burn_state():
         "missing code did not exchange", state.exchange_calls == 0, state.exchange_calls
     )
     status, html = get_html(
-        "/raccoon/oauth/callback?"
+        "/auth/callback?"
         + urllib.parse.urlencode({"code": state.code, "state": info["state"]})
     )
     check("retry after missing code succeeds", status == 200, (status, html[:120]))
