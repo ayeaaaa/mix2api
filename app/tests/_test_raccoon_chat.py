@@ -697,6 +697,7 @@ def test_chat_pool_bypass_keeps_the_account_proxy():
     class FakeOpener(object):
         def open(self, req, timeout=None):
             seen["url"] = req.full_url
+            seen.setdefault("open_urls", []).append(req.full_url)
             seen["timeout"] = timeout
             return io.BytesIO(b"data: [DONE]\n\n")
 
@@ -720,7 +721,7 @@ def test_chat_pool_bypass_keeps_the_account_proxy():
     check("pool bypass keeps the account proxy", seen.get("proxy") == proxy, seen)
     check(
         "pool bypass opens the chat endpoint",
-        seen.get("url") == R.BASE_URL + R.EP_CHAT,
+        any(url == R.BASE_URL + R.EP_CHAT for url in seen.get("open_urls") or []),
         seen,
     )
     check(

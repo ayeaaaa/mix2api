@@ -3342,7 +3342,7 @@ class RaccoonStream(object):
         # bill IDs are then the final guard against rapid consecutive calls
         # (and against two concurrent calls reading the same page).
         lower = self.started_at - 1.5
-        for attempt in range(3):
+        for attempt in range(6):
             try:
                 data = fetch_bills(self.acct, limit=20, timeout=5.0)
             except Exception:
@@ -3391,8 +3391,8 @@ class RaccoonStream(object):
                 # an external desktop/web request or another concurrent gateway
                 # call. Do not guess which one belongs here.
                 return None
-            if attempt < 2:
-                time.sleep(0.35)
+            if attempt < 5:
+                time.sleep(0.6)
         return None
 
     def __iter__(self):
@@ -3415,13 +3415,12 @@ class RaccoonStream(object):
                     continue
                 if data == b"[DONE]":
                     self._saw_done = True
-                    # The upstream bill is the exact per-consumption record.
-                    # Attach its point cost to the final usage frame so the
-                    # gateway's usage row carries the same `credit` field as
-                    # WorkBuddy, without changing the client-visible content.
-                    frame = self._credit_frame()
-                    if frame:
-                        yield frame
+                    # Yield the terminal marker first: streaming clients stop
+                    # here, while the gateway continues reading the synthetic
+                    # usage frame below for its accounting row. This keeps the
+                    # bill lookup wait out of the client's latency.
+                    yield line
+                    break
                 else:
                     # A 200 stream can carry an error object after some normal
                     # chunks. Raise it here as well; otherwise the gateway would
@@ -3433,6 +3432,12 @@ class RaccoonStream(object):
                 raise RaccoonUpstreamError(
                     "Raccoon stream ended before the [DONE] event"
                 )
+            # The terminal marker is already on the wire. The gateway keeps
+            # reading this iterator for accounting; clients that stop at
+            # [DONE] never wait for the bill lookup.
+            frame = self._credit_frame()
+            if frame:
+                yield frame
         finally:
             self.close()
 
