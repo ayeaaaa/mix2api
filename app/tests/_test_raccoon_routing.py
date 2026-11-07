@@ -319,6 +319,18 @@ try:
     check("credit row unpriced",
           credit_row.get("cost_policy") == "raccoon:unpriced", credit_row)
 
+    print("== credit guards ==")
+    reset_fake()
+    reset_gateway()
+    add_account("pu-a")
+    wb_settings.set_limit(ACCOUNTS, "reserve_credits", "global", 2000)
+    wb_proxy.apply_raccoon_limits(refresh=True)
+    status, raw = post("/v1/chat/completions", chat_body())
+    check("reserve guard returns 503", status == 503, (status, raw[:300]))
+    check("reserve guard message", "预留" in raw and "积分" in raw, raw[:300])
+    wb_settings.set_limit(ACCOUNTS, "reserve_credits", "global", 0)
+    wb_proxy.apply_raccoon_limits(refresh=True)
+
     print("== usage ==")
     rows = rows_for("pu-a")
     check("usage rows written", len(rows) >= 6, len(rows))

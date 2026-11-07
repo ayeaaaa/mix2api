@@ -879,6 +879,13 @@ class RaccoonAccount(object):
         self.models_source = ""
         self.credits = None
         self.credits_fetched_at = 0.0
+        self.reserve_credits = 0
+        self.daily_credit_limit = 0
+        self.daily_token_limit = 0
+        self.model_daily_token_limit = 0
+        self.daily_credits_today = None
+        self.daily_tokens_today = None
+        self.model_daily_tokens = {}
         self.auth_generation = 0
         self.deleted = False
         self._lock = threading.RLock()
@@ -1000,6 +1007,15 @@ class RaccoonAccount(object):
             ),
             "models": len(self.models),
             "credits": _public_credits(self.credits),
+            "guard": self.guard_blocked(),
+            "reserve_credits": int(self.reserve_credits or 0),
+            "reserve_blocked": self.reserve_blocked(),
+            "daily_token_limit": int(self.daily_token_limit or 0),
+            "daily_tokens_today": self.daily_tokens_today,
+            "daily_limit_blocked": self.daily_limit_blocked(),
+            "daily_credit_limit": int(self.daily_credit_limit or 0),
+            "daily_credits_today": self.daily_credits_today,
+            "credit_limit_reached": self.credit_limit_reached(),
             "proxy_slot": self.proxy_slot,
             "proxy": _mask_proxy_url(self.proxy),
             "note": self.note,
@@ -1010,6 +1026,74 @@ class RaccoonAccount(object):
         """Selectable? Expired tokens stay selectable so ensure_token can fix them."""
         now = now or time.time()
         return (not self.disabled) and (not self.deleted) and now >= self.cool_until
+
+    def reserve_blocked(self):
+        """WorkBuddy-style low-credit guard, in Raccoon points.
+
+        An unknown balance never blocks; the next credit refresh supplies it.
+        Raccoon has no free-model exemption, so the threshold blocks the
+        account for every model.
+        """
+        try:
+            reserve = int(self.reserve_credits or 0)
+        except (TypeError, ValueError):
+            reserve = 0
+        if reserve <= 0 or not isinstance(self.credits, dict):
+            return False
+        remain = self.credits.get("remain")
+        if remain is None:
+            return False
+        try:
+            return int(remain) <= reserve
+        except (TypeError, ValueError):
+            return False
+
+    def daily_limit_blocked(self):
+        if not self.daily_token_limit or self.daily_tokens_today is None:
+            return False
+        try:
+            return int(self.daily_tokens_today) >= int(self.daily_token_limit)
+        except (TypeError, ValueError):
+            return False
+
+    def model_daily_limit_blocked(self, model):
+        if not self.model_daily_token_limit or not model:
+            return False
+        used = (self.model_daily_tokens or {}).get(str(model))
+        if used is None:
+            return False
+        try:
+            return int(used) >= int(self.model_daily_token_limit)
+        except (TypeError, ValueError):
+            return False
+
+    def credit_limit_reached(self):
+        if not self.daily_credit_limit or self.daily_credits_today is None:
+            return False
+        try:
+            return float(self.daily_credits_today) >= float(self.daily_credit_limit)
+        except (TypeError, ValueError):
+            return False
+
+    def credit_limit_blocked(self, model=None):
+        # Raccoon has no realm catalogue of free models; a reached daily cap
+        # blocks every model until local midnight.
+        return self.credit_limit_reached()
+
+    def guard_blocked(self, model=None):
+        """The first active guard, for pick() and the panel, or ''."""
+        if self.reserve_blocked():
+            return "reserve"
+        if self.daily_limit_blocked():
+            return "daily_token"
+        if self.model_daily_limit_blocked(model):
+            return "model_daily_token"
+        if self.credit_limit_blocked(model):
+            return "daily_credit"
+        return ""
+
+    def ready(self, now=None, model=None):
+        return self.healthy(now) and not self.guard_blocked(model)
 
     def has_model(self, model):
         mid = str(model or "").strip().lower()
@@ -1143,9 +1227,43 @@ class RaccoonPool(object):
                 slot = by_id.get(acct.proxy_slot)
                 acct.proxy = slot["url"] if slot else ""
 
+    def apply_limits(self, values=None, usage=None):
+        """Apply the shared WorkBuddy guards to Raccoon accounts.
+
+        Raccoon uses the global guard values (there is no intl/cn override
+        dimension for this provider); token/credit counts come from the same
+        daily usage fold as WorkBuddy and are keyed by account UID.
+        """
+        import wb_settings
+
+        if values is None:
+            values = {
+                key: wb_settings.limit_values(self.accounts_dir, key)
+                for key in (
+                    "reserve_credits",
+                    "daily_credit_limit",
+                    "daily_token_limit",
+                    "model_daily_token_limit",
+                )
+            }
+        usage = usage or {}
+        token_counts = usage.get("tokens") or {}
+        credit_counts = usage.get("credits") or {}
+        model_counts = usage.get("models") or {}
+        with self._lock:
+            for acct in self.accounts:
+                acct.reserve_credits = int((values.get("reserve_credits") or {}).get("global") or 0)
+                acct.daily_credit_limit = int((values.get("daily_credit_limit") or {}).get("global") or 0)
+                acct.daily_token_limit = int((values.get("daily_token_limit") or {}).get("global") or 0)
+                acct.model_daily_token_limit = int((values.get("model_daily_token_limit") or {}).get("global") or 0)
+                acct.daily_tokens_today = token_counts.get(acct.uid, 0)
+                acct.daily_credits_today = credit_counts.get(acct.uid, 0.0)
+                acct.model_daily_tokens = dict(model_counts.get(acct.uid) or {})
+        return values
+
     def stats(self):
         now = time.time()
-        total = healthy = disabled = cooling = 0
+        total = healthy = disabled = cooling = limited = 0
         with self._lock:
             accounts = list(self.accounts)
         for acct in accounts:
@@ -1154,6 +1272,8 @@ class RaccoonPool(object):
                 disabled += 1
             elif now < acct.cool_until:
                 cooling += 1
+            elif acct.guard_blocked():
+                limited += 1
             else:
                 healthy += 1
         return {
@@ -1161,6 +1281,7 @@ class RaccoonPool(object):
             "healthy": healthy,
             "disabled": disabled,
             "cooling": cooling,
+            "limited": limited,
         }
 
     # ---- 增删启停 ----
@@ -1332,7 +1453,7 @@ class RaccoonPool(object):
                 acct = self.get(uid)
                 if (
                     acct
-                    and acct.healthy(now)
+                    and acct.ready(now, model)
                     and acct.has_model(model)
                     and acct.active_concurrent < acct.max_concurrent
                 ):
@@ -1342,7 +1463,7 @@ class RaccoonPool(object):
             for a in accounts
             if a.uid not in exclude
             and (allowed_accounts is None or a.uid in allowed_accounts)
-            and a.healthy(now)
+            and a.ready(now, model)
             and a.active_concurrent < a.max_concurrent
         ]
         capable = [a for a in candidates if a.has_model(model)]
@@ -3396,6 +3517,17 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
     body = build_chat_body(body, session_key)
     model = body["model"]
     pool = pool_for(config["accounts_dir"])
+    # A reserve guard needs a known balance. The dashboard normally warmed it,
+    # but a fresh/headless install may reach chat first; fetch only the unknown
+    # accounts and only when the guard is configured.
+    if any(int(a.reserve_credits or 0) > 0 for a in list(pool.accounts)):
+        for acct in list(pool.accounts):
+            if acct.disabled or isinstance(acct.credits, dict):
+                continue
+            try:
+                fetch_credits(acct, timeout=6.0)
+            except RaccoonError:
+                pass
     exclude = set()
     last_error = None
     attempts = max(2, len(pool.accounts) + 1)
@@ -3478,6 +3610,23 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
                 "%s 冷却中：%s"
                 % (acct.nickname, _redact(acct.last_error or "稍后重试", secrets))
             )
+        elif acct.guard_blocked(model):
+            guard = acct.guard_blocked(model)
+            if guard == "reserve":
+                reason = "积分低于预留阈值（%s <= %s）" % (
+                    (acct.credits or {}).get("remain"), acct.reserve_credits
+                )
+            elif guard == "daily_token":
+                reason = "今日 token 已达上限（%s/%s）" % (
+                    acct.daily_tokens_today, acct.daily_token_limit
+                )
+            elif guard == "model_daily_token":
+                reason = "模型 %s 今日 token 已达上限" % model
+            else:
+                reason = "今日积分已达上限（%s/%s）" % (
+                    acct.daily_credits_today, acct.daily_credit_limit
+                )
+            reasons.append("%s %s" % (acct.nickname, reason))
         elif acct.active_concurrent >= acct.max_concurrent:
             reasons.append("%s 并发已满" % acct.nickname)
     if reasons:

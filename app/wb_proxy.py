@@ -2814,6 +2814,28 @@ def apply_model_daily_token_limit(refresh=False):
     return POOL.apply_model_daily_token_limit(limits, per_model)
 
 
+def apply_raccoon_limits(refresh=False):
+    """Push the shared WorkBuddy guards and today's counters into Raccoon.
+
+    Raccoon uses the global reserve/daily limits (the per-realm intl/cn
+    overrides stay WorkBuddy-only), but the same daily usage fold: credit rows
+    now carry Raccoon points, so the daily-credit guard sees them.
+    """
+    try:
+        pool = wb_raccoon.pool_for(ACCOUNTS_DIR)
+    except Exception:
+        return 0
+    keys = ("reserve_credits", "daily_credit_limit",
+            "daily_token_limit", "model_daily_token_limit")
+    values = wb_settings.limit_values_many(ACCOUNTS_DIR, keys)
+    usage = None
+    if any((entry.get("global") or 0) > 0 for entry in values.values()):
+        stats = daily_usage_stats(ttl=0 if refresh else None)
+        if stats is not None:
+            usage = stats
+    return pool.apply_limits(values, usage)
+
+
 def apply_daily_guards(refresh=False):
     """Push all three daily guards into the pool in one pass.
 
@@ -22759,6 +22781,9 @@ class Handler(BaseHTTPRequestHandler):
                 # One pass refreshes all three: a limit edit is rare, and the
                 # guards publish from the same fold anyway.
                 apply_daily_guards(refresh=True)
+                apply_raccoon_limits(refresh=True)
+            if "reserve_credits" in touched:
+                apply_raccoon_limits(refresh=True)
             if "expiring_window_days" in touched and POOL:
                 POOL.apply_expiring_window()
 
@@ -23936,6 +23961,7 @@ class Handler(BaseHTTPRequestHandler):
             query
             and str((query.get("force") or [""])[0]).lower() in ("1", "true", "yes")
         )
+        apply_raccoon_limits()
         cfg = wb_raccoon.load_config(ACCOUNTS_DIR)
         try:
             data = wb_raccoon.overview(cfg, force=force)
@@ -26252,6 +26278,7 @@ class Handler(BaseHTTPRequestHandler):
             # 本地配置问题，按 400 回：502 会让人以为上游坏了。
             raise wb_raccoon.RaccoonBadRequest(
                 "Raccoon 出口未启用：请到设置页打开「启用 Raccoon 出口」。")
+        apply_raccoon_limits()
         return wb_raccoon.open_chat(
             cfg, payload, session_key,
             allowed_accounts=self._key_allowed_accounts())
@@ -26919,6 +26946,7 @@ def _bootstrap_runtime(args):
     # slot yet and the semaphore swap is safe.
     resize_chat_slots(POOL.count_ready())
     apply_daily_guards()
+    apply_raccoon_limits()
     load_persisted_realm()
     global SCHEDULER
     from wb_scheduler import Scheduler

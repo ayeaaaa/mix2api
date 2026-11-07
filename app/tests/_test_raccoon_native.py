@@ -1058,6 +1058,43 @@ def test_credits_401_refreshes_once():
     check("credits used rotated token", acct.auth["access_token"] == state.token)
 
 
+def test_workbuddy_style_credit_guards():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    pool = R.pool_for(ACCOUNTS)
+    R.fetch_credits(acct, force=True)
+    values = {
+        "reserve_credits": {"global": 2000},
+        "daily_credit_limit": {"global": 0},
+        "daily_token_limit": {"global": 0},
+        "model_daily_token_limit": {"global": 0},
+    }
+    pool.apply_limits(values)
+    check("reserve blocks known low balance", acct.reserve_blocked() is True, acct.view())
+    check("reserve guard in view", acct.view().get("guard") == "reserve", acct.view())
+    check("pick skips reserve-blocked account", pool.pick() is None, pool.list())
+
+    values["reserve_credits"]["global"] = 0
+    values["daily_credit_limit"]["global"] = 2
+    pool.apply_limits(values, {"credits": {acct.uid: 3}})
+    check("daily credit guard", acct.credit_limit_reached() is True, acct.view())
+    check("daily credit guard view", acct.view().get("guard") == "daily_credit", acct.view())
+
+    values["daily_credit_limit"]["global"] = 0
+    values["daily_token_limit"]["global"] = 10
+    pool.apply_limits(values, {"tokens": {acct.uid: 11}})
+    check("daily token guard", acct.daily_limit_blocked() is True, acct.view())
+
+    values["daily_token_limit"]["global"] = 0
+    values["model_daily_token_limit"]["global"] = 5
+    pool.apply_limits(values, {"models": {acct.uid: {"raccoon-090dd3": 6}}})
+    check("model daily token guard",
+          acct.model_daily_limit_blocked("raccoon-090dd3") is True, acct.view())
+    check("other model stays available",
+          acct.model_daily_limit_blocked("sn-glm-5-3") is False, acct.view())
+
+
 def test_view_never_contains_secret():
     reset()
     access = make_jwt("pu-secret", 3600)
@@ -1120,7 +1157,8 @@ def test_terminal_error_marks_disabled_and_soft_marks_cooldown():
     )
     check(
         "terminal and cooling stats",
-        pool.stats() == {"total": 2, "healthy": 0, "disabled": 1, "cooling": 1},
+        pool.stats() == {"total": 2, "healthy": 0, "disabled": 1,
+                          "cooling": 1, "limited": 0},
         pool.stats(),
     )
 
@@ -1302,6 +1340,7 @@ try:
     print("== credits ==")
     test_credits_balance_and_bills()
     test_credits_401_refreshes_once()
+    test_workbuddy_style_credit_guards()
     print("== views ==")
     test_view_never_contains_secret()
     test_terminal_error_marks_disabled_and_soft_marks_cooldown()
