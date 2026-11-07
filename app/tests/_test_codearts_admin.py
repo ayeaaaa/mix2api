@@ -71,7 +71,7 @@ HUB_PORT = hub.server_address[1]
 try:
     wb_proxy.POOL = None
     wb_proxy.API_KEY = None
-    C.save_config(ACCOUNTS, {"enabled": True})
+    C.save_config(ACCOUNTS, {"enabled": True, "credits_auto_claim": False})
     auth = {
         "user_id": "u1", "user_name": "账号一", "domain_id": "d1",
         "cloud_dragon_token": state.token,
