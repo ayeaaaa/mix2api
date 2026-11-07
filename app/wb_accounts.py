@@ -216,6 +216,31 @@ def is_tls_verify_text(text):
     return is_tls_verify_error(TLSVerifyError(str(text)))
 
 
+_WEB_TLS_EOF_MARKERS = (
+    "ssleoferror",
+    "unexpected_eof_while_reading",
+    "unexpected eof while reading",
+    "eof occurred in violation of protocol",
+)
+
+
+def is_web_tls_failure_text(text):
+    """True when a stringified web-channel failure is an unusable TLS handshake.
+
+    The ACP sandbox edges currently fail in two ways: a hostname-mismatched
+    EdgeOne certificate, or an immediate TLS EOF before HTTP starts. Both make
+    the web leg impossible to complete and are eligible for the explicit
+    daily-activity report fallback. Generic timeouts and business errors stay
+    excluded so a genuinely unfinished conversation is never marked as done.
+    """
+    if is_tls_verify_text(text):
+        return True
+    if not text:
+        return False
+    lower = str(text).lower()
+    return any(marker in lower for marker in _WEB_TLS_EOF_MARKERS)
+
+
 def _retryable(exc):
     """Transient network faults worth another attempt (TLS resets, timeouts, 5xx)."""
     if is_tls_verify_error(exc):
@@ -2339,6 +2364,22 @@ class Account(object):
             return {"ok": True, "skipped": True,
                     "msg": "今日活跃已完成，跳过网页活跃"}
         res = self._daily_chat_web_upstream(prompt)
+        fallback_on = (bool(self.path)
+                       and wb_settings.daily_chat_web_fallback_activity(
+                           os.path.dirname(self.path)))
+        if (not res.get("ok") and fallback_on
+                and is_web_tls_failure_text(res.get("error"))):
+            try:
+                fb = self.report_activity()
+            except Exception as exc:
+                fb = {"ok": False, "error": str(exc)}
+            res["web_fallback"] = fb
+            if fb.get("ok"):
+                res["ok"] = True
+                res.pop("error", None)
+                res["msg"] = (
+                    "每日活跃对话：网页通道 TLS 握手失败，已回退对话活跃上报（%s）"
+                    % (fb.get("msg") or ""))
         wb_activity.record_attempt(self, wb_activity.TASK_DAILY_CHAT, trigger, res)
         return res
 
@@ -2790,6 +2831,12 @@ class Account(object):
     def _daily_chat_upstream(self, web=None):
         """每日活跃对话的实际流程；返回形状见 daily_chat。"""
         import wb_proxy
+        web_enabled = (bool(web) if web is not None else
+                       (bool(self.path)
+                        and wb_settings.daily_chat_web(os.path.dirname(self.path))))
+        fallback_on = (web_enabled and bool(self.path)
+                       and wb_settings.daily_chat_web_fallback_activity(
+                           os.path.dirname(self.path)))
         url = self.chat_base_url() + wb_proxy.CHAT_PATH
         model = self.daily_chat_model()
         headers = self.headers("chat", model=model)
@@ -2826,20 +2873,23 @@ class Account(object):
                 pass
             result = {"ok": True, "msg": "每日活跃对话成功完成"}
             web_ok = True
-            if web is None:
-                web = bool(self.path) and wb_settings.daily_chat_web(os.path.dirname(self.path))
-            if web:
+            if web_enabled:
                 res = self.daily_chat_web(trigger=None)
                 result["web"] = res
                 web_ok = bool(res.get("ok"))
                 if web_ok:
-                    # 重试过就把轮数带上：光看「成功」分不清是首轮就跑完，还是
-                    # 前几轮超时、多等了一轮才跑完（后者是慢，不是没跑）。
-                    tries = res.get("attempts") or 1
-                    retried = "（重试 %d 次后）" % (tries - 1) if tries > 1 else ""
-                    result["msg"] = ("每日活跃对话成功完成（网页通道%s %s：%d 段输出，%d ms）"
-                                     % (retried, res.get("status") or "completed",
-                                        res.get("chunks") or 0, res.get("elapsed_ms") or 0))
+                    if res.get("web_fallback"):
+                        result["web_fallback"] = res["web_fallback"]
+                        result["msg"] = res.get("msg") or "每日活跃对话已回退活跃上报"
+                    else:
+                        # 重试过就把轮数带上：光看「成功」分不清是首轮就跑完，还是
+                        # 前几轮超时、多等了一轮才跑完（后者是慢，不是没跑）。
+                        tries = res.get("attempts") or 1
+                        retried = "（重试 %d 次后）" % (tries - 1) if tries > 1 else ""
+                        result["msg"] = (
+                            "每日活跃对话成功完成（网页通道%s %s：%d 段输出，%d ms）"
+                            % (retried, res.get("status") or "completed",
+                               res.get("chunks") or 0, res.get("elapsed_ms") or 0))
                 else:
                     # 桌面腿成功不等于当天打卡完成：计入官方「每日活跃」的只有网页腿
                     # （#75/#59/#90）。面板与活动历史按 ok 画成功/失败，网页腿失败却
@@ -2850,22 +2900,6 @@ class Account(object):
                     result["error"] = "网页通道失败：%s%s" % (res.get("error"), suffix)
                     result["msg"] = "每日活跃对话未完成（网页通道失败：%s%s）" % (
                         res.get("error"), suffix)
-                    # 沙箱入口证书校验失败（#645）不属于「这一轮没跑完」，重试同一轮
-                    # 永远不会成功；而成长连登只需要一条 POST /v2/report 就能点亮。
-                    # 开关打开时改走活跃上报，把当天算完成（默认关，行为不变）。
-                    fallback_on = (bool(self.path)
-                                   and wb_settings.daily_chat_web_fallback_activity(
-                                       os.path.dirname(self.path)))
-                    if fallback_on and is_tls_verify_text(res.get("error")):
-                        fb = self.report_activity()
-                        result["web_fallback"] = fb
-                        if fb.get("ok"):
-                            web_ok = True
-                            result["ok"] = True
-                            result.pop("error", None)
-                            result["msg"] = (
-                                "每日活跃对话：网页通道证书校验失败，已回退对话活跃上报（%s）"
-                                % (fb.get("msg") or ""))
             # 只有真正计入官方「每日活跃」的网页通道成功了才算今天做过：网页腿失败时
             # 若照写 lastDailyChat，当天后续巡检会直接跳过该账号，那天的 30/50 积分静默
             # 丢掉且不再重试。web=False（没开网页通道）时维持原语义：桌面腿成功即算完成。
@@ -2897,7 +2931,28 @@ class Account(object):
                         "error": f"HTTP 403 / 11140: {err[:100]}"}
             return {"ok": False, "error": f"HTTP {exc.code}: {err[:100]}"}
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            err = str(exc)
+            # The desktop warm-up leg can itself die on the same TLS edge before
+            # the web leg starts. When the explicit fallback is enabled, report
+            # one lightweight activity event instead of losing the whole day.
+            if fallback_on and is_web_tls_failure_text(err):
+                try:
+                    fb = self.report_activity()
+                except Exception as fb_exc:
+                    fb = {"ok": False, "error": str(fb_exc)}
+                if fb.get("ok"):
+                    self.last_daily_chat = time.strftime("%Y-%m-%d %H:%M:%S")
+                    if self.path and os.path.exists(os.path.dirname(self.path)):
+                        self.save(os.path.dirname(self.path))
+                    return {
+                        "ok": True,
+                        "web_fallback": fb,
+                        "msg": (
+                            "每日活跃对话：TLS 握手中断，已回退对话活跃上报（%s）"
+                            % (fb.get("msg") or "")),
+                    }
+                return {"ok": False, "error": err, "web_fallback": fb}
+            return {"ok": False, "error": err}
 
     def checkin(self, trigger="unknown"):
         """国内版每日签到。

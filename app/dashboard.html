@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>mix2api 控制台</title>
+<title>WorkBuddy 控制台</title>
 <!-- 首帧判定：必须留在 <head>、在任何页面内容之前同步执行。
      没有面板会话令牌（无痕 / 首次访问 / 已登出）→ 不动 markup 上的 display:flex，
      登录闸门随首帧一起出现，看板骨架不会被先画出来再盖住。
@@ -1760,10 +1760,13 @@ html:not([data-console-layout="on"]) #btnNavLogs {order:8}
 html[data-console-layout="on"] #classicTitle {display:none}
 </style>
 <script>
-try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1') {
+var defaultConsoleLayout = true;
+try { defaultConsoleLayout = localStorage.getItem('wb-console-layout') !== '0'; } catch(e){}
+if(!window.__NEXT_UI__ && defaultConsoleLayout) {
   document.documentElement.setAttribute('data-console-layout','on');
+  document.getElementById('wb-alibaba-console').media = 'all';
   document.getElementById('wb-console-v2').media = 'all';
-} } catch(e){}
+}
 </script>
 <script>
 /* Runs before <body> is parsed, so the page the user last had is the
@@ -1774,11 +1777,12 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
   var THEME_STYLE_KEY = 'wb-theme-style';
   var THEME_STYLES = {
     claude: {label:'Claude', light:{"--bg":"#efebe0","--panel":"#ffffff","--panel2":"#e9e5d6","--panel3":"#e0dbc9","--line":"#d5cfbc","--line-hover":"#c5bfab","--fg":"#1f1e1b","--dim":"#625f57","--dim-light":"#87847a","--accent":"#a14427","--accent-hover":"#8a3a20","--accent-soft":"rgba(161,68,39,.09)","--accent-selected-bg":"rgba(161,68,39,.14)","--accent2":"#497035","--accent2-soft":"rgba(73,112,53,.12)","--warn":"#a0691c","--warn-soft":"rgba(183,121,31,.12)","--think":"#7d5c8a","--think-soft":"rgba(125,92,138,.10)","--bad":"#b5473b","--bad-soft":"rgba(181,71,59,.09)","--shadow-sm":"0 1px 2px 0 rgba(31,30,27,.05)","--shadow":"0 1px 2px 0 rgba(31,30,27,.05),0 4px 14px rgba(31,30,27,.04)","--shadow-md":"0 2px 6px 0 rgba(31,30,27,.06),0 12px 32px rgba(31,30,27,.09)","--header-bg":"rgba(239,235,224,.92)","--hm0":"#ece6db","--hm1":"#f3d5c1","--hm2":"#e8a98a","--hm3":"#d6846a","--hm4":"#b4533a"}, dark:{"--bg":"#1f1e1b","--panel":"#2d2c25","--panel2":"#38362f","--panel3":"#433f37","--line":"#4f4b42","--line-hover":"#5d584e","--fg":"#edebe3","--dim":"#a5a29a","--dim-light":"#9c9a90","--accent":"#e88a68","--accent-hover":"#f0967a","--accent-soft":"rgba(232,138,104,.14)","--accent-selected-bg":"rgba(232,138,104,.18)","--accent2":"#8fae78","--accent2-soft":"rgba(143,174,120,.15)","--warn":"#d9b25f","--warn-soft":"rgba(217,178,95,.15)","--think":"#bfa3cc","--think-soft":"rgba(191,163,204,.15)","--bad":"#d97b72","--bad-soft":"rgba(217,123,114,.15)","--shadow-sm":"0 1px 2px 0 rgba(0,0,0,.25)","--shadow":"0 1px 2px 0 rgba(0,0,0,.25),0 4px 14px rgba(0,0,0,.25)","--shadow-md":"0 2px 6px 0 rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.4)","--header-bg":"rgba(31,30,27,.92)","--hm0":"#2b2924","--hm1":"#3d352e","--hm2":"#5a3e30","--hm3":"#8a5a45","--hm4":"#c97250"}},
+    alibaba: {label:'Alibaba', light:{"--bg":"#f5f7fa","--panel":"#ffffff","--panel2":"#f2f4f7","--panel3":"#e9edf2","--line":"#e3e8ef","--line-hover":"#c9d3e1","--fg":"#1d2129","--dim":"#4e5969","--dim-light":"#86909c","--accent":"#ff6a00","--accent-hover":"#e65f00","--accent-soft":"rgba(255,106,0,.10)","--accent-selected-bg":"rgba(255,106,0,.08)","--accent2":"#00a870","--accent2-soft":"rgba(0,168,112,.12)","--warn":"#ff9a2e","--warn-soft":"rgba(255,154,46,.14)","--think":"#1677ff","--think-soft":"rgba(22,119,255,.10)","--bad":"#d93026","--bad-soft":"rgba(217,48,38,.10)","--shadow-sm":"0 1px 2px rgba(29,33,41,.05)","--shadow":"0 1px 2px rgba(29,33,41,.04)","--shadow-md":"0 6px 16px rgba(29,33,41,.08)","--header-bg":"rgba(255,255,255,.92)","--hm0":"#fff3e8","--hm1":"#ffd9bf","--hm2":"#ffb27a","--hm3":"#ff8a3d","--hm4":"#ff6a00"}, dark:{"--bg":"#0f172a","--panel":"#151f32","--panel2":"#1b2940","--panel3":"#22334e","--line":"#2a3a50","--line-hover":"#3b4d66","--fg":"#f2f5fa","--dim":"#a9b7c9","--dim-light":"#8494a8","--accent":"#ff7a1a","--accent-hover":"#ff9440","--accent-soft":"rgba(255,122,26,.15)","--accent-selected-bg":"rgba(255,122,26,.18)","--accent2":"#2bd19a","--accent2-soft":"rgba(43,209,154,.16)","--warn":"#ffb454","--warn-soft":"rgba(255,180,84,.16)","--think":"#5b9cff","--think-soft":"rgba(91,156,255,.16)","--bad":"#ff6b6b","--bad-soft":"rgba(255,107,107,.16)","--shadow-sm":"0 1px 2px rgba(0,0,0,.35)","--shadow":"0 1px 2px rgba(0,0,0,.35)","--shadow-md":"0 8px 24px rgba(0,0,0,.45)","--header-bg":"rgba(15,23,42,.90)","--hm0":"#1b2940","--hm1":"#2a3a50","--hm2":"#6a3b1f","--hm3":"#b05a20","--hm4":"#ff7a1a"}},
     material: {label:'Material', light:{"--bg":"#fefbff","--panel":"#ffffff","--panel2":"#f5eff7","--panel3":"#ece6f0","--line":"#cac4d0","--line-hover":"#b4aab8","--fg":"#1d1b20","--dim":"#5b5b66","--dim-light":"#767680","--accent":"#6750a4","--accent-hover":"#4f378b","--accent-soft":"#eaddff","--accent-selected-bg":"#e8def8","--accent2":"#006a60","--accent2-soft":"#ccfbee","--warn":"#7e5260","--bad":"#b3261e","--bad-soft":"#f9dedc","--think":"#5e5891","--think-soft":"#e5dffa","--shadow-sm":"0 1px 2px 0 rgba(29,27,32,.15)","--shadow":"0 1px 2px 0 rgba(29,27,32,.18),0 1px 3px 1px rgba(29,27,32,.10)","--shadow-md":"0 2px 4px -1px rgba(29,27,32,.12),0 4px 6px 1px rgba(29,27,32,.10)","--header-bg":"rgba(254,251,255,.94)","--hm0":"#e8def8","--hm1":"#d3c2f1","--hm2":"#b8a1ec","--hm3":"#9a82e3","--hm4":"#6750a4"}, dark:{"--bg":"#141218","--panel":"#211f26","--panel2":"#2b2930","--panel3":"#36343b","--line":"#49454f","--line-hover":"#5b5963","--fg":"#e6e1e5","--dim":"#c4c5d0","--dim-light":"#928f9a","--accent":"#d0bcff","--accent-hover":"#b9a4fa","--accent-soft":"rgba(208,188,255,.24)","--accent-selected-bg":"rgba(208,188,255,.30)","--accent2":"#4ecdb4","--accent2-soft":"rgba(78,205,180,.24)","--warn":"#f2b8b4","--bad":"#f2b8b4","--bad-soft":"rgba(242,184,180,.24)","--think":"#cfc4f7","--think-soft":"rgba(207,196,247,.18)","--shadow-sm":"0 1px 2px 0 rgba(0,0,0,.30)","--shadow":"0 1px 2px 0 rgba(0,0,0,.40),0 1px 3px 1px rgba(0,0,0,.30)","--shadow-md":"0 2px 4px -1px rgba(0,0,0,.45),0 4px 6px 1px rgba(0,0,0,.32)","--header-bg":"rgba(20,18,24,.88)","--hm0":"#2b2930","--hm1":"#332e44","--hm2":"#3d3460","--hm3":"#4d4080","--hm4":"#d0bcff"}},
     miuix: {label:'MiuiX', light:{"--bg":"#f6f7fa","--panel":"#ffffff","--panel2":"#eef0f4","--panel3":"#e2e6ee","--line":"#dde1e8","--line-hover":"#c9d0db","--fg":"#1f2024","--dim":"#5f6671","--dim-light":"#8c93a0","--accent":"#ff5c00","--accent-hover":"#ff7a33","--accent-soft":"rgba(255,92,0,.10)","--accent-selected-bg":"rgba(255,92,0,.18)","--accent2":"#07c160","--accent2-soft":"rgba(7,193,96,.12)","--warn":"#d48200","--bad":"#e53935","--bad-soft":"rgba(229,57,53,.10)","--think":"#7c4dff","--think-soft":"rgba(124,77,255,.10)","--shadow-sm":"0 1px 2px 0 rgba(31,32,36,.05)","--shadow":"0 2px 6px 0 rgba(31,32,36,.08)","--shadow-md":"0 6px 16px 0 rgba(31,32,36,.10)","--header-bg":"rgba(255,255,255,.85)","--hm0":"#ffece0","--hm1":"#ffd0b8","--hm2":"#ffb085","--hm3":"#ff8c4a","--hm4":"#ff5c00"}, dark:{"--bg":"#0e0f12","--panel":"#191b1f","--panel2":"#22252b","--panel3":"#2a2d34","--line":"#2e3239","--line-hover":"#3a3f48","--fg":"#f0f1f4","--dim":"#9aa0aa","--dim-light":"#7a8090","--accent":"#ff7a33","--accent-hover":"#ff9056","--accent-soft":"rgba(255,122,51,.18)","--accent-selected-bg":"rgba(255,122,51,.26)","--accent2":"#3ed984","--accent2-soft":"rgba(62,217,132,.20)","--warn":"#ffb852","--bad":"#ff6f6f","--bad-soft":"rgba(255,111,111,.16)","--think":"#a78bff","--think-soft":"rgba(167,139,255,.18)","--shadow-sm":"0 1px 2px 0 rgba(0,0,0,.40)","--shadow":"0 2px 6px 0 rgba(0,0,0,.55)","--shadow-md":"0 6px 18px 0 rgba(0,0,0,.60)","--header-bg":"rgba(14,15,18,.78)","--hm0":"#22252b","--hm1":"#332820","--hm2":"#4a2c20","--hm3":"#5c3220","--hm4":"#ff7a33"}}
   };
   window.__WB_THEME_STYLES__ = THEME_STYLES;
-  var STYLE_GEOMETRY = {claude:12, material:14, miuix:20};
+  var STYLE_GEOMETRY = {claude:12, alibaba:10, material:14, miuix:20};
   Object.keys(THEME_STYLES).forEach(function(id){
     ['light','dark'].forEach(function(mode){
       var v=THEME_STYLES[id][mode];
@@ -2096,8 +2100,8 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     'WorkBuddy 独立桌面客户端 (WB)': 'WorkBuddy standalone desktop client (WB)',
     'WorkBuddy 用量看板': 'WorkBuddy Usage Dashboard',
     'WorkBuddy 网关': 'WorkBuddy Gateway',
-    'mix2api 控制台': 'mix2api Console',
-    'mix2api 仓库': 'mix2api repo',
+    'WorkBuddy 控制台': 'WorkBuddy Console',
+    'WorkBuddy 仓库': 'WorkBuddy repo',
     '[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...': '[task_runner] Starting the fully automatic task claiming, event reporting and reward claiming pipeline...',
     '] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。': ']? The secret will be erased and cannot be recovered; the usage it already produced in the dashboard keeps this name.',
     '] 已保存': '] saved',
@@ -3571,8 +3575,8 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     "OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按 OpenRouter 公佈的模型價折算，覆蓋該帳號在所選區間內的請求；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按該行（模型·區域·帳號）的 token 消耗折算；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "WorkBuddy 网关看板": "WorkBuddy 閘道看板",
-    "mix2api 控制台": "mix2api 控制台",
-    "mix2api 仓库": "mix2api 倉庫",
+    "WorkBuddy 控制台": "WorkBuddy 控制台",
+    "WorkBuddy 仓库": "WorkBuddy 倉庫",
     "[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...": "[task_runner] 正在啟動全自動任務接取、事件上報與獎勵領取流水...",
     "] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。": "] 嗎？金鑰會被抹掉且無法恢復；看板裡它已經產生的歷史用量仍會保留這個名字。",
     "] 已保存": "] 已儲存",
@@ -5130,15 +5134,15 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
 <body>
 <header>
   <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <h1 id="classicTitle"><span class="dot" id="statusDot"></span>mix2api</h1>
+    <h1 id="classicTitle"><span class="dot" id="statusDot"></span>WorkBuddy 网关</h1>
     <button type="button" class="console-mobile-menu" id="btnConsoleNav" onclick="toggleConsoleNav()" aria-label="打开功能导航" aria-controls="consoleSidebar" aria-expanded="false">☰</button>
     <div class="console-product">
       <span class="console-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span class="console-wordmark">mix2api<span>API HUB</span></span>
+      <span class="console-wordmark">WorkBuddy<span>API HUB</span></span>
     </div>
     <div class="console-service"><span id="consoleStatusSlot"></span><span>本地网关</span><span class="console-port" id="consolePort">8788</span></div>
-    <a class="gh-link" href="https://github.com/ayeaaaa/mix2api" target="_blank" rel="noopener noreferrer"
-       title="查看 mix2api 项目仓库" aria-label="mix2api 项目仓库">
+    <a class="gh-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer"
+       title="查看 WorkBuddy 项目仓库" aria-label="WorkBuddy 项目仓库">
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
       </svg>
@@ -5168,6 +5172,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <div class="theme-dropdown" id="themeDropdown" role="menu" aria-label="选择颜色主题">
         <div class="theme-style-group" role="group" aria-label="主题风格">
           <button type="button" class="theme-option" data-theme-style-option="claude" onclick="selectStyle('claude', event)" role="menuitem">Claude</button>
+          <button type="button" class="theme-option" data-theme-style-option="alibaba" onclick="selectStyle('alibaba', event)" role="menuitem">Alibaba</button>
           <button type="button" class="theme-option" data-theme-style-option="material" onclick="selectStyle('material', event)" role="menuitem">Material</button>
           <button type="button" class="theme-option" data-theme-style-option="miuix" onclick="selectStyle('miuix', event)" role="menuitem">MiuiX</button>
         </div>
@@ -5225,7 +5230,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
      align-items:center;justify-content:center;padding:20px;background:var(--bg)">
   <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
               border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(15,23,42,.12)">
-    <div style="font-size:16px;font-weight:700;margin-bottom:6px">mix2api</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy</div>
     <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
     <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
            onkeydown="if(event.key==='Enter') submitPanelLogin()"
@@ -5249,8 +5254,8 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
 <div id="nextShell">
   <aside id="nextSidebar" aria-label="主导航">
     <div class="next-brand">
-      <div class="next-brand-mark">m</div>
-      <div class="next-brand-text"><b>mix2api</b><span>gateway console</span></div>
+      <div class="next-brand-mark">W</div>
+      <div class="next-brand-text"><b>WorkBuddy</b><span>gateway console</span></div>
     </div>
     <div class="next-nav-label">工作台</div>
     <nav class="next-nav" id="nextNav">
@@ -5292,9 +5297,9 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       </button>
     </nav>
     <div class="next-sidebar-foot">
-      <a class="next-side-link" href="https://github.com/ayeaaaa/mix2api" target="_blank" rel="noopener noreferrer">
+      <a class="next-side-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        mix2api 仓库
+        WorkBuddy 仓库
       </a>
       <button type="button" class="next-side-link" onclick="toggleConsoleWindow()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3 3-3 3M12.5 15H17"/></svg>
@@ -5716,7 +5721,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     <button class="sec" onclick="testAccounts(this)" title="逐个真发一条最小请求，并同时检查本机到上游的网络：能分清「账号坏了」和「本机断网了」，测试通过还会清掉该账号的熔断/降权计数">一键测试</button>
     </div>
     <div class="tb-group">
-    <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
+    <button class="sec" onclick="autoAssignSlots(this)" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
     <button class="sec" id="btnProductAll" onclick="cycleAllProducts(this)" title="把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI">一键切换所有出站身份：<span id="productAllLabel">WB</span></button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
@@ -6466,8 +6471,21 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="sec" onclick="discoverProxySlots(this)">自动发现 mihomo 端口</button>
+          <button class="sec" onclick="runSubBridgeTest(this)">测试订阅转换</button>
+          <button class="sec" onclick="runSubBridgeImport(this)">订阅转换并导入</button>
           <button class="sec" onclick="addProxySlotRow()">+ 添加槽位</button>
           <button onclick="saveProxySlots(this)">保存槽位</button>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:6px">
+          订阅链接（每行一条，支持 Clash/Mihomo 订阅、V2Ray/SS/SSR/Trojan 订阅或 base64，也可以直接填 http/socks5 代理）
+        </div>
+        <textarea id="subBridgeSubs" class="mono" style="width:100%;min-height:92px;font-size:12px" placeholder="https://example.com/sub&#10;socks5://user:pass@host:port"></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="sec" onclick="loadSubBridgeSubs(this)">读取当前订阅</button>
+          <button class="sec" onclick="saveSubBridgeSubs(this,false)">保存订阅</button>
+          <button class="sec" onclick="saveSubBridgeSubs(this,true)">保存并转换</button>
         </div>
       </div>
       <div id="slotList"></div>
@@ -7373,7 +7391,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         <h2>运行信息</h2>
       <table>
         <tbody>
-          <tr><td>项目</td><td class="mono" id="setProject">mix2api</td></tr>
+          <tr><td>项目</td><td class="mono" id="setProject">WorkBuddy</td></tr>
           <tr><td>当前版本</td><td class="mono" id="setVersion">-</td></tr>
           <tr><td>更新源</td><td class="mono" id="setUpdateRepo">-</td></tr>
           <tr><td>账号存储目录</td><td class="mono" id="setAccountsDir">-</td></tr>
@@ -9666,9 +9684,6 @@ function renderAvailableModels(){
       const night = ((m.id === 'glm-5.2' || m.id === 'deepseek-v4-pro') && window.VIEW_REALM === 'cn')
         ? ' <span style="font-size:10px;color:var(--accent)">(夜间0.5x)</span>' : '';
       credBadge = '<span class="badge s">' + esc(raw) + night + '</span>';
-    }
-    if(m.credits_note){
-      credBadge += ' <span class="badge" style="font-size:10px;color:var(--dim);background:var(--panel2);border-color:var(--line)">' + esc(m.credits_note) + '</span>';
     }
 
     // #505: 只标「Pro Only」（与上游徽章同名），不标「可用」。没有 entitlement 就什么都不显示。
@@ -15213,7 +15228,7 @@ function toggleConsoleLayout(evt){
   const root = document.documentElement;
   const on = root.getAttribute('data-console-layout') !== 'on';
   if(on) root.setAttribute('data-console-layout', 'on'); else root.removeAttribute('data-console-layout');
-  ['wb-console-v2'].forEach(id => { const el = document.getElementById(id); if(el) el.media = on ? 'all' : 'not all'; });
+  ['wb-alibaba-console','wb-console-v2'].forEach(id => { const el = document.getElementById(id); if(el) el.media = on ? 'all' : 'not all'; });
   try { localStorage.setItem('wb-console-layout', on ? '1' : '0'); } catch(e){}
   if(!on){
     document.querySelectorAll('.console-view-hidden').forEach(el => el.classList.remove('console-view-hidden'));
@@ -18533,6 +18548,133 @@ async function testProxySlot(index, btn){
   }
 }
 
+function renderSubBridgeCatalog(r){
+  const box = document.getElementById('slotDiscover');
+  if(!box) return;
+  const list = r.nodes || [];
+  if(!list.length){
+    box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim)">订阅解析成功，但没有可用节点</div></div>';
+    return;
+  }
+  box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">'
+    + '勾选要开启的节点（只勾选真正要用的，避免开太多端口）：'
+    + '<button class="sec mini" style="margin-left:8px" onclick="subBridgeSelectAll(true)">全选</button>'
+    + '<button class="sec mini" style="margin-left:6px" onclick="subBridgeSelectAll(false)">全不选</button>'
+    + '</div>'
+    + list.map(x =>
+        '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">'
+        + '<input type="checkbox" class="fx-import" data-node="' + esc(x.id || x.name) + '" data-kind="' + esc(x.type) + '">'
+        + '<span class="mono" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.name) + '</span>'
+        + '<span style="color:var(--dim)">' + esc(x.type) + (x.server ? (' · ' + esc(x.server) + ':' + x.port) : '') + '</span>'
+        + '</label>').join('')
+    + '<div style="margin-top:8px">'
+    + '<button class="sec" onclick="subBridgeApplyPicked(this)">保存选择并开槽</button>'
+    + '</div></div>';
+}
+
+function subBridgeSelectAll(on){
+  document.querySelectorAll('#slotDiscover input.fx-import').forEach(el => { el.checked = on; });
+}
+
+async function subBridgeApplyPicked(btn){
+  const nodes = Array.from(document.querySelectorAll('#slotDiscover input.fx-import:checked'))
+    .map(el => el.dataset.node);
+  if(!nodes.length){ toast('没有勾选任何节点', 'warn'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = '保存并开槽中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'apply', nodes, import: true});
+    if(r && r.ok){
+      const total = r.slots_total || (r.reachable || []).length;
+      const ready = r.slots_ready || (r.reachable || []).filter(x => x.ok).length;
+      const down = Math.max(0, total - ready);
+      toast('已更新 ' + total + ' 个槽位：' + ready + ' 个可用' +
+        (down ? '，' + down + ' 个暂不可用（已保留为关闭状态）' : '') +
+        '；旧订阅槽位已替换', down ? 'warn' : 'ok');
+      await loadProxySlots(true);
+      await loadAccounts();
+    }else{
+      toast('开槽失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('开槽失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '保存选择并开槽'; }
+  }
+}
+
+function updateSubBridgeTextarea(subs){
+  const box = document.getElementById('subBridgeSubs');
+  if(box && Array.isArray(subs)) box.value = subs.join('\n');
+}
+
+function subBridgeLinesFromTextarea(){
+  const box = document.getElementById('subBridgeSubs');
+  if(!box) return [];
+  return (box.value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+
+async function loadSubBridgeSubs(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '读取中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'list'});
+    if(r && r.ok){
+      updateSubBridgeTextarea(r.subs);
+      renderSubBridgeCatalog(r);
+      toast('解析到 ' + ((r.nodes || []).length) + ' 个节点，请勾选', 'ok');
+    }else{
+      toast('解析失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('解析失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '读取当前订阅'; }
+  }
+}
+
+async function saveSubBridgeSubs(btn, listAfter){
+  const subs = subBridgeLinesFromTextarea();
+  if(!subs.length){ toast('请至少填写一条订阅或代理链接', 'warn'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = listAfter ? '保存并解析中...' : '保存中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'list', subs});
+    if(r && r.ok){
+      updateSubBridgeTextarea(r.subs);
+      if(listAfter){ renderSubBridgeCatalog(r); toast('已解析 ' + ((r.nodes || []).length) + ' 个节点，请勾选', 'ok'); }
+      else { toast('订阅已保存', 'ok'); }
+    }else{
+      toast('保存失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = listAfter ? '保存并转换' : '保存订阅'; }
+  }
+}
+
+async function subBridgeRequest(btn, action, busyText){
+  if(btn){ btn.disabled = true; btn.textContent = busyText; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action});
+    if(r && r.ok && action === 'list'){
+      updateSubBridgeTextarea(r.subs);
+      renderSubBridgeCatalog(r);
+    } else if(r && r.ok && action === 'test'){
+      const box = document.getElementById('slotDiscover');
+      if(box) box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim)">'
+        + '桥接正常，版本 ' + esc(r.version || '') + '</div></div>';
+    }
+    if(r && r.ok && action === 'test'){ toast('桥接正常', 'ok'); }
+    else if(!(r && r.ok)){ toast('操作失败: ' + (r.error || 'unknown'), 'bad'); }
+  }catch(e){
+    toast('操作失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = action === 'refresh' ? '订阅转换并导入' : '测试订阅转换'; }
+  }
+}
+
+async function runSubBridgeTest(btn){ await subBridgeRequest(btn, 'test', '测试中...'); }
+async function runSubBridgeImport(btn){ await subBridgeRequest(btn, 'list', '解析中...'); }
+
 async function discoverProxySlots(btn){
   if(btn){ btn.disabled = true; btn.textContent = '探测中...'; }
   try{
@@ -18589,22 +18731,42 @@ function importDiscovered(){
   toast('已加入 ' + picked.length + ' 个槽位，记得点「保存槽位」', 'ok');
 }
 
-async function autoAssignSlots(){
+async function autoAssignSlots(btn){
   // Only fills in accounts that have no exit yet: an account that is already
   // bound keeps its slot, so this is not a rebalancer.
-  const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
-  if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
-  const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
-  if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
-  let i = 0;
-  for(const a of unbound){
-    const slot = slots[i % slots.length];
-    i++;
-    try{ await postJSON('/accounts/set', {uid: a.uid, proxySlot: slot.id}); }catch(e){}
+  const button = btn;
+  const originalText = button ? button.textContent : '';
+  if(button){ button.disabled = true; button.textContent = '正在读取账号...'; }
+  try{
+    const fresh = await getJSON('/accounts?realm=all');
+    window.ACCOUNTS = fresh.accounts || [];
+    const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
+    if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
+    const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
+    if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
+    toast('开始为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
+    let ok = 0, failed = 0;
+    for(let i = 0; i < unbound.length; i++){
+      const a = unbound[i];
+      const slot = slots[i % slots.length];
+      if(button) button.textContent = '分配中 ' + (i + 1) + '/' + unbound.length;
+      try{
+        await postJSON('/accounts/set', {uid: a.uid, proxySlot: slot.id});
+        ok++;
+      }catch(e){
+        failed++;
+        console.warn('auto assign proxy failed', a.uid, e);
+      }
+    }
+    await loadAccounts();
+    await loadProxySlots();
+    if(failed) toast('代理分配完成：成功 ' + ok + ' 个，失败 ' + failed + ' 个', failed === unbound.length ? 'bad' : 'warn');
+    else toast('已为 ' + ok + ' 个未绑定账号分配代理出口', 'ok');
+  }catch(e){
+    toast('一键分配代理失败: ' + e.message, 'bad');
+  }finally{
+    if(button){ button.disabled = false; button.textContent = originalText || '一键分配代理'; }
   }
-  await loadAccounts();
-  await loadProxySlots();
-  toast('已为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
 }
 
 /* 智能体配置只在「浏览器和网关进程同一台机器」时成立（issue #246）：服务端 /

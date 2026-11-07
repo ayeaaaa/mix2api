@@ -12,6 +12,12 @@ RUN apk add --no-cache tzdata ca-certificates &&     cp /usr/share/zoneinfo/${TZ
 # Copy application files (Zero external pip dependencies needed)
 COPY wb_*.py dashboard.html ./
 
+# Bake the local subscription bridge and its only external dependency into the
+# image so rebuilding or restarting the container cannot lose the integration.
+RUN pip install --no-cache-dir PyYAML==6.0.3 && \
+    cp wb_subbridge.py /usr/local/bin/wb-subbridge && \
+    chmod 0755 /usr/local/bin/wb-subbridge
+
 # Create data directories
 RUN mkdir -p /app/accounts /app/usage
 
