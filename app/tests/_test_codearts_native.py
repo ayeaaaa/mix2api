@@ -483,10 +483,15 @@ try:
     print("== credit exhaustion failover ==")
     extra = make_auth(state, uid="u2", name="账号二")
     pool.add(C.save_auth(ACCOUNTS, extra))
-    pool.get("u1").info = {"credits": {"total": {"remain": 4499.19,
-                                                   "expiring": 0}}}
-    pool.get("u2").info = {"credits": {"total": {"remain": 100.0,
-                                                   "expiring": 0}}}
+    u1 = pool.get("u1")
+    u2 = pool.get("u2")
+    u1.info = {"credits": {"total": {"remain": 4499.19, "expiring": 0}}}
+    u2.info = {"credits": {"total": {"remain": 100.0, "expiring": 0}}}
+    # Force u2 first so the test does not depend on prior last_used values.
+    u1.last_used = time.time()
+    u2.last_used = 0
+    u1.active_concurrent = 0
+    u2.active_concurrent = 0
     state.credit_error_once = True
     credit_body = C.build_chat_body({
         "model": "GLM-5.2",
