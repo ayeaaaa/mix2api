@@ -879,6 +879,8 @@ class RaccoonAccount(object):
         self.models_source = ""
         self.credits = None
         self.credits_fetched_at = 0.0
+        self.credit_seen_bills = set()
+        self._credit_bill_lock = threading.Lock()
         self.reserve_credits = 0
         self.daily_credit_limit = 0
         self.daily_token_limit = 0
@@ -3335,7 +3337,11 @@ class RaccoonStream(object):
         self._credit_checked = True
         if self.acct is None:
             return None
-        lower = self.started_at - 5.0
+        # A bill created before this request started belongs to an earlier
+        # call. Only a small clock-skew tolerance is allowed backwards; seen
+        # bill IDs are then the final guard against rapid consecutive calls
+        # (and against two concurrent calls reading the same page).
+        lower = self.started_at - 1.5
         for attempt in range(3):
             try:
                 data = fetch_bills(self.acct, limit=20, timeout=5.0)
@@ -3343,9 +3349,19 @@ class RaccoonStream(object):
                 data = {}
             candidates = []
             now = time.time()
+            fetched_ids = []
             for item in data.get("items") or []:
                 if not isinstance(item, dict):
                     continue
+                bill_id = str(
+                    item.get("bill_id")
+                    or "%s|%s|%s" % (
+                        item.get("group_id") or "",
+                        item.get("created_at") or "",
+                        item.get("points") or 0,
+                    )
+                )
+                fetched_ids.append(bill_id)
                 if _as_points(item.get("points")) >= 0:
                     continue
                 when = _parse_points_time(item.get("created_at"))
@@ -3353,13 +3369,27 @@ class RaccoonStream(object):
                     continue
                 stamp = when.timestamp()
                 if lower <= stamp <= now + 5.0:
-                    candidates.append(item)
-            if len(candidates) == 1:
-                self._credit_points = -_as_points(candidates[0].get("points"))
+                    candidates.append((bill_id, item))
+            with self.acct._credit_bill_lock:
+                fresh = [
+                    (bill_id, item)
+                    for bill_id, item in candidates
+                    if bill_id not in self.acct.credit_seen_bills
+                ]
+                # Mark every fetched bill, including older/ambiguous ones, so a
+                # later call cannot mistake it for that call's consumption.
+                self.acct.credit_seen_bills.update(fetched_ids)
+                if len(self.acct.credit_seen_bills) > 2000:
+                    # Old bills cannot fall into a future request's 1.5s
+                    # look-back window; keep only the current page.
+                    self.acct.credit_seen_bills = set(fetched_ids)
+            if len(fresh) == 1:
+                self._credit_points = -_as_points(fresh[0][1].get("points"))
                 return self._credit_points
-            if len(candidates) > 1:
-                # A concurrent desktop/web request produced more than one bill
-                # in the window; do not guess which one belongs to this call.
+            if len(fresh) > 1:
+                # More than one *new* bill appeared after this request started:
+                # an external desktop/web request or another concurrent gateway
+                # call. Do not guess which one belongs here.
                 return None
             if attempt < 2:
                 time.sleep(0.35)

@@ -629,6 +629,12 @@ def test_request_credit_matches_latest_bill():
     usage = result.get("usage") or {}
     check("per-request credit from bill", usage.get("credit") == 2, usage)
     check("bill was queried", state.bills_calls >= 1, state.bills_calls)
+    state.chat_bill_points = 1
+    stream, _acct, model = open_stream(chat_body())
+    second = aggregate(stream, model)
+    second_usage = second.get("usage") or {}
+    check("consecutive request credit not stolen by previous bill",
+          second_usage.get("credit") == 1, second_usage)
 
 
 def test_open_chat_filters_raw_payload_fields():

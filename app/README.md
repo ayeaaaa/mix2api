@@ -562,7 +562,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## v1.6.3
 
 - **小浣熊积分接入**：发现并接入网页端积分接口 `GET /api/web/points/v1/balance` 与 `GET /api/web/points/v2/bills?paging.limit=100&type=all`。账号表和出口卡片显示可用积分、今日消耗、近 7 天消耗；账号表保留最近账单摘要，新增「刷新积分」按钮。
-- **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。每次请求完成后按账号 + 请求时间窗口匹配最新账单，把 `points` 写入该请求 usage 行的 `credit`，与 WorkBuddy 的 credit 字段对齐；`cost_policy` 仍为 `raccoon:unpriced`（积分不是 CNY 价格）。窗口内多于一条账单时不猜测，`credit` 留空；账号总额/今日/近 7 天仍精确。
+- **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。每次请求完成后只认本次请求开始后新增、且尚未归因的账单，把 `points` 写入该请求 usage 行的 `credit`，与 WorkBuddy 的 credit 字段对齐；连续请求不会把上一笔账单算进来。`cost_policy` 仍为 `raccoon:unpriced`（积分不是 CNY 价格）。如果同一时间窗口内出现多条**新**账单（外部桌面端/网页端或并发请求），不猜测，`credit` 留空；账号总额/今日/近 7 天仍精确。
 - **WorkBuddy 兼容字段**：账号积分快照同时提供 `remain` / `amount` / `used`，面板的积分卡和账号卡可以复用同一套字段；单位是 `points`。
 - **WorkBuddy 护栏**：预留积分、每日积分、每日 token、单模型每日 token 都作用于 Raccoon，使用全局限额值；账号表显示「限额」及原因，账号池选号时跳过被护栏拦下的账号。跨出口回退不适用于 Raccoon（模型目录不同）。
 - **API**：面板新增 `POST /raccoon/credits/refresh`；`/raccoon/overview`/`/raccoon/accounts` 返回账号积分快照，不包含 token。
