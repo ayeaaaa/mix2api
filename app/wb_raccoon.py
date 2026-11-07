@@ -14,6 +14,7 @@ Python 3.9+ 标准库。所有出站 HTTP 都走 `wb_upstream_pool.urlopen`，�
 """
 
 import base64
+import datetime
 import hashlib
 import html as html_module
 import json
@@ -44,6 +45,11 @@ EP_LOGIN = "/api/web/auth/v1/login_with_authorization_code"
 EP_REFRESH = "/api/web/auth/v1/refresh"
 EP_CATALOG = "/api/web/llm/v2/model_catalog"
 EP_CHAT = "/api/web/llm/v2/chat/completions"
+EP_POINTS_BALANCE = "/api/web/points/v1/balance"
+EP_POINTS_BILLS = "/api/web/points/v2/bills"
+CREDITS_TTL = 60.0
+CREDITS_BILL_LIMIT = 100
+CREDITS_MAX_PAGES = 3
 
 #: Browser authorization page. This is deliberately independent of `BASE_URL`:
 #: `BASE_URL` points at the API host (and tests monkeypatch it), while the
@@ -871,10 +877,13 @@ class RaccoonAccount(object):
         self.models = []
         self.models_fetched_at = 0.0
         self.models_source = ""
+        self.credits = None
+        self.credits_fetched_at = 0.0
         self.auth_generation = 0
         self.deleted = False
         self._lock = threading.RLock()
         self._refresh_lock = threading.RLock()
+        self._credits_lock = threading.Lock()
 
     def live(self):
         """True while this object is still the pool's current entry for its uid."""
@@ -990,6 +999,7 @@ class RaccoonAccount(object):
                 else ""
             ),
             "models": len(self.models),
+            "credits": _public_credits(self.credits),
             "proxy_slot": self.proxy_slot,
             "proxy": _mask_proxy_url(self.proxy),
             "note": self.note,
@@ -2533,6 +2543,231 @@ _health_cache = {"at": 0.0, "value": {}}
 _health_lock = threading.Lock()
 
 
+def _as_points(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def _parse_points_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _public_credits(raw):
+    """Copy the credit snapshot into a JSON-safe view; no upstream ids."""
+    if not isinstance(raw, dict):
+        return None
+    keys = (
+        "available",
+        "daily",
+        "monthly",
+        "reward",
+        "topup",
+        "enterprise_topup",
+        "total",
+        "today_used",
+        "week_used",
+        "unit",
+        "fetched_at",
+    )
+    out = {key: raw.get(key) for key in keys}
+    out["recent"] = [dict(item) for item in raw.get("recent") or []]
+    return out
+
+
+def _points_bill_url(cursor=""):
+    query = {"paging.limit": str(CREDITS_BILL_LIMIT), "type": "all"}
+    if cursor:
+        query["cursor"] = cursor
+    return BASE_URL + EP_POINTS_BILLS + "?" + urllib.parse.urlencode(query)
+
+
+def fetch_credits(acct, force=False, timeout=15.0):
+    """Fetch balance + recent bills for one account.
+
+    The upstream exposes points, not a per-request model bill. We return the
+    exact balance and sum the negative bills for today / the last 7 days. The
+    result is cached for CREDITS_TTL so a dashboard refresh does not hammer the
+    endpoint; `force=True` is used by the explicit refresh button.
+    """
+    if acct is None:
+        raise RaccoonUnavailable("no Raccoon account available for credits")
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 15.0
+    now = time.time()
+    if (
+        not force
+        and isinstance(acct.credits, dict)
+        and now - float(acct.credits_fetched_at or 0.0) < CREDITS_TTL
+    ):
+        return _public_credits(acct.credits)
+
+    with acct._credits_lock:
+        now = time.time()
+        if (
+            not force
+            and isinstance(acct.credits, dict)
+            and now - float(acct.credits_fetched_at or 0.0) < CREDITS_TTL
+        ):
+            return _public_credits(acct.credits)
+        ensure_token(acct)
+        secrets = _auth_secrets(acct.auth)
+        balance_payload = None
+        for attempt in (0, 1):
+            generation = acct.auth_generation
+            try:
+                balance_payload = _request_json(
+                    "GET",
+                    BASE_URL + EP_POINTS_BALANCE,
+                    _account_headers(acct),
+                    timeout=timeout,
+                    proxy=acct.proxy,
+                    secrets=secrets,
+                )
+                break
+            except RaccoonAuthError:
+                if attempt:
+                    raise
+                ensure_token(
+                    acct, force=True, expected_generation=generation
+                )
+                secrets = _auth_secrets(acct.auth)
+        if not isinstance(balance_payload, dict):
+            raise RaccoonUpstreamError("Raccoon balance returned no data")
+        data = balance_payload.get("data")
+        if not isinstance(data, dict):
+            raise RaccoonUpstreamError("Raccoon balance returned no data")
+
+        items = []
+        cursor = ""
+        for _page in range(CREDITS_MAX_PAGES):
+            try:
+                bills_payload = _request_json(
+                    "GET",
+                    _points_bill_url(cursor),
+                    _account_headers(acct),
+                    timeout=timeout,
+                    proxy=acct.proxy,
+                    secrets=secrets,
+                )
+            except RaccoonAuthError:
+                # The balance call already refreshed; a 401 here is terminal.
+                raise
+            bills_data = (
+                bills_payload.get("data")
+                if isinstance(bills_payload, dict)
+                else None
+            )
+            if not isinstance(bills_data, dict):
+                break
+            page_items = bills_data.get("items")
+            if isinstance(page_items, list):
+                items.extend(
+                    item for item in page_items if isinstance(item, dict)
+                )
+            next_cursor = (
+                bills_data.get("next_cursor")
+                or (bills_data.get("paging") or {}).get("next_cursor")
+                or ""
+            )
+            has_more = bills_data.get("has_more")
+            if has_more is None:
+                has_more = bool(next_cursor)
+            if not has_more or not next_cursor:
+                break
+            cursor = str(next_cursor)
+
+        today = datetime.datetime.now().astimezone().date()
+        week_floor = now - 7 * 86400
+        today_used = 0
+        week_used = 0
+        recent = []
+        for item in items:
+            points = _as_points(item.get("points"))
+            when = _parse_points_time(item.get("created_at"))
+            if points < 0:
+                used = -points
+                if when is not None:
+                    if when.astimezone().date() == today:
+                        today_used += used
+                    if when.timestamp() >= week_floor:
+                        week_used += used
+            if len(recent) < 10:
+                recent.append({
+                    "event": str(item.get("event_name") or ""),
+                    "points": points,
+                    "created_at": str(item.get("created_at") or ""),
+                    "biz_type": str(item.get("biz_type") or ""),
+                    "client_type": str(item.get("client_type") or ""),
+                })
+
+        credits = {
+            "available": _as_points(data.get("available_points")),
+            "daily": _as_points(data.get("daily_points")),
+            "monthly": _as_points(data.get("monthly_points")),
+            "reward": _as_points(data.get("reward_points")),
+            "topup": _as_points(data.get("topup_points")),
+            "enterprise_topup": _as_points(
+                data.get("enterprise_topup_points")
+            ),
+            "total": _as_points(data.get("total_chargeable_points")),
+            "today_used": today_used,
+            "week_used": week_used,
+            "unit": "points",
+            "recent": recent,
+            "fetched_at": time.time(),
+        }
+        acct.credits = credits
+        acct.credits_fetched_at = credits["fetched_at"]
+        return _public_credits(credits)
+
+
+def refresh_credits(config, uid=""):
+    """Force a balance/bills refresh for one account or the whole pool."""
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    targets = [pool.get(uid)] if uid else list(pool.accounts)
+    if uid and targets[0] is None:
+        raise RaccoonNotFound("account not found")
+    results = []
+    for acct in targets:
+        try:
+            credits = fetch_credits(acct, force=True)
+            results.append(
+                {
+                    "ok": True,
+                    "uid": acct.uid,
+                    "credits": credits,
+                }
+            )
+        except RaccoonError as exc:
+            results.append(
+                {
+                    "ok": False,
+                    "uid": acct.uid,
+                    "message": _redact(str(exc), _auth_secrets(acct.auth))[:300],
+                }
+            )
+    return {
+        "ok": all(item["ok"] for item in results) if results else True,
+        "accounts": results,
+        "message": "已刷新 %d 个账号的积分" % len(results),
+    }
+
+
 def overview(config, force=False):
     """Admin-facing snapshot: accounts, stats, models, base URL; no secrets."""
     if not isinstance(config, dict) or not config.get("accounts_dir"):
@@ -2540,6 +2775,16 @@ def overview(config, force=False):
             config.get("accounts_dir") if isinstance(config, dict) else "."
         )
     pool = pool_for(config["accounts_dir"])
+    # Point balance is account-level and cheap, but never let a credit endpoint
+    # failure hide the account list. Disabled accounts are not polled unless the
+    # operator explicitly refreshes credits.
+    for acct in list(pool.accounts):
+        if acct.disabled:
+            continue
+        try:
+            fetch_credits(acct, force=bool(force), timeout=8.0)
+        except RaccoonError:
+            pass
     models = [
         {"id": item["id"], "name": item.get("name") or item["id"]}
         for item in model_entries(config)
@@ -3143,11 +3388,17 @@ def test_account(config, uid):
         raise RaccoonNotFound("account not found")
     try:
         fetch_catalog(acct, timeout=15.0, force=True)
+        credits = None
+        try:
+            credits = fetch_credits(acct, force=True, timeout=10.0)
+        except RaccoonError:
+            pass
         remaining = max(0, int(acct.token_remaining()))
         return {
             "ok": True,
             "uid": acct.uid,
             "models": len(acct.models),
+            "credits": credits,
             "token_remaining": _fmt_duration(remaining),
             "token_seconds": remaining,
             "message": "连接正常",

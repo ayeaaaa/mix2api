@@ -84,6 +84,7 @@ api.renderRaccoonAccounts({
      reason: '', token_remaining: '29d0h0m', expires_at: '2026-12-01T12:00:00+08:00',
      active_concurrent: 0, max_concurrent: 3, proxy_slot: 'slot-1', proxy: '',
      note: '备注一', tasks_enabled: true, models: 9,
+     credits: {available: 1234, today_used: 3, week_used: 7, unit: 'points'},
      access_token: 'SECRET_ACCESS', refresh_token: 'SECRET_REFRESH'},
     {uid: 'u2', nickname: '浣熊二号', disabled: true, cooling: false,
      reason: 'manual', token_remaining: '1d0h0m', expires_at: '',
@@ -117,11 +118,17 @@ assert.ok(box.innerHTML.includes('备注一'), '账号表应显示备注');
 assert.ok(box.innerHTML.includes('raccoonSetProxy'), '应显示出口选择器');
 assert.ok(box.innerHTML.includes('slot-1'), '出口选择器应包含已绑定槽位');
 assert.ok(box.innerHTML.includes('美国 住宅'), '出口选择器应显示槽位名称');
+assert.ok(/raccoonRefreshCredits/.test(script), '应显示刷新积分入口');
+assert.ok(script.includes('/raccoon/credits/refresh'), '缺少积分刷新端点');
 
-// 小浣熊没有积分 / 签到，也不能把 token 字段带进表格。
+// 小浣熊有积分、没有签到；也不能把 token 字段带进表格。
 assert.ok(!box.innerHTML.includes('SECRET_ACCESS'), '不能渲染 access_token');
 assert.ok(!box.innerHTML.includes('SECRET_REFRESH'), '不能渲染 refresh_token');
-assert.ok(!box.innerHTML.includes('积分'), '小浣熊账号表不应有积分列');
+assert.ok(box.innerHTML.includes('<th>积分</th>'), '小浣熊账号表应有积分列');
+assert.ok(box.innerHTML.includes('1234'), '应显示积分余额');
+assert.ok(box.innerHTML.includes('今日 -3'), '应显示今日消耗');
+assert.ok(box.innerHTML.includes('7天 -7'), '应显示近 7 天消耗');
+assert.ok(!box.innerHTML.includes('签到'), '小浣熊账号表不应有签到列');
 assert.ok(!box.innerHTML.includes('签到'), '小浣熊账号表不应有签到列');
 
 // UID 来自服务端/上游，不能直接拼进 inline onclick 的 JS 字符串。HTML 转义

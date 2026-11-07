@@ -15,6 +15,7 @@ a helper rather than a suite.
 """
 
 import base64
+import datetime
 import json
 import threading
 import time
@@ -118,6 +119,55 @@ class FakeState(object):
         self.office_org_name = "Raccoon Test"
         self.office_org_role = ""
         self.catalog = default_catalog()
+        self.balance_calls = 0
+        self.bills_calls = 0
+        self.balance_status = 200
+        self.bills_status = 200
+        now = datetime.datetime.now().astimezone()
+        def when(days=0):
+            return (now - datetime.timedelta(days=days)).isoformat(timespec="seconds")
+        self.balance = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "available_points": 1234,
+                "daily_points": 234,
+                "monthly_points": 0,
+                "reward_points": 1000,
+                "topup_points": 0,
+                "enterprise_topup_points": 0,
+                "total_chargeable_points": 1234,
+                "topup_frozen": False,
+            },
+        }
+        self.bills = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "items": [
+                    {"event_name": "桌面端 LLM 对话消耗", "points": -1,
+                     "biz_type": "desktop", "client_type": "desktop",
+                     "created_at": when(0)},
+                    {"event_name": "桌面端 LLM 对话消耗", "points": -2,
+                     "biz_type": "desktop", "client_type": "desktop",
+                     "created_at": when(0)},
+                    {"event_name": "三天前对话消耗", "points": -4,
+                     "biz_type": "desktop", "client_type": "desktop",
+                     "created_at": when(3)},
+                    {"event_name": "八天前对话消耗", "points": -5,
+                     "biz_type": "desktop", "client_type": "desktop",
+                     "created_at": when(8)},
+                    {"event_name": "每日积分发放", "points": 300,
+                     "biz_type": "daily_grant", "client_type": "web",
+                     "created_at": when(0)},
+                    {"event_name": "奖励积分", "points": 1000,
+                     "biz_type": "reward_grant", "client_type": "web",
+                     "created_at": when(2)},
+                ],
+                "has_more": False,
+                "next_cursor": "",
+            },
+        }
         self.last_header_names = None
         self.lock = threading.Lock()
 
@@ -297,6 +347,26 @@ class _Handler(BaseHTTPRequestHandler):
                     "last_headers": state.last_headers,
                 },
             )
+            return
+        if path == "/api/web/points/v1/balance":
+            state.balance_calls += 1
+            if not self._authorized():
+                self._send_json(401, {"message": "invalid access token"})
+                return
+            if state.balance_status != 200:
+                self._send_json(state.balance_status, {"message": "balance failed"})
+                return
+            self._send_json(200, state.balance)
+            return
+        if path == "/api/web/points/v2/bills":
+            state.bills_calls += 1
+            if not self._authorized():
+                self._send_json(401, {"message": "invalid access token"})
+                return
+            if state.bills_status != 200:
+                self._send_json(state.bills_status, {"message": "bills failed"})
+                return
+            self._send_json(200, state.bills)
             return
         if path == "/api/web/llm/v2/model_catalog":
             state.catalog_calls += 1

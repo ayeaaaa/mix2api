@@ -62,6 +62,10 @@ def reset_fake(expires_in=3600, refresh_token="refresh-1"):
     state.catalog_error = 0
     state.catalog_error_body = None
     state.catalog = default_catalog()
+    state.balance_calls = 0
+    state.bills_calls = 0
+    state.balance_status = 200
+    state.bills_status = 200
     state.exchange_status = 200
     state.exchange_body = None
     state.chat_status = 501
@@ -1008,6 +1012,51 @@ def test_proxy_slot_binding():
     wb_settings.set_proxy_slots(ACCOUNTS, [])
 
 
+def test_credits_balance_and_bills():
+    reset()
+    reset_fake()
+    acct = _catalog_account()
+    credits = R.fetch_credits(acct, force=True)
+    check("credits available", credits.get("available") == 1234, credits)
+    check("credits daily", credits.get("daily") == 234, credits)
+    check("credits reward", credits.get("reward") == 1000, credits)
+    check("credits today used", credits.get("today_used") == 3, credits)
+    check("credits week used", credits.get("week_used") == 7, credits)
+    check("credits recent items", len(credits.get("recent") or []) == 6, credits)
+    check("credits one balance call", state.balance_calls == 1, state.balance_calls)
+    check("credits one bills call", state.bills_calls == 1, state.bills_calls)
+    check(
+        "credits surface in account view",
+        (acct.view().get("credits") or {}).get("available") == 1234,
+        acct.view(),
+    )
+    cached = R.fetch_credits(acct)
+    check("credits cache hit", cached.get("available") == 1234, cached)
+    check("credits cache avoids balance", state.balance_calls == 1, state.balance_calls)
+    check("credits cache avoids bills", state.bills_calls == 1, state.bills_calls)
+    R.fetch_credits(acct, force=True)
+    check("credits force refetches balance", state.balance_calls == 2, state.balance_calls)
+    check("credits force refetches bills", state.bills_calls == 2, state.bills_calls)
+    overview = R.overview(R.load_config(ACCOUNTS))
+    account = (overview.get("accounts") or [{}])[0]
+    check(
+        "overview carries credits",
+        (account.get("credits") or {}).get("available") == 1234,
+        account,
+    )
+
+
+def test_credits_401_refreshes_once():
+    reset()
+    reset_fake()
+    acct = _catalog_account(token=make_jwt("pu-credits-401", 3600))
+    credits = R.fetch_credits(acct, force=True)
+    check("credits survive one 401", credits.get("available") == 1234, credits)
+    check("credits refreshed once", state.refresh_calls == 1, state.refresh_calls)
+    check("credits retried balance", state.balance_calls == 2, state.balance_calls)
+    check("credits used rotated token", acct.auth["access_token"] == state.token)
+
+
 def test_view_never_contains_secret():
     reset()
     access = make_jwt("pu-secret", 3600)
@@ -1249,6 +1298,9 @@ try:
     print("== pool ==")
     test_pool_state_and_actions()
     test_proxy_slot_binding()
+    print("== credits ==")
+    test_credits_balance_and_bills()
+    test_credits_401_refreshes_once()
     print("== views ==")
     test_view_never_contains_secret()
     test_terminal_error_marks_disabled_and_soft_marks_cooldown()

@@ -111,6 +111,10 @@ def reset_fake():
     state.exchange_body = None
     state.exchange_error = None
     state.catalog = default_catalog()
+    state.balance_calls = 0
+    state.bills_calls = 0
+    state.balance_status = 200
+    state.bills_status = 200
     state.office_identity = "personal"
     state.office_org_name = "Raccoon Test"
     state.code = "test-code"
@@ -687,6 +691,32 @@ def test_manual_disable_survives_admin_catalog_and_refresh():
     )
 
 
+def test_credits_refresh():
+    print("== credits ==")
+    reset_accounts()
+    reset_fake()
+    import_current_account()
+    status, result = call("POST", "/raccoon/credits/refresh", {}, token=TOKEN)
+    check("credits refresh status", status == 200, (status, result))
+    check("credits refresh ok", result.get("ok") is True, result)
+    rows = result.get("accounts") or []
+    check("credits refresh account", len(rows) == 1 and rows[0].get("ok") is True, rows)
+    credits = (rows[0].get("credits") or {}) if rows else {}
+    check("credits balance", credits.get("available") == 1234, credits)
+    check("credits today used", credits.get("today_used") == 3, credits)
+    check("credits week used", credits.get("week_used") == 7, credits)
+    overview = call("GET", "/raccoon/overview", token=TOKEN)[1]
+    acct = (overview.get("accounts") or [{}])[0]
+    check(
+        "overview credits visible",
+        (acct.get("credits") or {}).get("available") == 1234,
+        acct,
+    )
+    blob = json.dumps(overview, ensure_ascii=False)
+    check("credits no access token", state.token not in blob, overview)
+    check("credits no refresh token", state.refresh_token not in blob, overview)
+
+
 def test_models_refresh_and_keepalive():
     print("== refresh/keepalive ==")
     reset_accounts()
@@ -1095,6 +1125,7 @@ try:
     test_proxy_credentials_are_masked_in_views()
     test_import_rolls_back_auth_file_when_enable_fails()
     test_manual_disable_survives_admin_catalog_and_refresh()
+    test_credits_refresh()
     test_models_refresh_and_keepalive()
     test_admin_errors_are_readable_and_secret_free()
     test_callback_requests_are_redacted_and_nostore()

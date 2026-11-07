@@ -5658,6 +5658,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     </div>
     <div class="toolbar">
       <button onclick="openRaccoonAuth()">添加账号</button>
+      <button class="sec" onclick="raccoonRefreshCredits(this)">刷新积分</button>
       <button class="sec" onclick="refreshModelCatalog(this)">刷新模型目录</button>
       <button class="sec" onclick="loadRaccoonOverview(true)">刷新</button>
     </div>
@@ -8691,9 +8692,19 @@ function renderRaccoonCards(r){
   const st = r.stats || {};
   const healthy = (st.healthy != null) ? st.healthy : "—";
   const total = (st.total != null) ? st.total : 0;
+  let available = 0, todayUsed = 0, hasCredits = false;
+  (r.accounts || []).forEach(function(a){
+    if(a.credits && a.credits.available != null){
+      hasCredits = true;
+      available += Number(a.credits.available) || 0;
+      todayUsed += Number(a.credits.today_used) || 0;
+    }
+  });
   box.innerHTML =
     card("健康账号", healthy + "/" + total, "由本进程直接管理")
     + card("模型", (r.models || []).length, "小浣熊目录")
+    + card("积分余额", hasCredits ? available : "—", "available_points")
+    + card("今日消耗", hasCredits ? todayUsed : "—", "按账单汇总")
     + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
     + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
 }
@@ -8726,6 +8737,23 @@ async function raccoonSetProxy(uid, slotId, el){
   }
 }
 
+async function raccoonRefreshCredits(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/raccoon/credits/refresh', {});
+    if(r && r.ok === false){
+      toast('积分刷新失败: ' + (r.message || '上游不可用'), 'bad');
+    }else{
+      toast('积分已刷新', 'ok');
+    }
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('积分刷新失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 function renderRaccoonAccounts(r){
   const box = document.getElementById("raccoonAccounts");
   const count = document.getElementById("raccoonAcctCount");
@@ -8737,7 +8765,7 @@ function renderRaccoonAccounts(r){
     return;
   }
   let html = '<div class="table-wrap"><table><thead><tr>'
-    + '<th>账号</th><th>状态</th><th>Token</th><th>出口</th><th>并发</th><th>模型</th><th>操作</th>'
+    + '<th>账号</th><th>状态</th><th>Token</th><th>出口</th><th>并发</th><th>模型</th><th>积分</th><th>操作</th>'
     + '</tr></thead><tbody>';
   accounts.forEach(function(a){
     const uid = escapeHtml(a.uid || "");
@@ -8753,6 +8781,14 @@ function renderRaccoonAccounts(r){
     const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
       + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
     const models = (a.models != null) ? a.models : "—";
+    const cr = a.credits || {};
+    let creditsHtml = "—";
+    if(cr.available != null){
+      creditsHtml = '<b>' + escapeHtml(String(cr.available)) + '</b>'
+        + '<div style="font-size:11px;color:var(--dim)">今日 -'
+        + escapeHtml(String(cr.today_used || 0)) + ' · 7天 -'
+        + escapeHtml(String(cr.week_used || 0)) + '</div>';
+    }
     const legacyProxy = (!a.proxy_slot && a.proxy)
       ? '<div class="mono" style="font-size:11px;color:var(--dim);max-width:180px;overflow:hidden;text-overflow:ellipsis">'
         + escapeHtml(a.proxy) + '</div>'
@@ -8773,6 +8809,7 @@ function renderRaccoonAccounts(r){
       + '<td class="mono" style="font-size:11px">' + token + '</td>'
       + '<td>' + raccoonSlotSelectHtml(a) + legacyProxy + '</td>'
       + '<td>' + conc + '</td><td>' + models + '</td>'
+      + '<td>' + creditsHtml + '</td>'
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
   });
   html += '</tbody></table></div>';

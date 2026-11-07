@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.2-2496ED?style=flat-square" alt="Version 1.6.2"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.3-2496ED?style=flat-square" alt="Version 1.6.3"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -230,11 +230,11 @@ CodeArts 的 OAuth、token 续期、账号池、模型发现、聊天 SSE 和签
 - chat 非流式与 SSE、工具调用、视觉模型的图片输入（OpenAI `image_url`、Responses `input_image`、Anthropic `image`）；`/v1/responses` 与 Anthropic Messages 复用现有适配层。
 - 多账号并发、会话粘性、429/5xx 冷却后自动换号；401/403 先强制续期一次再重试同一账号，续期失败再换号；400 不换号。
 - 账号表支持备注、任务开关（为后续自动化预留；v1.6.0 没有签到/成长任务）、单账号测试、启停、清冷却、删除和账号级代理槽。代理槽与 WorkBuddy / CodeArts 共用 `wb_upstream_pool` 的连接复用、代理认证、`no_proxy` 和失效连接重试，槽位停用/删除回退直连。
-- token 在过期前 2 分钟由请求路径自动续期；`/raccoon/keepalive` 可手动续期并刷新模型目录，「测试连接」也会强制刷新目录。小浣熊没有签到 / 成长任务，也没有积分或额度查询接口。
+- token 在过期前 2 分钟由请求路径自动续期；`/raccoon/keepalive` 可手动续期并刷新模型目录，「测试连接」也会强制刷新目录。小浣熊没有签到 / 成长任务；积分余额、今日/近 7 天消耗和最近账单可在账号页查询。
 
 **用量与限制**
 
-- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表没有积分列；通用用量表沿用字段，积分显示 `0.00`、估算价格显示 `—`。
+- 每行记 `realm=raccoon`、上游账号 UID 和 `cost_policy=raccoon:unpriced`；token 数按上游返回记录。Raccoon 账号卡片/账号表显示积分余额和今日/近 7 天消耗；通用用量表沿用字段，积分显示 `0.00`、估算价格显示 `—`。
 - Raccoon 不参与 WorkBuddy 的积分/额度护栏和跨出口回退；`/v1/models?realm=all` 不合并 Raccoon，仍只含 WorkBuddy 模型（沿用 v1.0.9 的单出口设计）。
 - v1.6.0 不支持扫码登录、手机号/密码登录（需要二维码渲染和 AES-128-CFB，后续版本再补）；远程用户请导入 `auth.json`。
 - 出口由 API Key 或面板默认出口选择，单一出口下不需要 `provider/` 前缀；以后同时服务多个出口时再加。
@@ -558,6 +558,12 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.3
+
+- **小浣熊积分接入**：发现并接入网页端积分接口 `GET /api/web/points/v1/balance` 与 `GET /api/web/points/v2/bills?paging.limit=100&type=all`。账号表和出口卡片显示可用积分、今日消耗、近 7 天消耗；账号表保留最近账单摘要，新增「刷新积分」按钮。
+- **口径说明**：余额是账号级精确值；今日/近 7 天消耗由账单中的负数积分汇总。账单没有直接映射到网关单次请求/模型，因此网关 usage 行仍保持 `raccoon:unpriced`，不伪造每请求积分。
+- **API**：面板新增 `POST /raccoon/credits/refresh`；`/raccoon/overview`/`/raccoon/accounts` 返回账号积分快照，不包含 token。
 
 ## v1.6.2
 
