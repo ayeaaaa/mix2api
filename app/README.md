@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.1-2496ED?style=flat-square" alt="Version 1.6.1"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.2-2496ED?style=flat-square" alt="Version 1.6.2"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -558,6 +558,11 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.2
+
+- **恢复设置启用门控**：小浣熊卡片和账号入口重新改为「设置 → 小浣熊接入 → 勾选启用小浣熊出口」后才出现；未启用时不再常显。设置项旁新增提示，说明启用后网关页才会出现小浣熊卡片和「添加账号」入口。 / **Restore the settings gate**: the Raccoon card and account entry are visible only after Settings → Raccoon → "Enable Raccoon" is checked; they are no longer always shown. The setting now explains that the gateway card and add-account entry appear after enabling.
+- v1.6.1 的浏览器授权路径修复（`/auth/callback`）保留，不重新引入旧的无效回调路径。 / The v1.6.1 browser-auth callback fix (`/auth/callback`) is retained; the old invalid callback path is not reintroduced.
 
 ## v1.6.1
 
