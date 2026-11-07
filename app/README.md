@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.0-2496ED?style=flat-square" alt="Version 1.6.0"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.1-2496ED?style=flat-square" alt="Version 1.6.1"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -558,6 +558,10 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.1
+
+- **小浣熊入口常显**：未启用时也在网关页显示「小浣熊 (Raccoon)」卡片，并标注「未启用 · 点击添加」；点击卡片直接打开添加账号弹窗，首次导入成功后自动启用并切到小浣熊视图。账号页的「小浣熊」按钮和设置页的「添加小浣熊账号」按钮同样常显，不再需要先到设置里手动启用才能找到入口。 / **Raccoon entry is always visible**: the Raccoon card is shown even when the realm is disabled, marked "not enabled - click to add"; clicking it opens the add-account modal directly, and a successful first import auto-enables the realm and switches to the Raccoon view. The Accounts-page Raccoon button and the Settings-page "Add Raccoon account" button are always visible too. This is a UI-only patch; the provider protocol is unchanged.
 
 ## v1.6.0
 

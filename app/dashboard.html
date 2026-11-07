@@ -5436,13 +5436,14 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     </div>
 
     <!-- 卡片 4: 小浣熊 (Raccoon) -->
-    <div id="tabRaccoon" class="realm-card" onclick="switchViewRealm('raccoon')" style="display:none">
+    <div id="tabRaccoon" class="realm-card" onclick="raccoonCardAction()">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="realm-badge-raccoon">小浣熊 (Raccoon)</span>
         <span id="tabRaccoonHost" class="mono" style="font-size:11px;color:var(--dim)">xiaohuanxiong.com</span>
         <span id="tabRaccoonDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
         <span id="tabRaccoonViewBadge" class="badge s mini" style="display:none">当前视图</span>
         <span id="tabRaccoonOffline" class="badge bad mini" style="display:none">离线</span>
+        <span id="tabRaccoonOffBadge" class="badge s mini" style="display:none">未启用 · 点击添加</span>
       </div>
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
@@ -5630,7 +5631,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button type="button" id="accountsRealmIntl" onclick="switchViewRealm('intl')" aria-pressed="false">国际版</button>
       <button type="button" id="accountsRealmCn" onclick="switchViewRealm('cn')" aria-pressed="false">国内版</button>
       <button type="button" id="accountsRealmCodearts" onclick="switchViewRealm('codearts')" aria-pressed="false" style="display:none">CodeArts</button>
-      <button type="button" id="accountsRealmRaccoon" onclick="switchViewRealm('raccoon')" aria-pressed="false" style="display:none">小浣熊</button>
+      <button type="button" id="accountsRealmRaccoon" onclick="raccoonRealmAction()" aria-pressed="false">小浣熊</button>
     </div>
   </div>
   <!-- 拆分模式下三个区块的落点（页头之后、原顺序）；合并模式搬走之后这里就空着 -->
@@ -6451,6 +6452,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button onclick="saveRaccoonSettings(this)">保存小浣熊设置</button>
         <button class="sec" onclick="testRaccoon(this)">测试连接</button>
+        <button class="sec" onclick="openRaccoonAuth()">添加小浣熊账号</button>
         <span id="setRaccoonHint" style="font-size:12px;color:var(--dim)"></span>
       </div>
     </section>
@@ -8121,9 +8123,15 @@ function updateUI(){
     tCa.className = "realm-card" + (isCodeartsView ? " active" : "");
   }
   if(tRc){
-    tRc.style.display = raccoonEnabled ? "" : "none";
-    tRc.className = "realm-card" + (isRaccoonView ? " active" : "");
+    // Keep the fourth card visible even before the realm is enabled: it is the
+    // discoverable entry to "enable + import auth.json". A disabled card opens
+    // the auth modal instead of switching to an unavailable realm.
+    tRc.style.display = "";
+    tRc.className = "realm-card" + (isRaccoonView ? " active" : "")
+      + (raccoonEnabled ? "" : " disabled");
   }
+  const rcOffBadge = document.getElementById("tabRaccoonOffBadge");
+  if(rcOffBadge) rcOffBadge.style.display = raccoonEnabled ? "none" : "inline-block";
   const vbIntl = document.getElementById("tabIntlViewBadge");
   if(vbIntl) vbIntl.style.display = isIntlView ? "inline-block" : "none";
   const vbCn = document.getElementById("tabCnViewBadge");
@@ -8153,9 +8161,9 @@ function updateUI(){
   }
   const rsRc = document.getElementById("accountsRealmRaccoon");
   if(rsRc){
-    rsRc.style.display = raccoonEnabled ? "" : "none";
-    rsRc.classList.toggle("active", isRaccoonView);
-    rsRc.setAttribute("aria-pressed", isRaccoonView ? "true" : "false");
+    rsRc.style.display = "";
+    rsRc.classList.toggle("active", isRaccoonView && raccoonEnabled);
+    rsRc.setAttribute("aria-pressed", (isRaccoonView && raccoonEnabled) ? "true" : "false");
   }
   const nextRcBtn = document.getElementById("nextGatewayRealmRaccoon");
   if(nextRcBtn){
@@ -8839,6 +8847,22 @@ function switchRaccoonAuthTab(name){
   }
 }
 
+function raccoonCardAction(){
+  if((window.REALM_OPTIONS || []).includes("raccoon")){
+    switchViewRealm("raccoon");
+    return;
+  }
+  openRaccoonAuth();
+}
+
+function raccoonRealmAction(){
+  if((window.REALM_OPTIONS || []).includes("raccoon")){
+    switchViewRealm("raccoon");
+    return;
+  }
+  openRaccoonAuth();
+}
+
 function openRaccoonAuth(){
   RACCOON_OAUTH_GEN += 1;
   const modal = document.getElementById("raccoonAuthModal");
@@ -9039,6 +9063,13 @@ async function importRaccoonAuth(btn){
       refreshActiveRealm().catch(function(){}),
     ]);
     if(window.updateUI) window.updateUI();
+    // The first import auto-enables the realm; take the user straight to the
+    // new account page so the result is visible instead of leaving them on a
+    // WorkBuddy/CodeArts view wondering where the account went.
+    if((window.REALM_OPTIONS || []).includes("raccoon")
+       && window.VIEW_REALM !== "raccoon"){
+      await switchViewRealm("raccoon").catch(function(){});
+    }
     closeRaccoonAuth();
   }catch(e){
     setRaccoonOauthStatus("导入失败: " + e.message, false);

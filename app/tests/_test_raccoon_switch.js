@@ -15,12 +15,13 @@ const html = dashboardHtml();
 const script = dashboardScript();
 
 /* ---- 1. 结构 ---- */
-assert.ok(/id="tabRaccoon"[^>]*onclick="switchViewRealm\('raccoon'\)"/.test(html),
+assert.ok(/id="tabRaccoon"[^>]*onclick="raccoonCardAction\(\)"/.test(html),
   '网关页缺少小浣熊出口卡片');
-assert.ok(/id="accountsRealmRaccoon"[^>]*onclick="switchViewRealm\('raccoon'\)"/.test(html),
+assert.ok(/id="accountsRealmRaccoon"[^>]*onclick="raccoonRealmAction\(\)"/.test(html),
   '账号页缺少小浣熊视图按钮');
 assert.ok(html.includes('id="tabRaccoonViewBadge"'), '缺少小浣熊当前视图徽章');
 assert.ok(html.includes('id="tabRaccoonDefaultBadge"'), '缺少小浣熊默认出口徽章');
+assert.ok(html.includes('id="tabRaccoonOffBadge"'), '缺少小浣熊未启用徽章');
 assert.ok(html.includes('id="tabRaccoonKeyBadge"'), '缺少小浣熊 Key 计数');
 assert.ok(html.includes('id="tabRaccoonHealthy"'), '缺少小浣熊健康账号数');
 assert.ok(html.includes('id="tabRaccoonTotal"'), '缺少小浣熊账号总数');
@@ -37,6 +38,8 @@ assert.ok(/id="nextGatewayRealmRaccoon"[^>]*onclick="switchViewRealm\('raccoon'\
 
 assert.ok(/if\(r === "raccoon"\)\{[\s\S]{0,300}?loadRaccoonOverview\(true\)/.test(script),
   'switchViewRealm 应有 raccoon 分支并加载概览');
+assert.ok(/function raccoonCardAction\(\)/.test(script),
+  '未启用卡片应有启用/添加账号入口');
 assert.ok(/const isRaccoonView = \(window\.VIEW_REALM === "raccoon"\)/.test(script),
   'updateUI 应识别 raccoon 视图');
 assert.ok(/raccoonEnabled = \(window\.REALM_OPTIONS \|\| \[\]\)\.includes\("raccoon"\)/.test(script),
@@ -73,7 +76,9 @@ try {
     window.REALM_OPTIONS = ['intl', 'cn', 'codearts', 'raccoon'];
     return {updateUI: updateUI, setViewRealm: setViewRealm,
             switchViewRealm: switchViewRealm, realmLabel: realmLabel,
-            renderConsoleAccountHealth: renderConsoleAccountHealth};
+            renderConsoleAccountHealth: renderConsoleAccountHealth,
+            raccoonCardAction: raccoonCardAction,
+            raccoonRealmAction: raccoonRealmAction};
   `)();
 } catch (e) {
   console.log = realLog;
@@ -167,12 +172,19 @@ assert.ok(!byId('nextGatewayRealmRaccoon').classList.contains('active'),
 window.REALM_OPTIONS = ['intl', 'cn'];
 window.VIEW_REALM = 'intl';
 api.updateUI();
-assert.equal(byId('tabRaccoon').style.display, 'none',
-  '未配置时小浣熊卡片应隐藏');
-assert.equal(byId('accountsRealmRaccoon').style.display, 'none',
-  '未配置时小浣熊视图按钮应隐藏');
+assert.notEqual(byId('tabRaccoon').style.display, 'none',
+  '未配置时小浣熊卡片仍应显示（否则找不到添加账号入口）');
+assert.notEqual(byId('tabRaccoonOffBadge').style.display, 'none',
+  '未配置时卡片应显示未启用徽章');
+assert.notEqual(byId('accountsRealmRaccoon').style.display, 'none',
+  '未配置时小浣熊视图按钮仍应显示');
 assert.equal(byId('nextGatewayRealmRaccoon').hidden, true,
   '未配置时网关页出口切换应隐藏小浣熊按钮');
+
+// 未启用时点卡片不切到一个不可用视图，而是直接打开添加账号弹窗。
+api.raccoonCardAction();
+assert.ok(byId('raccoonAuthModal').classList.contains('show'),
+  '未启用时点小浣熊卡片应打开添加账号弹窗');
 
 // 未启用时即便 URL 强塞 view=raccoon，也不能露出账号区/统计条；视图应先
 // 回落到当前默认出口，WorkBuddy 区块随之恢复（不能只剩空壳）。
@@ -184,8 +196,8 @@ assert.equal(byId('raccoonAccountsSection').style.display, 'none',
   '未启用时即使视图是 raccoon 也应隐藏账号区');
 assert.equal(byId('raccoonSummary').style.display, 'none',
   '未启用时即使视图是 raccoon 也应隐藏统计条');
-assert.equal(byId('tabRaccoon').style.display, 'none',
-  '未启用时即使视图是 raccoon 也应隐藏卡片');
+assert.notEqual(byId('tabRaccoon').style.display, 'none',
+  '未启用时卡片仍显示，作为添加账号入口');
 assert.equal(byId('workbuddyAccountsSection').style.display, '',
   '小浣熊停用后 WorkBuddy 账号区应恢复');
 assert.equal(byId('workbuddyDisabledSection').style.display, '',
