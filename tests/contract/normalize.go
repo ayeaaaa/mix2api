@@ -265,7 +265,8 @@ func isIdentityFieldKey(key string) bool {
 
 // isTimestampKey recognizes wire timestamp spellings. It deliberately does not
 // treat every *_id or arbitrary string as time so semantic fields keep their
-// values.
+// values. "until" is CodeArts' cooldown expiry and is replaced only when its
+// value actually parses as a timestamp.
 func isTimestampKey(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	switch canonicalKey(key) {

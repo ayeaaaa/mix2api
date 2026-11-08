@@ -1,3 +1,9 @@
+// CodeArts v2 regression contract suite.
+//
+// These tests lock down the v2 foundation's scoped CodeArts behavior against a
+// local fake upstream and the real provider/API composition. They are not
+// captured v1.6.5 oracle output: v2 regression contract coverage is complete
+// here, while v1.6.5 oracle parity remains pending. See tests/oracle/codearts.md.
 package contract
 
 import (
@@ -10,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +35,8 @@ const (
 	codeartsCanonical1017      = "deepseek-v4.1-flash-1017"
 	codeartsDisplay1017        = "DeepSeek-V4.1-Flash-1017"
 )
+
+var codeartsTokenRemainingPattern = regexp.MustCompile(`^(?:[0-9]+h[0-9]+m|[0-9]+m)$`)
 
 // codeartsExpectedModelIDs is the exact union the v1.6.5 fake upstream and the
 // published official/benefit seed sets produce. The order is the provider's
@@ -49,7 +58,7 @@ var codeartsExpectedModelIDs = []string{
 	"deepseek-v4-flash-0731",
 }
 
-func TestNormalizeJSONCodeArtsWireTimes(t *testing.T) {
+func TestCodeArtsNormalizeJSONWireTimes(t *testing.T) {
 	payload := []byte(`{
 	  "expires_at": "2026-11-09T02:01:23",
 	  "until": "2026-11-09T08:00:00",
@@ -68,6 +77,14 @@ func TestNormalizeJSONCodeArtsWireTimes(t *testing.T) {
 	}
 	if root["token_remaining"] != "3h59m" {
 		t.Fatalf("token_remaining = %#v, want the duration preserved", root["token_remaining"])
+	}
+
+	semantic, err := NormalizeJSON([]byte(`{"until":"eventually"}`))
+	if err != nil {
+		t.Fatalf("NormalizeJSON semantic until: %v", err)
+	}
+	if got := semantic.(map[string]any)["until"]; got != "eventually" {
+		t.Fatalf("non-timestamp until = %#v, want it preserved", got)
 	}
 }
 
@@ -143,8 +160,14 @@ func TestCodeArtsGoldenHealthModelsChat(t *testing.T) {
 			t.Fatalf("1017 model identity = %#v", entry)
 		}
 		credits, _ := entry["credits"].(string)
-		if credits != "x0.18" && credits != "x0.12" {
-			t.Fatalf("1017 credits = %q, want a peak/off-peak rate", credits)
+		peak, _ := entry["credits_peak"].(string)
+		offpeak, _ := entry["credits_offpeak"].(string)
+		if peak != "x0.18" || offpeak != "x0.12" {
+			t.Fatalf("1017 peak/off-peak credits = %q/%q, want x0.18/x0.12", peak, offpeak)
+		}
+		if credits != peak && credits != offpeak {
+			t.Fatalf("1017 credits = %q, want the current peak (%q) or off-peak (%q) rate",
+				credits, peak, offpeak)
 		}
 		fixture.assertNoSecrets(t, "models", rec.Body.Bytes())
 		codeartsAssertGoldenJSON(t, rec.Body.Bytes(), "codearts_models.golden.json", func(body []byte) []byte {
@@ -287,6 +310,17 @@ func TestCodeArtsGoldenOverviewCheckinCreditsModelsRefresh(t *testing.T) {
 		if !ok || len(accounts) != 2 {
 			t.Fatalf("overview accounts = %#v", root["accounts"])
 		}
+		for _, raw := range accounts {
+			account := raw.(map[string]any)
+			remaining, _ := account["token_remaining"].(string)
+			if !codeartsTokenRemainingPattern.MatchString(remaining) {
+				t.Fatalf("overview token_remaining = %q, want a non-empty duration", remaining)
+			}
+			expiresAt, _ := account["expires_at"].(string)
+			if strings.TrimSpace(expiresAt) == "" {
+				t.Fatalf("overview expires_at is empty: %#v", account)
+			}
+		}
 		stats := root["stats"].(map[string]any)
 		if codeartsNumber(stats["total"]) != "2" || codeartsNumber(stats["healthy"]) != "2" ||
 			codeartsNumber(stats["credits"]) != "1800" {
@@ -355,7 +389,9 @@ func TestCodeArtsGoldenOverviewCheckinCreditsModelsRefresh(t *testing.T) {
 	})
 
 	t.Run("models_refresh", func(t *testing.T) {
-		before := fixture.fake.callCount(codeartsFakeBuiltinPath)
+		builtinBefore := fixture.fake.callCount(codeartsFakeBuiltinPath)
+		agentBefore := fixture.fake.callCount(codeartsFakeAgentListPath)
+		benefitBefore := fixture.fake.callCount(codeartsFakeBenefitConfigPath)
 		rec := fixture.doPanel(t, http.MethodPost, "/codearts/models/refresh", map[string]any{})
 		codeartsRequireStatus(t, "models refresh", rec, http.StatusOK)
 		result := decodeJSONBody(t, rec.Body.Bytes())
@@ -370,12 +406,62 @@ func TestCodeArtsGoldenOverviewCheckinCreditsModelsRefresh(t *testing.T) {
 		if _, ok := catalog["fetched_at"]; !ok {
 			t.Fatalf("models refresh catalog has no fetched_at: %#v", catalog)
 		}
-		if got := fixture.fake.callCount(codeartsFakeBuiltinPath); got <= before {
-			t.Fatalf("builtin discovery calls = %d, want more than %d", got, before)
+		for name, before := range map[string]int{
+			"builtin": builtinBefore,
+			"agent":   agentBefore,
+			"benefit": benefitBefore,
+		} {
+			path := map[string]string{
+				"builtin": codeartsFakeBuiltinPath,
+				"agent":   codeartsFakeAgentListPath,
+				"benefit": codeartsFakeBenefitConfigPath,
+			}[name]
+			if got := fixture.fake.callCount(path); got < before+2 {
+				t.Fatalf("%s discovery calls = %d, want one per account (at least %d)",
+					name, got, before+2)
+			}
 		}
 		fixture.assertNoSecrets(t, "models refresh", rec.Body.Bytes())
 		codeartsAssertGoldenJSON(t, rec.Body.Bytes(), "codearts_models_refresh.golden.json", nil)
 	})
+}
+
+func TestCodeArtsModelsLiveSettingsToggle(t *testing.T) {
+	fixture := newCodeArtsContractFixture(t, true, codeartsContractAccounts(1)...)
+
+	rec := fixture.doAPI(t, http.MethodGet, "/v1/models?realm=codearts", nil)
+	codeartsRequireStatus(t, "models enabled", rec, http.StatusOK)
+	before := fixture.fake.callCount(codeartsFakeBuiltinPath)
+
+	if _, err := fixture.store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": false},
+	}); err != nil {
+		t.Fatalf("disable settings: %v", err)
+	}
+	rec = fixture.doAPI(t, http.MethodGet, "/v1/models?realm=codearts", nil)
+	codeartsRequireStatus(t, "models disabled by live settings", rec, http.StatusServiceUnavailable)
+	failure := codeartsErrorEnvelope(t, "models disabled by live settings", rec)
+	if failure["message"] != "CodeArts 出口未启用：请到设置页填写 Base URL 和 API Key。" ||
+		failure["type"] != "invalid_request_error" ||
+		codeartsNumber(failure["code"]) != "503" {
+		t.Fatalf("live-disabled models error = %#v", failure)
+	}
+	if got := fixture.fake.callCount(codeartsFakeBuiltinPath); got != before {
+		t.Fatalf("disabled models triggered discovery: builtin calls %d, want %d", got, before)
+	}
+
+	if _, err := fixture.store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": true},
+	}); err != nil {
+		t.Fatalf("re-enable settings: %v", err)
+	}
+	rec = fixture.doAPI(t, http.MethodGet, "/v1/models?realm=codearts", nil)
+	codeartsRequireStatus(t, "models re-enabled by live settings", rec, http.StatusOK)
+	root := decodeJSONBody(t, rec.Body.Bytes())
+	if root["realm"] != "codearts" {
+		t.Fatalf("re-enabled models envelope = %#v", root)
+	}
+	fixture.assertNoSecrets(t, "models live settings", rec.Body.Bytes())
 }
 
 func TestCodeArtsDisabledAndErrorEnvelopes(t *testing.T) {
@@ -494,11 +580,7 @@ func TestCodeArtsConcurrencyRetryThenFailover(t *testing.T) {
 		"stream":   false,
 	})
 	codeartsRequireStatus(t, "concurrency failover", rec, http.StatusOK)
-	completion := decodeJSONBody(t, rec.Body.Bytes())
-	message := completion["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
-	if message["content"] != "你好" {
-		t.Fatalf("failover completion = %#v", completion)
-	}
+	codeartsAssertContractCompletion(t, "concurrency failover", rec.Body.Bytes())
 
 	if got := fixture.fake.chatCount(fixture.accounts[0].Token); got != 2 {
 		t.Fatalf("first account chat calls = %d, want initial + one retry", got)
@@ -527,6 +609,7 @@ func TestCodeArtsCreditExhaustedFailoverAndAllAccounts(t *testing.T) {
 			"stream":   false,
 		})
 		codeartsRequireStatus(t, "credit failover", rec, http.StatusOK)
+		codeartsAssertContractCompletion(t, "credit failover", rec.Body.Bytes())
 		if got := fixture.fake.chatCount(fixture.accounts[0].Token); got != 1 {
 			t.Fatalf("exhausted account chat calls = %d, want 1", got)
 		}
@@ -573,6 +656,37 @@ func TestCodeArtsCreditExhaustedFailoverAndAllAccounts(t *testing.T) {
 	})
 }
 
+// codeartsAssertContractCompletion checks the semantic non-stream shape the
+// failover paths must preserve, not just the HTTP status.
+func codeartsAssertContractCompletion(t *testing.T, where string, body []byte) {
+	t.Helper()
+	completion := decodeJSONBody(t, body)
+	if completion["object"] != "chat.completion" || completion["model"] != "GLM-5.2" {
+		t.Fatalf("%s completion identity = %#v", where, completion)
+	}
+	if id, _ := completion["id"].(string); strings.TrimSpace(id) == "" {
+		t.Fatalf("%s completion id is empty: %#v", where, completion)
+	}
+	choices, ok := completion["choices"].([]any)
+	if !ok || len(choices) != 1 {
+		t.Fatalf("%s completion choices = %#v", where, completion["choices"])
+	}
+	choice := choices[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	if message["role"] != "assistant" || message["content"] != "你好" {
+		t.Fatalf("%s completion message = %#v", where, message)
+	}
+	if choice["finish_reason"] != "stop" {
+		t.Fatalf("%s completion finish_reason = %#v", where, choice["finish_reason"])
+	}
+	usage, ok := completion["usage"].(map[string]any)
+	if !ok || codeartsNumber(usage["prompt_tokens"]) != "3" ||
+		codeartsNumber(usage["completion_tokens"]) != "2" ||
+		codeartsNumber(usage["total_tokens"]) != "5" {
+		t.Fatalf("%s completion usage = %#v", where, completion["usage"])
+	}
+}
+
 // codeartsContractAccount is one realistic fake-upstream credential document.
 type codeartsContractAccount struct {
 	UID           string
@@ -608,6 +722,7 @@ func codeartsContractAccounts(count int) []codeartsContractAccount {
 type codeartsContractFixture struct {
 	server    *http.Server
 	provider  *codearts.Provider
+	store     *config.Store
 	upstream  *httptest.Server
 	fake      *codeartsContractUpstream
 	accounts  []codeartsContractAccount
@@ -654,7 +769,18 @@ func newCodeArtsContractFixture(
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
+	secrets := make([]string, 0, len(accounts)*6)
 	for _, account := range accounts {
+		dpopPrivateKey, err := codearts.NewDPoPKey()
+		if err != nil {
+			t.Fatalf("NewDPoPKey(%s): %v", account.UID, err)
+		}
+		var dpopFields struct {
+			D string `json:"d"`
+		}
+		if err := json.Unmarshal(dpopPrivateKey, &dpopFields); err != nil || dpopFields.D == "" {
+			t.Fatalf("decode DPoP private scalar for %s: %v", account.UID, err)
+		}
 		authPath, err := codearts.AuthPath(accountsDir, account.UID)
 		if err != nil {
 			t.Fatalf("AuthPath(%s): %v", account.UID, err)
@@ -670,11 +796,26 @@ func newCodeArtsContractFixture(
 			CodeVerifier:     account.CodeVerifier,
 			ClientID:         account.ClientID,
 			Expiration:       now.Add(time.Duration(account.ExpirySeconds) * time.Second),
+			DPopPrivateKey:   dpopPrivateKey,
 			ProxySlot:        "",
 			UpdatedAt:        now.Unix(),
 		}); err != nil {
 			t.Fatalf("SaveAuth(%s): %v", account.UID, err)
 		}
+		savedAuth, err := codearts.LoadAuth(authPath)
+		if err != nil {
+			t.Fatalf("LoadAuth(%s): %v", account.UID, err)
+		}
+		var savedDPoP struct {
+			D string `json:"d"`
+		}
+		if err := json.Unmarshal(savedAuth.DPopPrivateKey, &savedDPoP); err != nil ||
+			savedDPoP.D == "" || savedDPoP.D != dpopFields.D {
+			t.Fatalf("auth file %s did not retain the seeded DPoP private scalar", authPath)
+		}
+		secrets = append(secrets,
+			account.Token, account.AccessKeyID, account.SecretKey,
+			account.RefreshToken, account.CodeVerifier, dpopFields.D)
 	}
 
 	provider, err := codearts.New(store)
@@ -691,15 +832,13 @@ func newCodeArtsContractFixture(
 	fixture := &codeartsContractFixture{
 		server:    server,
 		provider:  provider,
+		store:     store,
 		upstream:  upstream,
 		fake:      fake,
 		accounts:  append([]codeartsContractAccount(nil), accounts...),
+		secrets:   secrets,
 		panelAuth: codeartsContractPanelToken,
 		apiKey:    codeartsContractAPIKey,
-	}
-	for _, account := range accounts {
-		fixture.secrets = append(fixture.secrets,
-			account.Token, account.AccessKeyID, account.SecretKey, account.RefreshToken)
 	}
 	return fixture
 }
@@ -1140,7 +1279,21 @@ func codeartsContractToolFrames(model string) [][]byte {
 				"delta": map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "call_contract", "type": "function",
 					"function": map[string]any{
-						"name": "lookup", "arguments": `{"q":"go"}`,
+						"name": "lookup", "arguments": `{"q":`,
+					},
+				}}},
+				"finish_reason": nil,
+			}},
+		},
+		{
+			"id": "chatcmpl-contract-tool", "object": "chat.completion.chunk", "created": 1,
+			"model": model,
+			"choices": []any{map[string]any{
+				"index": 0,
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0,
+					"function": map[string]any{
+						"arguments": `"go"}`,
 					},
 				}}},
 				"finish_reason": nil,

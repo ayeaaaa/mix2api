@@ -1469,3 +1469,49 @@ func TestModelsDisabledRealmReturnsUnavailable(t *testing.T) {
 		t.Fatalf("disabled Models message = %q", apiErr.SafeMessage())
 	}
 }
+
+func TestModelsLiveSettingsToggle(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": true},
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	provider, err := New(store)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	models, err := provider.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("enabled Models: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("enabled Models returned an empty catalogue")
+	}
+
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": false},
+	}); err != nil {
+		t.Fatalf("disable settings: %v", err)
+	}
+	_, err = provider.Models(context.Background(), false)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("disabled Models after live toggle = %v, want 503", err)
+	}
+
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": true},
+	}); err != nil {
+		t.Fatalf("re-enable settings: %v", err)
+	}
+	models, err = provider.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("re-enabled Models: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("re-enabled Models returned an empty catalogue")
+	}
+}

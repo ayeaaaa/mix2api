@@ -36,19 +36,21 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 	if ctx == nil {
 		return nil, errors.New("codearts: model catalog requires a context")
 	}
-	if p.pool != nil {
-		p.pool.mu.RLock()
-		enabled := p.pool.cfg.Enabled
-		p.pool.mu.RUnlock()
-		if !enabled {
-			// v1 gates the realm's /v1/models route before reading a catalogue.
-			// Returning the seed set while disabled would advertise a realm
-			// that cannot serve chat.
-			return nil, &APIError{
-				Kind:    KindUnavailable,
-				Status:  http.StatusServiceUnavailable,
-				Message: disabledAdminMessage,
-			}
+	// /v1/models is read through the provider directly, so it must observe the
+	// same live settings as provider admin/health routes. Without this reload,
+	// an external settings edit would leave the disabled-realm gate stale.
+	cfg, err := p.applySettings()
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled {
+		// v1 gates the realm's /v1/models route before reading a catalogue.
+		// Returning the seed set while disabled would advertise a realm that
+		// cannot serve chat.
+		return nil, &APIError{
+			Kind:    KindUnavailable,
+			Status:  http.StatusServiceUnavailable,
+			Message: disabledAdminMessage,
 		}
 	}
 

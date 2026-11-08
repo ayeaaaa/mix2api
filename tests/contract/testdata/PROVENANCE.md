@@ -22,7 +22,8 @@ fields; v1's panel/media/key readiness blocks are out of scope for this slice.
 The `codearts_*.golden.json` and `codearts_chat_stream.golden.json` files are
 also **v2 regression fixtures**, generated from the local fake CodeArts upstream
 through the real provider and API server. They are **not captured v1.6.5 oracle
-output**. They cover the scoped CodeArts surface: provider health, the exact
+output**. The v2 regression contract is **complete** for these scoped fixtures;
+v1.6.5 oracle parity is **pending**. They cover the scoped CodeArts surface: provider health, the exact
 `/v1/models?realm=codearts` union (including `DeepSeek-V4.1-Flash-1017`), chat
 non-stream and SSE (text and tool calls), overview with no credential fields,
 check-in claim/confirm, credits refresh, models refresh, disabled/error
