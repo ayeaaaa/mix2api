@@ -39,6 +39,7 @@ const (
 	oauthTTL                = 600 * time.Second
 	oauthMaxSessions        = 64
 	oauthHTTPTimeout        = 30 * time.Second
+	oauthBusyGrace          = 2 * oauthHTTPTimeout
 	oauthMaxResponseBytes   = 1 << 20
 	oauthMessageLimit       = 500
 	oauthTokenRejectBodyMax = 300
@@ -268,10 +269,26 @@ func (s *OAuthSessions) sessionsFor(storeKey string) map[string]*oauthSession {
 
 func (s *OAuthSessions) gcLocked(sessions map[string]*oauthSession, now time.Time) {
 	for id, session := range sessions {
-		if now.Sub(session.CreatedAt) > oauthTTL {
-			delete(sessions, id)
+		age := now.Sub(session.CreatedAt)
+		if age <= oauthTTL {
+			continue
 		}
+		// Do not delete an exchange or ticket request out from under its
+		// network call (or a retained ticket result awaiting persistence) at
+		// the exact TTL boundary. The grace is longer than the HTTP timeout;
+		// a stuck busy session is still collected after it.
+		if oauthSessionBusy(session) && age <= oauthTTL+oauthBusyGrace {
+			continue
+		}
+		delete(sessions, id)
 	}
+}
+
+// oauthSessionBusy reports state that owns network work or a ticket result.
+// Both cap eviction and TTL collection avoid destroying such sessions.
+func oauthSessionBusy(session *oauthSession) bool {
+	return session != nil &&
+		(session.Status == "exchanging" || session.TicketPolling || session.PendingTicket != nil)
 }
 
 func evictOldestLocked(sessions map[string]*oauthSession) *oauthSession {
@@ -280,7 +297,7 @@ func evictOldestLocked(sessions map[string]*oauthSession) *oauthSession {
 		// A session with an exchange or ticket request in flight, or a retained
 		// ticket result, is busy: the cap must evict a settled session instead
 		// of orphaning that work.
-		if session.Status == "exchanging" || session.TicketPolling || session.PendingTicket != nil {
+		if oauthSessionBusy(session) {
 			continue
 		}
 		if oldest == nil || session.CreatedAt.Before(oldest.CreatedAt) {

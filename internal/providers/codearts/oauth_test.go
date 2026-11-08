@@ -1061,6 +1061,50 @@ func TestOAuthCapDoesNotEvictTicketPolling(t *testing.T) {
 	}
 }
 
+func TestOAuthTTLProtectsBusySessionsUntilGrace(t *testing.T) {
+	store, _ := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+
+	_, busyPoll := mustBegin(t, sessions, store, 8788)
+	_, pendingTicket := mustBegin(t, sessions, store, 8788)
+	_, staleBusyPoll := mustBegin(t, sessions, store, 8788)
+	_, stalePendingTicket := mustBegin(t, sessions, store, 8788)
+	_, idle := mustBegin(t, sessions, store, 8788)
+
+	now := sessions.nowTime()
+	atBoundary := now.Add(-oauthTTL - time.Second)
+	atGrace := now.Add(-oauthTTL - oauthBusyGrace - time.Second)
+	busyPoll.CreatedAt = atBoundary
+	busyPoll.TicketPolling = true
+	pendingTicket.CreatedAt = atBoundary
+	pendingTicket.PendingTicket = &Token{UserID: "pending-user", Credentials: Credentials{SecurityToken: "pending-st"}}
+	staleBusyPoll.CreatedAt = atGrace
+	staleBusyPoll.TicketPolling = true
+	stalePendingTicket.CreatedAt = atGrace
+	stalePendingTicket.PendingTicket = &Token{UserID: "stale-user", Credentials: Credentials{SecurityToken: "stale-st"}}
+	idle.CreatedAt = atBoundary
+
+	key := mustStoreKey(t, store)
+	sessions.mu.Lock()
+	sessions.gcLocked(sessions.byStore[key], now)
+	_, busyExists := sessions.byStore[key][busyPoll.ID]
+	_, pendingExists := sessions.byStore[key][pendingTicket.ID]
+	_, staleBusyExists := sessions.byStore[key][staleBusyPoll.ID]
+	_, stalePendingExists := sessions.byStore[key][stalePendingTicket.ID]
+	_, idleExists := sessions.byStore[key][idle.ID]
+	sessions.mu.Unlock()
+
+	if !busyExists || !pendingExists {
+		t.Fatalf("TTL GC removed a busy session at the boundary: poll=%v pending=%v", busyExists, pendingExists)
+	}
+	if staleBusyExists || stalePendingExists {
+		t.Fatalf("TTL GC kept stuck busy sessions past the grace: poll=%v pending=%v", staleBusyExists, stalePendingExists)
+	}
+	if idleExists {
+		t.Fatalf("TTL GC kept an idle expired session")
+	}
+}
+
 func TestOAuthCodeFailurePreservesTicketPoll(t *testing.T) {
 	fake, _ := newOAuthFake(t)
 	store, dir := newOAuthTestStore(t)
@@ -1510,28 +1554,120 @@ func TestOAuthPublicJSONContainsNoSecrets(t *testing.T) {
 	sessions := NewOAuthSessions()
 	start, session := mustBegin(t, sessions, store, 8788)
 
-	raw, err := json.Marshal(start)
+	// Use long, non-base64url sentinels so the check cannot collide with an
+	// enum value or a randomly generated challenge byte.
+	const (
+		ticketSecretSentinel  = "sentinel:ticket-secret:0123456789abcdef"
+		verifierSentinel      = "sentinel:pkce-verifier:0123456789abcdef"
+		jwkPrivateSentinel    = "sentinel:jwk-private-d:0123456789abcdef"
+		securityTokenSentinel = "sentinel:security-token:0123456789abcdef"
+		accessKeySentinel     = "sentinel:access-key:0123456789abcdef"
+		secretKeySentinel     = "sentinel:secret-key:0123456789abcdef"
+		refreshTokenSentinel  = "sentinel:refresh-token:0123456789abcdef"
+		stateSentinel         = "sentinel:oauth-state:0123456789abcdef"
+	)
+	session.Secret = ticketSecretSentinel
+	session.Verifier = verifierSentinel
+	session.State = stateSentinel
+	session.DPoPKey = json.RawMessage(`{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"` + jwkPrivateSentinel + `"}`)
+	session.PendingTicket = &Token{
+		UserID: "pending-user",
+		Credentials: Credentials{
+			AccessKeyID: accessKeySentinel, SecretAccessKey: secretKeySentinel,
+			SecurityToken: securityTokenSentinel,
+		},
+		RefreshToken: refreshTokenSentinel,
+	}
+	session.SavedAuth = &Auth{
+		UserID: "saved-user", CloudDragonToken: securityTokenSentinel,
+		AccessKeyID: accessKeySentinel, SecretAccessKey: secretKeySentinel,
+		RefreshToken: refreshTokenSentinel, DPopPrivateKey: session.DPoPKey,
+	}
+	session.Status = "error"
+	session.Message = "登录失败：上游拒绝了请求"
+
+	sentinels := []string{
+		ticketSecretSentinel, verifierSentinel, jwkPrivateSentinel,
+		securityTokenSentinel, accessKeySentinel, secretKeySentinel,
+		refreshTokenSentinel, stateSentinel,
+	}
+	forbiddenKeys := map[string]bool{
+		"code": true, "state": true, "secret": true, "code_verifier": true,
+		"refresh_token": true, "cloud_dragon_token": true,
+		"access_key_id": true, "secret_access_key": true,
+		"security_token": true, "dpop_private_key": true, "jwk": true, "d": true,
+	}
+
+	assertPublic := func(label string, raw []byte) {
+		t.Helper()
+		var object map[string]any
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatalf("%s is not a JSON object: %v", label, err)
+		}
+		// auth_url is public: it necessarily carries the PKCE challenge and
+		// public ticket id. Inspect it separately, not as a raw token blob.
+		authURLText, _ := object["auth_url"].(string)
+		delete(object, "auth_url")
+		remaining, err := json.Marshal(object)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sentinel := range sentinels {
+			if strings.Contains(string(remaining), sentinel) {
+				t.Fatalf("%s leaked %q: %s", label, sentinel, remaining)
+			}
+		}
+		assertNoForbiddenJSONKeys(t, label, object, forbiddenKeys)
+		if authURLText == "" {
+			t.Fatalf("%s has no auth_url to inspect", label)
+		}
+		parsed, err := url.Parse(authURLText)
+		if err != nil {
+			t.Fatalf("%s auth_url is unparseable: %v", label, err)
+		}
+		query := parsed.Query()
+		for key := range forbiddenKeys {
+			if query.Get(key) != "" {
+				t.Fatalf("%s auth_url leaked query field %q", label, key)
+			}
+		}
+		for _, sentinel := range sentinels {
+			if strings.Contains(authURLText, sentinel) {
+				t.Fatalf("%s auth_url leaked %q", label, sentinel)
+			}
+		}
+	}
+
+	startJSON, err := json.Marshal(start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), session.Secret) || strings.Contains(string(raw), session.Verifier) {
-		t.Fatalf("start leaked a secret: %s", raw)
-	}
+	assertPublic("start", startJSON)
 
-	// An error session's public poll carries only a safe message.
-	session.Status = "error"
-	session.Message = "登录失败：上游拒绝了请求"
 	poll, err := sessions.Poll(store, start.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err = json.Marshal(poll)
+	pollJSON, err := json.Marshal(poll)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{session.Secret, session.Verifier, "ST", "AK", "SK"} {
-		if strings.Contains(string(raw), secret) {
-			t.Fatalf("poll leaked %q: %s", secret, raw)
+	assertPublic("poll", pollJSON)
+}
+
+func assertNoForbiddenJSONKeys(t *testing.T, label string, value any, forbidden map[string]bool) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if forbidden[key] {
+				t.Fatalf("%s contains forbidden JSON field %q", label, key)
+			}
+			assertNoForbiddenJSONKeys(t, label, child, forbidden)
+		}
+	case []any:
+		for _, child := range typed {
+			assertNoForbiddenJSONKeys(t, label, child, forbidden)
 		}
 	}
 }
