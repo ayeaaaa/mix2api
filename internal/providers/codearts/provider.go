@@ -281,9 +281,10 @@ func (p *Provider) Health(ctx context.Context, force bool) (providers.Health, er
 	return value, nil
 }
 
-// Overview returns the v1 admin snapshot. Statistics refreshes are best effort,
-// disabled accounts are skipped, models are the account-info/account-catalog
-// union with the v1 seed fallback, and no credential enters the payload.
+// Overview returns the v1 admin snapshot. Statistics refreshes are best effort
+// for every account, including disabled ones (v1 aggregates their package/credit
+// snapshots), models are the account-info/account-catalog union with the v1 seed
+// fallback, and no credential enters the payload.
 func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -293,9 +294,9 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 		return nil, err
 	}
 	if !cfg.Enabled {
-		return nil, &APIError{
-			Kind:    KindUnavailable,
+		return nil, &adminError{
 			Status:  http.StatusServiceUnavailable,
+			Type:    "invalid_request_error",
 			Message: disabledAdminMessage,
 		}
 	}
@@ -303,12 +304,6 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 	for _, account := range p.pool.Accounts() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
-		}
-		account.mu.Lock()
-		disabled := account.removed || account.State.Disabled || account.State.ManualDisabled
-		account.mu.Unlock()
-		if disabled {
-			continue
 		}
 		infoCtx, cancel := context.WithTimeout(ctx, overviewInfoTimeout)
 		_, _ = p.FetchInfo(infoCtx, account, force)

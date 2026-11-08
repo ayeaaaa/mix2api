@@ -58,16 +58,21 @@ func serverAdminError(message string) *adminError {
 	}
 }
 
-// adminErrorFrom maps pool, OAuth, and HTTPError failures onto the v1 panel
-// envelope. CodeArts APIErrors expose their client-facing status through the
-// shared providers.HTTPError contract; a plain local/upstream error keeps v1's
-// admin default of 502.
+// adminErrorFrom maps pool, OAuth, and provider failures onto the v1 panel
+// envelope. The admin surface only special-cases NotFound (404) and genuine
+// bad requests (400); every other rate-limit, unavailable, credit, upstream, or
+// local failure keeps v1's admin default of 502. The generic API's HTTPError
+// status mapping remains separate.
 func adminErrorFrom(err error) *adminError {
 	if err == nil {
 		return &adminError{
 			Status: http.StatusBadGateway, Type: "invalid_request_error",
 			Message: "codearts: request failed",
 		}
+	}
+	var adminErr *adminError
+	if errors.As(err, &adminErr) && adminErr != nil {
+		return adminErr
 	}
 	switch {
 	case errors.Is(err, ErrAccountNotFound):
@@ -76,7 +81,7 @@ func adminErrorFrom(err error) *adminError {
 		}
 	case errors.Is(err, ErrAuthPathCollision):
 		return &adminError{
-			Status: http.StatusConflict, Type: "invalid_request_error",
+			Status: http.StatusBadGateway, Type: "invalid_request_error",
 			Message: "codearts: auth file belongs to a different account",
 		}
 	case errors.Is(err, ErrOAuthSession):
@@ -88,7 +93,8 @@ func adminErrorFrom(err error) *adminError {
 		return badAdminRequest(oauthStateMessage)
 	case errors.Is(err, ErrOAuthReplay):
 		return &adminError{
-			Status: http.StatusConflict, Type: "invalid_request_error", Message: oauthReplayMessage,
+			Status: http.StatusBadGateway, Type: "invalid_request_error",
+			Message: oauthReplayMessage,
 		}
 	case errors.Is(err, ErrOAuthCallbackURL):
 		return badAdminRequest(oauthCallbackURLMessage)
@@ -98,21 +104,32 @@ func adminErrorFrom(err error) *adminError {
 		return badAdminRequest(oauthRedirectMessage)
 	}
 
+	// The admin surface is stricter than the generic OpenAI API: only a
+	// genuine bad request keeps its 400. v1 maps rate limits, unavailable
+	// upstreams, credit exhaustion, and every other provider failure to 502.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		status := http.StatusBadGateway
+		if apiErr.Kind == KindBadRequest {
+			status = http.StatusBadRequest
+		}
+		message := strings.TrimSpace(apiErr.SafeMessage())
+		if message == "" {
+			message = safeCodeArtsAdminError(err)
+		}
+		return &adminError{Status: status, Type: "invalid_request_error", Message: message}
+	}
 	var httpErr providers.HTTPError
 	if errors.As(err, &httpErr) {
-		status := httpErr.HTTPStatus()
-		if status < 400 || status > 599 {
-			status = http.StatusBadGateway
-		}
-		errType := strings.TrimSpace(httpErr.ErrorType())
-		if errType == "" {
-			errType = "invalid_request_error"
+		status := http.StatusBadGateway
+		if httpErr.HTTPStatus() == http.StatusBadRequest {
+			status = http.StatusBadRequest
 		}
 		message := strings.TrimSpace(httpErr.SafeMessage())
 		if message == "" {
 			message = safeCodeArtsAdminError(err)
 		}
-		return &adminError{Status: status, Type: errType, Message: message}
+		return &adminError{Status: status, Type: "invalid_request_error", Message: message}
 	}
 	return &adminError{
 		Status: http.StatusBadGateway, Type: "invalid_request_error",
@@ -264,6 +281,23 @@ func forceFromQuery(r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+// requireAdminEnabled applies current settings and enforces v1's disabled-realm
+// admin gate. Import and OAuth routes deliberately do not call this: they are
+// the v2 bootstrap/re-enable path.
+func (p *Provider) requireAdminEnabled() *adminError {
+	cfg, err := p.applySettings()
+	if err != nil {
+		return adminErrorFrom(err)
+	}
+	if !cfg.Enabled {
+		return &adminError{
+			Status: http.StatusServiceUnavailable, Type: "invalid_request_error",
+			Message: disabledAdminMessage,
+		}
+	}
+	return nil
 }
 
 // RouteNotFoundMessage is consumed by the generic API route adapter so an
@@ -419,13 +453,13 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 			writeAdminError(w, failure)
 			return
 		}
+		if failure := p.requireAdminEnabled(); failure != nil {
+			writeAdminError(w, failure)
+			return
+		}
 		uid := adminText(payload["uid"])
 		if uid == "" {
 			writeAdminError(w, badAdminRequest("uid required"))
-			return
-		}
-		if _, err := p.applySettings(); err != nil {
-			writeAdminError(w, adminErrorFrom(err))
 			return
 		}
 
@@ -497,7 +531,7 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 				log.Printf("codearts: remove auth files for %s: %v", uid, err)
 				writeAdminError(w, &adminError{
 					Status: http.StatusInternalServerError, Type: "server_error",
-					Message: "账号文件删除失败，账号仍保留；请检查账号文件权限",
+					Message: "账号文件删除失败，请检查账号文件权限",
 				})
 				return
 			}
@@ -649,9 +683,13 @@ func (p *Provider) oauthPoll(sessionID string) (OAuthPoll, error) {
 
 func (p *Provider) syncOAuthAccount(uid string) error {
 	uid = strings.TrimSpace(uid)
-	if uid == "" || p.pool == nil || p.pool.Get(uid) != nil {
+	if uid == "" || p.pool == nil {
 		return nil
 	}
+	// Always reload from the saved auth document. A completed ticket fallback
+	// may be a re-login of an existing UID, in which case the in-memory
+	// credentials are stale until this reimport. Running the same path again on
+	// a later poll also retries after a partial add/enable failure.
 	path, err := AuthPath(p.accountsDir, uid)
 	if err != nil {
 		return err
@@ -816,8 +854,8 @@ func (p *Provider) handleCreditsRefresh(w http.ResponseWriter, r *http.Request) 
 		writeAdminError(w, failure)
 		return
 	}
-	if _, err := p.applySettings(); err != nil {
-		writeAdminError(w, adminErrorFrom(err))
+	if failure := p.requireAdminEnabled(); failure != nil {
+		writeAdminError(w, failure)
 		return
 	}
 	result, err := p.RefreshCredits(r.Context())
@@ -834,8 +872,8 @@ func (p *Provider) handleCheckin(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, failure)
 		return
 	}
-	if _, err := p.applySettings(); err != nil {
-		writeAdminError(w, adminErrorFrom(err))
+	if failure := p.requireAdminEnabled(); failure != nil {
+		writeAdminError(w, failure)
 		return
 	}
 	uid := adminText(payload["uid"])
@@ -859,8 +897,8 @@ func (p *Provider) handleKeepalive(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, failure)
 		return
 	}
-	if _, err := p.applySettings(); err != nil {
-		writeAdminError(w, adminErrorFrom(err))
+	if failure := p.requireAdminEnabled(); failure != nil {
+		writeAdminError(w, failure)
 		return
 	}
 	if p.tokenManager == nil {
@@ -893,8 +931,8 @@ func (p *Provider) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, failure)
 		return
 	}
-	if _, err := p.applySettings(); err != nil {
-		writeAdminError(w, adminErrorFrom(err))
+	if failure := p.requireAdminEnabled(); failure != nil {
+		writeAdminError(w, failure)
 		return
 	}
 	writeAdminJSON(w, http.StatusOK, p.refreshModels(r.Context()))
@@ -918,9 +956,9 @@ func (p *Provider) invalidateModels() {
 }
 
 // refreshModels invalidates the catalog, force-fetches every enabled account,
-// and reports the v1 {ok, models, catalog, message} envelope. Discovery
-// failures keep the official/benefit seed fallback instead of failing the
-// route, matching v1's best-effort refresh.
+// and reports the v1 {ok, models, catalog} envelope. Discovery failures keep
+// the official/benefit seed fallback instead of failing the route, matching
+// v1's best-effort refresh.
 func (p *Provider) refreshModels(ctx context.Context) map[string]any {
 	if ctx == nil {
 		ctx = context.Background()
@@ -928,15 +966,10 @@ func (p *Provider) refreshModels(ctx context.Context) map[string]any {
 	p.invalidateModels()
 	entries, err := p.Models(ctx, true)
 	ok := err == nil
-	message := "模型目录已刷新"
-	if !ok {
-		message = safeCodeArtsAdminError(err)
-	}
 	return map[string]any{
 		"ok":      ok,
 		"models":  len(entries),
 		"catalog": p.modelsMeta(),
-		"message": message,
 	}
 }
 
@@ -973,8 +1006,8 @@ func (p *Provider) handleConnectionTest(w http.ResponseWriter, r *http.Request) 
 		writeAdminError(w, failure)
 		return
 	}
-	if _, err := p.applySettings(); err != nil {
-		writeAdminError(w, adminErrorFrom(err))
+	if failure := p.requireAdminEnabled(); failure != nil {
+		writeAdminError(w, failure)
 		return
 	}
 	health, err := p.Health(r.Context(), true)

@@ -239,7 +239,8 @@ func TestCodeArtsRoutesPanelMetadata(t *testing.T) {
 }
 
 func TestCodeArtsOverviewNoTokensAndStats(t *testing.T) {
-	_, _ = newAdminUpstreams(t)
+	credits, _ := newAdminUpstreams(t)
+	credits.setPlugin("u2", map[string]any{})
 	f := newCodeArtsRoutesFixture(t, true)
 	first := addRouteAccount(t, f.p, "u1")
 	second := addRouteAccount(t, f.p, "u2")
@@ -307,6 +308,11 @@ func TestCodeArtsOverviewNoTokensAndStats(t *testing.T) {
 		routeNumber(health["healthy"]) != 1 {
 		t.Fatalf("health = %#v", health)
 	}
+	// v1 refreshes statistics for disabled accounts too, not only the live
+	// subset used for scheduling.
+	if got := credits.callCountFor("u2", creditPluginPath); got != 1 {
+		t.Fatalf("disabled account statistics calls = %d, want 1", got)
+	}
 }
 
 func TestCodeArtsOverviewDisabledAndHealth(t *testing.T) {
@@ -357,6 +363,66 @@ func TestCodeArtsOverviewDisabledAndHealth(t *testing.T) {
 	}
 }
 
+func TestCodeArtsDisabledAdminGating(t *testing.T) {
+	f := newCodeArtsRoutesFixture(t, false)
+	addRouteAccount(t, f.p, "u1")
+
+	getRoutes := []string{"/codearts/overview", "/codearts/accounts"}
+	for _, path := range getRoutes {
+		recorder := f.do(http.MethodGet, path, nil, "")
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s disabled status=%d body=%s", path, recorder.Code, recorder.Body)
+		}
+		failure := routesErrorBody(t, decodeRoutesJSON(t, recorder))
+		if failure["message"] != routesDisabledMessage {
+			t.Fatalf("%s disabled error = %#v", path, failure)
+		}
+	}
+
+	postRoutes := []string{
+		"/codearts/test",
+		"/codearts/models/refresh",
+		"/codearts/keepalive",
+		"/codearts/credits/refresh",
+		"/codearts/accounts/checkin",
+		"/codearts/checkin",
+		"/codearts/accounts/enable",
+		"/codearts/accounts/disable",
+		"/codearts/accounts/clear-cooldown",
+		"/codearts/accounts/note",
+		"/codearts/accounts/tasks",
+		"/codearts/accounts/test",
+		"/codearts/accounts/proxy",
+		"/codearts/accounts/delete",
+	}
+	for _, path := range postRoutes {
+		recorder := f.do(http.MethodPost, path, map[string]any{}, "")
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s disabled status=%d body=%s", path, recorder.Code, recorder.Body)
+		}
+		failure := routesErrorBody(t, decodeRoutesJSON(t, recorder))
+		if failure["message"] != routesDisabledMessage ||
+			failure["type"] != "invalid_request_error" ||
+			routeNumber(failure["code"]) != http.StatusServiceUnavailable {
+			t.Fatalf("%s disabled error = %#v", path, failure)
+		}
+	}
+
+	// Import is the deliberate bootstrap extension: it can run while the
+	// realm is disabled and auto-enables it.
+	recorder := f.do(http.MethodPost, "/codearts/accounts/import",
+		routeAuthPayload(t, testAuth("u2")), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("bootstrap import status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	if !f.p.Config().Enabled {
+		t.Fatal("bootstrap import did not enable the realm")
+	}
+	if f.p.Pool().Get("u2") == nil {
+		t.Fatal("bootstrap import did not add the account")
+	}
+}
+
 func TestCodeArtsHealthFiveSecondCacheAndForce(t *testing.T) {
 	f := newCodeArtsRoutesFixture(t, true)
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
@@ -394,6 +460,45 @@ func TestCodeArtsHealthFiveSecondCacheAndForce(t *testing.T) {
 	}
 	if routeNumber(health["accounts"]) != 2 {
 		t.Fatalf("expired health cache = %#v", health)
+	}
+}
+
+func TestCodeArtsHealthCacheInvalidatedByAdminRoutes(t *testing.T) {
+	f := newCodeArtsRoutesFixture(t, true)
+	addRouteAccount(t, f.p, "u1")
+
+	health, err := f.p.Health(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if routeNumber(health["accounts"]) != 1 {
+		t.Fatalf("initial health = %#v", health)
+	}
+
+	recorder := f.do(http.MethodPost, "/codearts/accounts/import",
+		routeAuthPayload(t, testAuth("u2")), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("import status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	health, err = f.p.Health(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Health after import: %v", err)
+	}
+	if routeNumber(health["accounts"]) != 2 {
+		t.Fatalf("import did not invalidate the health cache: %#v", health)
+	}
+
+	recorder = f.do(http.MethodPost, "/codearts/accounts/disable",
+		map[string]any{"uid": "u2"}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("disable status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	health, err = f.p.Health(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Health after disable: %v", err)
+	}
+	if routeNumber(health["healthy"]) != 1 || routeNumber(health["accounts"]) != 2 {
+		t.Fatalf("disable did not invalidate the health cache: %#v", health)
 	}
 }
 
@@ -438,7 +543,7 @@ func TestCodeArtsImportFlatNestedAndCollision(t *testing.T) {
 	writeTestAuth(t, f.dir, "a_b", "")
 	conflict := routeAuthPayload(t, testAuth("a/b"))
 	recorder = f.do(http.MethodPost, "/codearts/accounts/import", conflict, "")
-	if recorder.Code != http.StatusConflict {
+	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("collision status=%d body=%s", recorder.Code, recorder.Body)
 	}
 	failure := routesErrorBody(t, decodeRoutesJSON(t, recorder))
@@ -708,8 +813,11 @@ func TestCodeArtsModelsRefreshAndConnectionTest(t *testing.T) {
 		t.Fatalf("models refresh status=%d body=%s", recorder.Code, recorder.Body)
 	}
 	body := decodeRoutesJSON(t, recorder)
-	if body["ok"] != true || routeNumber(body["models"]) < 1 || routesText(body["message"]) == "" {
+	if body["ok"] != true || routeNumber(body["models"]) < 1 {
 		t.Fatalf("models refresh = %#v", body)
+	}
+	if _, hasMessage := body["message"]; hasMessage {
+		t.Fatalf("models refresh has a v2-only message field: %#v", body)
 	}
 	catalog, _ := body["catalog"].(map[string]any)
 	if catalog["source"] != "codearts" || routeNumber(catalog["accounts"]) != 1 || catalog["stale"] != false {
@@ -790,10 +898,12 @@ func TestCodeArtsUnknownRouteAndErrorEnvelopes(t *testing.T) {
 		kind   string
 	}{
 		{"not found", ErrAccountNotFound, http.StatusNotFound, "invalid_request_error"},
-		{"collision", ErrAuthPathCollision, http.StatusConflict, "invalid_request_error"},
-		{"rate limit", &APIError{Kind: KindRateLimited, Message: "limited"}, http.StatusTooManyRequests, "rate_limit_error"},
-		{"unavailable", &APIError{Kind: KindUnavailable, Message: "offline"}, http.StatusServiceUnavailable, "invalid_request_error"},
+		{"collision", ErrAuthPathCollision, http.StatusBadGateway, "invalid_request_error"},
+		{"rate limit", &APIError{Kind: KindRateLimited, Message: "limited"}, http.StatusBadGateway, "invalid_request_error"},
+		{"unavailable", &APIError{Kind: KindUnavailable, Message: "offline"}, http.StatusBadGateway, "invalid_request_error"},
+		{"credit exhausted", &APIError{Kind: KindCreditExhausted, Message: "empty"}, http.StatusBadGateway, "invalid_request_error"},
 		{"bad request", &APIError{Kind: KindBadRequest, Message: "bad"}, http.StatusBadRequest, "invalid_request_error"},
+		{"oauth replay", ErrOAuthReplay, http.StatusBadGateway, "invalid_request_error"},
 		{"plain", errors.New("boom"), http.StatusBadGateway, "invalid_request_error"},
 	}
 	for _, testCase := range cases {
@@ -940,6 +1050,50 @@ func TestCodeArtsOAuthStartPanelCallbackAndBrowserCallback(t *testing.T) {
 	}
 }
 
+func TestCodeArtsOAuthBrowserCallbackPersistsAccountAndEnablesRealm(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	const tokenSentinel = "browser-callback-security-token-0123456789"
+	fake.tokenFn = func() map[string]any {
+		payload := defaultTokenPayload()
+		payload["credentials"] = map[string]any{
+			"access_key_id":     "browser-access",
+			"secret_access_key": "browser-secret",
+			"security_token":    tokenSentinel,
+			"expiration":        "2030-01-02T03:04:05Z",
+		}
+		return payload
+	}
+	f := newCodeArtsRoutesFixture(t, false)
+
+	recorder := f.do(http.MethodPost, "/codearts/accounts/oauth/start", map[string]any{}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("oauth start status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	start := decodeRoutesJSON(t, recorder)
+	parsed, err := url.Parse(routesText(start["auth_url"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := parsed.Query().Get("ticket_id")
+	recorder = f.do(http.MethodGet,
+		"/oauth/callback?code=oauth-code&ticket_id="+url.QueryEscape(ticket), nil, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("browser callback status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	assertNoSecrets(t, "browser callback", recorder.Body.String(), tokenSentinel)
+	if f.p.Pool().Get("u1") == nil {
+		t.Fatal("browser callback did not add the account to the pool")
+	}
+	settings, err := f.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeartsConfig, _ := settings["codearts"].(map[string]any)
+	if codeartsConfig["enabled"] != true {
+		t.Fatalf("browser callback did not enable the realm: %#v", settings)
+	}
+}
+
 func TestCodeArtsOAuthTicketFallbackPollReloadsPool(t *testing.T) {
 	_, _ = newOAuthFake(t)
 	f := newCodeArtsRoutesFixture(t, false)
@@ -1008,12 +1162,205 @@ func TestCodeArtsOAuthTicketFallbackPollReloadsPool(t *testing.T) {
 	}
 }
 
+func beginRouteTicketFallback(t *testing.T, f *codeartsRoutesFixture) (sessionID, ticket, secret string) {
+	t.Helper()
+	recorder := f.do(http.MethodPost, "/codearts/accounts/oauth/start", map[string]any{}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("oauth start status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	start := decodeRoutesJSON(t, recorder)
+	sessionID = routesText(start["session_id"])
+	parsed, err := url.Parse(routesText(start["auth_url"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket = parsed.Query().Get("ticket_id")
+
+	storeKey, err := oauthStoreKey(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.p.oauthSessions.mu.Lock()
+	session := f.p.oauthSessions.byStore[storeKey][sessionID]
+	if session != nil {
+		secret = session.Secret
+	}
+	f.p.oauthSessions.mu.Unlock()
+	if secret == "" {
+		t.Fatal("OAuth session secret not found")
+	}
+
+	redirect := "https://portal.example.test/portal/callback?ticket_id=" + url.QueryEscape(ticket)
+	callbackURL := "http://127.0.0.1:54321/oauth/callback?secret=" +
+		url.QueryEscape(secret) + "&redirect=" + url.QueryEscape(redirect)
+	recorder = f.do(http.MethodPost, "/codearts/accounts/oauth/callback", map[string]any{
+		"session_id":   sessionID,
+		"callback_url": callbackURL,
+	}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("fallback callback status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	body := decodeRoutesJSON(t, recorder)
+	if body["status"] != "continue" || routesText(body["next_url"]) == "" {
+		t.Fatalf("fallback callback = %#v", body)
+	}
+	return sessionID, ticket, secret
+}
+
+func TestCodeArtsOAuthTicketFallbackReimportsExistingAccount(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	const (
+		newToken  = "re-login-security-token-0123456789"
+		newAccess = "re-login-access-key"
+		newSecret = "re-login-secret-key"
+	)
+	fake.ticketFn = func() map[string]any {
+		payload := defaultTokenPayload()
+		payload["credentials"] = map[string]any{
+			"access_key_id":     newAccess,
+			"secret_access_key": newSecret,
+			"security_token":    newToken,
+			"expiration":        "2030-01-02T03:04:05Z",
+		}
+		return payload
+	}
+	f := newCodeArtsRoutesFixture(t, false)
+	existing := addRouteAccount(t, f.p, "u1")
+	existing.mu.Lock()
+	oldToken := existing.Auth.CloudDragonToken
+	existing.mu.Unlock()
+
+	sessionID, _, _ := beginRouteTicketFallback(t, f)
+	existing.mu.Lock()
+	stillOld := existing.Auth.CloudDragonToken
+	existing.mu.Unlock()
+	if stillOld != oldToken {
+		t.Fatalf("credentials changed before ticket poll: %q", stillOld)
+	}
+
+	recorder := f.do(http.MethodPost, "/codearts/accounts/oauth/poll",
+		map[string]any{"session_id": sessionID}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("fallback poll status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	poll := decodeRoutesJSON(t, recorder)
+	if poll["status"] != "done" {
+		t.Fatalf("fallback poll = %#v", poll)
+	}
+	account := f.p.Pool().Get("u1")
+	if account == nil {
+		t.Fatal("fallback poll removed the existing account")
+	}
+	account.mu.Lock()
+	reloadedToken := account.Auth.CloudDragonToken
+	reloadedAccess := account.Auth.AccessKeyID
+	account.mu.Unlock()
+	if reloadedToken != newToken || reloadedAccess != newAccess {
+		t.Fatalf("existing account was not reimported: token=%q access=%q",
+			reloadedToken, reloadedAccess)
+	}
+	settings, err := f.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeartsConfig, _ := settings["codearts"].(map[string]any)
+	if codeartsConfig["enabled"] != true {
+		t.Fatalf("re-login did not enable the disabled realm: %#v", settings)
+	}
+}
+
+func TestCodeArtsOAuthTicketFallbackRetriesPartialEnable(t *testing.T) {
+	_, _ = newOAuthFake(t)
+	f := newCodeArtsRoutesFixture(t, false)
+	sessionID, _, _ := beginRouteTicketFallback(t, f)
+
+	settingsPath := f.store.Path
+	if err := os.RemoveAll(settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(settingsPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(settingsPath) })
+
+	recorder := f.do(http.MethodPost, "/codearts/accounts/oauth/poll",
+		map[string]any{"session_id": sessionID}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("partial-enable poll status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	if f.p.Pool().Get("u1") == nil {
+		t.Fatal("partial-enable poll did not add the account")
+	}
+	if f.p.Config().Enabled {
+		t.Fatal("settings write unexpectedly succeeded while settings.json was a directory")
+	}
+
+	if err := os.RemoveAll(settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	recorder = f.do(http.MethodPost, "/codearts/accounts/oauth/poll",
+		map[string]any{"session_id": sessionID}, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("retry poll status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	if !f.p.Config().Enabled {
+		t.Fatal("retry poll did not finish enabling the realm")
+	}
+	settings, err := f.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeartsConfig, _ := settings["codearts"].(map[string]any)
+	if codeartsConfig["enabled"] != true {
+		t.Fatalf("retry poll did not persist enabled=true: %#v", settings)
+	}
+}
+
 func TestCodeArtsOAuthStartRequiresInjectedListenerPort(t *testing.T) {
 	f := newCodeArtsRoutesFixture(t, true)
 	f.p.SetListenerPort(0)
 	recorder := f.do(http.MethodPost, "/codearts/accounts/oauth/start", map[string]any{}, "")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unset listener port status=%d body=%s", recorder.Code, recorder.Body)
+	}
+}
+
+func TestCodeArtsDeleteFailureUsesAccurateMessage(t *testing.T) {
+	f := newCodeArtsRoutesFixture(t, true)
+	addRouteAccount(t, f.p, "u1")
+
+	folder := f.p.pool.folder
+	backup := folder + ".bak"
+	if err := os.Rename(folder, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(folder, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(folder)
+		_ = os.Rename(backup, folder)
+	})
+
+	recorder := f.do(http.MethodPost, "/codearts/accounts/delete",
+		map[string]any{"uid": "u1"}, "")
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("delete failure status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	body := decodeRoutesJSON(t, recorder)
+	failure := routesErrorBody(t, body)
+	if failure["type"] != "server_error" {
+		t.Fatalf("delete failure envelope = %#v", failure)
+	}
+	message := routesText(failure["message"])
+	if !strings.Contains(message, "账号文件删除失败") {
+		t.Fatalf("delete failure message = %q", message)
+	}
+	if strings.Contains(message, "仍保留") {
+		t.Fatalf("delete failure still claims the account remains: %q", message)
+	}
+	if strings.Contains(recorder.Body.String(), f.dir) {
+		t.Fatalf("delete failure leaked a filesystem path: %s", recorder.Body.String())
 	}
 }
 
