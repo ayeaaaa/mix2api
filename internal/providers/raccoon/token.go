@@ -53,9 +53,8 @@ type accountRefreshKey struct {
 }
 
 type accountRefreshState struct {
-	mu         sync.Mutex
-	generation uint64
-	inflight   *refreshCall
+	mu       sync.Mutex
+	inflight *refreshCall
 }
 
 type refreshCall struct {
@@ -116,7 +115,11 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		return m.ensureFailure(a, state, err)
 	}
 
-	oldAuth := a.authSnapshot()
+	oldAuth := a.refreshCredentials()
+	if oldAuth.Deleted {
+		state.mu.Unlock()
+		return ErrAccountDeleted
+	}
 	call := &refreshCall{done: make(chan struct{})}
 	state.inflight = call
 	state.mu.Unlock()
@@ -164,15 +167,13 @@ func (m *TokenManager) RefreshIfGeneration(ctx context.Context, a *Account, gene
 }
 
 // Generation returns the credential generation for an account. It increases
-// once per successful refresh.
+// once per successful refresh and on every explicit auth rewrite (re-import,
+// proxy-slot binding, removal).
 func (m *TokenManager) Generation(a *Account) uint64 {
 	if m == nil || a == nil {
 		return 0
 	}
-	state := m.stateFor(a)
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.generation
+	return a.credentialGeneration()
 }
 
 func (m *TokenManager) refresh(ctx context.Context, a *Account, expected *uint64) error {
@@ -182,7 +183,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account, expected *uint64
 
 	state := m.stateFor(a)
 	state.mu.Lock()
-	if expected != nil && state.generation != *expected {
+	if expected != nil && a.credentialGeneration() != *expected {
 		state.mu.Unlock()
 		return nil
 	}
@@ -192,12 +193,20 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account, expected *uint64
 		return waitRefresh(ctx, call)
 	}
 
-	oldAuth := a.authSnapshot()
+	snapshot := a.refreshCredentials()
+	if snapshot.Deleted {
+		state.mu.Unlock()
+		return ErrAccountDeleted
+	}
+	if expected != nil && snapshot.Generation != *expected {
+		state.mu.Unlock()
+		return nil
+	}
 	call := &refreshCall{done: make(chan struct{})}
 	state.inflight = call
 	state.mu.Unlock()
 
-	return m.performRefresh(ctx, a, state, call, oldAuth)
+	return m.performRefresh(ctx, a, state, call, snapshot)
 }
 
 func (m *TokenManager) validateCall(ctx context.Context, a *Account) error {
@@ -253,7 +262,7 @@ func (m *TokenManager) performRefresh(
 	a *Account,
 	state *accountRefreshState,
 	call *refreshCall,
-	oldAuth Auth,
+	captured refreshCredentialSnapshot,
 ) error {
 	// The refresh is shared by every waiter, so it must not inherit any one
 	// caller's cancellation. WithoutCancel preserves values, while the HTTP
@@ -264,38 +273,64 @@ func (m *TokenManager) performRefresh(
 		requestCtx, cancel = context.WithTimeout(requestCtx, m.timeout)
 		defer cancel()
 	}
-	updated, err := m.requestRefresh(requestCtx, a, oldAuth)
 
-	var stateChanged bool
+	var updated Auth
+	var err error
+	if strings.TrimSpace(captured.Path) == "" {
+		err = errors.New("raccoon: token refresh requires an auth path")
+	} else {
+		updated, err = m.requestRefresh(requestCtx, a, captured.Auth)
+	}
+
+	var (
+		stateChanged bool
+		oldUID       string
+		newUID       string
+	)
 	state.mu.Lock()
-	if err == nil {
-		stateChanged = a.setRefreshedAuth(updated)
-		state.generation++
-		call.err = nil
+	a.credentialMu.Lock()
+	if captured.Deleted || a.Deleted || a.authGeneration != captured.Generation {
+		if a.Deleted {
+			err = ErrAccountDeleted
+		} else {
+			err = ErrCredentialsChanged
+		}
+		call.err = err
+	} else if err == nil {
+		if saveErr := SaveAuth(captured.Path, updated); saveErr != nil {
+			call.err = fmt.Errorf("raccoon: persist refreshed auth: %w", saveErr)
+			err = call.err
+		} else {
+			oldUID, newUID, stateChanged = a.publishRefreshedAuthLocked(updated)
+			a.authGeneration++
+			call.err = nil
+		}
 	} else {
 		// A manual disable is a panel decision. A failed refresh must not
 		// replace its reason or otherwise alter that state.
 		if IsAuthError(err) {
-			stateChanged = a.markAuthFailure(err.Error())
+			stateChanged = a.markAuthFailureLocked(err.Error())
 		}
 		call.err = err
 	}
+	a.credentialMu.Unlock()
 	state.inflight = nil
 	close(call.done)
 	state.mu.Unlock()
 
+	if oldUID != "" && newUID != "" && oldUID != newUID && a.pool != nil {
+		a.pool.renameAffinity(oldUID, newUID)
+	}
 	if stateChanged && m.OnStateChange != nil {
 		m.OnStateChange(a)
+	}
+	if call.err != nil {
+		return call.err
 	}
 	return err
 }
 
 func (m *TokenManager) requestRefresh(ctx context.Context, a *Account, oldAuth Auth) (Auth, error) {
-	path, _ := a.authPathAndUID()
-	if path == "" {
-		return Auth{}, errors.New("raccoon: token refresh requires an auth path")
-	}
-
 	refreshToken := cleanToken(oldAuth.RefreshToken)
 	if refreshToken == "" {
 		return Auth{}, &APIError{
@@ -385,10 +420,6 @@ func (m *TokenManager) requestRefresh(ctx context.Context, a *Account, oldAuth A
 	}
 	updated.UID = uid
 	updated.UpdatedAt = m.now().Unix()
-
-	if err := SaveAuth(path, updated); err != nil {
-		return Auth{}, fmt.Errorf("raccoon: persist refreshed auth: %w", err)
-	}
 	return updated, nil
 }
 

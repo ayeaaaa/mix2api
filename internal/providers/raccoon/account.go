@@ -2,6 +2,7 @@ package raccoon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,6 +20,16 @@ const (
 
 	// maxNoteRunes mirrors v1's note[:200] truncation.
 	maxNoteRunes = 200
+)
+
+var (
+	// ErrCredentialsChanged aborts a refresh whose captured credential
+	// generation no longer matches (re-import, proxy change, or another write).
+	ErrCredentialsChanged = errors.New("raccoon: account credentials changed during token refresh")
+
+	// ErrAccountDeleted aborts credential work after Remove has tombstoned the
+	// account, so a stale handler cannot recreate the auth file.
+	ErrAccountDeleted = errors.New("raccoon: account was deleted")
 )
 
 // CreditsSnapshot is the provider-private public credit snapshot. Task 12 owns
@@ -70,6 +81,12 @@ type PointsTasks struct {
 //
 // Auth and State are the v1-shaped persistent documents. The guard fields are
 // shared settings projected per account by the pool; they are not persisted.
+//
+// Lock order: authOpsMu -> credentialMu -> mu. Pool.mu is never held while
+// credentialMu is acquired, and stateMu is never held with credentialMu.
+// credentialMu serializes auth-file writes and guards Path, Deleted, and
+// authGeneration; it is not held across refresh network I/O. Auth and State
+// are guarded by mu.
 type Account struct {
 	Auth        Auth
 	State       accountstate.State
@@ -94,6 +111,14 @@ type Account struct {
 	// pool is the owner, used to remap UID-keyed runtime data after a refresh
 	// rotates the JWT subject. It is nil for standalone test accounts.
 	pool *Pool
+
+	credentialMu sync.Mutex
+	// Deleted is the Remove tombstone. It is read and written under
+	// credentialMu; Acquire and credential writers reject the account.
+	Deleted bool
+	// authGeneration increases on refresh success, re-import, proxy binding,
+	// and removal. It is guarded by credentialMu.
+	authGeneration uint64
 
 	mu               sync.Mutex
 	activeConcurrent int
@@ -429,15 +454,31 @@ func (a *Account) ProxySlot() string {
 	return a.proxySlot
 }
 
-// authSnapshot returns a copy of the credentials for a token operation. The
-// Auth value's extra-field map is immutable after load.
-func (a *Account) authSnapshot() Auth {
+type refreshCredentialSnapshot struct {
+	Auth       Auth
+	Path       string
+	Generation uint64
+	Deleted    bool
+}
+
+// refreshCredentials atomically snapshots the credentials, auth path, and
+// generation used by one refresh. Callers keep credentialMu only for this
+// snapshot and the final verify/save, never across the network request.
+func (a *Account) refreshCredentials() refreshCredentialSnapshot {
 	if a == nil {
-		return Auth{}
+		return refreshCredentialSnapshot{Deleted: true}
 	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.Auth
+	snapshot := refreshCredentialSnapshot{
+		Auth:       a.Auth,
+		Generation: a.authGeneration,
+		Deleted:    a.Deleted,
+	}
+	a.mu.Unlock()
+	snapshot.Path = strings.TrimSpace(a.Path)
+	return snapshot
 }
 
 // authPathAndUID returns the refresh path and embedded UID snapshot.
@@ -445,9 +486,53 @@ func (a *Account) authPathAndUID() (string, string) {
 	if a == nil {
 		return "", ""
 	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
+	path := strings.TrimSpace(a.Path)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return strings.TrimSpace(a.Path), strings.TrimSpace(a.Auth.UID)
+	uid := strings.TrimSpace(a.Auth.UID)
+	if uid == "" {
+		uid = strings.TrimSpace(a.State.UID)
+	}
+	a.mu.Unlock()
+	return path, uid
+}
+
+// credentialGeneration returns the current auth generation.
+func (a *Account) credentialGeneration() uint64 {
+	if a == nil {
+		return 0
+	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
+	return a.authGeneration
+}
+
+// currentUID returns the account UID and whether the tombstone is clear.
+func (a *Account) currentUID() (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
+	deleted := a.Deleted
+	a.mu.Lock()
+	uid := strings.TrimSpace(a.Auth.UID)
+	if uid == "" {
+		uid = strings.TrimSpace(a.State.UID)
+	}
+	a.mu.Unlock()
+	return uid, !deleted
+}
+
+// isDeleted reports the Remove tombstone under the credential lock.
+func (a *Account) isDeleted() bool {
+	if a == nil {
+		return true
+	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
+	return a.Deleted
 }
 
 // refreshDue reports whether the access token is inside the v1 refresh window.
@@ -470,69 +555,83 @@ func (a *Account) tokenIsExpired(now time.Time) bool {
 	return tokenExpired(a.Auth, now)
 }
 
-// setRefreshedAuth publishes a successful refresh and clears non-manual
-// disable state. It returns whether persistent state changed.
-func (a *Account) setRefreshedAuth(updated Auth) bool {
-	if a == nil {
-		return false
-	}
+// publishRefreshedAuthLocked publishes a successful refresh. The caller must
+// hold credentialMu and must already have verified the captured generation and
+// tombstone. It clears the v1 non-manual disable/error fields and returns the
+// old/new UID plus whether persistent state changed.
+func (a *Account) publishRefreshedAuthLocked(updated Auth) (oldUID, newUID string, stateChanged bool) {
 	a.mu.Lock()
-	oldUID := strings.TrimSpace(a.State.UID)
+	defer a.mu.Unlock()
+
+	oldUID = strings.TrimSpace(a.State.UID)
 	if oldUID == "" {
 		oldUID = strings.TrimSpace(a.Auth.UID)
 	}
 	a.Auth = updated
-	newUID := strings.TrimSpace(updated.UID)
+	newUID = strings.TrimSpace(updated.UID)
 	if newUID == "" {
 		newUID = oldUID
 	}
 	a.State.UID = newUID
 	uidChanged := oldUID != "" && newUID != "" && oldUID != newUID
 
-	stateChanged := uidChanged
+	stateChanged = uidChanged
 	if !a.State.ManualDisabled {
-		if a.State.Disabled || a.State.Reason != "" || !a.State.CoolUntil.IsZero() {
-			a.State.Disabled = false
-			a.State.Reason = ""
-			a.State.CoolUntil = time.Time{}
+		if a.State.Disabled || a.State.ManualDisabled || a.State.DisabledBy != "" ||
+			a.State.Reason != "" || a.State.LastError != "" ||
+			a.State.ErrCount != 0 || !a.State.CoolUntil.IsZero() {
 			stateChanged = true
 		}
+		a.State.Disabled = false
+		a.State.ManualDisabled = false
+		a.State.DisabledBy = ""
+		a.State.Reason = ""
+		a.State.LastError = ""
+		a.State.ErrCount = 0
+		a.State.CoolUntil = time.Time{}
 	}
-	owner := a.pool
-	a.mu.Unlock()
+	return oldUID, newUID, stateChanged
+}
 
-	if owner != nil && uidChanged {
-		owner.renameAffinity(oldUID, newUID)
+// markAuthFailureLocked applies a terminal auth failure. The caller must hold
+// credentialMu and must have verified the captured generation and tombstone.
+// Manual disable keeps its reason, disabled_by, and cooldown; LastError is
+// still updated so the panel can show the latest auth problem.
+func (a *Account) markAuthFailureLocked(message string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	stateChanged := a.State.LastError != message
+	a.State.LastError = message
+	if a.State.ManualDisabled {
+		return stateChanged
 	}
+	if !a.State.Disabled || a.State.DisabledBy != "auth" ||
+		a.State.Reason != message || !a.State.CoolUntil.IsZero() {
+		stateChanged = true
+	}
+	a.State.Disabled = true
+	a.State.DisabledBy = "auth"
+	a.State.Reason = message
+	a.State.CoolUntil = time.Time{}
 	return stateChanged
 }
 
-// markAuthFailure marks a terminal auth failure unless the account is manually
-// disabled. It returns whether persistent state changed.
-func (a *Account) markAuthFailure(message string) bool {
+// hasSelectionState snapshots the scheduler fields used by Pick. live is false
+// once Remove has tombstoned the account.
+func (a *Account) hasSelectionState() (uid string, active, max int, lastUsed time.Time, live bool) {
 	if a == nil {
-		return false
+		return "", 0, 1, time.Time{}, false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.State.ManualDisabled {
-		return false
-	}
-	a.State.Disabled = true
-	a.State.Reason = message
-	a.State.CoolUntil = time.Time{}
-	return true
-}
-
-// hasSelectionState snapshots the scheduler fields used by Pick.
-func (a *Account) hasSelectionState() (uid string, active, max int, lastUsed time.Time) {
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	uid = strings.TrimSpace(a.Auth.UID)
 	if uid == "" {
 		uid = strings.TrimSpace(a.State.UID)
 	}
-	return uid, a.activeConcurrent, normalizedMaxConcurrent(a.maxConcurrent), a.lastUsed
+	return uid, a.activeConcurrent, normalizedMaxConcurrent(a.maxConcurrent), a.lastUsed, !a.Deleted
 }
 
 func (a *Account) setMaxConcurrent(max int) {

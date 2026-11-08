@@ -45,6 +45,11 @@ var (
 // Pool is the provider-owned Raccoon account pool. It owns auth loading,
 // generic state persistence, scheduler guards, session affinity, and proxy
 // slot resolution.
+// Lock order: authOpsMu -> credentialMu -> mu; authOpsMu -> stateMu -> mu;
+// stateMu -> pool.mu (snapshot copy) and mu (field copy). credentialMu and
+// stateMu are never held together. pool.mu is never held across credential or
+// auth-file I/O. TokenManager adds state.mu -> credentialMu -> mu for one
+// account's refresh flight.
 type Pool struct {
 	dir       string
 	folder    string
@@ -56,6 +61,20 @@ type Pool struct {
 	slots    transport.Slots
 	affinity map[string]string
 	order    []string
+
+	// authOpsMu serializes Add/Remove/SetProxySlot membership and auth-file
+	// operations. It is never nested around a refresh network request, and
+	// pool.mu is not held across credential I/O.
+	authOpsMu sync.Mutex
+
+	// stateMu serializes every full-file state snapshot and write. A mutation
+	// that persists (Disable, Enable, notes, errors, refresh callbacks) cannot
+	// be overwritten by an older snapshot.
+	stateMu sync.Mutex
+
+	// stateWriteHook is a test seam invoked after the snapshot is built and
+	// before the state file write, while stateMu is held.
+	stateWriteHook func()
 
 	// preserved keeps state entries whose auth file is temporarily missing or
 	// malformed. A later save must not silently wipe notes, manual disables,
@@ -331,12 +350,32 @@ func (p *Pool) loadAuthFiles() ([]loadedAuth, error) {
 
 // SaveState writes dir/raccoon/state.json atomically, preserving state for
 // accounts whose auth files are not currently loaded and every unknown field
-// carried by accountstate.State.
+// carried by accountstate.State. Snapshot and write are serialized so an older
+// full-file snapshot cannot overwrite a later mutation.
 func (p *Pool) SaveState() error {
 	if p == nil {
 		return errors.New("raccoon: pool is nil")
 	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	return p.saveStateLocked()
+}
 
+// mutateState serializes a state mutation with its snapshot and write under
+// stateMu. Callers must not call SaveState from fn.
+func (p *Pool) mutateState(fn func()) error {
+	if p == nil {
+		return errors.New("raccoon: pool is nil")
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	fn()
+	return p.saveStateLocked()
+}
+
+// saveStateLocked builds and writes one full state snapshot. The caller holds
+// stateMu.
+func (p *Pool) saveStateLocked() error {
 	p.mu.RLock()
 	accounts := append([]*Account(nil), p.accounts...)
 	preserved := make(map[string]accountstate.State, len(p.preserved))
@@ -374,23 +413,47 @@ func (p *Pool) SaveState() error {
 		states[uid] = state
 	}
 
+	if p.stateWriteHook != nil {
+		p.stateWriteHook()
+	}
 	if err := accountstate.SaveStore(statePath, states); err != nil {
 		return fmt.Errorf("raccoon: save state: %w", err)
 	}
 	return nil
 }
 
-// Accounts returns a snapshot of account pointers.
+// Accounts returns a snapshot of account pointers sorted by their current UID.
+// It is re-sorted on every call so a JWT-subject rotation is reflected.
 func (p *Pool) Accounts() []*Account {
 	if p == nil {
 		return nil
 	}
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return append([]*Account(nil), p.accounts...)
+	accounts := append([]*Account(nil), p.accounts...)
+	p.mu.RUnlock()
+	return sortedAccountsByUID(accounts)
 }
 
-// Get returns the account whose embedded auth UID or state UID matches uid.
+func sortedAccountsByUID(accounts []*Account) []*Account {
+	type keyedAccount struct {
+		account *Account
+		uid     string
+	}
+	keyed := make([]keyedAccount, 0, len(accounts))
+	for _, account := range accounts {
+		uid, _ := account.currentUID()
+		keyed = append(keyed, keyedAccount{account: account, uid: uid})
+	}
+	sort.SliceStable(keyed, func(i, j int) bool { return keyed[i].uid < keyed[j].uid })
+	sorted := make([]*Account, len(keyed))
+	for i, item := range keyed {
+		sorted[i] = item.account
+	}
+	return sorted
+}
+
+// Get returns the live account whose embedded auth UID or state UID matches
+// uid. A tombstoned account is hidden while Remove finishes.
 func (p *Pool) Get(uid string) *Account {
 	if p == nil {
 		return nil
@@ -400,11 +463,8 @@ func (p *Pool) Get(uid string) *Account {
 		return nil
 	}
 	for _, account := range p.Accounts() {
-		account.mu.Lock()
-		match := strings.TrimSpace(account.Auth.UID) == uid ||
-			strings.TrimSpace(account.State.UID) == uid
-		account.mu.Unlock()
-		if match {
+		accountUID, live := account.currentUID()
+		if live && accountUID == uid {
 			return account
 		}
 	}
@@ -478,8 +538,8 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	accounts := p.Accounts()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
-			uid, active, max, _ := account.hasSelectionState()
-			if uid != affinityUID || active >= max {
+			uid, active, max, _, live := account.hasSelectionState()
+			if !live || uid != affinityUID || active >= max {
 				continue
 			}
 			if account.Ready(now, model) && account.HasModel(model) {
@@ -497,8 +557,8 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	}
 	candidates := make([]candidate, 0, len(accounts))
 	for _, account := range accounts {
-		uid, active, max, lastUsed := account.hasSelectionState()
-		if exclude[uid] || active >= max {
+		uid, active, max, lastUsed, live := account.hasSelectionState()
+		if !live || exclude[uid] || active >= max {
 			continue
 		}
 		if !account.Ready(now, model) {
@@ -590,6 +650,11 @@ func (p *Pool) Acquire(a *Account) bool {
 	if a == nil {
 		return false
 	}
+	a.credentialMu.Lock()
+	defer a.credentialMu.Unlock()
+	if a.Deleted {
+		return false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	max := normalizedMaxConcurrent(a.maxConcurrent)
@@ -614,7 +679,7 @@ func (p *Pool) Release(a *Account) {
 }
 
 // Disable applies a manual disable. The manual marker keeps a token refresh
-// from clearing it.
+// from clearing it. Mutation and state write share the state-save lock.
 func (p *Pool) Disable(uid, reason string) error {
 	account, err := p.accountForMutation(uid)
 	if err != nil {
@@ -623,14 +688,15 @@ func (p *Pool) Disable(uid, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "manual disable"
 	}
-	account.mu.Lock()
-	account.State.Disabled = true
-	account.State.ManualDisabled = true
-	account.State.DisabledBy = "manual"
-	account.State.Reason = reason
-	account.State.LastError = reason
-	account.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		account.mu.Lock()
+		account.State.Disabled = true
+		account.State.ManualDisabled = true
+		account.State.DisabledBy = "manual"
+		account.State.Reason = reason
+		account.State.LastError = reason
+		account.mu.Unlock()
+	})
 }
 
 // Enable clears a manual disable, cooldown, and error counters.
@@ -639,16 +705,17 @@ func (p *Pool) Enable(uid string) error {
 	if err != nil {
 		return err
 	}
-	account.mu.Lock()
-	account.State.Disabled = false
-	account.State.ManualDisabled = false
-	account.State.DisabledBy = ""
-	account.State.Reason = ""
-	account.State.LastError = ""
-	account.State.ErrCount = 0
-	account.State.CoolUntil = time.Time{}
-	account.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		account.mu.Lock()
+		account.State.Disabled = false
+		account.State.ManualDisabled = false
+		account.State.DisabledBy = ""
+		account.State.Reason = ""
+		account.State.LastError = ""
+		account.State.ErrCount = 0
+		account.State.CoolUntil = time.Time{}
+		account.mu.Unlock()
+	})
 }
 
 // ClearCooldown clears the cooldown and consecutive-error count.
@@ -657,11 +724,12 @@ func (p *Pool) ClearCooldown(uid string) error {
 	if err != nil {
 		return err
 	}
-	account.mu.Lock()
-	account.State.CoolUntil = time.Time{}
-	account.State.ErrCount = 0
-	account.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		account.mu.Lock()
+		account.State.CoolUntil = time.Time{}
+		account.State.ErrCount = 0
+		account.mu.Unlock()
+	})
 }
 
 // SetNote stores a trimmed, 200-character note.
@@ -670,10 +738,11 @@ func (p *Pool) SetNote(uid, note string) error {
 	if err != nil {
 		return err
 	}
-	account.mu.Lock()
-	account.State.Note = truncateRunes(strings.TrimSpace(note), maxNoteRunes)
-	account.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		account.mu.Lock()
+		account.State.Note = truncateRunes(strings.TrimSpace(note), maxNoteRunes)
+		account.mu.Unlock()
+	})
 }
 
 // SetTasksEnabled toggles auto task/reward behavior for one account.
@@ -682,10 +751,11 @@ func (p *Pool) SetTasksEnabled(uid string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	account.mu.Lock()
-	account.State.TasksEnabled = enabled
-	account.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		account.mu.Lock()
+		account.State.TasksEnabled = enabled
+		account.mu.Unlock()
+	})
 }
 
 func (p *Pool) accountForMutation(uid string) (*Account, error) {
@@ -702,41 +772,54 @@ func (p *Pool) accountForMutation(uid string) (*Account, error) {
 // SetProxySlot persists proxySlot in the account's auth document and resolves
 // it against the current slot list. An empty slot id clears the binding.
 func (p *Pool) SetProxySlot(uid, slotID string) error {
+	if p == nil {
+		return ErrAccountNotFound
+	}
+	p.authOpsMu.Lock()
+	defer p.authOpsMu.Unlock()
+
 	account, err := p.accountForMutation(uid)
 	if err != nil {
 		return err
 	}
 	slotID = strings.TrimSpace(slotID)
+	proxy := p.proxyURLForSlot(slotID)
 
+	account.credentialMu.Lock()
+	if account.Deleted {
+		account.credentialMu.Unlock()
+		return ErrAccountDeleted
+	}
 	account.mu.Lock()
-	path := account.Path
+	path := strings.TrimSpace(account.Path)
 	currentUID := strings.TrimSpace(account.Auth.UID)
 	auth := account.Auth
 	account.mu.Unlock()
 	if path == "" {
+		account.credentialMu.Unlock()
 		return errors.New("raccoon: account has no auth path")
 	}
 	auth.ProxySlot = slotID
 	if err := p.verifyWritableAuth(path, currentUID); err != nil {
+		account.credentialMu.Unlock()
 		return err
 	}
 	if err := SaveAuth(path, auth); err != nil {
+		account.credentialMu.Unlock()
 		return fmt.Errorf("raccoon: save proxy slot: %w", err)
 	}
+	account.authGeneration++
 	saved, err := LoadAuth(path)
 	if err != nil {
+		account.credentialMu.Unlock()
 		return fmt.Errorf("raccoon: reload proxy slot: %w", err)
 	}
-
-	p.mu.RLock()
-	proxy := p.slots.URL(slotID)
-	p.mu.RUnlock()
-
 	account.mu.Lock()
 	account.Auth = saved
 	account.proxySlot = slotID
 	account.proxy = proxy
 	account.mu.Unlock()
+	account.credentialMu.Unlock()
 	return nil
 }
 
@@ -772,13 +855,24 @@ func (p *Pool) ProxyURL(a *Account) string {
 
 // NewTokenManager builds a refresh manager wired to this pool. When opts does
 // not name a proxy resolver, refresh requests follow each account's resolved
-// proxy slot. Account state transitions (terminal auth failure, non-manual
-// recovery, and a rotated JWT subject) are persisted to state.json
-// automatically. BaseURL, Timeout, and Now come from opts; the default timeout
-// remains v1's 30-second refresh timeout.
+// proxy slot. An unset timeout uses cfg.TimeoutSeconds, matching v1's
+// acct.pool.config timeout; NewTokenManager's 30-second fallback still applies
+// when the config has no positive timeout. Account state transitions (terminal
+// auth failure, non-manual recovery, and a rotated JWT subject) are persisted
+// to state.json automatically.
 func (p *Pool) NewTokenManager(client *transport.Client, opts TokenManagerOptions) *TokenManager {
-	if opts.ProxyURL == nil && p != nil {
-		opts.ProxyURL = p.ProxyURL
+	if p != nil {
+		if opts.ProxyURL == nil {
+			opts.ProxyURL = p.ProxyURL
+		}
+		if opts.Timeout == 0 {
+			p.mu.RLock()
+			seconds := p.cfg.TimeoutSeconds
+			p.mu.RUnlock()
+			if seconds > 0 {
+				opts.Timeout = time.Duration(seconds * float64(time.Second))
+			}
+		}
 	}
 	manager := NewTokenManager(client, opts)
 	if p != nil {
@@ -951,6 +1045,12 @@ func (p *Pool) NoteSuccess(a *Account) error {
 	if a == nil {
 		return nil
 	}
+	if p == nil {
+		return errors.New("raccoon: pool is nil")
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+
 	a.mu.Lock()
 	changed := a.State.ErrCount != 0 || a.State.LastError != "" || !a.State.CoolUntil.IsZero()
 	if changed {
@@ -962,7 +1062,7 @@ func (p *Pool) NoteSuccess(a *Account) error {
 	if !changed {
 		return nil
 	}
-	return p.SaveState()
+	return p.saveStateLocked()
 }
 
 // NoteError records a request failure with v1 semantics: terminal disables the
@@ -972,34 +1072,40 @@ func (p *Pool) NoteError(a *Account, message string, soft, terminal bool) error 
 	if a == nil {
 		return nil
 	}
-
-	a.mu.Lock()
-	redacted := secrets.Redact(message, authSecretValues(a.Auth)...)
-	redacted = truncateRunes(redacted, maxNoteRunes)
-	a.State.LastError = redacted
-	switch {
-	case terminal:
-		if !a.State.ManualDisabled {
-			a.State.Disabled = true
-			a.State.DisabledBy = "auth"
-			a.State.Reason = redacted
-		}
-	case soft:
-		a.State.CoolUntil = time.Now().Add(softCooldown)
-	default:
-		a.State.ErrCount++
-		if a.State.ErrCount >= errThreshold {
-			a.State.CoolUntil = time.Now().Add(errCooldown)
-			a.State.ErrCount = 0
-		}
+	if p == nil {
+		return errors.New("raccoon: pool is nil")
 	}
-	a.mu.Unlock()
-	return p.SaveState()
+	return p.mutateState(func() {
+		a.mu.Lock()
+		redacted := secrets.Redact(message, authSecretValues(a.Auth)...)
+		redacted = truncateRunes(redacted, maxNoteRunes)
+		a.State.LastError = redacted
+		switch {
+		case terminal:
+			if !a.State.ManualDisabled {
+				a.State.Disabled = true
+				a.State.DisabledBy = "auth"
+				a.State.Reason = redacted
+			}
+		case soft:
+			a.State.CoolUntil = time.Now().Add(softCooldown)
+		default:
+			a.State.ErrCount++
+			if a.State.ErrCount >= errThreshold {
+				a.State.CoolUntil = time.Now().Add(errCooldown)
+				a.State.ErrCount = 0
+			}
+		}
+		a.mu.Unlock()
+	})
 }
 
 // Add imports or replaces one account. It uses the canonical AuthPath and
 // refuses to overwrite a file whose embedded UID differs (sanitized filename
-// collisions). Existing runtime/manual state is preserved on re-import.
+// collisions). Existing runtime/manual state and a persisted proxy slot are
+// preserved on re-import. Add/Remove/SetProxySlot share authOpsMu, and auth
+// writes share the account's credentialMu, so a refresh captured before the
+// import cannot overwrite it.
 func (p *Pool) Add(auth Auth) (*Account, error) {
 	if p == nil {
 		return nil, errors.New("raccoon: pool is nil")
@@ -1019,6 +1125,14 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	p.authOpsMu.Lock()
+	defer p.authOpsMu.Unlock()
+
+	if account := p.Get(auth.UID); account != nil {
+		return p.reimportAccount(account, path, auth)
+	}
+
 	if err := p.verifyWritableAuth(path, auth.UID); err != nil {
 		return nil, err
 	}
@@ -1032,40 +1146,9 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 
 	p.mu.Lock()
 	max := maxConcurrentFor(p.cfg)
-	for _, account := range p.accounts {
-		account.mu.Lock()
-		match := strings.TrimSpace(account.Auth.UID) == strings.TrimSpace(saved.UID)
-		account.mu.Unlock()
-		if !match {
-			continue
-		}
-		account.mu.Lock()
-		account.Auth = saved
-		account.Path = path
-		account.proxySlot = strings.TrimSpace(saved.ProxySlot)
-		account.proxy = p.slots.URL(account.proxySlot)
-		account.Models = nil
-		account.maxConcurrent = max
-		account.State.MaxConcurrent = max
-		if !account.State.ManualDisabled {
-			account.State.Disabled = false
-			account.State.DisabledBy = ""
-			account.State.Reason = ""
-			account.State.LastError = ""
-			account.State.ErrCount = 0
-			account.State.CoolUntil = time.Time{}
-		}
-		account.mu.Unlock()
-		delete(p.preserved, saved.UID)
-		p.mu.Unlock()
-		if err := p.SaveState(); err != nil {
-			return nil, err
-		}
-		return account, nil
-	}
-
 	state, ok := p.preserved[saved.UID]
 	delete(p.preserved, saved.UID)
+	p.mu.Unlock()
 	if !ok {
 		state = accountstate.State{UID: saved.UID, TasksEnabled: true}
 	}
@@ -1078,14 +1161,12 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		State:         state,
 		Path:          path,
 		proxySlot:     strings.TrimSpace(saved.ProxySlot),
-		proxy:         p.slots.URL(strings.TrimSpace(saved.ProxySlot)),
+		proxy:         p.proxyURLForSlot(strings.TrimSpace(saved.ProxySlot)),
 		pool:          p,
 		maxConcurrent: max,
 	}
+	p.mu.Lock()
 	p.accounts = append(p.accounts, account)
-	sort.Slice(p.accounts, func(i, j int) bool {
-		return strings.TrimSpace(p.accounts[i].Auth.UID) < strings.TrimSpace(p.accounts[j].Auth.UID)
-	})
 	p.mu.Unlock()
 
 	if err := p.SaveState(); err != nil {
@@ -1094,13 +1175,102 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	return account, nil
 }
 
+// reimportAccount replaces credentials on the canonical *Account while
+// preserving manual state, notes, tasks, and the existing proxy slot.
+func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Account, error) {
+	p.mu.RLock()
+	max := maxConcurrentFor(p.cfg)
+	p.mu.RUnlock()
+
+	account.credentialMu.Lock()
+	if account.Deleted {
+		account.credentialMu.Unlock()
+		return nil, ErrAccountDeleted
+	}
+
+	account.mu.Lock()
+	existingSlot := strings.TrimSpace(account.proxySlot)
+	if existingSlot == "" {
+		existingSlot = strings.TrimSpace(account.Auth.ProxySlot)
+	}
+	account.mu.Unlock()
+	if strings.TrimSpace(auth.ProxySlot) == "" && existingSlot != "" {
+		auth.ProxySlot = existingSlot
+	}
+
+	if err := p.verifyWritableAuth(path, auth.UID); err != nil {
+		account.credentialMu.Unlock()
+		return nil, err
+	}
+	if err := SaveAuth(path, auth); err != nil {
+		account.credentialMu.Unlock()
+		return nil, err
+	}
+	saved, err := LoadAuth(path)
+	if err != nil {
+		account.credentialMu.Unlock()
+		return nil, err
+	}
+	account.authGeneration++
+
+	account.mu.Lock()
+	account.Auth = saved
+	account.Path = path
+	account.proxySlot = strings.TrimSpace(saved.ProxySlot)
+	account.Models = nil
+	account.maxConcurrent = max
+	account.mu.Unlock()
+	account.credentialMu.Unlock()
+
+	p.mu.Lock()
+	delete(p.preserved, saved.UID)
+	p.mu.Unlock()
+
+	proxy := p.proxyURLForSlot(strings.TrimSpace(saved.ProxySlot))
+	if err := p.mutateState(func() {
+		account.mu.Lock()
+		account.proxy = proxy
+		account.State.UID = saved.UID
+		account.State.MaxConcurrent = max
+		if !account.State.ManualDisabled {
+			account.State.Disabled = false
+			account.State.DisabledBy = ""
+			account.State.Reason = ""
+			account.State.LastError = ""
+			account.State.ErrCount = 0
+			account.State.CoolUntil = time.Time{}
+		}
+		account.mu.Unlock()
+	}); err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
 // Remove deletes the account's auth document(s), state entry, and affinity
 // bindings. Matching v1, a UID may have a canonical file plus duplicate aliases.
+// The tombstone is raised under the credential lock before any file is deleted;
+// an in-flight refresh therefore aborts instead of recreating the auth file.
 func (p *Pool) Remove(uid string) error {
+	if p == nil {
+		return ErrAccountNotFound
+	}
+	p.authOpsMu.Lock()
+	defer p.authOpsMu.Unlock()
+
 	account, err := p.accountForMutation(uid)
 	if err != nil {
 		return err
 	}
+
+	account.credentialMu.Lock()
+	if account.Deleted {
+		account.credentialMu.Unlock()
+		return ErrAccountNotFound
+	}
+	account.Deleted = true
+	account.authGeneration++
+
 	account.mu.Lock()
 	accountUID := strings.TrimSpace(account.Auth.UID)
 	if accountUID == "" {
@@ -1110,13 +1280,18 @@ func (p *Pool) Remove(uid string) error {
 
 	paths, err := p.authPathsForUID(accountUID)
 	if err != nil {
+		account.Deleted = false
+		account.credentialMu.Unlock()
 		return err
 	}
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			account.Deleted = false
+			account.credentialMu.Unlock()
 			return fmt.Errorf("raccoon: remove auth file %s: %w", path, err)
 		}
 	}
+	account.credentialMu.Unlock()
 
 	p.mu.Lock()
 	remaining := p.accounts[:0]
@@ -1132,6 +1307,14 @@ func (p *Pool) Remove(uid string) error {
 	p.mu.Unlock()
 
 	return p.SaveState()
+}
+
+// proxyURLForSlot resolves a configured slot without holding the credential
+// lock across the pool read.
+func (p *Pool) proxyURLForSlot(slotID string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.slots.URL(slotID)
 }
 
 // authPathsForUID returns the canonical file and any alias whose embedded UID
