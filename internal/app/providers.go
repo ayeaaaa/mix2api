@@ -11,6 +11,7 @@ import (
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/codearts"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
 )
 
@@ -77,6 +78,17 @@ func Build(paths Paths) (*Setup, error) {
 	}
 	if err := registry.Register(raccoonProvider); err != nil {
 		return nil, fmt.Errorf("app: register raccoon provider: %w", err)
+	}
+
+	// Exactly one CodeArts Provider/Pool is created per accounts directory.
+	// Pool locks are instance-local, so a second Provider over the same
+	// state.json would race even though each Pool is internally consistent.
+	codeartsProvider, err := codearts.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("app: initialize codearts provider: %w", err)
+	}
+	if err := registry.Register(codeartsProvider); err != nil {
+		return nil, fmt.Errorf("app: register codearts provider: %w", err)
 	}
 
 	return &Setup{

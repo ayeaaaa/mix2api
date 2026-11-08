@@ -89,11 +89,20 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	if setup.Store.Path != wantStorePath {
 		t.Fatalf("store path = %q, want %q", setup.Store.Path, wantStorePath)
 	}
-	if len(setup.Providers) != 1 {
-		t.Fatalf("providers = %d, want 1", len(setup.Providers))
+	if len(setup.Providers) != 2 {
+		t.Fatalf("providers = %d, want raccoon and codearts", len(setup.Providers))
 	}
-	if got := setup.Providers[0].ID(); got != "raccoon" {
-		t.Fatalf("provider ID = %q, want raccoon", got)
+	raccoonRegistered := false
+	for _, provider := range setup.Providers {
+		if provider.ID() == "raccoon" {
+			raccoonRegistered = true
+			if provider.Realm() != "raccoon" {
+				t.Fatalf("raccoon provider realm = %q", provider.Realm())
+			}
+		}
+	}
+	if !raccoonRegistered {
+		t.Fatal("app.Build did not register the raccoon provider")
 	}
 	if _, ok := setup.Registry.Get("raccoon"); !ok {
 		t.Fatal("registry has no raccoon realm")
