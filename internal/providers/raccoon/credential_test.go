@@ -260,6 +260,108 @@ func TestRefreshVsRemoveDoesNotResurrectAuth(t *testing.T) {
 	}
 }
 
+func TestFailedImportRollbackAbortsInFlightRefresh(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+
+	refreshedToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-rollback",
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	url, started, release := blockingRefreshServer(t, refreshedToken)
+	tm := p.NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
+		BaseURL: url,
+		Now:     func() time.Time { return now },
+		Timeout: 2 * time.Second,
+	})
+	p.SetTokenManager(tm)
+
+	accessToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-rollback",
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	commitErr := errors.New("enable config failed")
+	var (
+		account           *Account
+		generationBefore  uint64
+		flightEpochBefore uint64
+	)
+	refreshErr := make(chan error, 1)
+	_, err := p.AddWithCommit(Auth{
+		UID:          "u-rollback",
+		AccessToken:  accessToken,
+		RefreshToken: "refresh-rollback",
+	}, func(committed *Account) error {
+		account = committed
+		generationBefore = committed.credentialGeneration()
+		flightEpochBefore = committed.flightEpochValue()
+		p.BindSession("session-rollback", committed.Auth.UID)
+		go func() { refreshErr <- tm.Refresh(context.Background(), committed) }()
+		waitChannel(t, started, "refresh request")
+		return commitErr
+	})
+	if !errors.Is(err, commitErr) {
+		release()
+		t.Fatalf("AddWithCommit error = %v, want commit failure", err)
+	}
+	if account == nil {
+		release()
+		t.Fatal("commit callback did not receive the transient account")
+	}
+
+	path, pathErr := AuthPath(dir, "u-rollback")
+	if pathErr != nil {
+		release()
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		release()
+		t.Fatalf("failed import rollback left an auth file: %v", statErr)
+	}
+	if p.Get("u-rollback") != nil {
+		release()
+		t.Fatal("failed import rollback left a pool account")
+	}
+	if !account.isDeleted() {
+		release()
+		t.Fatal("failed import rollback did not tombstone the account")
+	}
+	if got := account.credentialGeneration(); got != generationBefore+1 {
+		release()
+		t.Fatalf("generation after rollback = %d, want %d", got, generationBefore+1)
+	}
+	if got := account.flightEpochValue(); got != flightEpochBefore+1 {
+		release()
+		t.Fatalf("flight epoch after rollback = %d, want %d", got, flightEpochBefore+1)
+	}
+	if got := managerStateCount(tm, account); got != 0 {
+		release()
+		t.Fatalf("rollback retained %d manager flight states", got)
+	}
+	p.mu.RLock()
+	affinity := p.affinity["session-rollback"]
+	p.mu.RUnlock()
+	if affinity != "" {
+		release()
+		t.Fatalf("rollback retained affinity for %q", affinity)
+	}
+
+	release()
+	if err := waitError(t, refreshErr, "refresh after rollback"); !errors.Is(err, ErrAccountDeleted) {
+		t.Fatalf("refresh after rollback error = %v, want ErrAccountDeleted", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("in-flight refresh resurrected the rolled-back auth file: %v", statErr)
+	}
+	if p.Get("u-rollback") != nil {
+		t.Fatal("in-flight refresh resurrected the rolled-back account")
+	}
+	if p.Acquire(account) {
+		t.Fatal("tombstoned rolled-back account still acquires concurrency")
+	}
+}
+
 func TestSetProxySlotAfterRemoveDoesNotRecreateAuth(t *testing.T) {
 	now := time.Now()
 	dir := t.TempDir()

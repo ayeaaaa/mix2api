@@ -89,17 +89,41 @@ func adminErrorFrom(err error) *adminError {
 	return &adminError{Status: http.StatusBadGateway, Type: "invalid_request_error", Message: message}
 }
 
+// importAdminError maps auth-file transaction failures without exposing
+// filesystem paths. A sanitized filename collision is a conflict, not an
+// upstream gateway error.
+func importAdminError(err error) *adminError {
+	if errors.Is(err, ErrAuthPathCollision) {
+		return &adminError{
+			Status: http.StatusConflict, Type: "invalid_request_error",
+			Message: "raccoon: auth file belongs to a different account",
+		}
+	}
+	if errors.Is(err, ErrAccountDeleted) {
+		return &adminError{
+			Status: http.StatusConflict, Type: "invalid_request_error",
+			Message: "raccoon: account is no longer available",
+		}
+	}
+	return &adminError{
+		Status: http.StatusBadGateway, Type: "invalid_request_error",
+		Message: "raccoon: import failed",
+	}
+}
+
 func accountActionError(err error) *adminError {
 	if errors.Is(err, ErrAccountNotFound) || errors.Is(err, ErrAccountDeleted) {
 		return &adminError{
 			Status: http.StatusNotFound, Type: "invalid_request_error", Message: "account not found",
 		}
 	}
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		message = "account action failed"
+	if errors.Is(err, ErrAuthPathCollision) {
+		return &adminError{
+			Status: http.StatusConflict, Type: "invalid_request_error",
+			Message: "raccoon: auth file belongs to a different account",
+		}
 	}
-	return &adminError{Status: http.StatusInternalServerError, Type: "server_error", Message: message}
+	return &adminError{Status: http.StatusInternalServerError, Type: "server_error", Message: "account action failed"}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -296,10 +320,7 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	account, err := p.saveAndEnable(auth)
 	if err != nil {
-		writeAdminError(w, &adminError{
-			Status: http.StatusBadGateway, Type: "invalid_request_error",
-			Message: truncateRunes(redactText(err.Error()), 300),
-		})
+		writeAdminError(w, importAdminError(err))
 		return
 	}
 	view := account.View()

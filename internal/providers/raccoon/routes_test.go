@@ -527,15 +527,22 @@ func TestImportAuthPathCollisionDoesNotOverwrite(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		t.Fatalf("colliding import succeeded: %s", rec.Body)
 	}
-	if rec.Code != http.StatusBadGateway {
+	if rec.Code != http.StatusConflict {
 		t.Fatalf("colliding import status=%d body=%s", rec.Code, rec.Body)
 	}
-	after, err := os.ReadFile(existingPath)
-	if err != nil {
+	if after, err := os.ReadFile(existingPath); err != nil {
 		t.Fatal(err)
-	}
-	if string(before) != string(after) {
+	} else if string(before) != string(after) {
 		t.Fatal("colliding import overwrote the existing auth file")
+	}
+	if strings.Contains(rec.Body.String(), f.dir) ||
+		strings.Contains(rec.Body.String(), existingPath) ||
+		strings.Contains(rec.Body.String(), "raccoon-a_b.json") {
+		t.Fatalf("colliding import leaked a filesystem path: %s", rec.Body)
+	}
+	errObject := routeErrorBody(t, decodeRouteJSON(t, rec))
+	if errObject["message"] != "raccoon: auth file belongs to a different account" {
+		t.Fatalf("colliding import message = %#v", errObject["message"])
 	}
 	if f.p.pool.Get(collidingUID) != nil {
 		t.Fatal("colliding import created a phantom account")
@@ -577,15 +584,22 @@ func TestOAuthExchangeAuthPathCollisionDoesNotOverwrite(t *testing.T) {
 	if callback.Code == http.StatusOK {
 		t.Fatalf("colliding OAuth exchange succeeded: %s", callback.Body)
 	}
-	if callback.Code != http.StatusBadGateway {
+	if callback.Code != http.StatusConflict {
 		t.Fatalf("colliding OAuth exchange status=%d body=%s", callback.Code, callback.Body)
 	}
-	after, err := os.ReadFile(existingPath)
-	if err != nil {
+	if after, err := os.ReadFile(existingPath); err != nil {
 		t.Fatal(err)
-	}
-	if string(before) != string(after) {
+	} else if string(before) != string(after) {
 		t.Fatal("colliding OAuth exchange overwrote the existing auth file")
+	}
+	if strings.Contains(callback.Body.String(), f.dir) ||
+		strings.Contains(callback.Body.String(), existingPath) ||
+		strings.Contains(callback.Body.String(), "raccoon-a_b.json") {
+		t.Fatalf("colliding OAuth exchange leaked a filesystem path: %s", callback.Body)
+	}
+	errObject := routeErrorBody(t, decodeRouteJSON(t, callback))
+	if errObject["message"] != "raccoon: auth file belongs to a different account" {
+		t.Fatalf("colliding OAuth exchange message = %#v", errObject["message"])
 	}
 	if f.p.pool.Get("a/b") != nil {
 		t.Fatal("colliding OAuth exchange created a phantom account")
@@ -606,6 +620,48 @@ func TestOAuthExchangeAuthPathCollisionDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestOAuthCollisionCallbackHTMLHasNoPaths(t *testing.T) {
+	f := newRoutesFixtureWithSetup(t, "pu-routes", time.Hour, func(dir string) {
+		writePoolAuth(t, dir, "a_b", "", time.Now().Add(time.Hour), nil)
+	})
+	existingPath, err := AuthPath(f.dir, "a_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.fake.mu.Lock()
+	f.fake.exchangeCode = "html-collision-code"
+	f.fake.exchangeToken = makeUnsignedJWTNoT("a/b", f.now.Add(time.Hour))
+	f.fake.mu.Unlock()
+	started := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
+		map[string]any{}, "127.0.0.1:54321"))
+	state := parsedState(t, routeText(started["auth_url"]))
+	callback := f.do(http.MethodGet, "/auth/callback?"+url.Values{
+		"code": {"html-collision-code"}, "state": {state},
+	}.Encode(), nil, "")
+	if callback.Code != http.StatusBadRequest {
+		t.Fatalf("collision callback status=%d body=%s", callback.Code, callback.Body)
+	}
+	html := callback.Body.String()
+	if strings.Contains(html, f.dir) || strings.Contains(html, existingPath) ||
+		strings.Contains(html, "raccoon-a_b.json") || strings.Contains(html, "auth path") {
+		t.Fatalf("collision callback HTML leaked a filesystem path: %s", html)
+	}
+	if !strings.Contains(html, "登录失败") ||
+		!strings.Contains(html, "auth file belongs to a different account") {
+		t.Fatalf("collision callback HTML = %s", html)
+	}
+	poll := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/poll",
+		map[string]any{"session_id": routeText(started["session_id"])}, ""))
+	if poll["status"] != "error" {
+		t.Fatalf("collision poll = %#v", poll)
+	}
+	pollBlobBytes, _ := json.Marshal(poll)
+	pollBlob := string(pollBlobBytes)
+	if strings.Contains(pollBlob, f.dir) || strings.Contains(pollBlob, existingPath) {
+		t.Fatalf("collision poll leaked a filesystem path: %s", pollBlob)
+	}
+}
+
 func TestImportRollbackOnEnableFailure(t *testing.T) {
 	t.Run("new account", func(t *testing.T) {
 		f := newRoutesFixture(t)
@@ -619,6 +675,10 @@ func TestImportRollbackOnEnableFailure(t *testing.T) {
 		}, "")
 		if rec.Code == http.StatusOK {
 			t.Fatalf("import succeeded despite enable failure: %s", rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), f.dir) ||
+			strings.Contains(rec.Body.String(), f.store.Path) {
+			t.Fatalf("enable failure leaked a filesystem path: %s", rec.Body)
 		}
 		path, err := AuthPath(f.dir, "pu-enable-fail")
 		if err != nil {
@@ -669,6 +729,10 @@ func TestImportRollbackOnEnableFailure(t *testing.T) {
 		if rec.Code == http.StatusOK {
 			t.Fatalf("re-import succeeded despite enable failure: %s", rec.Body)
 		}
+		if strings.Contains(rec.Body.String(), f.dir) ||
+			strings.Contains(rec.Body.String(), f.store.Path) {
+			t.Fatalf("re-import enable failure leaked a filesystem path: %s", rec.Body)
+		}
 		after, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -699,6 +763,10 @@ func TestImportRollbackOnAddFailure(t *testing.T) {
 	}, "")
 	if rec.Code == http.StatusOK {
 		t.Fatalf("import succeeded despite state failure: %s", rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), f.dir) ||
+		strings.Contains(rec.Body.String(), f.store.Path) {
+		t.Fatalf("add failure leaked a filesystem path: %s", rec.Body)
 	}
 	path, err := AuthPath(f.dir, "pu-add-fail")
 	if err != nil {

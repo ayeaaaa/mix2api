@@ -333,11 +333,7 @@ func (p *Provider) exchangeCode(ctx context.Context, code string) (*Account, *ad
 	}
 	account, err := p.saveAndEnable(auth)
 	if err != nil {
-		return nil, &adminError{
-			Status:  http.StatusBadGateway,
-			Type:    "invalid_request_error",
-			Message: redactOAuthError(err.Error(), code),
-		}
+		return nil, importAdminError(err)
 	}
 	return account, nil
 }

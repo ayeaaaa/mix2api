@@ -1395,6 +1395,16 @@ func (p *Pool) rollbackNewAccount(
 	preserved accountstate.State,
 	hadPreserved bool,
 ) error {
+	// Tombstone exactly like Remove before dropping membership or manager
+	// bookkeeping. An in-flight refresh that captured the pre-rollback
+	// generation must fail as ErrAccountDeleted and must never write the auth
+	// file back after this rollback deleted it.
+	account.credentialMu.Lock()
+	account.Deleted = true
+	account.authGeneration++
+	account.flightEpoch++
+	account.credentialMu.Unlock()
+
 	p.forgetTokenManagers(func(manager *TokenManager) { manager.ForgetAccount(account) })
 
 	p.mu.Lock()
@@ -1410,6 +1420,7 @@ func (p *Pool) rollbackNewAccount(
 	} else {
 		delete(p.preserved, uid)
 	}
+	p.dropAffinityLocked(uid)
 	p.mu.Unlock()
 
 	fileErr := restoreAuthFileBackup(path, backup, existed)
