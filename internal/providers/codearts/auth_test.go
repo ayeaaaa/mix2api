@@ -1,6 +1,7 @@
 package codearts
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -408,6 +409,85 @@ func TestStateAcceptAccountsWrapperAndLegacyInference(t *testing.T) {
 	}
 	if len(list) != 4 {
 		t.Fatalf("saved state has %d entries, want 4: %s", len(list), data)
+	}
+}
+
+func TestStateRepairsManualOnlyDisable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `[
+		{"name":"manual-only","manual_disabled":true,"disabled":false},
+		{"name":"manual-empty","manual_disabled":true}
+	]`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	for name, state := range got {
+		if !state.Disabled || !state.ManualDisabled {
+			t.Fatalf("%s did not repair to disabled+manual: %+v", name, state)
+		}
+		if state.Reason != "manual disable" {
+			t.Fatalf("%s repaired reason = %q, want manual disable", name, state.Reason)
+		}
+	}
+
+	// Constructed inconsistent states are repaired on save too.
+	path = filepath.Join(t.TempDir(), "state.json")
+	if err := SaveState(path, map[string]AccountState{
+		"constructed": {Name: "constructed", ManualDisabled: true, TasksEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var disabled bool
+	if err := json.Unmarshal(raw[0]["disabled"], &disabled); err != nil || !disabled {
+		t.Fatalf("saved disabled = %q, want true", raw[0]["disabled"])
+	}
+	var reason string
+	if err := json.Unmarshal(raw[0]["reason"], &reason); err != nil || reason != "manual disable" {
+		t.Fatalf("saved reason = %q, want manual disable", raw[0]["reason"])
+	}
+}
+
+func TestStateWrapperSiblingKeysAcceptedButDroppedOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{"schema_version":2,"accounts":[{"name":"u1","note":"keep"}],"meta":{"keep":"x"}}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if len(got) != 1 || got["u1"].Note != "keep" {
+		t.Fatalf("LoadState = %#v, want u1 with note", got)
+	}
+	if err := SaveState(path, got); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		t.Fatalf("saved wrapper siblings instead of the v1 bare list: %s", data)
+	}
+	if bytes.Contains(data, []byte("schema_version")) || bytes.Contains(data, []byte(`"meta"`)) {
+		t.Fatalf("wrapper sibling keys were persisted: %s", data)
 	}
 }
 

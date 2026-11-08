@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 )
@@ -148,6 +150,62 @@ func TestConfigAcceptsV1BooleanNumbers(t *testing.T) {
 	if got.TimeoutSeconds != 1 || got.MaxConcurrent != 1 {
 		t.Fatalf("boolean numeric values = timeout %v max %d, want 1 and 1",
 			got.TimeoutSeconds, got.MaxConcurrent)
+	}
+}
+
+func TestSaveConfigConcurrentDifferentKeysDoNotClobber(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+
+	var calls atomic.Int32
+	firstRead := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondRead := make(chan struct{}, 1)
+	saveConfigReadHook = func() {
+		if calls.Add(1) == 1 {
+			close(firstRead)
+			<-releaseFirst
+			return
+		}
+		select {
+		case secondRead <- struct{}{}:
+		default:
+		}
+	}
+	defer func() { saveConfigReadHook = nil }()
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := SaveConfig(store, map[string]any{"timeout_seconds": 45})
+		errs <- err
+	}()
+	<-firstRead
+	go func() {
+		_, err := SaveConfig(store, map[string]any{"stream_timeout_seconds": 120})
+		errs <- err
+	}()
+
+	// The second save must block on the package lock before its read phase.
+	// Without serialization it reaches the hook while the first is paused.
+	select {
+	case <-secondRead:
+		close(releaseFirst)
+		t.Fatal("SaveConfig entered its read-modify-write cycle concurrently")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+	}
+
+	got := LoadConfig(store)
+	if got.TimeoutSeconds != 45 {
+		t.Fatalf("TimeoutSeconds = %v, want 45 (first save was clobbered)", got.TimeoutSeconds)
+	}
+	if got.StreamTimeoutSeconds != 120 {
+		t.Fatalf("StreamTimeoutSeconds = %v, want 120 (second save was clobbered)", got.StreamTimeoutSeconds)
 	}
 }
 

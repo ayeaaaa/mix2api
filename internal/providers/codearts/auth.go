@@ -258,9 +258,10 @@ func decodeInt64Value(raw json.RawMessage) int64 {
 	return 0
 }
 
-// decodeExpiration tolerates v1's ISO-8601 strings, empty values, malformed
-// values, and (for hand-edited files) numeric epoch seconds. Anything
-// unparseable becomes the zero time rather than blocking the account load.
+// decodeExpiration tolerates v1's ISO-8601 strings, empty values, and
+// malformed values. Numeric and other non-string shapes are malformed by v1's
+// _parse_expiration rules. Anything unparseable becomes the zero time rather
+// than blocking the account load.
 func decodeExpiration(raw json.RawMessage) time.Time {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {

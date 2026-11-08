@@ -9,9 +9,20 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 )
+
+// saveConfigMu serializes SaveConfig's load-modify-merge cycle. The core store
+// makes each Merge atomic, but SaveConfig also reads the normalized config
+// first; without this lock two saves of different keys could both read the old
+// value and the later Merge would clobber the earlier key with stale values.
+var saveConfigMu sync.Mutex
+
+// saveConfigReadHook is a test seam invoked after LoadConfig and before the
+// patch is applied, while saveConfigMu is held.
+var saveConfigReadHook func()
 
 // Defaults and bounds match v1.6.5's CodeArts settings.
 const (
@@ -78,7 +89,13 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 		return Config{}, errors.New("codearts: config store is nil")
 	}
 
+	saveConfigMu.Lock()
+	defer saveConfigMu.Unlock()
+
 	current := LoadConfig(store)
+	if saveConfigReadHook != nil {
+		saveConfigReadHook()
+	}
 	raw := configValues(current)
 	for key, value := range patch {
 		switch key {

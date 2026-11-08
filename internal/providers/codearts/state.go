@@ -53,10 +53,26 @@ var knownStateJSONKeys = map[string]struct{}{
 	"tasks_enabled":   {},
 }
 
+// repairStateInvariants keeps manual_disabled and disabled consistent. A
+// manual marker with disabled=false would show as enabled in the panel while
+// the scheduler refuses the account, so it is repaired to a disabled+manual
+// pair on both load and save. The reason keeps the legacy manual-disable
+// signal when the file did not provide one.
+func repairStateInvariants(state *AccountState) {
+	if !state.ManualDisabled || state.Disabled {
+		return
+	}
+	state.Disabled = true
+	if strings.TrimSpace(state.Reason) == "" {
+		state.Reason = "manual disable"
+	}
+}
+
 // MarshalJSON writes the v1 field order followed by unknown fields sorted by
 // key. The note is capped here as well as on load so a caller cannot persist a
 // longer value by constructing AccountState directly.
 func (s AccountState) MarshalJSON() ([]byte, error) {
+	repairStateInvariants(&s)
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	first := true
@@ -173,6 +189,7 @@ func (s *AccountState) UnmarshalJSON(data []byte) error {
 	if state.Disabled && !state.ManualDisabled && state.Reason == "manual disable" {
 		state.ManualDisabled = true
 	}
+	repairStateInvariants(&state)
 
 	for key, value := range raw {
 		if _, known := knownStateJSONKeys[key]; known {
@@ -352,6 +369,9 @@ func decodeStateEntries(data []byte) ([]json.RawMessage, error) {
 		}
 		return entries, nil
 	case '{':
+		// v1's loader accepts {"accounts":[...]}; sibling keys are ignored
+		// because v1 only reads the accounts list and always saves the bare
+		// list shape back.
 		var wrapper map[string]json.RawMessage
 		if err := json.Unmarshal(trimmed, &wrapper); err != nil {
 			return nil, fmt.Errorf("decode object: %w", err)
