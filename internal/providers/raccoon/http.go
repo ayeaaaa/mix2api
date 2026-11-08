@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
@@ -30,6 +31,9 @@ const (
 	// maxHTTPBodyBytes bounds response bodies so a broken upstream cannot
 	// grow memory without limit.
 	maxHTTPBodyBytes = 256 * 1024
+
+	// maxErrorMessageBytes caps upstream-derived reasons, matching v1.
+	maxErrorMessageBytes = 500
 )
 
 // ErrorKind classifies an upstream Raccoon failure.
@@ -186,8 +190,9 @@ func (c *HTTPClient) DoJSON(
 
 	response, err := c.client.Do(requestCtx, request, proxyURL)
 	if err != nil {
-		// Caller cancellation is not an upstream condition.
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		// Only caller cancellation is propagated; deadlines and transport
+		// failures are transient upstream conditions, matching v1.
+		if ctxErr := ctx.Err(); ctxErr == context.Canceled {
 			return nil, ctxErr
 		}
 		return nil, &APIError{
@@ -199,7 +204,7 @@ func (c *HTTPClient) DoJSON(
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxHTTPBodyBytes))
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ctx.Err(); ctxErr == context.Canceled {
 			return nil, ctxErr
 		}
 		return nil, &APIError{
@@ -289,24 +294,57 @@ func errorMessage(body []byte, redactValues ...string) string {
 			}
 		}
 		if message == "" {
-			if code, ok := object["code"]; ok && code != nil && code != "" && code != json.Number("0") && code != float64(0) {
-				message = fmt.Sprintf("error_code=%v", code)
+			for _, key := range []string{"code", "error_code"} {
+				if code, ok := object[key]; ok && !zeroErrorCode(code) {
+					message = fmt.Sprintf("%s=%v", key, code)
+					break
+				}
 			}
 		}
 	}
 
 	if message == "" {
 		message = strings.TrimSpace(string(body))
-		if len(message) > 500 {
-			message = message[:500]
-		}
 	}
-	return redactText(message, redactValues...)
+	// Redact before capping so a truncated token prefix cannot survive.
+	message = redactText(message, redactValues...)
+	return truncateUTF8(message, maxErrorMessageBytes)
+}
+
+func zeroErrorCode(code any) bool {
+	switch value := code.(type) {
+	case nil:
+		return true
+	case string:
+		value = strings.TrimSpace(value)
+		return value == "" || value == "0"
+	case json.Number:
+		return value.String() == "0"
+	case float64:
+		return value == 0
+	case int:
+		return value == 0
+	case int64:
+		return value == 0
+	default:
+		return false
+	}
+}
+
+func truncateUTF8(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	text = text[:limit]
+	for len(text) > 0 && !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+	return text
 }
 
 var (
 	bearerSecretPattern = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;"']+`)
-	namedSecretPattern  = regexp.MustCompile(`(?i)(["']?(?:access_token|refresh_token|authorization_code|authorization)["']?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^\s,;"'&}]+)`)
+	namedSecretPattern  = regexp.MustCompile(`(?i)(["']?(?:authorization_code|error_code|access_token|refresh_token|authorization|code)["']?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^\s,;"'&}]+)`)
 	jwtSecretPattern    = regexp.MustCompile(`[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*`)
 )
 

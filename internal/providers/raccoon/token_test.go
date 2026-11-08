@@ -720,7 +720,7 @@ func TestRefreshMissingAccessTokenIsTerminal(t *testing.T) {
 	}
 }
 
-func TestRefreshDoesNotPublishWhenSaveFails(t *testing.T) {
+func TestEnsureDoesNotPublishWhenSaveFails(t *testing.T) {
 	now := time.Unix(1800000000, 0).UTC()
 	newExpiry := now.Add(3600 * time.Second)
 	newToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": newExpiry.Unix()})
@@ -742,8 +742,10 @@ func TestRefreshDoesNotPublishWhenSaveFails(t *testing.T) {
 		Path: authPath,
 	}
 	manager := newTokenTestManager(t, server.URL, now)
-	if err := manager.Refresh(context.Background(), account); err == nil {
-		t.Fatal("Refresh() error = nil, want save failure")
+	// The token is still valid, so Ensure's transient-swallow rule must not
+	// hide this local persistence failure.
+	if err := manager.Ensure(context.Background(), account); err == nil {
+		t.Fatal("Ensure() error = nil, want save failure")
 	}
 	if account.Auth.AccessToken != oldToken || account.Auth.RefreshToken != "refresh-secret" {
 		t.Fatal("refresh published credentials before SaveAuth succeeded")
@@ -782,6 +784,266 @@ func TestRefreshHTTPErrorsAreTransient(t *testing.T) {
 				t.Fatal("transient HTTP failure disabled the account")
 			}
 		})
+	}
+}
+
+func TestEnsureReevaluatesExpiryAfterFailedRefresh(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	var clock atomic.Int64
+	clock.Store(now.UnixNano())
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"temporary upstream failure"}`)
+	}))
+	defer server.Close()
+
+	oldToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "pu-test",
+		"exp": now.Add(60 * time.Second).Unix(),
+	})
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(60 * time.Second),
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
+		BaseURL: server.URL,
+		Now:     func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+	})
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- manager.Ensure(context.Background(), account)
+	}()
+	<-started
+
+	// The token was valid when Ensure started but expires while the slow
+	// refresh is failing. The failure must be reported, not swallowed.
+	clock.Store(now.Add(2 * time.Minute).UnixNano())
+	close(release)
+
+	err := <-errs
+	if err == nil {
+		t.Fatal("Ensure() error = nil, want the transient failure after expiry")
+	}
+	if IsAuthError(err) || !IsTransientError(err) {
+		t.Fatalf("Ensure() error = %v, want transient", err)
+	}
+	if account.State.Disabled {
+		t.Fatal("transient failure disabled the account")
+	}
+}
+
+func TestRefreshTerminalPreservesManualDisable(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	oldToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": now.Add(-time.Minute).Unix()})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"message":"invalid credentials"}`)
+	}))
+	defer server.Close()
+
+	coolUntil := now.Add(10 * time.Minute)
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(-time.Minute),
+		},
+		State: accountstate.State{
+			UID:            "pu-test",
+			Disabled:       true,
+			ManualDisabled: true,
+			Reason:         "disabled from the panel",
+			CoolUntil:      coolUntil,
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := newTokenTestManager(t, server.URL, now)
+	err := manager.Refresh(context.Background(), account)
+	if err == nil || !IsAuthError(err) {
+		t.Fatalf("Refresh() error = %v, want terminal auth error", err)
+	}
+	if !account.State.Disabled || !account.State.ManualDisabled {
+		t.Fatalf("terminal failure cleared manual disable: %#v", account.State)
+	}
+	if account.State.Reason != "disabled from the panel" {
+		t.Fatalf("terminal failure overwrote manual reason with %q", account.State.Reason)
+	}
+	if !account.State.CoolUntil.Equal(coolUntil) {
+		t.Fatalf("terminal failure changed manual cooldown to %v", account.State.CoolUntil)
+	}
+}
+
+func TestRefreshErrorRedactsCodeFields(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	oldToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": now.Add(time.Minute).Unix()})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error_code":"super-secret-code-value","detail":"bad request"}`)
+	}))
+	defer server.Close()
+
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(time.Minute),
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := newTokenTestManager(t, server.URL, now)
+	err := manager.Refresh(context.Background(), account)
+	if err == nil {
+		t.Fatal("Refresh() error = nil, want auth failure")
+	}
+	assertNoTokenValues(t, err.Error(), "super-secret-code-value", oldToken, "refresh-secret")
+	if !strings.Contains(err.Error(), "error_code=") {
+		t.Fatalf("error = %q, want the v1 error_code reason", err.Error())
+	}
+
+	for _, text := range []string{
+		`code=secret-code-one`,
+		`error_code=secret-code-two`,
+		`{"code":"secret-code-three","error_code":"secret-code-four"}`,
+	} {
+		redacted := redactText(text)
+		for _, secret := range []string{"secret-code-one", "secret-code-two", "secret-code-three", "secret-code-four"} {
+			if strings.Contains(redacted, secret) {
+				t.Fatalf("redactText(%q) = %q leaked %q", text, redacted, secret)
+			}
+		}
+	}
+}
+
+func TestStructuredErrorMessageIsBounded(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	oldToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": now.Add(time.Minute).Unix()})
+	longReason := strings.Repeat("x", 5000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"message":%q}`, longReason)
+	}))
+	defer server.Close()
+
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(time.Minute),
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := newTokenTestManager(t, server.URL, now)
+	err := manager.Refresh(context.Background(), account)
+	if err == nil {
+		t.Fatal("Refresh() error = nil, want upstream failure")
+	}
+	const prefix = "raccoon: HTTP 500: "
+	if len(err.Error()) > len(prefix)+maxErrorMessageBytes {
+		t.Fatalf("error length = %d, want <= %d", len(err.Error()), len(prefix)+maxErrorMessageBytes)
+	}
+}
+
+func TestLeaderCancellationDoesNotFailWaiters(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	newExpiry := now.Add(3600 * time.Second)
+	newToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": newExpiry.Unix()})
+	oldToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": now.Add(time.Minute).Unix()})
+
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		close(started)
+		<-release
+		fmt.Fprintf(w, `{"data":{"access_token":%q,"refresh_token":"next","expires_at":%d}}`, newToken, newExpiry.Unix())
+	}))
+	defer server.Close()
+
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(time.Minute),
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := newTokenTestManager(t, server.URL, now)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		leaderDone <- manager.Refresh(leaderCtx, account)
+	}()
+	<-started
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		waiterDone <- manager.Refresh(context.Background(), account)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the waiter join the in-flight call
+
+	cancelLeader()
+	close(release)
+
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader Refresh() error = %v", err)
+	}
+	if err := <-waiterDone; err != nil {
+		t.Fatalf("waiter Refresh() error = %v; leader cancellation must not fail waiters", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	if account.Auth.AccessToken != newToken {
+		t.Fatal("waiter observed the old access token")
+	}
+}
+
+func TestHTTPTimeoutIsTransient(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	oldToken := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": now.Add(time.Minute).Unix()})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		fmt.Fprint(w, `{"data":{"access_token":"unused"}}`)
+	}))
+	defer server.Close()
+
+	account := &Account{
+		Auth: Auth{
+			UID:          "pu-test",
+			AccessToken:  oldToken,
+			RefreshToken: "refresh-secret",
+			ExpiresAt:    now.Add(time.Minute),
+		},
+		Path: filepath.Join(t.TempDir(), "raccoon", "raccoon-pu-test.json"),
+	}
+	manager := NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
+		BaseURL: server.URL,
+		Timeout: 20 * time.Millisecond,
+		Now:     func() time.Time { return now },
+	})
+	err := manager.Refresh(context.Background(), account)
+	if err == nil || IsAuthError(err) || !IsTransientError(err) {
+		t.Fatalf("Refresh() error = %v, want transient timeout", err)
+	}
+	if account.State.Disabled {
+		t.Fatal("timeout disabled the account")
 	}
 }
 

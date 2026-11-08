@@ -33,6 +33,7 @@ type TokenManagerOptions struct {
 type TokenManager struct {
 	http     *HTTPClient
 	now      func() time.Time
+	timeout  time.Duration
 	proxyURL func(*Account) string
 
 	mu     sync.Mutex
@@ -68,12 +69,17 @@ func NewTokenManager(client *transport.Client, opts TokenManagerOptions) *TokenM
 	if now == nil {
 		now = time.Now
 	}
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
 	return &TokenManager{
 		http: NewHTTPClient(client, HTTPClientOptions{
 			BaseURL: opts.BaseURL,
-			Timeout: opts.Timeout,
+			Timeout: timeout,
 		}),
 		now:      now,
+		timeout:  timeout,
 		proxyURL: opts.ProxyURL,
 		states:   make(map[accountRefreshKey]*accountRefreshState),
 	}
@@ -96,7 +102,6 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		state.mu.Unlock()
 		return nil
 	}
-	wasExpired := tokenExpired(a.Auth, now)
 	if state.inflight != nil {
 		call := state.inflight
 		state.mu.Unlock()
@@ -108,10 +113,7 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		if IsAuthError(err) || wasExpired {
-			return err
-		}
-		return nil
+		return m.ensureFailure(a, state, err)
 	}
 
 	oldAuth := a.Auth
@@ -126,10 +128,24 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	if IsAuthError(err) || wasExpired {
+	return m.ensureFailure(a, state, err)
+}
+
+// ensureFailure applies v1's swallow rule only to transient upstream failures:
+// a still-valid token keeps working, while an expired token reports the error.
+// Local failures (for example a failed SaveAuth) and terminal auth failures are
+// always returned.
+func (m *TokenManager) ensureFailure(a *Account, state *accountRefreshState, err error) error {
+	if IsAuthError(err) {
 		return err
 	}
-	return nil
+	state.mu.Lock()
+	expired := tokenExpired(a.Auth, m.now())
+	state.mu.Unlock()
+	if IsTransientError(err) && !expired {
+		return nil
+	}
+	return err
 }
 
 // Refresh forces a refresh regardless of expiry. Concurrent forced refreshes
@@ -238,7 +254,16 @@ func (m *TokenManager) performRefresh(
 	call *refreshCall,
 	oldAuth Auth,
 ) error {
-	updated, err := m.requestRefresh(ctx, a, oldAuth)
+	// The refresh is shared by every waiter, so it must not inherit any one
+	// caller's cancellation. WithoutCancel preserves values, while the HTTP
+	// client bounds the request with the configured timeout.
+	requestCtx := context.WithoutCancel(ctx)
+	if m.timeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(requestCtx, m.timeout)
+		defer cancel()
+	}
+	updated, err := m.requestRefresh(requestCtx, a, oldAuth)
 
 	var stateChanged bool
 	state.mu.Lock()
@@ -253,7 +278,9 @@ func (m *TokenManager) performRefresh(
 		state.generation++
 		call.err = nil
 	} else {
-		if IsAuthError(err) {
+		// A manual disable is a panel decision. A failed refresh must not
+		// replace its reason or otherwise alter that state.
+		if IsAuthError(err) && !a.State.ManualDisabled {
 			a.State.Disabled = true
 			a.State.Reason = err.Error()
 			a.State.CoolUntil = time.Time{}
