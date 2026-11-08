@@ -53,6 +53,10 @@ var (
 // account's refresh flight. Catalog adds catalogFetchMu -> catalogMu and
 // catalogFetchMu -> Account.mu; catalogMu and Account.mu are never held
 // together, and apiMu is a leaf around the injected client/manager pointers.
+// Points fetch locks (Account.creditsMu/tasksMu/autoClaimMu) follow the same
+// leaf rule: never acquire them while Pool.mu or Account.mu is held, and never
+// hold two of creditsMu/tasksMu at once. AutoClaim may hold autoClaimMu while
+// calling the credits/tasks/reward methods.
 type Pool struct {
 	dir       string
 	folder    string

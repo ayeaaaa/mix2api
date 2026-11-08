@@ -33,8 +33,9 @@ var (
 	ErrAccountDeleted = errors.New("raccoon: account was deleted")
 )
 
-// CreditsSnapshot is the provider-private public credit snapshot. Task 12 owns
-// fetching; this minimal shape carries the v1 view fields until then.
+// CreditsSnapshot is the provider-private public credit snapshot. The wire
+// shape matches v1's _public_credits: only normalized counters and recent
+// events are exposed; upstream IDs and credentials never enter this type.
 type CreditsSnapshot struct {
 	Available       any              `json:"available"`
 	Remain          any              `json:"remain"`
@@ -68,8 +69,9 @@ type PointsInvite struct {
 	RemainingRewardInvitees any `json:"remaining_reward_invitees"`
 }
 
-// PointsTasks is the provider-private public task snapshot. Task 12 owns
-// fetching and the invite-code stripping rules.
+// PointsTasks is the provider-private public task snapshot. The wire shape
+// matches v1's _public_point_tasks: task keys/statuses and invite counters only,
+// and never the invite code itself.
 type PointsTasks struct {
 	NewUser   []PointsTaskState `json:"new_user"`
 	Invitee   []PointsTaskState `json:"invitee"`
@@ -88,6 +90,12 @@ type PointsTasks struct {
 // credentialMu serializes auth-file writes and guards Path, Deleted, and
 // authGeneration; it is not held across refresh network I/O. Auth and State
 // are guarded by mu.
+//
+// The provider-private points locks are leaves with respect to mu: they are
+// never acquired while mu is held, and they may acquire credentialMu/mu through
+// TokenManager.Ensure or a snapshot publish. The auto-claim lock may hold the
+// tasks and credits locks while it refreshes; nothing acquires autoClaimMu from
+// those paths. A caller may hold at most one of creditsMu/tasksMu at a time.
 type Account struct {
 	Auth        Auth
 	State       accountstate.State
@@ -123,6 +131,17 @@ type Account struct {
 	// flightEpoch changes on re-import and removal so a fresh request cannot
 	// join a tombstoned refresh flight owned by the same *Account.
 	flightEpoch uint64
+
+	// creditsMu serializes balance/bills fetches for one account so a cache
+	// miss cannot stampede upstream. tasksMu does the same for task snapshots.
+	// autoClaimMu serializes the whole auto-claim check and guards autoClaimAt.
+	// creditsFetchedAt and tasksFetchedAt are exact TTL stamps guarded by mu.
+	creditsMu        sync.Mutex
+	tasksMu          sync.Mutex
+	autoClaimMu      sync.Mutex
+	creditsFetchedAt time.Time
+	tasksFetchedAt   time.Time
+	autoClaimAt      time.Time
 
 	mu               sync.Mutex
 	activeConcurrent int
@@ -681,13 +700,21 @@ func copyFloat64Pointer(value *float64) *float64 {
 }
 
 // publicCredits copies only the v1 public keys and guarantees recent is a list,
-// never null.
+// never null. Each recent map is copied as v1's [dict(item) for item] does, so
+// a caller cannot mutate the account snapshot.
 func publicCredits(raw *CreditsSnapshot) *CreditsSnapshot {
 	if raw == nil {
 		return nil
 	}
 	copy := *raw
-	copy.Recent = append([]map[string]any{}, raw.Recent...)
+	copy.Recent = make([]map[string]any, len(raw.Recent))
+	for index, item := range raw.Recent {
+		entry := make(map[string]any, len(item))
+		for key, value := range item {
+			entry[key] = value
+		}
+		copy.Recent[index] = entry
+	}
 	return &copy
 }
 
