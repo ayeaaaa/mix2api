@@ -79,6 +79,43 @@ func (e *APIError) Error() string {
 	}
 }
 
+// HTTPStatus maps the classified failure to the v1 chat error status. A
+// transport/network failure has no upstream HTTP status and is a 503; every
+// other upstream failure is a 502. Authentication failures are 502 because the
+// client's API key is not the rejected credential.
+func (e *APIError) HTTPStatus() int {
+	if e == nil {
+		return http.StatusBadGateway
+	}
+	switch e.Kind {
+	case KindBadRequest:
+		return http.StatusBadRequest
+	case KindAuth:
+		return http.StatusBadGateway
+	case KindRateLimited:
+		return http.StatusTooManyRequests
+	case KindUnavailable:
+		return http.StatusServiceUnavailable
+	case KindTransient:
+		if e.Status == 0 {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusBadGateway
+	case KindUpstream, KindNotFound:
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// ErrorType returns the OpenAI error type for the classified failure.
+func (e *APIError) ErrorType() string {
+	if e != nil && e.Kind == KindRateLimited {
+		return "rate_limit_error"
+	}
+	return "invalid_request_error"
+}
+
 // IsAuthError reports whether err is an authentication failure. A non-API
 // error, such as a network or filesystem error, is never an auth failure.
 func IsAuthError(err error) bool {

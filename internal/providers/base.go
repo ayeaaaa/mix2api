@@ -41,6 +41,21 @@ type ChatStream interface {
 	Close() error
 }
 
+// HTTPError is an optional provider error contract. Providers use it to
+// declare the HTTP status and OpenAI-style error type the generic API should
+// return. The API layer checks for this interface with errors.As, so it never
+// imports a concrete provider package.
+type HTTPError interface {
+	error
+
+	// HTTPStatus returns the HTTP status to send to the client.
+	HTTPStatus() int
+
+	// ErrorType returns the OpenAI error type, such as "rate_limit_error" or
+	// "invalid_request_error".
+	ErrorType() string
+}
+
 // AuthClass tells the API layer what authentication a route requires.
 type AuthClass int
 

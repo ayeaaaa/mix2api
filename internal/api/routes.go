@@ -2,11 +2,8 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -143,19 +140,5 @@ func (t *providerRouteTable) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeProviderRouteError(w http.ResponseWriter, status int, message string) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    "invalid_request_error",
-			"code":    status,
-		},
-	})
-	body := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	writeV1Error(w, status, "invalid_request_error", message)
 }

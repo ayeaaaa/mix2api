@@ -97,6 +97,7 @@ type raccoonCatalogStatus struct {
 }
 
 var _ providers.Provider = (*Provider)(nil)
+var _ providers.HTTPError = (*APIError)(nil)
 
 // New returns the production Raccoon provider. The accounts directory is the
 // directory containing the shared settings file, matching v1's layout. The
