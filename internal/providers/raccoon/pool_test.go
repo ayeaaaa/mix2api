@@ -698,6 +698,40 @@ func TestStateFileShapeSafety(t *testing.T) {
 	}
 }
 
+func TestMalformedSafetyStateFailsClosedThroughPool(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-safety", "", poolExpiry(time.Now()), nil)
+	statePath := writePoolState(t, dir, `{"u-safety":{"disabled":"false","manual_disabled":0}}`)
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u-safety")
+	if account == nil {
+		t.Fatal("account disappeared")
+	}
+	account.mu.Lock()
+	state := account.State
+	account.mu.Unlock()
+	if state.Healthy(time.Now()) || !state.Disabled || !state.ManualDisabled {
+		t.Fatalf("malformed safety fields opened the account: %+v", state)
+	}
+	if err := p.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) == string(after) {
+		t.Fatal("fail-closed state was not rewritten safely")
+	}
+	if strings.Contains(string(after), `"disabled":"false"`) {
+		t.Fatalf("malformed safety value survived save: %s", after)
+	}
+}
+
 func TestStateForMissingAuthFileIsPreserved(t *testing.T) {
 	now := time.Now()
 	dir := t.TempDir()

@@ -18,7 +18,7 @@ func TestModelsRealmRaccoon(t *testing.T) {
 			{"id": "sn-kimi-k3", "object": "model", "owned_by": "sensetime", "provider": "raccoon"},
 		},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=raccoon", "", nil)
 	if rec.Code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestModelsUnknownRealm404(t *testing.T) {
 		id: "raccoon", realm: "raccoon",
 		models: []providers.Model{{"id": "m1"}},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=missing", "", nil)
 	requireErrorEnvelope(t, rec, http.StatusNotFound, "invalid_request_error")
@@ -57,7 +57,7 @@ func TestModelsDefaultSingleProvider(t *testing.T) {
 		id: "raccoon", realm: "raccoon",
 		models: []providers.Model{{"id": "m1"}},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
 	if rec.Code != http.StatusOK {
@@ -75,7 +75,7 @@ func TestModelsDefaultSingleProvider(t *testing.T) {
 func TestModelsMultipleProvidersRequireRealm(t *testing.T) {
 	first := &stubProvider{id: "a", realm: "alpha", models: []providers.Model{{"id": "a1"}}}
 	second := &stubProvider{id: "b", realm: "beta", models: []providers.Model{{"id": "b1"}}}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{first, second}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{first, second}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
 	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
@@ -97,7 +97,7 @@ func TestModelsRealmAllUnion(t *testing.T) {
 		},
 	}
 	raccoon := &stubProvider{id: "raccoon", realm: "raccoon", models: []providers.Model{{"id": "r1"}}}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn, raccoon}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, raccoon}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
 	if rec.Code != http.StatusOK {
@@ -130,12 +130,25 @@ func TestModelsRealmAllUnion(t *testing.T) {
 
 func TestModelsRealmAllLockedWithoutWorkBuddy(t *testing.T) {
 	provider := &stubProvider{id: "raccoon", realm: "raccoon", models: []providers.Model{{"id": "m1"}}}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
 	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
 	if failure["message"] == "" {
 		t.Fatalf("missing locked-realm explanation")
+	}
+}
+
+func TestModelsRejectsNonCanonicalRealm(t *testing.T) {
+	provider := &stubProvider{id: "raccoon", realm: "raccoon", models: []providers.Model{{"id": "m1"}}}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=Raccoon", "", nil)
+	requireErrorEnvelope(t, rec, http.StatusNotFound, "invalid_request_error")
+
+	rec = serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=%20raccoon%20", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("trimmed canonical realm status = %d, body = %s", rec.Code, rec.Body)
 	}
 }
 
@@ -146,7 +159,7 @@ func TestModelsProviderErrorMapped(t *testing.T) {
 			status: http.StatusTooManyRequests, errType: "rate_limit_error", message: "slow down",
 		},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=raccoon", "", nil)
 	requireErrorEnvelope(t, rec, http.StatusTooManyRequests, "rate_limit_error")
@@ -154,7 +167,7 @@ func TestModelsProviderErrorMapped(t *testing.T) {
 
 func TestModelsMethodNotAllowedEnvelope(t *testing.T) {
 	provider := &stubProvider{id: "raccoon", realm: "raccoon", models: []providers.Model{{"id": "m1"}}}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/models?realm=raccoon", "{}", nil)
 	requireErrorEnvelope(t, rec, http.StatusMethodNotAllowed, "invalid_request_error")
@@ -163,7 +176,7 @@ func TestModelsMethodNotAllowedEnvelope(t *testing.T) {
 func TestModelsRealmHeaderPrecedence(t *testing.T) {
 	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
 	beta := &stubProvider{id: "beta", realm: "beta", models: []providers.Model{{"id": "beta-model"}}}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{alpha, beta}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{alpha, beta}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=alpha", "",
 		map[string]string{"X-Realm": "beta"})
@@ -200,7 +213,7 @@ func TestModelsUnknownProviderErrorDoesNotLeakLocalDetail(t *testing.T) {
 		id: "raccoon", realm: "raccoon",
 		modelsErr: errors.New("open /root/private/raccoon/u-abc.json: uid u-abc"),
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=raccoon", "", nil)
 
 	failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "invalid_request_error")
@@ -219,7 +232,7 @@ func TestModelsRealmAllWorkBuddyIDPrefix(t *testing.T) {
 		id: "workbuddy-cn", realm: "cn",
 		models: []providers.Model{{"id": "cn-model"}},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
 	if rec.Code != http.StatusOK {
@@ -244,7 +257,7 @@ func TestModelsRealmAllFiltersNonWorkBuddyIdentity(t *testing.T) {
 		id: "raccoon", realm: "cn",
 		models: []providers.Model{{"id": "cn-model"}},
 	}
-	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
 	if rec.Code != http.StatusOK {

@@ -8,11 +8,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Store is a JSON settings file at Path.
 type Store struct {
 	Path string
+}
+
+// mergeLocks serializes read-modify-write cycles by file path. Multiple Store
+// values may point at the same settings file (for example the command-level
+// store and a provider-owned store), so a per-Store mutex is not sufficient.
+var mergeLocks sync.Map
+
+func mergeLock(path string) *sync.Mutex {
+	key := path
+	if absolute, err := filepath.Abs(path); err == nil {
+		key = absolute
+	}
+	key = filepath.Clean(key)
+	value, _ := mergeLocks.LoadOrStore(key, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 // New returns a Store backed by path.
@@ -61,7 +77,14 @@ func decodeSettings(r io.Reader) (map[string]any, error) {
 // atomically, and returns the merged settings. Map values are merged; all
 // other values, including arrays, replace the previous value. Keys absent from
 // patch are preserved, including unknown nested keys.
+//
+// The load/merge/write cycle is serialized across Store values that share the
+// same file path, so two concurrent patches cannot lose each other's keys.
 func (s *Store) Merge(patch map[string]any) (map[string]any, error) {
+	lock := mergeLock(s.Path)
+	lock.Lock()
+	defer lock.Unlock()
+
 	current, err := s.Load()
 	if err != nil {
 		return nil, err

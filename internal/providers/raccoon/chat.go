@@ -90,6 +90,11 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	client := p.HTTPClient()
 	tokens := p.TokenManager()
 
+	// v1 warms only unknown balances when a reserve guard is configured. A
+	// fresh/headless install may reach chat before the dashboard ever refreshed
+	// credits; without this the reserve guard cannot block spending.
+	p.prewarmReserves(ctx)
+
 	accounts := p.Accounts()
 	attempts := len(accounts) + 1
 	if attempts < 2 {
@@ -190,6 +195,41 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	return nil, p.noAccountError(model)
 }
 
+// prewarmReserveTimeout is v1's per-account credit fetch budget before Pick.
+const prewarmReserveTimeout = 6 * time.Second
+
+// prewarmReserves fetches credits only for enabled accounts whose reserve guard
+// is active but whose balance is still unknown. Failures are swallowed: Pick
+// will use whatever guard state exists and v1 treats this as best effort.
+func (p *Pool) prewarmReserves(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	needs := false
+	candidates := make([]*Account, 0)
+	for _, account := range p.Accounts() {
+		account.mu.Lock()
+		unknown := account.ReserveCredits > 0 && account.Credits == nil &&
+			!account.State.Disabled && !account.State.ManualDisabled
+		account.mu.Unlock()
+		if unknown {
+			needs = true
+			candidates = append(candidates, account)
+		}
+	}
+	if !needs {
+		return
+	}
+	for _, account := range candidates {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, prewarmReserveTimeout)
+		_, _ = p.FetchCredits(fetchCtx, account, false)
+		cancel()
+	}
+}
+
 // openChatAccount performs one selected account's request. The caller owns the
 // acquired slot; on error no bookkeeping is released here.
 //
@@ -222,7 +262,7 @@ func (p *Pool) openChatAccount(
 		}
 	}
 
-	stream, attemptErr := p.runChatAccountAttempt(ctx, account, encoded, client, tokens, cfg)
+	stream, attemptErr := p.runChatAccountAttempt(ctx, account, encoded, model, client, tokens, cfg)
 	if errors.Is(attemptErr, ErrCredentialsChanged) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -230,7 +270,7 @@ func (p *Pool) openChatAccount(
 		// Retry once from the top so Ensure and the generation snapshot use the
 		// current credentials. This is the same acquired slot, never a second
 		// Acquire.
-		stream, attemptErr = p.runChatAccountAttempt(ctx, account, encoded, client, tokens, cfg)
+		stream, attemptErr = p.runChatAccountAttempt(ctx, account, encoded, model, client, tokens, cfg)
 	}
 	if errors.Is(attemptErr, ErrCredentialsChanged) {
 		// Do not expose a Task 9 internal credential race to the client. A
@@ -247,6 +287,7 @@ func (p *Pool) runChatAccountAttempt(
 	ctx context.Context,
 	account *Account,
 	encoded []byte,
+	model string,
 	client *HTTPClient,
 	tokens *TokenManager,
 	cfg Config,
@@ -280,7 +321,7 @@ func (p *Pool) runChatAccountAttempt(
 		}
 
 		stream, sendErr := p.sendChatRequest(
-			ctx, account, client, chatHeaders(snapshot.Auth), encoded,
+			ctx, account, client, chatHeaders(snapshot.Auth), encoded, model,
 			authSecretValues(snapshot.Auth), cfg,
 		)
 		if sendErr != nil {
@@ -348,18 +389,22 @@ func (p *Pool) refreshChatToken(
 }
 
 // sendChatRequest sends one streaming POST through the account's proxy. The
-// returned stream owns the response body and the stream-scoped timeout.
+// returned stream owns the response body. The header wait is bounded by the
+// configured timeout, but body reads use a per-read idle timeout that resets on
+// every upstream chunk; there is no absolute whole-stream deadline.
 func (p *Pool) sendChatRequest(
 	ctx context.Context,
 	account *Account,
 	client *HTTPClient,
 	headers http.Header,
 	body []byte,
+	model string,
 	secrets []string,
 	cfg Config,
 ) (*chatStream, error) {
 	timeout := chatStreamTimeout(cfg)
-	streamCtx, cancel := context.WithTimeout(ctx, timeout)
+	streamCtx, cancel := context.WithCancel(ctx)
+	startedAt := p.timeNow()
 
 	request, err := http.NewRequestWithContext(
 		streamCtx, http.MethodPost, client.resolve(ChatPath), bytes.NewReader(body),
@@ -370,25 +415,46 @@ func (p *Pool) sendChatRequest(
 	}
 	request.Header = headers.Clone()
 
-	response, err := client.client.Do(streamCtx, request, p.ProxyURL(account))
-	if err != nil {
-		// Snapshot both contexts before cancel(): cancel() itself makes
-		// streamCtx.Err() non-nil and would misclassify every network failure
-		// as a timeout.
-		ctxErr := ctx.Err()
-		streamErr := streamCtx.Err()
+	type headerResult struct {
+		response *http.Response
+		err      error
+	}
+	headersCh := make(chan headerResult, 1)
+	go func() {
+		response, requestErr := client.client.Do(streamCtx, request, p.ProxyURL(account))
+		headersCh <- headerResult{response: response, err: requestErr}
+	}()
+	timer := time.NewTimer(timeout)
+	var response *http.Response
+	select {
+	case result := <-headersCh:
+		timer.Stop()
+		response = result.response
+		err = result.err
+	case <-ctx.Done():
+		timer.Stop()
 		cancel()
-		if ctxErr != nil {
-			return nil, ctxErr
+		result := <-headersCh
+		if result.response != nil {
+			_ = result.response.Body.Close()
 		}
-		if streamErr != nil {
-			if errors.Is(streamErr, context.DeadlineExceeded) {
-				return nil, &APIError{
-					Kind:    KindTransient,
-					Message: "raccoon: chat stream timed out",
-				}
-			}
-			return nil, streamErr
+		return nil, ctx.Err()
+	case <-timer.C:
+		cancel()
+		result := <-headersCh
+		if result.response != nil {
+			_ = result.response.Body.Close()
+		}
+		return nil, &APIError{
+			Kind:    KindTransient,
+			Message: "raccoon: chat stream timed out",
+		}
+	}
+
+	if err != nil {
+		cancel()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		return nil, &APIError{
 			Kind:    KindTransient,
@@ -410,7 +476,7 @@ func (p *Pool) sendChatRequest(
 		return nil, newAPIError(response.StatusCode, raw, secrets...)
 	}
 
-	return newChatStream(ctx, streamCtx, cancel, response.Body, p, account, secrets), nil
+	return newChatStream(ctx, streamCtx, cancel, response.Body, p, account, model, secrets, timeout, startedAt), nil
 }
 
 // chatStreamTimeout reads cfg.StreamTimeoutSeconds with v1's default. The

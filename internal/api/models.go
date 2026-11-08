@@ -37,7 +37,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	force := queryBool(r, "force")
 
-	if strings.EqualFold(realm, "all") {
+	if realm == "all" {
 		candidates := s.workBuddyProviders()
 		if len(candidates) == 0 {
 			writeFailure(w, localFailure(http.StatusBadRequest,

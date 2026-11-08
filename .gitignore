@@ -1,0 +1,24 @@
+# Runtime data: account credentials, state, usage, and local databases/logs.
+/accounts/
+/usage/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+
+# Local build/test artifacts.
+/mix2api
+*.test
+coverage.out
+*.out
+
+# Editor/OS noise.
+.DS_Store
+.vscode/
+.idea/
+
+# Test-only oracle copies and Python caches (also ignored locally).
+tests/oracle/v1.6.5/
+__pycache__/
+*.pyc

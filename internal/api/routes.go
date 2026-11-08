@@ -16,6 +16,16 @@ import (
 // method, and path groups with multiple routes get a sub-tree handler so
 // unknown or method-mismatched paths still return the v1 JSON error envelope.
 func RegisterProviderRoutes(mux *http.ServeMux, provider providers.Provider) {
+	registerProviderRoutes(mux, provider, nil)
+}
+
+type routeAuthDecorator func(providers.AuthClass, http.HandlerFunc) http.HandlerFunc
+
+func registerProviderRoutes(
+	mux *http.ServeMux,
+	provider providers.Provider,
+	decorate routeAuthDecorator,
+) {
 	if mux == nil || provider == nil {
 		return
 	}
@@ -25,15 +35,20 @@ func RegisterProviderRoutes(mux *http.ServeMux, provider providers.Provider) {
 			notFoundMessage = message
 		}
 	}
-	registerRoutes(mux, provider.Routes(), notFoundMessage)
+	registerRoutes(mux, provider.Routes(), notFoundMessage, decorate)
 }
 
 // RegisterRoutes is RegisterProviderRoutes without the Provider wrapper.
 func RegisterRoutes(mux *http.ServeMux, routes []providers.Route) {
-	registerRoutes(mux, routes, "not found")
+	registerRoutes(mux, routes, "not found", nil)
 }
 
-func registerRoutes(mux *http.ServeMux, routes []providers.Route, notFoundMessage string) {
+func registerRoutes(
+	mux *http.ServeMux,
+	routes []providers.Route,
+	notFoundMessage string,
+	decorate routeAuthDecorator,
+) {
 	if mux == nil {
 		return
 	}
@@ -49,11 +64,15 @@ func registerRoutes(mux *http.ServeMux, routes []providers.Route, notFoundMessag
 		if prefix != "" {
 			groupCount[prefix]++
 		}
+		handler := route.Handler
+		if decorate != nil {
+			handler = decorate(route.Auth, handler)
+		}
 		pattern := path
 		if method := strings.TrimSpace(route.Method); method != "" {
 			pattern = strings.ToUpper(method) + " " + path
 		}
-		mux.HandleFunc(pattern, route.Handler)
+		mux.HandleFunc(pattern, handler)
 	}
 
 	prefixes := make([]string, 0, len(groupCount))

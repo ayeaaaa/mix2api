@@ -38,6 +38,14 @@ const (
 	creditsBillLimit = 100
 	creditsMaxPages  = 3
 
+	// Per-request credit look-back, matching v1 _request_credit.
+	creditLookbackLimit    = 20
+	creditLookbackAttempts = 6
+	creditLookbackSkew     = 1500 * time.Millisecond
+	creditLookbackInterval = 600 * time.Millisecond
+	creditLookbackTimeout  = 5 * time.Second
+	creditSeenBillLimit    = 2000
+
 	// maxPointsErrorRunes and maxPointsStepErrorRunes mirror v1's redacted
 	// account-level and per-step error caps.
 	maxPointsErrorRunes     = 300
@@ -173,6 +181,188 @@ func (p *Pool) RefreshCredits(ctx context.Context, uid string) ([]CreditsResult,
 		})
 	}
 	return results, nil
+}
+
+// requestCredit reproduces v1's per-request credit look-back. It polls one
+// 20-bill page up to six times, accepts only negative bills created after the
+// request started (with 1.5s skew), and returns a credit only when exactly one
+// new candidate appears. Every fetched bill id is marked seen so consecutive
+// requests cannot attribute the same bill twice; more than one new bill is
+// ambiguous and deliberately produces no guess.
+func (p *Pool) requestCredit(ctx context.Context, a *Account, startedAt time.Time) (int, bool) {
+	if p == nil || a == nil || startedAt.IsZero() {
+		return 0, false
+	}
+	lower := startedAt.Add(-creditLookbackSkew)
+	for attempt := 0; attempt < creditLookbackAttempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, false
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, creditLookbackTimeout)
+		items, _ := p.fetchBillPage(fetchCtx, a, creditLookbackLimit)
+		cancel()
+
+		now := p.timeNow()
+		candidates := make([]creditCandidate, 0, 1)
+		fetchedIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			billID := creditBillID(item)
+			fetchedIDs = append(fetchedIDs, billID)
+			points := pointsInt(item["points"])
+			if points >= 0 {
+				continue
+			}
+			when, ok := parsePointsTime(item["created_at"])
+			if !ok {
+				continue
+			}
+			if when.Before(lower) || when.After(now.Add(5*time.Second)) {
+				continue
+			}
+			candidates = append(candidates, creditCandidate{id: billID, points: points})
+		}
+
+		fresh := a.rememberCreditBills(fetchedIDs, candidates)
+		if len(fresh) == 1 {
+			return -fresh[0].points, true
+		}
+		if len(fresh) > 1 {
+			return 0, false
+		}
+		if attempt < creditLookbackAttempts-1 {
+			timer := time.NewTimer(creditLookbackInterval)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return 0, false
+			}
+		}
+	}
+	return 0, false
+}
+
+type creditCandidate struct {
+	id     string
+	points int
+}
+
+func cloneUsage(usage map[string]any) map[string]any {
+	copied := make(map[string]any, len(usage))
+	for key, value := range usage {
+		copied[key] = value
+	}
+	return copied
+}
+
+func usageTotal(usage map[string]any) float64 {
+	value, ok := numericValue(usage["total_tokens"])
+	if !ok {
+		return 0
+	}
+	return value
+}
+
+// rememberCreditBills atomically filters candidates against the seen set and
+// marks every fetched id, including older/ambiguous bills. The set is bounded;
+// once it exceeds the cap only the current page survives (older bills cannot
+// fall into a future request's short look-back window).
+func (a *Account) rememberCreditBills(fetchedIDs []string, candidates []creditCandidate) []creditCandidate {
+	if a == nil {
+		return nil
+	}
+	a.creditBillMu.Lock()
+	defer a.creditBillMu.Unlock()
+	if a.creditSeenBills == nil {
+		a.creditSeenBills = make(map[string]bool)
+	}
+	fresh := make([]creditCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !a.creditSeenBills[candidate.id] {
+			fresh = append(fresh, candidate)
+		}
+	}
+	for _, id := range fetchedIDs {
+		if id != "" {
+			a.creditSeenBills[id] = true
+		}
+	}
+	if len(a.creditSeenBills) > creditSeenBillLimit {
+		replacement := make(map[string]bool, minInt(len(fetchedIDs), creditSeenBillLimit))
+		for _, id := range fetchedIDs {
+			if id == "" {
+				continue
+			}
+			if len(replacement) >= creditSeenBillLimit {
+				break
+			}
+			replacement[id] = true
+		}
+		a.creditSeenBills = replacement
+	}
+	return fresh
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func creditBillID(item map[string]any) string {
+	if id := pointsTruthyText(item["bill_id"]); id != "" {
+		return id
+	}
+	points := any(0)
+	if value, ok := item["points"]; ok && pointsTruthy(value) {
+		points = value
+	}
+	return pointsTruthyText(item["group_id"]) + "|" +
+		pointsTruthyText(item["created_at"]) + "|" + pointsText(points)
+}
+
+// fetchBillPage reads one bounded bill page with v1's limit/query shape. The
+// caller supplies the short per-attempt context; errors are treated like v1's
+// data={} retry signal.
+func (p *Pool) fetchBillPage(ctx context.Context, a *Account, limit int) ([]map[string]any, error) {
+	if p == nil || a == nil {
+		return nil, errors.New("raccoon: account is nil")
+	}
+	client := p.HTTPClient()
+	if client == nil {
+		return nil, errors.New("raccoon: points http client is not configured")
+	}
+	tokens := p.TokenManager()
+	if tokens != nil {
+		if err := tokens.Ensure(ctx, a); err != nil {
+			return nil, err
+		}
+	}
+	snapshot := a.refreshCredentials()
+	if snapshot.Deleted {
+		return nil, ErrAccountDeleted
+	}
+	path := PointsBillsPath + "?paging.limit=" + strconv.Itoa(limit) + "&type=all"
+	payload, err := client.DoJSON(
+		ctx, http.MethodGet, path, pointsHeaders(snapshot.Auth), nil, p.ProxyURL(a),
+		authSecretValues(snapshot.Auth)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	data := pointsData(payload)
+	if data == nil {
+		return nil, nil
+	}
+	rawItems, _ := data["items"].([]any)
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, rawItem := range rawItems {
+		if item, ok := rawItem.(map[string]any); ok {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 // fetchBills reads at most creditsMaxPages pages with v1's limit and type.
@@ -519,13 +709,14 @@ func (a *Account) freshCredits(now time.Time) (*CreditsSnapshot, bool) {
 }
 
 // redactedPointsError renders an upstream failure for a panel/result message.
-// Known credentials are removed, plus token-shaped text, and the result is
+// The shared safe formatter removes local filesystem/programming detail first;
+// known credentials and token-shaped text are then removed and the result is
 // capped like v1.
 func redactedPointsError(err error, a *Account, limit int) string {
 	if err == nil {
 		return ""
 	}
-	text := err.Error()
+	text := safeRaccoonError(err)
 	if a != nil {
 		text = redactText(text, authSecretValues(a.authSnapshot())...)
 	}

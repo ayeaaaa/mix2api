@@ -59,9 +59,9 @@ func TestAPIErrorHTTPMapping(t *testing.T) {
 			errType: "invalid_request_error",
 		},
 		{
-			name:    "not found maps upstream",
+			name:    "not found maps conflict",
 			err:     &APIError{Kind: KindNotFound, Status: http.StatusNotFound},
-			status:  http.StatusBadGateway,
+			status:  http.StatusConflict,
 			errType: "invalid_request_error",
 		},
 		{
@@ -80,5 +80,18 @@ func TestAPIErrorHTTPMapping(t *testing.T) {
 				t.Fatalf("ErrorType() = %q, want %q", got, tc.errType)
 			}
 		})
+	}
+}
+
+func TestAPIErrorSafeMessageIsUnprefixed(t *testing.T) {
+	err := &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest, Message: "bad input"}
+	if got := err.SafeMessage(); got != "bad input" {
+		t.Fatalf("SafeMessage = %q, want %q", got, "bad input")
+	}
+	if got := err.Error(); got == err.SafeMessage() || got != "raccoon: HTTP 400: bad input" {
+		t.Fatalf("internal Error() = %q, want prefixed log form", got)
+	}
+	if got := (*APIError)(nil).SafeMessage(); got != "" {
+		t.Fatalf("nil SafeMessage = %q", got)
 	}
 }

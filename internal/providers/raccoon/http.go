@@ -101,11 +101,24 @@ func (e *APIError) HTTPStatus() int {
 			return http.StatusServiceUnavailable
 		}
 		return http.StatusBadGateway
-	case KindUpstream, KindNotFound:
+	case KindNotFound:
+		// A provider-side missing resource is a conflict in the generic chat
+		// contract, matching the v1 Raccoon admin mapping.
+		return http.StatusConflict
+	case KindUpstream:
 		return http.StatusBadGateway
 	default:
 		return http.StatusBadGateway
 	}
+}
+
+// SafeMessage returns the provider message without the internal prefix and
+// HTTP status label. This is the exact v1 wire message.
+func (e *APIError) SafeMessage() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
 }
 
 // ErrorType returns the OpenAI error type for the classified failure.

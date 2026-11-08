@@ -139,9 +139,9 @@ func TestSaveStoreDeterministicSortedByUID(t *testing.T) {
 	}
 }
 
-func TestStoreTimestampsUseRFC3339(t *testing.T) {
+func TestStoreTimestampsUseUnixSeconds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	ts := time.Date(2026, 11, 8, 1, 2, 3, 0, time.FixedZone("CST", 8*60*60))
+	ts := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
 	states := map[string]State{"uid": {UID: "uid", CoolUntil: ts, LastUsed: ts.Add(time.Hour)}}
 	if err := SaveStore(path, states); err != nil {
 		t.Fatalf("SaveStore: %v", err)
@@ -155,11 +155,11 @@ func TestStoreTimestampsUseRFC3339(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("state file is not JSON: %v", err)
 	}
-	if got := raw["uid"]["cool_until"]; got != "2026-11-08T01:02:03+08:00" {
-		t.Fatalf("cool_until = %#v, want RFC3339 timestamp", got)
+	if got := raw["uid"]["cool_until"]; got != float64(ts.Unix()) {
+		t.Fatalf("cool_until = %#v, want Unix seconds %d", got, ts.Unix())
 	}
-	if got := raw["uid"]["last_used"]; got != "2026-11-08T02:02:03+08:00" {
-		t.Fatalf("last_used = %#v, want RFC3339 timestamp", got)
+	if got := raw["uid"]["last_used"]; got != float64(ts.Add(time.Hour).Unix()) {
+		t.Fatalf("last_used = %#v, want Unix seconds %d", got, ts.Add(time.Hour).Unix())
 	}
 
 	got, err := LoadStore(path)
@@ -388,11 +388,11 @@ func TestLegacyV1FixtureRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatalf("saved state is not JSON: %v\n%s", err, data)
 	}
-	if got := saved["pu-v1"]["cool_until"]; got != wantCool.Format(time.RFC3339Nano) {
-		t.Fatalf("saved cool_until = %#v, want RFC3339 %q", got, wantCool.Format(time.RFC3339Nano))
+	if got := saved["pu-v1"]["cool_until"]; got != unixSecondsValue(wantCool) {
+		t.Fatalf("saved cool_until = %#v, want Unix seconds %v", got, unixSecondsValue(wantCool))
 	}
-	if got := saved["pu-v1"]["last_used"]; got != wantLastUsed.Format(time.RFC3339Nano) {
-		t.Fatalf("saved last_used = %#v, want RFC3339 %q", got, wantLastUsed.Format(time.RFC3339Nano))
+	if got := saved["pu-v1"]["last_used"]; got != unixSecondsValue(wantLastUsed) {
+		t.Fatalf("saved last_used = %#v, want Unix seconds %v", got, unixSecondsValue(wantLastUsed))
 	}
 	if got := saved["pu-v1"]["active_concurrent"]; got != float64(0) {
 		t.Fatalf("saved active_concurrent = %#v, want 0", got)
@@ -539,6 +539,116 @@ func TestSaveStoreSkipsEmptyUID(t *testing.T) {
 	}
 	if len(got) != 1 || got["ok"].Note != "keep me" {
 		t.Fatalf("LoadStore = %#v, want only the ok entry", got)
+	}
+}
+
+func TestMalformedSafetyFieldsFailClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{
+		"string-disabled": {"disabled": "false", "note": "truthy in v1"},
+		"number-disabled": {"disabled": 0},
+		"string-manual": {"manual_disabled": "false"},
+		"null-disabled": {"disabled": null}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	now := time.Now()
+	for uid, state := range got {
+		if state.Healthy(now) {
+			t.Fatalf("%s with malformed safety field loaded healthy: %+v", uid, state)
+		}
+		if !state.Disabled {
+			t.Fatalf("%s malformed safety field did not set Disabled: %+v", uid, state)
+		}
+	}
+	if !got["string-manual"].ManualDisabled {
+		t.Fatalf("malformed manual_disabled did not fail closed: %+v", got["string-manual"])
+	}
+}
+
+func TestOutOfRangeTimestampsClampAndSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{
+		"future": {"cool_until": 1e300, "last_used": 1e300},
+		"past": {"cool_until": -1e300, "last_used": -1e300},
+		"rfc-future": {"cool_until": "9999-12-31T23:59:59Z", "last_used": "0000-01-01T00:00:00Z"}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if !got["future"].CoolUntil.Equal(maxStateTime()) {
+		t.Fatalf("future CoolUntil = %v, want clamp %v", got["future"].CoolUntil, maxStateTime())
+	}
+	if !got["past"].CoolUntil.Equal(minStateTime()) {
+		t.Fatalf("past CoolUntil = %v, want clamp %v", got["past"].CoolUntil, minStateTime())
+	}
+	if got["future"].Healthy(time.Now()) {
+		t.Fatal("far-future cooldown was treated as healthy")
+	}
+	if err := SaveStore(path, got); err != nil {
+		t.Fatalf("SaveStore after clamped load: %v", err)
+	}
+
+	// A directly constructed out-of-range time must not wedge SaveStore either.
+	if err := SaveStore(path, map[string]State{
+		"manual-future": {UID: "manual-future", CoolUntil: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		"manual-past":   {UID: "manual-past", CoolUntil: time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}); err != nil {
+		t.Fatalf("SaveStore with out-of-range times: %v", err)
+	}
+}
+
+// TestSaveStoreIsReadableByV1NumericParser mirrors the exact v1.6.5 load
+// expression: float(entry.get("cool_until") or 0) and float(...last_used...).
+func TestSaveStoreIsReadableByV1NumericParser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	cool := time.Unix(1800000000, 750000000).UTC()
+	lastUsed := time.Unix(1760000000, 0).UTC()
+	if err := SaveStore(path, map[string]State{
+		"pu-v1-reader": {UID: "pu-v1-reader", CoolUntil: cool, LastUsed: lastUsed},
+		"pu-zero":      {UID: "pu-zero"},
+	}); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("v1 JSON load failed: %v", err)
+	}
+	loadFloat := func(uid, key string) float64 {
+		t.Helper()
+		var number float64
+		if err := json.Unmarshal(raw[uid][key], &number); err != nil {
+			t.Fatalf("v1 float(%q) failed for %s: %v", key, uid, err)
+		}
+		return number
+	}
+	if got := loadFloat("pu-v1-reader", "cool_until"); got != 1800000000.75 {
+		t.Fatalf("v1 cool_until = %v, want 1800000000.75", got)
+	}
+	if got := loadFloat("pu-v1-reader", "last_used"); got != 1760000000 {
+		t.Fatalf("v1 last_used = %v, want 1760000000", got)
+	}
+	if got := loadFloat("pu-zero", "cool_until"); got != 0 {
+		t.Fatalf("v1 zero cool_until = %v, want 0", got)
+	}
+	if got := loadFloat("pu-zero", "last_used"); got != 0 {
+		t.Fatalf("v1 zero last_used = %v, want 0", got)
 	}
 }
 

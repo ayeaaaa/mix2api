@@ -142,6 +142,10 @@ type Account struct {
 	creditsFetchedAt time.Time
 	tasksFetchedAt   time.Time
 	autoClaimAt      time.Time
+	// creditSeenBills is v1's per-account seen-bill guard for the post-DONE
+	// per-request credit look-back. Bounded to the current page beyond the cap.
+	creditBillMu    sync.Mutex
+	creditSeenBills map[string]bool
 
 	mu               sync.Mutex
 	activeConcurrent int

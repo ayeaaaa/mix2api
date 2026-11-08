@@ -41,7 +41,7 @@ func providerFailure(err error) *apiFailure {
 
 	var httpErr providers.HTTPError
 	if errors.As(err, &httpErr) {
-		message := strings.TrimSpace(err.Error())
+		message := strings.TrimSpace(httpErr.SafeMessage())
 		if message == "" {
 			message = "upstream request failed"
 		}

@@ -2,9 +2,11 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -14,19 +16,21 @@ type ServerOptions struct {
 	Addr    string
 	Version string
 
+	// ListenerPort is the actual bound port. It is injected into providers
+	// that need a loopback OAuth callback (Raccoon) and must never be inferred
+	// from the request Host header.
+	ListenerPort int
+
 	// Providers are mounted under their declared routes and are reachable
 	// through the generic /v1/chat/completions and /v1/models endpoints.
 	Providers []providers.Provider
 
 	// PanelAuth wraps every AuthPanel route and its top-level provider subtree.
-	// Nil keeps the routes declared-only: the AuthPanel metadata is present but
-	// enforcement is left to the platform layer, which owns session/password
-	// storage. Full panel and API-key storage is later platform work.
+	// Nil fails closed for panel routes; it never leaves them open.
 	PanelAuth func(http.Handler) http.Handler
 
-	// APIKeyAuth optionally wraps the generic /v1 endpoints. As with PanelAuth,
-	// nil is the declared-only scaffold; paid key storage is not implemented
-	// here.
+	// APIKeyAuth wraps the generic /v1 endpoints and provider routes declared
+	// AuthAPIKey. Nil fails closed with 401.
 	APIKeyAuth func(http.Handler) http.Handler
 }
 
@@ -47,6 +51,12 @@ type Server struct {
 	mux       *http.ServeMux
 }
 
+// listenerPortSetter is the optional provider contract used to inject the
+// actual listener port for provider-owned loopback OAuth flows.
+type listenerPortSetter interface {
+	SetListenerPort(int)
+}
+
 // New returns a generic API server handler.
 func New(opts ServerOptions) *Server {
 	s := &Server{
@@ -54,17 +64,29 @@ func New(opts ServerOptions) *Server {
 		providers: normalizeProviders(opts.Providers),
 		mux:       http.NewServeMux(),
 	}
+	if opts.ListenerPort > 0 {
+		for _, provider := range s.providers {
+			if setter, ok := provider.(listenerPortSetter); ok {
+				setter.SetListenerPort(opts.ListenerPort)
+			}
+		}
+	}
 	s.mount()
 	return s
 }
 
 // NewServer returns an HTTP server exposing the generic health, models, chat,
-// and provider routes.
+// and provider routes. Header read timeouts are bounded; write timeouts are
+// deliberately zero because chat responses are long-lived SSE streams.
 func NewServer(opts ServerOptions) *http.Server {
 	s := New(opts)
 	return &http.Server{
-		Addr:    opts.Addr,
-		Handler: s.Handler(),
+		Addr:              opts.Addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 
@@ -73,24 +95,43 @@ func (s *Server) mount() {
 	s.mux.Handle("/v1/chat/completions", s.protectAPI(http.HandlerFunc(s.handleChat)))
 	s.mux.Handle("/v1/models", s.protectAPI(http.HandlerFunc(s.handleModels)))
 	for _, provider := range s.providers {
-		RegisterProviderRoutes(s.mux, provider)
+		registerProviderRoutes(s.mux, provider, s.decorateProviderRoute)
 	}
 }
 
-// Handler returns the mux with optional panel authentication applied to every
-// AuthPanel provider subtree.
+// Handler returns the mux with panic recovery, optional panel authentication
+// applied to every AuthPanel provider subtree, and fail-closed behavior when a
+// panel middleware is not configured.
 func (s *Server) Handler() http.Handler {
 	if s == nil {
 		return http.NotFoundHandler()
 	}
-	return wrapPanelAuth(s.mux, panelProtectedPrefixes(s.providers), s.opts.PanelAuth)
+	panel := wrapPanelAuth(s.mux, panelProtectedPrefixes(s.providers), s.opts.PanelAuth)
+	return recoveryHandler(panel)
 }
 
 func (s *Server) protectAPI(handler http.Handler) http.Handler {
 	if s == nil || s.opts.APIKeyAuth == nil {
-		return handler
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
+		})
 	}
 	return s.opts.APIKeyAuth(handler)
+}
+
+// decorateProviderRoute applies AuthAPIKey to provider-declared routes. Panel
+// routes are guarded at the top-level subtree so unknown paths fail closed too.
+func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.HandlerFunc) http.HandlerFunc {
+	if auth != providers.AuthAPIKey {
+		return handler
+	}
+	if s.opts.APIKeyAuth == nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
+		}
+	}
+	protected := s.opts.APIKeyAuth(handler)
+	return protected.ServeHTTP
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +155,52 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSONResponse(w, http.StatusOK, response)
+}
+
+// recoveryHandler turns a panic into a 500 error envelope when no response has
+// been written. A panic after SSE headers can only close the already-corrupt
+// response; it must not be converted into a second HTTP status line.
+func recoveryHandler(next http.Handler) http.Handler {
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracked := &responseStateWriter{ResponseWriter: w}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("api: panic serving %s %s: %v", r.Method, r.URL.Path, recovered)
+				if !tracked.wrote {
+					writeV1Error(tracked, http.StatusInternalServerError, "server_error", "internal server error")
+				}
+			}
+		}()
+		next.ServeHTTP(tracked, r)
+	})
+}
+
+type responseStateWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *responseStateWriter) WriteHeader(status int) {
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseStateWriter) Write(data []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *responseStateWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *responseStateWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func normalizeProviders(list []providers.Provider) []providers.Provider {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,7 @@ func newRoutesFixtureWithSetup(
 		now: now, uid: uid, token: token,
 	}
 	provider.SetNow(func() time.Time { return fixture.now })
+	provider.SetListenerPort(54321)
 	fixture.mux = http.NewServeMux()
 	api.RegisterProviderRoutes(fixture.mux, provider)
 	return fixture
@@ -1220,22 +1222,32 @@ func TestOAuthStateValidationAndSingleUse(t *testing.T) {
 
 func TestOAuthTTLCapAndPortValidation(t *testing.T) {
 	f := newRoutesFixture(t)
+	f.p.SetListenerPort(80)
 	badPort := f.do(http.MethodPost, "/raccoon/accounts/oauth/start", map[string]any{},
-		"127.0.0.1:80")
+		"127.0.0.1:54321")
 	if badPort.Code != http.StatusBadRequest {
-		t.Fatalf("privileged port status=%d body=%s", badPort.Code, badPort.Body)
+		t.Fatalf("privileged listener port status=%d body=%s", badPort.Code, badPort.Body)
 	}
-	badText := f.do(http.MethodPost, "/raccoon/accounts/oauth/start", map[string]any{},
-		"127.0.0.1:not-a-port")
-	if badText.Code != http.StatusBadRequest {
-		t.Fatalf("invalid port status=%d body=%s", badText.Code, badText.Body)
+	f.p.SetListenerPort(0)
+	unset := f.do(http.MethodPost, "/raccoon/accounts/oauth/start", map[string]any{},
+		"127.0.0.1:54321")
+	if unset.Code != http.StatusBadRequest {
+		t.Fatalf("unset listener port status=%d body=%s", unset.Code, unset.Body)
 	}
+	f.p.SetListenerPort(54321)
 
+	// A portless reverse-proxy Host must not influence the loopback redirect.
 	fallback := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
-		map[string]any{}, "example.com"))
+		map[string]any{}, "proxy.internal"))
 	parsed, _ := url.Parse(routeText(fallback["auth_url"]))
-	if parsed.Query().Get("redirect") != "http://127.0.0.1:8788/auth/callback" {
+	if parsed.Query().Get("redirect") != "http://127.0.0.1:54321/auth/callback" {
 		t.Fatalf("fallback redirect = %q", parsed.Query().Get("redirect"))
+	}
+	foreign := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
+		map[string]any{}, "127.0.0.1:9999"))
+	foreignURL, _ := url.Parse(routeText(foreign["auth_url"]))
+	if foreignURL.Query().Get("redirect") != "http://127.0.0.1:54321/auth/callback" {
+		t.Fatalf("foreign Host changed redirect = %q", foreignURL.Query().Get("redirect"))
 	}
 
 	started := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
@@ -1691,5 +1703,40 @@ func TestOverviewAutoClaimLogin(t *testing.T) {
 	f.fake.points.mu.Unlock()
 	if desktop != 1 || mobile != 1 {
 		t.Fatalf("auto claim grants desktop=%d mobile=%d", desktop, mobile)
+	}
+}
+
+func TestAdminErrorsNeverExposeFilesystemDetail(t *testing.T) {
+	pathErr := errors.New("open /root/private/accounts/raccoon/raccoon-u.json: permission denied")
+	failure := adminErrorFrom(pathErr)
+	if failure.Status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", failure.Status)
+	}
+	rec := httptest.NewRecorder()
+	writeAdminError(rec, failure)
+	blob := rec.Body.String()
+	for _, needle := range []string{"/root/private", "raccoon-u.json", "permission denied"} {
+		if strings.Contains(blob, needle) {
+			t.Fatalf("admin error leaked %q: %s", needle, blob)
+		}
+	}
+
+	if got := redactedPointsError(pathErr, nil, maxPointsErrorRunes); strings.Contains(got, "/root/private") {
+		t.Fatalf("points message leaked a path: %q", got)
+	}
+	apiErr := &APIError{Kind: KindUpstream, Status: 500, Message: "upstream failed"}
+	if got := adminErrorFrom(apiErr).Message; got != "upstream failed" {
+		t.Fatalf("API error message = %q, want unprefixed upstream message", got)
+	}
+
+	// The delete failure response has no relative filesystem hint either.
+	deleteFailure := &adminError{
+		Status: http.StatusInternalServerError, Type: "server_error",
+		Message: "账号文件删除失败，账号仍保留；请检查账号文件权限",
+	}
+	rec = httptest.NewRecorder()
+	writeAdminError(rec, deleteFailure)
+	if strings.Contains(rec.Body.String(), "accounts/") {
+		t.Fatalf("delete error leaked a data path: %s", rec.Body)
 	}
 }

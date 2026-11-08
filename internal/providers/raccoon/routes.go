@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,17 +76,47 @@ func adminErrorFrom(err error) *adminError {
 				status = http.StatusBadGateway
 			}
 		}
-		message := strings.TrimSpace(apiErr.Message)
-		if message == "" {
-			message = "raccoon: upstream error"
-		}
+		message := safeRaccoonError(err)
 		return &adminError{Status: status, Type: errType, Message: message}
 	}
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		message = "raccoon: request failed"
+	return &adminError{
+		Status: http.StatusBadGateway, Type: "invalid_request_error",
+		Message: safeRaccoonError(err),
 	}
-	return &adminError{Status: http.StatusBadGateway, Type: "invalid_request_error", Message: message}
+}
+
+// safeRaccoonError is the single formatter for panel/overview/keepalive/test/
+// grant/credits messages. Provider APIError messages are already redacted, but
+// local filesystem/programming errors are not: never echo them. Callers log the
+// raw error server-side if they need diagnostics.
+func safeRaccoonError(err error) string {
+	if err == nil {
+		return "raccoon: request failed"
+	}
+	var adminErr *adminError
+	if errors.As(err, &adminErr) && adminErr != nil {
+		if message := strings.TrimSpace(adminErr.Message); message != "" {
+			return message
+		}
+		return "raccoon: request failed"
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		if message := strings.TrimSpace(apiErr.Message); message != "" {
+			return message
+		}
+		return "raccoon: upstream request failed"
+	}
+	switch {
+	case errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrAccountDeleted):
+		return "account not found"
+	case errors.Is(err, ErrAuthPathCollision):
+		return "raccoon: auth file belongs to a different account"
+	}
+	// Keep the raw local/provider detail server-side only; the wire response
+	// must not reveal absolute paths or permission errors.
+	log.Printf("raccoon: internal error: %v", err)
+	return "raccoon: request failed"
 }
 
 // importAdminError maps auth-file transaction failures without exposing
@@ -212,33 +242,22 @@ func forceFromQuery(r *http.Request) bool {
 	}
 }
 
-func requestPort(r *http.Request) (int, *adminError) {
-	host := strings.TrimSpace(r.Host)
-	if host == "" {
-		return 8788, nil
+func (p *Provider) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if _, failure := readAdminPayload(w, r); failure != nil {
+		writeAdminError(w, failure)
+		return
 	}
-	portText := ""
-	if strings.HasPrefix(host, "[") || strings.Contains(host, ":") {
-		_, port, err := net.SplitHostPort(host)
-		if err != nil {
-			if strings.Contains(err.Error(), "missing port") {
-				return 8788, nil
-			}
-			return 0, badRequest("gateway port must be an integer")
-		}
-		portText = port
-	}
-	if portText == "" {
-		return 8788, nil
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return 0, badRequest("gateway port must be an integer")
-	}
+	port := p.listenerPort()
 	if port < 1024 || port > 65535 {
-		return 0, badRequest("gateway port must be between 1024 and 65535")
+		writeAdminError(w, badRequest("gateway port must be between 1024 and 65535"))
+		return
 	}
-	return port, nil
+	result, failure := p.oauthStart(port)
+	if failure != nil {
+		writeAdminError(w, failure)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // RouteNotFoundMessage is an optional hint consumed by the generic API route
@@ -452,9 +471,10 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 					})
 					return
 				}
+				log.Printf("raccoon: remove auth files for %s: %v", uid, err)
 				writeAdminError(w, &adminError{
 					Status: http.StatusInternalServerError, Type: "server_error",
-					Message: "账号文件删除失败，账号仍保留；请检查 accounts/raccoon 的文件权限",
+					Message: "账号文件删除失败，账号仍保留；请检查账号文件权限",
 				})
 				return
 			}
@@ -763,24 +783,6 @@ func (p *Provider) handleConnectionTest(w http.ResponseWriter, r *http.Request) 
 		"catalog_source": source,
 		"message":        "连接正常",
 	})
-}
-
-func (p *Provider) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
-	if _, failure := readAdminPayload(w, r); failure != nil {
-		writeAdminError(w, failure)
-		return
-	}
-	port, failure := requestPort(r)
-	if failure != nil {
-		writeAdminError(w, failure)
-		return
-	}
-	result, failure := p.oauthStart(port)
-	if failure != nil {
-		writeAdminError(w, failure)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
 }
 
 func (p *Provider) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {

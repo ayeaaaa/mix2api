@@ -110,7 +110,8 @@ These are the five failure classes most likely to break a real deployment; every
 
 ## Program Gates
 
-- Gate A (after plan 1): Raccoon vertical slice passes contract tests against v1.6.5 oracle.
+- Gate A (after plan 1): **partial** — the Raccoon vertical slice passes v2 regression/contract tests and fake-upstream checks; a real selected v1.6.5 fake-upstream oracle recording is still required before claiming full parity.
+- Gate B (after plan 2): CodeArts parity passes provider + contract tests.
 - Gate B (after plan 2): CodeArts parity passes provider + contract tests.
 - Gate C (after plan 3): WorkBuddy parity passes provider + contract tests.
 - Gate D (after plan 4): all non-UI features pass; media/agents/update contract green.

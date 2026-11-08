@@ -42,9 +42,13 @@ type ChatStream interface {
 }
 
 // HTTPError is an optional provider error contract. Providers use it to
-// declare the HTTP status and OpenAI-style error type the generic API should
-// return. The API layer checks for this interface with errors.As, so it never
-// imports a concrete provider package.
+// declare the HTTP status, OpenAI-style error type, and the safe client-facing
+// message the generic API should return. The API layer checks for this
+// interface with errors.As, so it never imports a concrete provider package.
+//
+// Error() remains the internal/logging representation and may include a
+// provider prefix or status label. SafeMessage must not: the API writes it to
+// /v1 clients verbatim.
 type HTTPError interface {
 	error
 
@@ -54,6 +58,10 @@ type HTTPError interface {
 	// ErrorType returns the OpenAI error type, such as "rate_limit_error" or
 	// "invalid_request_error".
 	ErrorType() string
+
+	// SafeMessage returns the redacted message for the wire response without
+	// provider prefixes such as "raccoon: HTTP 400:".
+	SafeMessage() string
 }
 
 // AuthClass tells the API layer what authentication a route requires.

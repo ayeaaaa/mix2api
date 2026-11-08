@@ -1,7 +1,11 @@
 # v1.6.5 oracle for contract goldens
 
-The v2 golden fixtures in `tests/contract/testdata` are derived from the
-read-only Python v1.6.5 tree at `/root/opencode/mix2api`. That tree is the
+The v2 golden fixtures in `tests/contract/testdata` are currently hand-written
+v2 regression goldens, **not captured v1.6.5 oracle output** (see
+`tests/contract/testdata/PROVENANCE.md`). The procedure below is how to record
+real oracle fixtures later.
+
+The read-only Python v1.6.5 tree at `/root/opencode/mix2api` is the intended
 oracle: **never modify it**, and do not commit the copied tree. This directory
 is only the place to keep a local, test-only copy when recording new goldens.
 

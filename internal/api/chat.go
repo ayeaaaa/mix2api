@@ -72,9 +72,6 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 			return
 		}
 		provider = resolved
-	} else if err := s.validateModel(r.Context(), provider, request.model); err != nil {
-		writeFailure(w, err)
-		return
 	}
 
 	chatRequest := providers.ChatRequest{
@@ -99,7 +96,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	defer func() { _ = stream.Close() }()
 
 	if request.stream {
-		writeChatStream(w, r, stream)
+		writeChatStream(w, r, stream, request.model)
 		return
 	}
 	writeChatCompletion(w, stream, request.model)
@@ -219,12 +216,16 @@ func chatSessionKey(r *http.Request, payload map[string]json.RawMessage) string 
 
 // resolveChatProvider applies the documented resolution order: an explicit
 // realm (X-Realm, then query, then body), a unique model match across
-// registered providers, then the only registered provider. Model validation
-// happens in the same pass so a request never reaches a provider with an
-// unknown model.
+// registered providers, then the only registered provider.
+//
+// Explicit-realm and single-provider requests are deliberately not rejected by
+// a catalog pre-check: a stale/empty cache must not hide a model the upstream
+// supports. The provider classifies unknown models. Multi-provider resolution
+// still needs a catalog match, but each lookup is bounded so discovery cannot
+// stall chat.
 func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPRequest) (providers.Provider, error) {
 	if realm := strings.TrimSpace(request.realm); realm != "" {
-		if strings.EqualFold(realm, "all") {
+		if realm == "all" {
 			candidates := s.workBuddyProviders()
 			if len(candidates) == 0 {
 				return nil, localFailure(http.StatusBadRequest,
@@ -236,9 +237,6 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		if provider == nil {
 			return nil, localFailure(http.StatusNotFound, "unknown realm: "+realm)
 		}
-		if err := s.validateModel(ctx, provider, request.model); err != nil {
-			return nil, err
-		}
 		return provider, nil
 	}
 
@@ -246,20 +244,24 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		return nil, localFailure(http.StatusBadRequest, "no provider is registered")
 	}
 	if len(s.providers) == 1 {
-		provider := s.providers[0]
-		if err := s.validateModel(ctx, provider, request.model); err != nil {
-			return nil, err
-		}
-		return provider, nil
+		return s.providers[0], nil
 	}
 	return s.resolveAmong(ctx, s.providers, request.model, "")
 }
+
+// catalogResolutionTimeout bounds only multi-provider model-to-realm
+// resolution. An expired lookup is treated as "no match" rather than a blocking
+// error; chat then either rejects an ambiguous request or reaches the explicit
+// provider, which classifies the model upstream.
+const catalogResolutionTimeout = 2 * time.Second
 
 func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provider, model, realm string) (providers.Provider, error) {
 	var firstErr error
 	successes := 0
 	for _, provider := range candidates {
-		models, err := provider.Models(ctx, false)
+		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+		models, err := provider.Models(lookupCtx, false)
+		cancel()
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -281,17 +283,6 @@ func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provid
 	return nil, localFailure(http.StatusNotFound, "model not found: "+model)
 }
 
-func (s *Server) validateModel(ctx context.Context, provider providers.Provider, model string) error {
-	models, err := provider.Models(ctx, false)
-	if err != nil {
-		return err
-	}
-	if !modelMatches(models, model) {
-		return localFailure(http.StatusNotFound, "model not found: "+model)
-	}
-	return nil
-}
-
 func modelMatches(models []providers.Model, model string) bool {
 	want := strings.ToLower(strings.TrimSpace(model))
 	if want == "" {
@@ -309,7 +300,7 @@ func modelMatches(models []providers.Model, model string) bool {
 func (s *Server) providerForRealm(realm string) providers.Provider {
 	realm = strings.TrimSpace(realm)
 	for _, provider := range s.providers {
-		if strings.EqualFold(providerRealm(provider), realm) {
+		if providerRealm(provider) == realm {
 			return provider
 		}
 	}
@@ -340,25 +331,31 @@ func isWorkBuddyProvider(provider providers.Provider) bool {
 		strings.HasPrefix(id, "workbuddy_")
 }
 
-// writeChatStream passes provider frames through unchanged. SSE headers are
-// written only after the first successful frame, and a midstream failure turns
-// into a terminal readable SSE error frame instead of a silent truncation.
-func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream) {
-	flusher, _ := w.(http.Flusher)
-	wroteHeaders := false
-	wroteDone := false
+// writeChatStream normalizes provider frames into one OpenAI-style stream. SSE
+// headers are written only after the first normalized frame, a heartbeat keeps
+// silent upstreams alive, and the normalizer hoists usage/finish fields. After
+// [DONE] the writer keeps reading long enough to forward a provider's post-DONE
+// credit accounting frame; clients that stop at [DONE] never wait for it.
+func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) {
+	writer := newSSEWriter(w)
+	defer writer.Close()
+	normalizer := newStreamNormalizer(model)
 
 	for {
 		frame, err := stream.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if !wroteHeaders {
+				final := normalizer.finalize()
+				for _, out := range final {
+					if writeErr := writer.Write(out); writeErr != nil {
+						return
+					}
+				}
+				if !writer.WroteHeaders() && len(final) == 0 && !normalizer.sawAny {
 					writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned an empty stream"))
 					return
 				}
-				if !wroteDone {
-					writeSSEFrame(w, flusher, []byte("data: [DONE]\n\n"))
-				}
+				_ = writer.Write([]byte("data: [DONE]\n\n"))
 				return
 			}
 			if r != nil && r.Context().Err() != nil {
@@ -367,30 +364,83 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 			if errors.Is(err, context.Canceled) {
 				return
 			}
-			if !wroteHeaders {
+			if !writer.WroteHeaders() {
 				writeFailure(w, err)
 				return
 			}
-			writeSSEError(w, flusher, err)
+			writeSSEError(writer, err)
 			return
 		}
 		if len(frame) == 0 {
 			continue
 		}
-		if !wroteHeaders {
-			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.WriteHeader(http.StatusOK)
-			wroteHeaders = true
-		}
-		if _, err := w.Write(frame); err != nil {
-			return
-		}
-		flush(w, flusher)
 		if sseFrameDone(frame) {
-			wroteDone = true
+			for _, out := range normalizer.finalize() {
+				if writeErr := writer.Write(out); writeErr != nil {
+					return
+				}
+			}
+			if writeErr := writer.Write([]byte("data: [DONE]\n\n")); writeErr != nil {
+				return
+			}
+			forwardPostDone(writer, r, stream, normalizer)
 			return
+		}
+		for _, out := range normalizer.absorb(frame) {
+			if len(out) == 0 {
+				continue
+			}
+			if writeErr := writer.Write(out); writeErr != nil {
+				return
+			}
+		}
+	}
+}
+
+type postDoneResult struct {
+	frame []byte
+	err   error
+}
+
+// forwardPostDone reads after [DONE] with a bounded idle timeout. The upstream
+// account slot stays held until the stream closes, matching v1's stream scope.
+func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatStream, normalizer *streamNormalizer) {
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	timer := time.NewTimer(postDoneReadIdleTimeout)
+	defer timer.Stop()
+	for {
+		results := make(chan postDoneResult, 1)
+		go func() {
+			frame, err := stream.Next()
+			results <- postDoneResult{frame: frame, err: err}
+		}()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			return
+		case result := <-results:
+			if result.err != nil {
+				return
+			}
+			if len(result.frame) > 0 {
+				if out := normalizer.rewritePostDoneFrame(result.frame); len(out) > 0 {
+					if err := writer.Write(out); err != nil {
+						return
+					}
+				}
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(postDoneReadIdleTimeout)
 		}
 	}
 }
@@ -422,7 +472,9 @@ func aggregateChatStream(stream providers.ChatStream, model string) (map[string]
 			continue
 		}
 		if strings.TrimSpace(data) == "[DONE]" {
-			break
+			// Keep reading: Raccoon emits its credit usage frame after [DONE].
+			aggregate.sawDone = true
+			continue
 		}
 		aggregate.addJSON([]byte(data))
 	}
@@ -433,16 +485,7 @@ func aggregateChatStream(stream providers.ChatStream, model string) (map[string]
 	return completion, nil
 }
 
-func writeSSEFrame(w http.ResponseWriter, flusher http.Flusher, frame []byte) {
-	if len(frame) > 0 {
-		if _, err := w.Write(frame); err != nil {
-			return
-		}
-		flush(w, flusher)
-	}
-}
-
-func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
+func writeSSEError(writer *sseWriter, err error) {
 	failure := providerFailure(err)
 	message := failure.Message
 	if message == "" {
@@ -463,13 +506,7 @@ func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
 	frame = append(frame, "data: "...)
 	frame = append(frame, payload...)
 	frame = append(frame, '\n', '\n')
-	writeSSEFrame(w, flusher, frame)
-}
-
-func flush(w http.ResponseWriter, flusher http.Flusher) {
-	if flusher != nil {
-		flusher.Flush()
-	}
+	_ = writer.Write(frame)
 }
 
 func sseFrameDone(frame []byte) bool {
@@ -511,6 +548,7 @@ type chatAggregate struct {
 	finish      string
 	tools       map[int]*chatToolCall
 	sawChoice   bool
+	sawDone     bool
 	usage       map[string]any
 	lastCreated int64
 }
@@ -664,6 +702,12 @@ func (a *chatAggregate) completion(requestedModel string) (map[string]any, bool)
 			if call == nil || strings.TrimSpace(call.name) == "" {
 				continue
 			}
+			// A stream cut off by max_tokens or a dropped connection can leave
+			// the last call with half-written JSON. Never hand the client
+			// unparsable arguments; empty arguments are a legal no-arg call.
+			if !validToolArguments(call.arguments) {
+				continue
+			}
 			id := call.id
 			if id == "" {
 				id = randomChatID("call_")
@@ -719,7 +763,11 @@ func (a *chatAggregate) completion(requestedModel string) (map[string]any, bool)
 			},
 		},
 	}
-	if a.usage != nil {
+	if a.usage != nil && usageTotal(a.usage) > 0 {
+		completion["usage"] = a.usage
+	} else if estimated := estimateChatUsage(strings.Join(a.content, ""), strings.Join(a.reasoning, "")); estimated != nil {
+		completion["usage"] = estimated
+	} else if a.usage != nil {
 		completion["usage"] = a.usage
 	}
 	return completion, true

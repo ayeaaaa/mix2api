@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -55,6 +56,49 @@ func TestHealthIncludesProviderHealth(t *testing.T) {
 	}
 	if raccoon["ok"] != true || raccoon["accounts"] != float64(2) {
 		t.Fatalf("providers[raccoon] = %#v", raccoon)
+	}
+}
+
+func TestServerTimeoutsAndPanicRecovery(t *testing.T) {
+	srv := NewServer(ServerOptions{})
+	if srv.ReadHeaderTimeout != 10*time.Second || srv.IdleTimeout != 120*time.Second {
+		t.Fatalf("timeouts = %#v", srv)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 for SSE", srv.WriteTimeout)
+	}
+
+	provider := &stubProvider{
+		id: "panic", realm: "panic",
+		routes: []providers.Route{{
+			Method: http.MethodGet, Path: "/panic", Auth: providers.AuthNone,
+			Handler: func(http.ResponseWriter, *http.Request) { panic("boom") },
+		}},
+	}
+	live := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := httptest.NewRecorder()
+	live.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panic", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "boom") {
+		t.Fatalf("panic detail leaked: %s", rec.Body)
+	}
+}
+
+type listenerPortProvider struct {
+	*stubProvider
+	port int
+}
+
+func (p *listenerPortProvider) SetListenerPort(port int) { p.port = port }
+
+func TestServerInjectsListenerPort(t *testing.T) {
+	stub := &stubProvider{id: "oauth", realm: "oauth"}
+	provider := &listenerPortProvider{stubProvider: stub}
+	New(ServerOptions{Providers: []providers.Provider{provider}, ListenerPort: 54321})
+	if provider.port != 54321 {
+		t.Fatalf("listener port = %d, want 54321", provider.port)
 	}
 }
 

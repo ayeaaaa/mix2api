@@ -76,6 +76,8 @@ func decodeState(raw json.RawMessage) (State, bool) {
 
 // MarshalJSON writes known fields in a fixed order followed by unknown fields
 // sorted by key. SaveStore writes the surrounding UID map in sorted order.
+// Timestamps are Unix seconds (0 for the zero time) because that is the shape
+// v1.6.5 reads with float(entry.get("cool_until") or 0).
 func (s State) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -90,8 +92,8 @@ func (s State) MarshalJSON() ([]byte, error) {
 		{"reason", s.Reason},
 		{"err_count", s.ErrCount},
 		{"last_error", s.LastError},
-		{"cool_until", s.CoolUntil},
-		{"last_used", s.LastUsed},
+		{"cool_until", unixSecondsValue(s.CoolUntil)},
+		{"last_used", unixSecondsValue(s.LastUsed)},
 		{"note", s.Note},
 		{"tasks_enabled", s.TasksEnabled},
 		{"active_concurrent", s.ActiveConcurrent},
@@ -141,6 +143,11 @@ func appendJSONField(buf *bytes.Buffer, first *bool, name string, value any) err
 // UnmarshalJSON tolerates malformed known fields, legacy numeric timestamps,
 // and unknown keys. ActiveConcurrent is runtime-only and always starts at zero
 // after a restart so an account cannot be left permanently busy.
+//
+// Safety fields fail closed: a present but non-boolean disabled or
+// manual_disabled value marks the account disabled rather than silently
+// enabling it. This covers the dangerous Python truthiness edge where the JSON
+// string "false" is truthy in v1.
 func (s *State) UnmarshalJSON(data []byte) error {
 	raw := map[string]json.RawMessage{}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -148,8 +155,21 @@ func (s *State) UnmarshalJSON(data []byte) error {
 	}
 
 	var state State
-	decodeStateField(raw, "disabled", &state.Disabled)
-	decodeStateField(raw, "manual_disabled", &state.ManualDisabled)
+	if value, present, valid := decodeSafetyBool(raw, "disabled"); present {
+		if valid {
+			state.Disabled = value
+		} else {
+			state.Disabled = true
+		}
+	}
+	if value, present, valid := decodeSafetyBool(raw, "manual_disabled"); present {
+		if valid {
+			state.ManualDisabled = value
+		} else {
+			state.ManualDisabled = true
+			state.Disabled = true
+		}
+	}
 	decodeStateField(raw, "disabled_by", &state.DisabledBy)
 	decodeStateField(raw, "reason", &state.Reason)
 	decodeStateField(raw, "err_count", &state.ErrCount)
@@ -175,6 +195,24 @@ func (s *State) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// decodeSafetyBool accepts only the literal JSON booleans. Anything else is
+// reported as present-but-invalid so callers can fail closed; null and numeric
+// spellings are intentionally rejected rather than treated as false.
+func decodeSafetyBool(raw map[string]json.RawMessage, key string) (value, present, valid bool) {
+	encoded, ok := raw[key]
+	if !ok {
+		return false, false, true
+	}
+	switch string(bytes.TrimSpace(encoded)) {
+	case "true":
+		return true, true, true
+	case "false":
+		return false, true, true
+	default:
+		return false, true, false
+	}
+}
+
 func decodeStateField(raw map[string]json.RawMessage, key string, dst any) {
 	value, ok := raw[key]
 	if !ok {
@@ -195,7 +233,8 @@ func decodeTimestampField(raw map[string]json.RawMessage, key string, dst *time.
 
 // parseTimestamp accepts RFC3339 strings and legacy v1 numeric Unix seconds
 // (integer or fractional). Zero is v1's "never" sentinel and becomes the zero
-// time.
+// time. Out-of-range values are clamped to years 0000..9999 so a bad upstream
+// or hand-edited state file cannot make time.Time fail to marshal later.
 func parseTimestamp(raw json.RawMessage) (time.Time, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -209,7 +248,11 @@ func parseTimestamp(raw json.RawMessage) (time.Time, error) {
 		if text == "" {
 			return time.Time{}, nil
 		}
-		return time.Parse(time.RFC3339, text)
+		parsed, err := time.Parse(time.RFC3339, text)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return clampStateTime(parsed), nil
 	}
 
 	var number json.Number
@@ -220,11 +263,51 @@ func parseTimestamp(raw json.RawMessage) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return time.Time{}, fmt.Errorf("accountstate: timestamp is not finite")
+	}
 	if seconds == 0 {
 		return time.Time{}, nil
 	}
+	if seconds >= float64(maxStateUnixSeconds) {
+		return maxStateTime(), nil
+	}
+	if seconds <= float64(minStateUnixSeconds) {
+		return minStateTime(), nil
+	}
 	whole, fraction := math.Modf(seconds)
-	return time.Unix(int64(whole), int64(math.Round(fraction*1e9))).UTC(), nil
+	return clampStateTime(time.Unix(int64(whole), int64(math.Round(fraction*1e9))).UTC()), nil
+}
+
+// The RFC3339 marshal range is years 0000..9999. Clamping exactly at those
+// boundaries preserves the "cooling forever" signal for absurd future values
+// while keeping SaveStore writable.
+const (
+	minStateUnixSeconds int64 = -62167219200 // 0000-01-01T00:00:00Z
+	maxStateUnixSeconds int64 = 253402300799 // 9999-12-31T23:59:59Z
+)
+
+func minStateTime() time.Time { return time.Unix(minStateUnixSeconds, 0).UTC() }
+func maxStateTime() time.Time { return time.Unix(maxStateUnixSeconds, 0).UTC() }
+
+func clampStateTime(value time.Time) time.Time {
+	if value.Before(minStateTime()) {
+		return minStateTime()
+	}
+	if value.After(maxStateTime()) {
+		return maxStateTime()
+	}
+	return value
+}
+
+// unixSecondsValue returns v1's numeric timestamp shape. Zero stays numeric
+// zero, which round-trips through v1's `float(entry.get(...) or 0)`.
+func unixSecondsValue(value time.Time) float64 {
+	if value.IsZero() {
+		return 0
+	}
+	value = clampStateTime(value)
+	return float64(value.Unix()) + float64(value.Nanosecond())/float64(time.Second)
 }
 
 // SaveStore writes states as a JSON object keyed by UID. Empty UIDs are

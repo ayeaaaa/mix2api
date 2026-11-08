@@ -65,6 +65,12 @@ type chatFake struct {
 	blockAfterHeaders bool
 	// hang blocks after sending response headers but before any SSE frame.
 	hang bool
+
+	// balance and billItems serve the points endpoints for credit prewarm and
+	// the post-DONE per-request credit look-back.
+	balance   map[string]any
+	billItems []map[string]any
+	billCalls int
 }
 
 func (f *chatFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -73,9 +79,42 @@ func (f *chatFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveChat(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == RefreshPath:
 		f.serveRefresh(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == PointsBalancePath:
+		f.serveBalance(w)
+	case r.Method == http.MethodGet && r.URL.Path == PointsBillsPath:
+		f.serveBills(w, r)
 	default:
 		writeCatalogJSON(w, http.StatusNotFound, map[string]any{"message": "not found"})
 	}
+}
+
+func (f *chatFake) serveBalance(w http.ResponseWriter) {
+	f.mu.Lock()
+	balance := f.balance
+	f.mu.Unlock()
+	if balance == nil {
+		writeCatalogJSON(w, http.StatusNotFound, map[string]any{"message": "not found"})
+		return
+	}
+	writeCatalogJSON(w, http.StatusOK, map[string]any{"code": 0, "data": balance})
+}
+
+func (f *chatFake) serveBills(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.billCalls++
+	items := append([]map[string]any(nil), f.billItems...)
+	f.mu.Unlock()
+	_ = r
+	writeCatalogJSON(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"data": map[string]any{"items": items, "has_more": false},
+	})
+}
+
+func (f *chatFake) setBillItems(items []map[string]any) {
+	f.mu.Lock()
+	f.billItems = append([]map[string]any(nil), items...)
+	f.mu.Unlock()
 }
 
 func (f *chatFake) serveChat(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +336,7 @@ func newChatPool(t *testing.T, cfg Config, uids ...string) (*Pool, map[string]st
 		writePoolAuth(t, dir, uid, "", time.Now().Add(time.Hour), nil)
 	}
 	p := mustPool(t, dir, cfg)
+	p.SetCreditLookbackEnabled(false)
 	tokens := make(map[string]string, len(uids))
 	for _, uid := range uids {
 		tokens[uid] = chatAccountToken(t, p, uid)
@@ -501,7 +541,7 @@ func TestChatForcesStreamAndAllowlist(t *testing.T) {
 	}
 	if header.Get("X-Client-Platform") != ClientPlatform ||
 		header.Get("X-Client-Version") != ClientVersion ||
-		header.Get("X-Raccoon-Language") != ClientLanguage ||
+		header.Get("X-Raccoon-Language") != "zh" ||
 		header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("desktop identity headers = %v", header)
 	}
@@ -519,6 +559,7 @@ func TestChatHeaderOrgGate(t *testing.T) {
 		"office_identity": "org-code-1",
 	})
 	p := mustPool(t, dir, Config{Enabled: true, MaxConcurrent: 1})
+	p.SetCreditLookbackEnabled(false)
 	fake := &chatFake{}
 	server := httptest.NewServer(fake)
 	defer server.Close()
@@ -714,8 +755,8 @@ func TestStreamCloseReleasesOnce(t *testing.T) {
 		return stream
 	}
 
-	// [DONE] itself must release the slot, before the next Next call and
-	// before a deferred Close.
+	// [DONE] is yielded before the credit/EOF bookkeeping. The slot is held until
+	// the stream is actually exhausted or closed, matching v1's stream scope.
 	stream := open()
 	sawDone := false
 	for !sawDone {
@@ -725,11 +766,14 @@ func TestStreamCloseReleasesOnce(t *testing.T) {
 		}
 		sawDone = bytes.Contains(frame, []byte("[DONE]"))
 	}
-	if got := activeConcurrent(account); got != 0 {
-		t.Fatalf("active concurrent after DONE = %d, want 0", got)
+	if got := activeConcurrent(account); got != 1 {
+		t.Fatalf("active concurrent immediately after DONE = %d, want 1 until EOF", got)
 	}
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("Next after DONE = %v, want io.EOF", err)
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("active concurrent after EOF = %d, want 0", got)
 	}
 	var wg sync.WaitGroup
 	for index := 0; index < 8; index++ {
@@ -795,11 +839,14 @@ func TestChatDoneFirstFrameReleasesSlot(t *testing.T) {
 	if string(bytes.TrimSpace(frame)) != "data: [DONE]" {
 		t.Fatalf("frame = %q", frame)
 	}
-	if got := activeConcurrent(account); got != 0 {
-		t.Fatalf("pending [DONE] did not release the slot: %d", got)
+	if got := activeConcurrent(account); got != 1 {
+		t.Fatalf("pending [DONE] released the slot too early: %d", got)
 	}
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("Next after DONE = %v, want io.EOF", err)
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("EOF after DONE did not release the slot: %d", got)
 	}
 	if err := stream.Close(); err != nil {
 		t.Fatalf("deferred Close: %v", err)
@@ -1425,7 +1472,7 @@ func TestChatClassifiesHTTPStatusWhenErrorBodyReadFails(t *testing.T) {
 
 			stream, err := p.sendChatRequest(
 				context.Background(), account, p.HTTPClient(), http.Header{},
-				[]byte(`{"model":"raccoon-090dd3"}`), nil,
+				[]byte(`{"model":"raccoon-090dd3"}`), "raccoon-090dd3", nil,
 				Config{StreamTimeoutSeconds: 5},
 			)
 			if stream != nil {
@@ -1858,6 +1905,7 @@ func TestChatUsesAccountProxy(t *testing.T) {
 	dir := t.TempDir()
 	writePoolAuth(t, dir, "u-proxy-chat", "", time.Now().Add(time.Hour), nil)
 	p := mustPool(t, dir, Config{Enabled: true, MaxConcurrent: 1})
+	p.SetCreditLookbackEnabled(false)
 
 	target := &chatFake{}
 	targetServer := httptest.NewServer(target)
@@ -1961,6 +2009,7 @@ func TestChatEnsuresTokenBeforeRequest(t *testing.T) {
 	dir := t.TempDir()
 	writePoolAuth(t, dir, "u-ensure", "", time.Now().Add(30*time.Second), nil)
 	p := mustPool(t, dir, Config{Enabled: true, MaxConcurrent: 1})
+	p.SetCreditLookbackEnabled(false)
 	newToken := makeUnsignedJWT(t, map[string]any{
 		"sub": "u-ensure",
 		"exp": time.Now().Add(2 * time.Hour).Unix(),
@@ -2072,6 +2121,196 @@ func TestChatNilInputs(t *testing.T) {
 	p2, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1})
 	if _, err := p2.OpenChat(nil, providers.ChatRequest{}); err == nil {
 		t.Fatal("nil context did not error")
+	}
+}
+
+func TestChatEmitsPostDoneCreditUsageFromBill(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-credit")
+	p.SetCreditLookbackEnabled(true)
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	first := map[string]any{
+		"bill_id":    "bill-one",
+		"points":     -2,
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	fake.setBillItems([]map[string]any{first})
+
+	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	frames := drainChat(t, stream)
+	usage, ok := postDoneUsage(t, frames)
+	if !ok || usage["credit"] != float64(2) {
+		t.Fatalf("post-DONE usage = %#v (ok=%v), want credit 2", usage, ok)
+	}
+
+	// The first bill is now marked seen. A new negative bill appears while the
+	// old one remains on the page; only the new one may pay for this request.
+	second := map[string]any{
+		"bill_id":    "bill-two",
+		"points":     -1,
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	fake.setBillItems([]map[string]any{first, second})
+	stream, err = p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("second OpenChat: %v", err)
+	}
+	usage, ok = postDoneUsage(t, drainChat(t, stream))
+	if !ok || usage["credit"] != float64(1) {
+		t.Fatalf("second post-DONE usage = %#v (ok=%v), want credit 1", usage, ok)
+	}
+}
+
+func TestChatPostDoneCreditAmbiguousDoesNotGuess(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-credit-ambiguous")
+	p.SetCreditLookbackEnabled(true)
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	fake.setBillItems([]map[string]any{
+		{"bill_id": "bill-a", "points": -2, "created_at": now},
+		{"bill_id": "bill-b", "points": -3, "created_at": now},
+	})
+	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	frames := drainChat(t, stream)
+	if usage, ok := postDoneUsage(t, frames); ok {
+		t.Fatalf("ambiguous bills produced a guess: %#v", usage)
+	}
+}
+
+func postDoneUsage(t *testing.T, frames [][]byte) (map[string]any, bool) {
+	t.Helper()
+	seenDone := false
+	for _, frame := range frames {
+		data := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(frame)), "data:"))
+		if data == "[DONE]" {
+			seenDone = true
+			continue
+		}
+		if !seenDone || data == "" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			continue
+		}
+		usage, ok := payload["usage"].(map[string]any)
+		if ok && len(usage) > 0 {
+			return usage, true
+		}
+	}
+	return nil, false
+}
+
+func TestReservePrewarmBlocksSpendWhenBalanceUnknown(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-reserve")
+	p.SetCreditLookbackEnabled(false)
+	fake := &chatFake{
+		balance: map[string]any{"available_points": 5},
+	}
+	fake.setBillItems([]map[string]any{})
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	account := p.Get("u-reserve")
+	account.mu.Lock()
+	account.ReserveCredits = 10
+	account.Credits = nil
+	account.mu.Unlock()
+
+	_, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err == nil || !strings.Contains(err.Error(), "预留") {
+		t.Fatalf("reserve guard error = %v, want low-reserve explanation", err)
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 0 {
+		t.Fatalf("reserve guard spent %d upstream chat calls", calls)
+	}
+	if account.Credits == nil {
+		t.Fatal("prewarm did not fetch the unknown balance")
+	}
+}
+
+func TestChatStreamPerReadIdleTimeoutDoesNotCutActiveStream(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-long-stream", "", time.Now().Add(time.Hour), nil)
+	p := mustPool(t, dir, Config{Enabled: true, MaxConcurrent: 1, StreamTimeoutSeconds: 0.15})
+	p.SetCreditLookbackEnabled(false)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for index := 0; index < 6; index++ {
+			payload := fmt.Sprintf(
+				`data: {"id":"chunk-%d","choices":[{"index":0,"delta":{"content":"%d"}}]}%s`,
+				index, index, "\n\n",
+			)
+			_, _ = w.Write([]byte(payload))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	configureChatPool(t, p, upstream.URL)
+
+	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	frames := drainChat(t, stream)
+	content := string(bytes.Join(frames, nil))
+	for index := 0; index < 6; index++ {
+		if !strings.Contains(content, fmt.Sprintf(`"content":"%d"`, index)) {
+			t.Fatalf("frame %d missing from active stream: %s", index, content)
+		}
+	}
+	if !strings.Contains(content, "[DONE]") {
+		t.Fatalf("active stream was cut before DONE: %s", content)
+	}
+}
+
+func TestCreditSeenBillsBounded(t *testing.T) {
+	account := &Account{}
+	fetched := make([]string, 0, creditSeenBillLimit+50)
+	for index := 0; index < creditSeenBillLimit+50; index++ {
+		fetched = append(fetched, fmt.Sprintf("bill-%d", index))
+	}
+	account.rememberCreditBills(fetched, nil)
+	account.creditBillMu.Lock()
+	size := len(account.creditSeenBills)
+	account.creditBillMu.Unlock()
+	if size > creditSeenBillLimit {
+		t.Fatalf("seen bill set = %d, want <= %d", size, creditSeenBillLimit)
 	}
 }
 

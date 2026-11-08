@@ -89,6 +89,11 @@ type Pool struct {
 	// production always keeps the NewPool default.
 	now func() time.Time
 
+	// Collection of fake/real clocks and test seams for chat token-manager races.
+	// creditLookbackDisabled is set by tests that do not model bills; production
+	// keeps v1's per-request credit look-back enabled.
+	creditLookbackDisabled bool
+
 	// chatEnsureHook and chatRefreshHook are test seams for deterministic
 	// token-manager races in chat transport tests. They are set before use and
 	// are nil in production, where the injected TokenManager is called.
@@ -890,6 +895,28 @@ func (p *Pool) ProxyURL(a *Account) string {
 	return a.proxy
 }
 
+// SetCreditLookbackEnabled toggles the post-DONE per-request credit lookup.
+// Production keeps v1 behavior enabled; test fixtures without a bill endpoint
+// disable it so a stream does not spend the six-attempt retry window.
+func (p *Pool) SetCreditLookbackEnabled(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.creditLookbackDisabled = !enabled
+	p.mu.Unlock()
+}
+
+func (p *Pool) creditLookbackEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	enabled := !p.creditLookbackDisabled
+	p.mu.RUnlock()
+	return enabled
+}
+
 // SetHTTPClient configures the shared Raccoon JSON client used by provider
 // API calls. The provider wiring injects it after NewPool; when unset, catalog
 // reads fall back to the seed models rather than creating a second transport.
@@ -1516,7 +1543,9 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 		existingSlot = strings.TrimSpace(account.Auth.ProxySlot)
 	}
 	account.mu.Unlock()
-	if strings.TrimSpace(auth.ProxySlot) == "" && existingSlot != "" {
+	// v1 keeps the existing persisted slot even when the incoming auth document
+	// carries a different non-empty proxySlot.
+	if existingSlot != "" {
 		auth.ProxySlot = existingSlot
 	}
 

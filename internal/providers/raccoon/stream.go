@@ -1,7 +1,6 @@
 package raccoon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,28 +11,38 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+var errStreamIdleTimeout = errors.New("raccoon: chat stream idle timeout")
 
 // chatStream passes Raccoon SSE payloads through as complete frames. It caches
 // the first data event during preflight so an HTTP 200 carrying an embedded
 // error fails before the API layer writes headers, and it releases the account
-// slot exactly once.
+// slot exactly once. After [DONE] it stays open long enough to emit the v1
+// credit usage frame, which the API forwards after the terminal marker.
 type chatStream struct {
 	parent context.Context
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	body   io.ReadCloser
-	reader *bufio.Reader
+	pump   *streamPump
+	buffer []byte
+	idle   time.Duration
 
-	pool    *Pool
-	account *Account
-	secrets []string
+	pool      *Pool
+	account   *Account
+	model     string
+	secrets   []string
+	startedAt time.Time
 
 	pending     []byte
 	pendingData []byte
 	preflighted bool
 	sawDone     bool
+
+	lastUsage     map[string]any
+	creditChecked bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -46,17 +55,23 @@ func newChatStream(
 	body io.ReadCloser,
 	pool *Pool,
 	account *Account,
+	model string,
 	secrets []string,
+	idle time.Duration,
+	startedAt time.Time,
 ) *chatStream {
+	pump := newStreamPump(body)
 	return &chatStream{
-		parent:  parent,
-		ctx:     ctx,
-		cancel:  cancel,
-		body:    body,
-		reader:  bufio.NewReaderSize(body, 64*1024),
-		pool:    pool,
-		account: account,
-		secrets: append([]string(nil), secrets...),
+		parent:    parent,
+		ctx:       ctx,
+		cancel:    cancel,
+		pump:      pump,
+		idle:      idle,
+		pool:      pool,
+		account:   account,
+		model:     model,
+		secrets:   append([]string(nil), secrets...),
+		startedAt: startedAt,
 	}
 }
 
@@ -86,15 +101,14 @@ func (s *chatStream) preflight() error {
 }
 
 // Next returns one complete SSE frame, including its trailing blank line.
-// [DONE] is yielded once; the following call returns io.EOF and releases the
-// account. A stream that ends without [DONE] reports an upstream error.
+// [DONE] is yielded once; the following calls first emit the synthetic credit
+// usage frame and then drain any post-DONE upstream frames before io.EOF.
 func (s *chatStream) Next() ([]byte, error) {
 	if s == nil {
 		return nil, io.EOF
 	}
 	if s.sawDone {
-		_ = s.Close()
-		return nil, io.EOF
+		return s.nextAfterDone()
 	}
 	if s.pending != nil {
 		frame := s.pending
@@ -103,11 +117,9 @@ func (s *chatStream) Next() ([]byte, error) {
 		s.pendingData = nil
 		if isDoneEvent(data) {
 			s.sawDone = true
-			// [DONE] closes the stream: release the account before the terminal
-			// frame reaches the client. Close is idempotent, so a deferred
-			// caller Close cannot double-release.
-			_ = s.Close()
+			return frame, nil
 		}
+		s.trackUsage(data)
 		return frame, nil
 	}
 
@@ -129,14 +141,98 @@ func (s *chatStream) Next() ([]byte, error) {
 
 	if isDoneEvent(data) {
 		s.sawDone = true
-		_ = s.Close()
 		return frame, nil
 	}
 	if err := embeddedStreamError(data, s.secrets); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
+	s.trackUsage(data)
 	return frame, nil
+}
+
+// nextAfterDone emits the v1 per-request credit frame once, then forwards any
+// upstream bytes that follow [DONE]. A missing/multiple bill match produces no
+// frame and no guess.
+func (s *chatStream) nextAfterDone() ([]byte, error) {
+	if !s.creditChecked {
+		s.creditChecked = true
+		if frame := s.creditFrame(); frame != nil {
+			return frame, nil
+		}
+	}
+
+	frame, data, err := s.readFrame()
+	if err != nil {
+		_ = s.Close()
+		if errors.Is(err, io.EOF) {
+			return nil, io.EOF
+		}
+		return nil, s.mapReadError(err)
+	}
+	if isDoneEvent(data) {
+		return s.nextAfterDone()
+	}
+	if err := embeddedStreamError(data, s.secrets); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	s.trackUsage(data)
+	return frame, nil
+}
+
+func (s *chatStream) trackUsage(data []byte) {
+	if s == nil || len(data) == 0 {
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return
+	}
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok || len(usage) == 0 {
+		return
+	}
+	if s.lastUsage == nil {
+		s.lastUsage = cloneUsage(usage)
+		return
+	}
+	if usageTotal(usage) >= usageTotal(s.lastUsage) {
+		s.lastUsage = cloneUsage(usage)
+	}
+}
+
+func (s *chatStream) creditFrame() []byte {
+	if s == nil || s.pool == nil || s.account == nil {
+		return nil
+	}
+	if !s.pool.creditLookbackEnabled() {
+		return nil
+	}
+	credit, ok := s.pool.requestCredit(s.ctx, s.account, s.startedAt)
+	if !ok {
+		return nil
+	}
+	usage := map[string]any{}
+	if s.lastUsage != nil {
+		usage = cloneUsage(s.lastUsage)
+	}
+	usage["credit"] = credit
+	payload := map[string]any{
+		"id":      "chatcmpl-raccoon-usage",
+		"object":  "chat.completion.chunk",
+		"created": s.startedAt.Unix(),
+		"model":   s.model,
+		"choices": []any{},
+		"usage":   usage,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return []byte("data: " + string(encoded) + "\n\n")
 }
 
 // Close closes the upstream body, cancels the stream timeout, and releases the
@@ -149,8 +245,8 @@ func (s *chatStream) Close() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		if s.body != nil {
-			s.closeErr = s.body.Close()
+		if s.pump != nil {
+			s.pump.close()
 		}
 		if s.pool != nil {
 			s.pool.Release(s.account)
@@ -168,8 +264,8 @@ func (s *chatStream) abort() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.body != nil {
-		_ = s.body.Close()
+	if s.pump != nil {
+		s.pump.close()
 	}
 }
 
@@ -178,13 +274,125 @@ type sseLine struct {
 	payload []byte
 }
 
+// streamPump continuously reads the body into an unbuffered channel. The
+// consumer applies an idle timeout per chunk, so a long active stream is not
+// cut by an absolute whole-stream deadline while a silent upstream still times
+// out after the configured interval.
+type streamPump struct {
+	body io.ReadCloser
+	data chan streamChunk
+	stop chan struct{}
+	done chan struct{}
+
+	stopOnce sync.Once
+}
+
+type streamChunk struct {
+	data []byte
+	err  error
+}
+
+func newStreamPump(body io.ReadCloser) *streamPump {
+	pump := &streamPump{
+		body: body,
+		data: make(chan streamChunk),
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go pump.run()
+	return pump
+}
+
+func (p *streamPump) run() {
+	defer close(p.done)
+	defer close(p.data)
+	buffer := make([]byte, 64*1024)
+	for {
+		n, err := p.body.Read(buffer)
+		if n > 0 {
+			chunk := streamChunk{data: append([]byte(nil), buffer[:n]...)}
+			select {
+			case p.data <- chunk:
+			case <-p.stop:
+				return
+			}
+		}
+		if err != nil {
+			select {
+			case p.data <- streamChunk{err: err}:
+			case <-p.stop:
+			}
+			return
+		}
+	}
+}
+
+func (p *streamPump) next(parent context.Context, idle time.Duration) ([]byte, error) {
+	if p == nil {
+		return nil, io.EOF
+	}
+	if idle <= 0 {
+		idle = 15 * time.Second
+	}
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
+	select {
+	case chunk, ok := <-p.data:
+		if !ok {
+			return nil, io.EOF
+		}
+		if chunk.err != nil {
+			return nil, chunk.err
+		}
+		return chunk.data, nil
+	case <-parent.Done():
+		p.close()
+		return nil, parent.Err()
+	case <-timer.C:
+		p.close()
+		return nil, errStreamIdleTimeout
+	}
+}
+
+func (p *streamPump) close() {
+	if p == nil {
+		return
+	}
+	p.stopOnce.Do(func() {
+		close(p.stop)
+		if p.body != nil {
+			_ = p.body.Close()
+		}
+	})
+}
+
+func (s *chatStream) readLine() ([]byte, error) {
+	for {
+		if index := bytes.IndexByte(s.buffer, '\n'); index >= 0 {
+			line := append([]byte(nil), s.buffer[:index+1]...)
+			s.buffer = s.buffer[index+1:]
+			return line, nil
+		}
+		chunk, err := s.pump.next(s.ctx, s.idle)
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(s.buffer) > 0 {
+				line := s.buffer
+				s.buffer = nil
+				return line, nil
+			}
+			return nil, err
+		}
+		s.buffer = append(s.buffer, chunk...)
+	}
+}
+
 // readFrame reads one SSE event and returns its complete frame plus the joined
 // data payload used for error detection. Comments and other non-data fields
 // are skipped, matching v1's data-line pass-through.
 func (s *chatStream) readFrame() ([]byte, []byte, error) {
 	lines := make([]sseLine, 0, 1)
 	for {
-		line, err := s.reader.ReadBytes('\n')
+		line, err := s.readLine()
 		if len(line) > 0 {
 			trimmed := bytes.TrimRight(line, "\r\n")
 			switch {
@@ -253,6 +461,12 @@ func (s *chatStream) mapReadError(err error) error {
 				}
 			}
 			return ctxErr
+		}
+	}
+	if errors.Is(err, errStreamIdleTimeout) {
+		return &APIError{
+			Kind:    KindTransient,
+			Message: "raccoon: chat stream timed out",
 		}
 	}
 	if errors.Is(err, io.EOF) {

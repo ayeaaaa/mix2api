@@ -930,7 +930,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-- Golden fixtures from v1.6.5 outputs (recorded manually or from oracle test).
+- Golden fixtures are v2 regression goldens in this slice; real v1.6.5 fake-upstream oracle recording remains a Gate A follow-up (see `tests/contract/testdata/PROVENANCE.md`).
 - Compare normalized semantic values.
 - No real network; fake upstream.
 

@@ -845,6 +845,42 @@ func TestAddReimportPreservesProxySlot(t *testing.T) {
 	}
 }
 
+func TestReimportExistingProxySlotWinsOverIncoming(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-import-slot", "", poolExpiry(now), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+	p.SetProxySlots([]transport.Slot{
+		{ID: "slot-1", URL: "http://proxy-one.example:8080", Enabled: true},
+		{ID: "slot-2", URL: "http://proxy-two.example:8080", Enabled: true},
+	})
+	if err := p.SetProxySlot("u-import-slot", "slot-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	token := makeUnsignedJWT(t, map[string]any{"sub": "u-import-slot", "exp": poolExpiry(now).Unix()})
+	account, err := p.Add(Auth{
+		UID:           "u-import-slot",
+		AccessToken:   token,
+		RefreshToken:  "refresh-new",
+		OfficeOrgName: "Reimported",
+		ProxySlot:     "slot-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.ProxySlot() != "slot-1" {
+		t.Fatalf("incoming slot overrode existing slot: %q", account.ProxySlot())
+	}
+	saved, err := LoadAuth(account.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.ProxySlot != "slot-1" {
+		t.Fatalf("saved auth slot = %q, want existing slot-1", saved.ProxySlot)
+	}
+}
+
 func TestPoolTokenManagerWiresTimeoutAndProxy(t *testing.T) {
 	now := time.Now()
 	dir := t.TempDir()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,6 +57,9 @@ type Provider struct {
 
 	nowMu sync.RWMutex
 	now   func() time.Time
+
+	oauthPortMu sync.RWMutex
+	oauthPort   int
 
 	healthMu    sync.Mutex
 	healthCache healthCacheEntry
@@ -206,6 +210,38 @@ func (p *Provider) SetNow(now func() time.Time) {
 	}
 }
 
+// SetListenerPort injects the actual HTTP listener port used by the command
+// or server composition. OAuth redirect URLs must never be derived from the
+// request Host header: a reverse proxy may send a portless or foreign Host.
+func (p *Provider) SetListenerPort(port int) {
+	if p == nil {
+		return
+	}
+	p.oauthPortMu.Lock()
+	p.oauthPort = port
+	p.oauthPortMu.Unlock()
+}
+
+func (p *Provider) listenerPort() int {
+	if p == nil {
+		return 0
+	}
+	p.oauthPortMu.RLock()
+	port := p.oauthPort
+	p.oauthPortMu.RUnlock()
+	return port
+}
+
+// SetCreditLookbackEnabled toggles v1's post-DONE per-request bill lookup.
+// Production leaves it enabled; offline fixtures without a bill endpoint
+// disable it to keep stream completion immediate.
+func (p *Provider) SetCreditLookbackEnabled(enabled bool) {
+	if p == nil || p.pool == nil {
+		return
+	}
+	p.pool.SetCreditLookbackEnabled(enabled)
+}
+
 // SetBaseURL moves the Raccoon API host. The authorize page host is separate
 // and remains the public xiaohuanxiong.com page (or WB_RACCOON_AUTHORIZE_URL).
 func (p *Provider) SetBaseURL(baseURL string) {
@@ -296,12 +332,21 @@ func (p *Provider) ID() string { return ProviderID }
 // Realm returns the unique realm this instance serves.
 func (p *Provider) Realm() string { return ProviderRealm }
 
-// Models delegates discovery to the provider-owned catalog.
+// Models delegates discovery to the provider-owned catalog. A disabled realm
+// is a 503 even when seed models are known; an enabled realm with no accounts
+// keeps v1's seed fallback.
 func (p *Provider) Models(ctx context.Context, force bool) ([]providers.Model, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = p.applySettings()
+	cfg, _ := p.applySettings()
+	if !cfg.Enabled {
+		return nil, &APIError{
+			Kind:    KindUnavailable,
+			Status:  http.StatusServiceUnavailable,
+			Message: disabledChatMessage,
+		}
+	}
 	return p.pool.Models(ctx, force)
 }
 

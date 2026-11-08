@@ -21,7 +21,10 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
 )
 
-const contractVersion = "v2-contract"
+const (
+	contractVersion = "v2-contract"
+	contractAPIKey  = "contract-test-api-key"
+)
 
 // contractCatalogFixture is the two-model catalog the v1.6.5 oracle fake
 // serves. Keeping it small makes the golden exact: IDs, capability spellings,
@@ -51,6 +54,19 @@ const contractCatalogFixture = `{
     ]
   }
 }`
+
+func TestGoldenProvenanceIsExplicitlyRegression(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "PROVENANCE.md"))
+	if err != nil {
+		t.Fatalf("read provenance: %v", err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, want := range []string{"not outputs captured", "regression", "partial"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("provenance does not state %q: %s", want, raw)
+		}
+	}
+}
 
 func TestNormalizeJSONIgnoresDynamicFields(t *testing.T) {
 	first := []byte(`{
@@ -506,9 +522,18 @@ func newContractFixture(t *testing.T) *contractFixture {
 		t.Fatalf("raccoon.New: %v", err)
 	}
 	provider.SetNow(func() time.Time { return now })
+	// The fixture has no bill endpoint; the dedicated Raccoon provider test
+	// covers the post-DONE credit frame without changing these goldens.
+	provider.SetCreditLookbackEnabled(false)
 
+	passAuth := func(next http.Handler) http.Handler { return next }
 	return &contractFixture{
-		server:   api.NewServer(api.ServerOptions{Version: contractVersion, Providers: []providers.Provider{provider}}),
+		server: api.NewServer(api.ServerOptions{
+			Version:    contractVersion,
+			Providers:  []providers.Provider{provider},
+			APIKeyAuth: passAuth,
+			PanelAuth:  passAuth,
+		}),
 		provider: provider,
 		upstream: upstream,
 		fake:     fake,
@@ -607,8 +632,8 @@ func assertRaccoonIdentityHeaders(t *testing.T, header http.Header, token string
 	if got := header.Get("X-Client-Version"); got != raccoon.ClientVersion {
 		t.Fatalf("X-Client-Version = %q, want %q", got, raccoon.ClientVersion)
 	}
-	if got := header.Get("X-Raccoon-Language"); got != raccoon.ClientLanguage {
-		t.Fatalf("X-Raccoon-Language = %q, want %q", got, raccoon.ClientLanguage)
+	if got := header.Get("X-Raccoon-Language"); got != "zh" {
+		t.Fatalf("X-Raccoon-Language = %q, want literal zh", got)
 	}
 }
 

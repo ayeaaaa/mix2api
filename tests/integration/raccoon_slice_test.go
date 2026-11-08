@@ -20,7 +20,11 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
 )
 
-const sliceVersion = "2.0.0-integration"
+const (
+	sliceVersion       = "2.0.0-integration"
+	slicePanelPassword = "integration-panel-password"
+	sliceAPIKey        = "integration-api-key"
+)
 
 // TestCommandPathsFromEnv covers the command's directory wiring directly. The
 // helper is shared with cmd so this test exercises the real startup path.
@@ -73,6 +77,14 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	if setup.Store == nil {
 		t.Fatal("app.Build returned a nil settings store")
 	}
+	for _, provider := range setup.Providers {
+		if raccoonProvider, ok := provider.(*raccoon.Provider); ok {
+			// The slice's fake upstream has no bill endpoint; keep the stream
+			// terminal marker immediate while the dedicated provider test covers
+			// the real post-DONE credit lookup.
+			raccoonProvider.SetCreditLookbackEnabled(false)
+		}
+	}
 	wantStorePath := filepath.Join(root, "accounts", "settings.json")
 	if setup.Store.Path != wantStorePath {
 		t.Fatalf("store path = %q, want %q", setup.Store.Path, wantStorePath)
@@ -94,12 +106,35 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	}
 
 	server := api.NewServer(api.ServerOptions{
-		Version:   sliceVersion,
-		Providers: setup.Providers,
+		Version:    sliceVersion,
+		Providers:  setup.Providers,
+		PanelAuth:  api.RequirePanelAuth(slicePanelPassword),
+		APIKeyAuth: api.RequireAPIKeyAuth(sliceAPIKey),
 	})
 	live := httptest.NewServer(server.Handler)
 	t.Cleanup(live.Close)
 	client := &http.Client{Timeout: 10 * time.Second}
+	panelHeaders := map[string]string{"X-Panel-Token": slicePanelPassword}
+	apiHeaders := map[string]string{"Authorization": "Bearer " + sliceAPIKey}
+
+	// Unauthenticated import/delete/chat must be rejected before any provider
+	// or filesystem work. The delete path is a known panel route; even its
+	// method-mismatch subtree is behind panel auth.
+	for _, rejection := range []struct {
+		name    string
+		method  string
+		path    string
+		payload any
+	}{
+		{name: "import", method: http.MethodPost, path: "/raccoon/accounts/import", payload: map[string]any{}},
+		{name: "delete", method: http.MethodPost, path: "/raccoon/accounts/delete", payload: map[string]any{"uid": uid}},
+		{name: "chat", method: http.MethodPost, path: "/v1/chat/completions?realm=raccoon", payload: map[string]any{
+			"model": "raccoon-090dd3", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}},
+	} {
+		rec := sliceHTTP(t, client, rejection.method, live.URL+rejection.path, rejection.payload, nil)
+		sliceRequireStatus(t, "unauthenticated "+rejection.name, rec, http.StatusUnauthorized)
+	}
 
 	// 1. Flat auth import must enable the realm and persist it in the store
 	// that the provider reads on every request.
@@ -108,7 +143,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 		"refresh_token":   refreshToken,
 		"office_identity": "personal",
 		"office_org_name": "Slice Org",
-	})
+	}, panelHeaders)
 	sliceRequireStatus(t, "import", rec, http.StatusOK)
 	imported := sliceJSON(t, "import", rec)
 	if imported["ok"] != true || imported["enabled"] != true {
@@ -140,7 +175,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 
 	// 2. Overview must see the imported account, enabled health, and no
 	// credentials.
-	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/raccoon/overview", nil)
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/raccoon/overview", nil, panelHeaders)
 	sliceRequireStatus(t, "overview", rec, http.StatusOK)
 	overview := sliceJSON(t, "overview", rec)
 	if overview["provider"] != "raccoon" || overview["online"] != true {
@@ -177,7 +212,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	sliceNoSecrets(t, "overview", rec.Body, accessToken, refreshToken)
 
 	// 3. The generic model catalog resolves the imported account's realm.
-	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/v1/models?realm=raccoon", nil)
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/v1/models?realm=raccoon", nil, apiHeaders)
 	sliceRequireStatus(t, "models", rec, http.StatusOK)
 	models := sliceJSON(t, "models", rec)
 	if models["object"] != "list" || models["realm"] != "raccoon" {
@@ -208,7 +243,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 		"model":    "raccoon-090dd3",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 		"stream":   false,
-	})
+	}, apiHeaders)
 	sliceRequireStatus(t, "chat nonstream", rec, http.StatusOK)
 	completion := sliceJSON(t, "chat nonstream", rec)
 	if completion["object"] != "chat.completion" {
@@ -247,7 +282,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 		"model":    "raccoon-090dd3",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 		"stream":   true,
-	})
+	}, apiHeaders)
 	sliceRequireStatus(t, "chat stream", rec, http.StatusOK)
 	if got := rec.Header.Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
 		t.Fatalf("chat stream content type = %q", got)
@@ -264,7 +299,7 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	sliceNoSecrets(t, "chat stream", rec.Body, accessToken, refreshToken)
 
 	// 6. Generic health must include the Raccoon realm.
-	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/health", nil)
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/health", nil, nil)
 	sliceRequireStatus(t, "health", rec, http.StatusOK)
 	healthRoot := sliceJSON(t, "health", rec)
 	if healthRoot["ok"] != true || healthRoot["version"] != sliceVersion {
@@ -377,7 +412,7 @@ func (r *sliceResponse) summary() string {
 	)
 }
 
-func sliceHTTP(t *testing.T, client *http.Client, method, url string, payload any) *sliceResponse {
+func sliceHTTP(t *testing.T, client *http.Client, method, url string, payload any, headers map[string]string) *sliceResponse {
 	t.Helper()
 	var reader io.Reader
 	if payload != nil {
@@ -393,6 +428,9 @@ func sliceHTTP(t *testing.T, client *http.Client, method, url string, payload an
 	}
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
 	}
 	response, err := client.Do(request)
 	if err != nil {
