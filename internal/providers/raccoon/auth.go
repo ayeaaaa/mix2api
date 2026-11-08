@@ -1,6 +1,7 @@
 package raccoon
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,8 +19,11 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 )
 
-// Auth is one Raccoon account's persisted credentials. JSON field names match
-// v1's auth documents.
+var unsafeUIDCharacters = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// Auth is one Raccoon account's persisted credentials. The first six fields
+// are the required v1 keys; the remaining known v1 fields and any unknown
+// future fields are preserved additively.
 type Auth struct {
 	UID            string    `json:"uid"`
 	AccessToken    string    `json:"access_token"`
@@ -26,65 +31,175 @@ type Auth struct {
 	OfficeIdentity string    `json:"office_identity"`
 	OfficeOrgName  string    `json:"office_org_name"`
 	ExpiresAt      time.Time `json:"expires_at"`
+
+	TokenType     string `json:"token_type,omitempty"`
+	OfficeOrgRole string `json:"office_org_role,omitempty"`
+	ProxySlot     string `json:"proxySlot,omitempty"`
+	UpdatedAt     int64  `json:"updated_at,omitempty"`
+
+	// extraFields keeps unknown JSON fields byte-for-byte so a load/save cycle
+	// cannot drop future v1 settings. Empty known extras are also kept here so
+	// their presence survives a round trip.
+	extraFields map[string]json.RawMessage
 }
 
-// MarshalJSON writes the six v1 auth keys. ExpiresAt is stored as Unix seconds
-// to stay compatible with v1's numeric expires_at values.
+// MarshalJSON writes the six required v1 auth keys plus any present known
+// extras and unknown fields loaded from disk. ExpiresAt is stored as Unix
+// seconds to stay compatible with v1's numeric expires_at values.
 func (a Auth) MarshalJSON() ([]byte, error) {
-	type authDocument struct {
-		UID            string `json:"uid"`
-		AccessToken    string `json:"access_token"`
-		RefreshToken   string `json:"refresh_token"`
-		OfficeIdentity string `json:"office_identity"`
-		OfficeOrgName  string `json:"office_org_name"`
-		ExpiresAt      int64  `json:"expires_at"`
+	fields := make(map[string]json.RawMessage, 10)
+	put := func(key string, value any) error {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		fields[key] = encoded
+		return nil
 	}
 
 	var expiresAt int64
 	if !a.ExpiresAt.IsZero() {
 		expiresAt = a.ExpiresAt.Unix()
 	}
-	return json.Marshal(authDocument{
-		UID:            a.UID,
-		AccessToken:    a.AccessToken,
-		RefreshToken:   a.RefreshToken,
-		OfficeIdentity: a.OfficeIdentity,
-		OfficeOrgName:  a.OfficeOrgName,
-		ExpiresAt:      expiresAt,
-	})
+	values := []struct {
+		key   string
+		value any
+	}{
+		{"uid", a.UID},
+		{"access_token", a.AccessToken},
+		{"refresh_token", a.RefreshToken},
+		{"office_identity", a.OfficeIdentity},
+		{"office_org_name", a.OfficeOrgName},
+		{"expires_at", expiresAt},
+	}
+	for _, field := range values {
+		if err := put(field.key, field.value); err != nil {
+			return nil, err
+		}
+	}
+
+	if a.TokenType != "" {
+		if err := put("token_type", a.TokenType); err != nil {
+			return nil, err
+		}
+	}
+	if a.OfficeOrgRole != "" {
+		if err := put("office_org_role", a.OfficeOrgRole); err != nil {
+			return nil, err
+		}
+	}
+	if a.ProxySlot != "" {
+		if err := put("proxySlot", a.ProxySlot); err != nil {
+			return nil, err
+		}
+	}
+	if a.UpdatedAt != 0 {
+		if err := put("updated_at", a.UpdatedAt); err != nil {
+			return nil, err
+		}
+	}
+
+	for key, raw := range a.extraFields {
+		if _, present := fields[key]; present {
+			continue
+		}
+		fields[key] = append(json.RawMessage(nil), raw...)
+	}
+	return json.Marshal(fields)
 }
 
 // UnmarshalJSON accepts v1 numeric epoch seconds, epoch milliseconds, and
-// RFC3339 strings for expires_at. Unknown keys are ignored.
+// RFC3339 strings for expires_at. Known v1 extras and unknown keys are kept;
+// unknown values remain raw so numeric precision and shape are not lost.
 func (a *Auth) UnmarshalJSON(data []byte) error {
-	type authDocument struct {
-		UID            string          `json:"uid"`
-		AccessToken    string          `json:"access_token"`
-		RefreshToken   string          `json:"refresh_token"`
-		OfficeIdentity string          `json:"office_identity"`
-		OfficeOrgName  string          `json:"office_org_name"`
-		ExpiresAt      json.RawMessage `json:"expires_at"`
-	}
-
-	var doc authDocument
-	if err := json.Unmarshal(data, &doc); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	*a = Auth{
-		UID:            doc.UID,
-		AccessToken:    doc.AccessToken,
-		RefreshToken:   doc.RefreshToken,
-		OfficeIdentity: doc.OfficeIdentity,
-		OfficeOrgName:  doc.OfficeOrgName,
-		ExpiresAt:      decodeExpiresAt(doc.ExpiresAt),
+
+	next := Auth{}
+	for key, destination := range map[string]*string{
+		"uid":             &next.UID,
+		"access_token":    &next.AccessToken,
+		"refresh_token":   &next.RefreshToken,
+		"office_identity": &next.OfficeIdentity,
+		"office_org_name": &next.OfficeOrgName,
+	} {
+		if raw, ok := fields[key]; ok {
+			if err := json.Unmarshal(raw, destination); err != nil {
+				return err
+			}
+		}
 	}
+	next.ExpiresAt = decodeExpiresAt(fields["expires_at"])
+
+	if raw, ok := fields["token_type"]; ok {
+		if err := json.Unmarshal(raw, &next.TokenType); err != nil || next.TokenType == "" {
+			next.addExtra("token_type", raw)
+		}
+	}
+	if raw, ok := fields["office_org_role"]; ok {
+		if err := json.Unmarshal(raw, &next.OfficeOrgRole); err != nil || next.OfficeOrgRole == "" {
+			next.addExtra("office_org_role", raw)
+		}
+	}
+	if raw, ok := fields["proxySlot"]; ok {
+		if err := json.Unmarshal(raw, &next.ProxySlot); err != nil || next.ProxySlot == "" {
+			next.addExtra("proxySlot", raw)
+		}
+	}
+	if raw, ok := fields["updated_at"]; ok {
+		if value, err := decodeInt64JSON(raw); err != nil || value == 0 {
+			next.addExtra("updated_at", raw)
+		} else {
+			next.UpdatedAt = value
+		}
+	}
+
+	known := map[string]bool{
+		"uid":             true,
+		"access_token":    true,
+		"refresh_token":   true,
+		"office_identity": true,
+		"office_org_name": true,
+		"expires_at":      true,
+		"token_type":      true,
+		"office_org_role": true,
+		"proxySlot":       true,
+		"updated_at":      true,
+	}
+	for key, raw := range fields {
+		if !known[key] {
+			next.addExtra(key, raw)
+		}
+	}
+
+	*a = next
 	return nil
+}
+
+func (a *Auth) addExtra(key string, raw json.RawMessage) {
+	if a.extraFields == nil {
+		a.extraFields = make(map[string]json.RawMessage)
+	}
+	a.extraFields[key] = append(json.RawMessage(nil), raw...)
+}
+
+func decodeInt64JSON(raw json.RawMessage) (int64, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var number json.Number
+	if err := decoder.Decode(&number); err != nil {
+		return 0, err
+	}
+	return number.Int64()
 }
 
 // LoadAuth reads one auth document. It rejects a document without a usable
 // access token, strips a Bearer prefix, derives a missing UID from the JWT
-// subject (with v1's opaque-token hash fallback), and falls back to the JWT
-// exp claim when expires_at is absent. Errors never include token values.
+// subject (with v1's opaque-token hash fallback), and prefers the JWT exp
+// claim over a stored expires_at when the token carries exp. Errors never
+// include token values.
 func LoadAuth(path string) (Auth, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -105,8 +220,8 @@ func LoadAuth(path string) (Auth, error) {
 	if auth.UID == "" {
 		return Auth{}, fmt.Errorf("raccoon: auth file %s: uid is empty", path)
 	}
-	if auth.ExpiresAt.IsZero() {
-		auth.ExpiresAt = expiresAtFromAccessToken(auth.AccessToken)
+	if exp := expiresAtFromAccessToken(auth.AccessToken); !exp.IsZero() {
+		auth.ExpiresAt = exp
 	}
 	return auth, nil
 }
@@ -142,6 +257,22 @@ func SaveAuth(path string, auth Auth) error {
 		return fmt.Errorf("raccoon: save auth: %w", err)
 	}
 	return nil
+}
+
+// AuthPath returns the v1 auth path for UID under accountsDir:
+// accountsDir/raccoon/raccoon-<safe-uid>.json. UID is untrusted (it may come
+// from an unverified JWT sub), so non [A-Za-z0-9._-] runs are replaced with
+// underscores and empty UIDs are rejected rather than used raw.
+func AuthPath(accountsDir, uid string) (string, error) {
+	text := strings.TrimSpace(uid)
+	if text == "" {
+		return "", errors.New("raccoon: uid is empty")
+	}
+	safe := unsafeUIDCharacters.ReplaceAllString(text, "_")
+	if safe == "" || safe == "." || safe == ".." {
+		safe = "_"
+	}
+	return filepath.Join(accountsDir, "raccoon", "raccoon-"+safe+".json"), nil
 }
 
 // UIDFromAccessToken returns the JWT "sub" claim without verifying the

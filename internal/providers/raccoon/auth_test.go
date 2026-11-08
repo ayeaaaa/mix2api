@@ -1,6 +1,7 @@
 package raccoon
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -340,6 +341,211 @@ func TestAuthErrorsDoNotLeakTokens(t *testing.T) {
 	if strings.Contains(err.Error(), access) || strings.Contains(err.Error(), refresh) {
 		t.Fatalf("SaveAuth() error leaks a token: %v", err)
 	}
+}
+
+func TestAuthV1ExtrasRoundTrip(t *testing.T) {
+	const uid = "pu-01a1b125-f8ea-7260-b72c-a04d678ca4e9"
+	tok := makeUnsignedJWT(t, map[string]any{"sub": uid, "exp": 1796616020})
+	dir := t.TempDir()
+	path, err := AuthPath(dir, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "raccoon", "raccoon-"+uid+".json"); path != want {
+		t.Fatalf("AuthPath() = %q, want %q", path, want)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`{
+  "access_token": %q,
+  "refresh_token": "refresh-1",
+  "token_type": "Bearer",
+  "office_identity": "organization",
+  "office_org_name": "Raccoon Test Org",
+  "office_org_role": "admin",
+  "updated_at": 1794024020,
+  "uid": %q,
+  "proxySlot": "slot-1",
+  "future_metadata": {"flags": [1, 2], "note": "keep"},
+  "future_counter": 18446744073709551615
+}`, tok, uid)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original := readJSONObject(t, path)
+
+	auth, err := LoadAuth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.UID != uid {
+		t.Fatalf("UID = %q, want %q", auth.UID, uid)
+	}
+	if auth.TokenType != "Bearer" {
+		t.Fatalf("TokenType = %q, want Bearer", auth.TokenType)
+	}
+	if auth.OfficeOrgRole != "admin" {
+		t.Fatalf("OfficeOrgRole = %q, want admin", auth.OfficeOrgRole)
+	}
+	if auth.ProxySlot != "slot-1" {
+		t.Fatalf("ProxySlot = %q, want slot-1", auth.ProxySlot)
+	}
+	if auth.UpdatedAt != 1794024020 {
+		t.Fatalf("UpdatedAt = %d, want 1794024020", auth.UpdatedAt)
+	}
+	if want := time.Unix(1796616020, 0).UTC(); !auth.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want JWT exp %v", auth.ExpiresAt, want)
+	}
+
+	if err := SaveAuth(path, auth); err != nil {
+		t.Fatal(err)
+	}
+	assertOriginalFieldsPreserved(t, original, readJSONObject(t, path))
+	if _, ok := readJSONObject(t, path)["expires_at"]; !ok {
+		t.Fatal("saved auth is missing expires_at")
+	}
+
+	// A second load/save cycle must not lose the unknown fields either.
+	reloaded, err := LoadAuth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ProxySlot != "slot-1" || reloaded.TokenType != "Bearer" ||
+		reloaded.OfficeOrgRole != "admin" || reloaded.UpdatedAt != 1794024020 {
+		t.Fatalf("reloaded extras = %#v", reloaded)
+	}
+	if err := SaveAuth(path, reloaded); err != nil {
+		t.Fatal(err)
+	}
+	assertOriginalFieldsPreserved(t, original, readJSONObject(t, path))
+}
+
+func TestAuthPreservesEmptyKnownExtras(t *testing.T) {
+	tok := makeUnsignedJWT(t, map[string]any{"sub": "pu-test"})
+	path := filepath.Join(t.TempDir(), "raccoon-pu-test.json")
+	body := fmt.Sprintf(`{"uid":"pu-test","access_token":%q,"token_type":"","office_org_role":"","proxySlot":"","updated_at":0}`, tok)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original := readJSONObject(t, path)
+
+	auth, err := LoadAuth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAuth(path, auth); err != nil {
+		t.Fatal(err)
+	}
+	saved := readJSONObject(t, path)
+	for _, key := range []string{"token_type", "office_org_role", "proxySlot", "updated_at"} {
+		raw, ok := saved[key]
+		if !ok {
+			t.Fatalf("saved auth dropped empty %q", key)
+		}
+		if compactJSON(t, raw) != compactJSON(t, original[key]) {
+			t.Fatalf("saved %q = %s, want %s", key, raw, original[key])
+		}
+	}
+}
+
+func TestAuthPathSanitizesUID(t *testing.T) {
+	base := t.TempDir()
+	cases := []struct {
+		name     string
+		uid      string
+		filename string
+	}{
+		{"simple", "pu-test", "raccoon-pu-test.json"},
+		{"traversal", "../../etc/passwd", "raccoon-.._.._etc_passwd.json"},
+		{"slashes", `a/b\c`, "raccoon-a_b_c.json"},
+		{"unicode", "用户-测试", "raccoon-_-_.json"},
+		{"dots", "..", "raccoon-_.json"},
+		{"only separators", "///", "raccoon-_.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := AuthPath(base, tc.uid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(base, "raccoon", tc.filename)
+			if got != want {
+				t.Fatalf("AuthPath() = %q, want %q", got, want)
+			}
+			rel, err := filepath.Rel(base, got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				t.Fatalf("AuthPath() escaped base: %q", rel)
+			}
+		})
+	}
+
+	for _, uid := range []string{"", "   "} {
+		if got, err := AuthPath(base, uid); err == nil {
+			t.Fatalf("AuthPath(%q) = %q, want error", uid, got)
+		} else if got != "" {
+			t.Fatalf("AuthPath(%q) = %q, want empty path on error", uid, got)
+		}
+	}
+}
+
+func TestLoadAuthPrefersJWTExpiry(t *testing.T) {
+	jwtExp := int64(1796616020)
+	storedExpiresAt := int64(1700000000)
+	tok := makeUnsignedJWT(t, map[string]any{"sub": "pu-test", "exp": jwtExp})
+	path := filepath.Join(t.TempDir(), "raccoon-pu-test.json")
+	body := fmt.Sprintf(`{"uid":"pu-test","access_token":%q,"expires_at":%d}`, tok, storedExpiresAt)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadAuth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Unix(jwtExp, 0).UTC()
+	if !got.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want JWT exp %v", got.ExpiresAt, want)
+	}
+}
+
+func readJSONObject(t *testing.T, path string) map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	return fields
+}
+
+func assertOriginalFieldsPreserved(t *testing.T, original, saved map[string]json.RawMessage) {
+	t.Helper()
+	for key, raw := range original {
+		got, ok := saved[key]
+		if !ok {
+			t.Fatalf("saved auth dropped %q", key)
+		}
+		if compactJSON(t, got) != compactJSON(t, raw) {
+			t.Fatalf("saved %q = %s, want %s", key, got, raw)
+		}
+	}
+}
+
+func compactJSON(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
 }
 
 func keysOf(m map[string]json.RawMessage) []string {
