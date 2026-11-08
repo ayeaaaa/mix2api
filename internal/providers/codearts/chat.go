@@ -132,19 +132,18 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			return stream, nil
 		}
 
-		// The acquired slot is released exactly once here. A returned stream
-		// releases it in Close instead.
-		p.pool.Release(account)
 		if currentUID, _ := account.currentUID(); currentUID != "" {
 			uid = currentUID
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			p.pool.Release(account)
 			return nil, ctxErr
 		}
 
 		var apiErr *APIError
 		if !errors.As(attemptErr, &apiErr) {
 			// Local failures are not upstream failures and must not fail over.
+			p.pool.Release(account)
 			return nil, attemptErr
 		}
 
@@ -152,8 +151,15 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		switch apiErr.Kind {
 		case KindBadRequest:
 			// A rejected request is never retried on another account.
+			p.pool.Release(account)
 			return nil, attemptErr
 		case KindCreditExhausted:
+			// v1 releases before marking zero credits. The account is already
+			// excluded from this request; a second request could acquire the
+			// slot in the tiny release/mark window, which v1 accepts. All other
+			// failure kinds update state before Release so cooling is visible
+			// before another request can acquire.
+			p.pool.Release(account)
 			if markErr := account.MarkCreditExhausted(); markErr != nil {
 				// The account is still excluded for this request; the state
 				// write failure is not worth failing the failover over.
@@ -161,17 +167,23 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			}
 			exclude[uid] = true
 		case KindAuth:
+			// v1 notes terminal errors before releasing, so a concurrent
+			// request cannot acquire the account before it is disabled.
 			_ = p.pool.NoteError(account, attemptErr.Error(), false, true)
+			p.pool.Release(account)
 			exclude[uid] = true
 		case KindRateLimited, KindConcurrency:
 			_ = p.pool.NoteError(account, attemptErr.Error(), true, false)
+			p.pool.Release(account)
 			exclude[uid] = true
 		case KindUnavailable:
 			_ = p.pool.NoteError(account, attemptErr.Error(), true, false)
+			p.pool.Release(account)
 			exclude[uid] = true
 		default:
 			soft := apiErr.Status >= http.StatusInternalServerError
 			_ = p.pool.NoteError(account, attemptErr.Error(), soft, false)
+			p.pool.Release(account)
 			exclude[uid] = true
 		}
 	}
@@ -187,6 +199,13 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		}
 		return nil, lastErr
 	}
+	if p.allKnownCreditsExhausted() {
+		return nil, &APIError{
+			Kind:    KindCreditExhausted,
+			Status:  http.StatusBadRequest,
+			Message: allCreditsExhaustedMessage,
+		}
+	}
 	return nil, p.noAccountError()
 }
 
@@ -198,16 +217,14 @@ func (p *Provider) openChatAccount(ctx context.Context, account *Account, build 
 		return nil, errors.New("codearts: chat transport is nil")
 	}
 
-	account.mu.Lock()
-	auth := account.Auth
-	account.mu.Unlock()
-
 	if p.tokenManager != nil {
 		if err := p.tokenManager.Ensure(ctx, account); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, chatTokenError(err, auth)
+			// A refresh may have rotated credentials even on the failure path;
+			// classify the error against the current document.
+			return nil, chatTokenError(err, currentAccountAuth(account))
 		}
 	}
 
@@ -240,7 +257,7 @@ func (p *Provider) openChatAccount(ctx context.Context, account *Account, build 
 
 	var lastErr error
 	for attempt := 0; attempt < chatConcurrencyAttempts; attempt++ {
-		stream, attemptErr := p.sendChatAttempt(ctx, account, auth, model, build.ChatID, sessionID, raw)
+		stream, attemptErr := p.sendChatAttempt(ctx, account, model, build.ChatID, sessionID, raw)
 		if attemptErr == nil {
 			return stream, nil
 		}
@@ -256,12 +273,23 @@ func (p *Provider) openChatAccount(ctx context.Context, account *Account, build 
 	return nil, lastErr
 }
 
+// currentAccountAuth snapshots the live credential document. A token refresh
+// can rotate it between the initial Ensure and a later request or stream
+// error, so redaction must read the current value rather than an old copy.
+func currentAccountAuth(account *Account) Auth {
+	if account == nil {
+		return Auth{}
+	}
+	account.mu.Lock()
+	defer account.mu.Unlock()
+	return account.Auth
+}
+
 // sendChatAttempt sends one POST, classifies non-2xx responses, and preflights
 // the first SSE data event before returning a stream.
 func (p *Provider) sendChatAttempt(
 	ctx context.Context,
 	account *Account,
-	auth Auth,
 	model, chatID, sessionID string,
 	raw []byte,
 ) (providers.ChatStream, error) {
@@ -270,7 +298,7 @@ func (p *Provider) sendChatAttempt(
 	if err != nil {
 		cancel()
 		return nil, newChatError(KindUpstream, http.StatusBadGateway,
-			"codearts: build chat request failed: "+err.Error(), auth)
+			"codearts: build chat request failed: "+err.Error(), currentAccountAuth(account))
 	}
 
 	response, err := p.transport.Do(streamCtx, request, account.ProxyURL())
@@ -280,7 +308,7 @@ func (p *Provider) sendChatAttempt(
 			return nil, ctxErr
 		}
 		return nil, newChatError(KindUnavailable, http.StatusServiceUnavailable,
-			"连不上 CodeArts 聊天接口："+err.Error(), auth)
+			"连不上 CodeArts 聊天接口："+err.Error(), currentAccountAuth(account))
 	}
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -290,10 +318,12 @@ func (p *Provider) sendChatAttempt(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, classifyChatHTTP(response.StatusCode, body, auth)
+		return nil, classifyChatHTTP(response.StatusCode, body, currentAccountAuth(account))
 	}
 
-	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, model, auth)
+	// v1 does not gzip request bodies. Go's transport may negotiate gzip for
+	// the response's Accept-Encoding, but the request body stays plain JSON.
+	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, model)
 	if preflightErr := stream.preflight(); preflightErr != nil {
 		// Preflight failures have not returned a stream, so the caller still
 		// owns the slot and releases it.
@@ -553,7 +583,7 @@ func buildChatBody(req providers.ChatRequest) (*chatBuild, *APIError) {
 		body["stop"] = []any{stop}
 	}
 	if completion, ok := body["max_completion_tokens"]; ok && completion != nil {
-		if _, hasMaxTokens := body["max_tokens"]; !hasMaxTokens {
+		if maxTokens, hasMaxTokens := body["max_tokens"]; !hasMaxTokens || maxTokens == nil {
 			body["max_tokens"] = completion
 			delete(body, "max_completion_tokens")
 		}
@@ -1132,7 +1162,169 @@ func normalizeChatToolParameters(function map[string]any) {
 	if properties, ok := copied["properties"].(map[string]any); !ok || properties == nil {
 		copied["properties"] = map[string]any{}
 	}
-	function["parameters"] = copied
+	function["parameters"] = deepNormalizeChatSchema(copied)
+}
+
+// chatSchemaTypeAliases and chatSchemaValidTypes mirror v1's JSON-schema
+// repair for the upstream Go validator.
+var chatSchemaTypeAliases = map[string]string{
+	"str": "string", "text": "string", "int": "integer", "bool": "boolean",
+	"dict": "object", "list": "array", "float": "number",
+}
+
+var chatSchemaValidTypes = map[string]bool{
+	"string": true, "number": true, "integer": true, "boolean": true,
+	"array": true, "object": true, "null": true,
+}
+
+// deepNormalizeChatSchema recursively repairs the nested tool parameter schema
+// shapes v1 handles: type aliases, null metadata, object properties, required
+// lists, array items, definitions, and anyOf/oneOf/allOf branches.
+func deepNormalizeChatSchema(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+
+	for _, key := range []string{"description", "title", "format", "pattern", "items", "default"} {
+		if value, exists := schema[key]; exists && value == nil {
+			delete(schema, key)
+		}
+	}
+
+	if rawType, exists := schema["type"]; exists {
+		switch typed := rawType.(type) {
+		case string:
+			kind := strings.ToLower(strings.TrimSpace(typed))
+			if alias, ok := chatSchemaTypeAliases[kind]; ok {
+				schema["type"] = alias
+			} else if chatSchemaValidTypes[kind] {
+				schema["type"] = kind
+			} else {
+				if _, hasProperties := schema["properties"]; hasProperties {
+					schema["type"] = "object"
+				} else if _, hasItems := schema["items"]; hasItems {
+					schema["type"] = "array"
+				} else {
+					delete(schema, "type")
+				}
+			}
+		case []any:
+			normalized := make([]any, 0, len(typed))
+			for _, value := range typed {
+				kind := strings.ToLower(strings.TrimSpace(modelText(value)))
+				if kind == "" {
+					continue
+				}
+				if alias, ok := chatSchemaTypeAliases[kind]; ok {
+					kind = alias
+				}
+				normalized = append(normalized, kind)
+			}
+			schema["type"] = normalized
+		}
+	}
+
+	if schema["type"] == "object" || (schema["properties"] != nil && schema["type"] == nil) {
+		if schema["type"] == nil {
+			schema["type"] = "object"
+		}
+		if properties, ok := schema["properties"].(map[string]any); !ok || properties == nil {
+			schema["properties"] = map[string]any{}
+		}
+	}
+
+	if rawRequired, exists := schema["required"]; exists {
+		switch required := rawRequired.(type) {
+		case []any:
+			cleaned := make([]any, 0, len(required))
+			for _, value := range required {
+				if value == nil {
+					continue
+				}
+				text := strings.TrimSpace(modelText(value))
+				if text != "" {
+					cleaned = append(cleaned, text)
+				}
+			}
+			if len(cleaned) > 0 {
+				schema["required"] = cleaned
+			} else {
+				delete(schema, "required")
+			}
+		case string:
+			if text := strings.TrimSpace(required); text != "" {
+				schema["required"] = []any{text}
+			} else {
+				delete(schema, "required")
+			}
+		default:
+			delete(schema, "required")
+		}
+	}
+
+	if rawItems, exists := schema["items"]; exists {
+		switch items := rawItems.(type) {
+		case []any:
+			var first map[string]any
+			for _, value := range items {
+				if candidate, ok := value.(map[string]any); ok && candidate != nil {
+					first = candidate
+					break
+				}
+			}
+			if first != nil {
+				copied := make(map[string]any, len(first))
+				for key, value := range first {
+					copied[key] = value
+				}
+				schema["items"] = deepNormalizeChatSchema(copied)
+			} else {
+				schema["items"] = map[string]any{"type": "string"}
+			}
+		case map[string]any:
+			if items == nil {
+				schema["items"] = map[string]any{"type": "string"}
+			} else {
+				deepNormalizeChatSchema(items)
+			}
+		default:
+			delete(schema, "items")
+		}
+	}
+
+	if properties, ok := schema["properties"].(map[string]any); ok && properties != nil {
+		for _, value := range properties {
+			if nested, ok := value.(map[string]any); ok && nested != nil {
+				deepNormalizeChatSchema(nested)
+			}
+		}
+	}
+
+	for _, key := range []string{"$defs", "definitions"} {
+		definitions, ok := schema[key].(map[string]any)
+		if !ok || definitions == nil {
+			continue
+		}
+		for _, value := range definitions {
+			if nested, ok := value.(map[string]any); ok && nested != nil {
+				deepNormalizeChatSchema(nested)
+			}
+		}
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		branches, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, value := range branches {
+			if nested, ok := value.(map[string]any); ok && nested != nil {
+				deepNormalizeChatSchema(nested)
+			}
+		}
+	}
+
+	return schema
 }
 
 // normalizeChatToolChoice narrows a named function choice to that one tool and
@@ -1298,6 +1490,30 @@ func chatFloatToInt64(number float64) int64 {
 		return -1 << 63
 	}
 	return int64(number)
+}
+
+// allKnownCreditsExhausted reports whether every enabled account already has a
+// zero-credit snapshot. In that state v1's scheduler has no candidate at all;
+// the chat contract surfaces the readable 400 instead of a generic 503.
+func (p *Provider) allKnownCreditsExhausted() bool {
+	if p == nil || p.pool == nil {
+		return false
+	}
+	enabled := 0
+	for _, account := range p.pool.Accounts() {
+		account.mu.Lock()
+		disabled := account.removed || account.State.Disabled || account.State.ManualDisabled
+		exhausted := account.creditExhaustedLocked()
+		account.mu.Unlock()
+		if disabled {
+			continue
+		}
+		enabled++
+		if !exhausted {
+			return false
+		}
+	}
+	return enabled > 0
 }
 
 // noAccountError builds v1's readable 503 explanation with at most two account

@@ -68,6 +68,10 @@ func (e *APIError) Error() string {
 // HTTPStatus maps the kind to the v1 chat error status. Authentication
 // failures are 502 because the client's API key is not the rejected
 // credential. Concurrency is a 429 like v1's CodeArts mapping.
+//
+// KindUnavailable deliberately maps to 503 (not v1's generic 502): Task 5's
+// contract treats a local no-account or unreachable-upstream state as
+// service-unavailable. Every upstream status failure keeps 502.
 func (e *APIError) HTTPStatus() int {
 	if e == nil {
 		return http.StatusBadGateway

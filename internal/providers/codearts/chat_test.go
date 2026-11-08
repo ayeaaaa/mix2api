@@ -25,6 +25,7 @@ import (
 var _ providers.HTTPError = (*APIError)(nil)
 
 type t5Capture struct {
+	Method string
 	Path   string
 	Host   string
 	Header http.Header
@@ -50,6 +51,7 @@ func (f *t5Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls++
 	call := f.calls
 	f.captures = append(f.captures, t5Capture{
+		Method: r.Method,
 		Path:   r.URL.Path,
 		Host:   r.Host,
 		Header: r.Header.Clone(),
@@ -309,6 +311,15 @@ func TestChatBodyAllowlistCanonicalAndClamp(t *testing.T) {
 	if len(captures) != 1 {
 		t.Fatalf("upstream calls = %d, want 1", len(captures))
 	}
+	if captures[0].Method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", captures[0].Method)
+	}
+	if captures[0].Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", captures[0].Header.Get("Content-Type"))
+	}
+	if captures[0].Path != chatCompletionsPath {
+		t.Fatalf("path = %q, want %q", captures[0].Path, chatCompletionsPath)
+	}
 	body := captures[0].Body
 	if got := t5Text(body["model"]); got != "GLM-5.2" {
 		t.Fatalf("model = %q, want GLM-5.2", got)
@@ -357,6 +368,24 @@ func TestChatClampsBothTokenSpellings(t *testing.T) {
 	body := fake.snapshot()[0].Body
 	if t5Text(body["max_tokens"]) != "8192" || t5Text(body["max_completion_tokens"]) != "8192" {
 		t.Fatalf("both token spellings not clamped: %#v", body)
+	}
+}
+
+func TestChatNullMaxTokensFoldsCompletionTokens(t *testing.T) {
+	_, body, err := t5OpenBody(t, map[string]any{
+		"model":                 "GLM-5.2",
+		"messages":              t5Messages(t5UserMessage("hi")),
+		"max_tokens":            nil,
+		"max_completion_tokens": 4096,
+	})
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	if got := t5Text(body["max_tokens"]); got != "4096" {
+		t.Fatalf("max_tokens = %q, want completion value 4096", got)
+	}
+	if _, exists := body["max_completion_tokens"]; exists {
+		t.Fatalf("max_completion_tokens was not folded: %#v", body)
 	}
 }
 
@@ -662,6 +691,87 @@ func TestChatContentImagesAndTools(t *testing.T) {
 			t.Fatalf("tool result repack order = %#v", messages)
 		}
 	})
+}
+
+func TestChatNestedToolSchemaNormalization(t *testing.T) {
+	_, body, err := t5OpenBody(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "nested",
+				"parameters": map[string]any{
+					"type": "dict",
+					"properties": map[string]any{
+						"name": map[string]any{"type": "str", "description": nil},
+						"age":  map[string]any{"type": "int"},
+						"tags": map[string]any{
+							"type":  "list",
+							"items": []any{map[string]any{"type": "text"}, "junk"},
+						},
+						"meta": map[string]any{
+							"type":       "dict",
+							"properties": map[string]any{"ok": map[string]any{"type": "bool"}},
+							"required":   []any{nil, "ok", ""},
+						},
+					},
+					"required": []any{nil, "name", ""},
+					"$defs":    map[string]any{"inner": map[string]any{"type": "float"}},
+					"anyOf":    []any{map[string]any{"type": "float"}},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", tools)
+	}
+	tool, _ := tools[0].(map[string]any)
+	function, _ := tool["function"].(map[string]any)
+	params, _ := function["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Fatalf("parameter type = %#v, want object", params["type"])
+	}
+	properties, _ := params["properties"].(map[string]any)
+	name, _ := properties["name"].(map[string]any)
+	if name["type"] != "string" {
+		t.Fatalf("name.type = %#v, want string", name["type"])
+	}
+	if _, exists := name["description"]; exists {
+		t.Fatalf("null description survived: %#v", name)
+	}
+	age, _ := properties["age"].(map[string]any)
+	if age["type"] != "integer" {
+		t.Fatalf("age.type = %#v, want integer", age["type"])
+	}
+	tags, _ := properties["tags"].(map[string]any)
+	items, _ := tags["items"].(map[string]any)
+	if tags["type"] != "array" || items["type"] != "string" {
+		t.Fatalf("tags schema = %#v", tags)
+	}
+	meta, _ := properties["meta"].(map[string]any)
+	metaProperties, _ := meta["properties"].(map[string]any)
+	okSchema, _ := metaProperties["ok"].(map[string]any)
+	metaRequired, _ := meta["required"].([]any)
+	if meta["type"] != "object" || okSchema["type"] != "boolean" ||
+		len(metaRequired) != 1 || metaRequired[0] != "ok" {
+		t.Fatalf("meta schema = %#v", meta)
+	}
+	required, _ := params["required"].([]any)
+	if len(required) != 1 || required[0] != "name" {
+		t.Fatalf("required = %#v, want [name]", required)
+	}
+	defs, _ := params["$defs"].(map[string]any)
+	inner, _ := defs["inner"].(map[string]any)
+	branches, _ := params["anyOf"].([]any)
+	branch, _ := branches[0].(map[string]any)
+	if inner["type"] != "number" || branch["type"] != "number" {
+		t.Fatalf("nested definitions = %#v / %#v", inner, branch)
+	}
 }
 
 func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
@@ -1079,6 +1189,40 @@ func TestChatStreamEOFBeforeDoneIsUpstreamError(t *testing.T) {
 	}
 }
 
+func TestChatStreamReadErrorAfterChunkIsUpstreamError(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Declare more bytes than are written so the client body read fails
+		// with an unexpected EOF rather than a clean EOF after the frame.
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, t5DataFrame(`{"choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}`))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	first, err := stream.Next()
+	if err != nil || t5Delta(first)["content"] != "first" {
+		t.Fatalf("first frame = %q, err %v", first, err)
+	}
+	_, err = stream.Next()
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindUpstream || apiErr.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("read error = %v, want upstream 502 (not clean EOF)", err)
+	}
+	if accounts["u1"].activeConcurrent != 0 {
+		t.Fatalf("activeConcurrent = %d, want 0", accounts["u1"].activeConcurrent)
+	}
+}
+
 func TestChatStreamEmbeddedParameterErrorIsRedactedBadRequest(t *testing.T) {
 	fake, _ := newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
 		t5WriteSSEFrames(w, t5DataFrame(`{"error_code":"invalid_param","error_msg":"The request param is invalid token cloud-token-u1 refresh-token-u1"}`))
@@ -1100,6 +1244,88 @@ func TestChatStreamEmbeddedParameterErrorIsRedactedBadRequest(t *testing.T) {
 	}
 	if accounts["u1"].activeConcurrent != 0 {
 		t.Fatalf("activeConcurrent = %d, want 0", accounts["u1"].activeConcurrent)
+	}
+}
+
+func TestChatEmbeddedNestedErrorMapping(t *testing.T) {
+	cases := []struct {
+		name    string
+		frame   string
+		kind    ErrorKind
+		status  int
+		errType string
+	}{
+		{
+			name:    "nested auth code",
+			frame:   `{"error":{"code":401,"message":"expired"}}`,
+			kind:    KindAuth,
+			status:  http.StatusBadGateway,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "nested forbidden code",
+			frame:   `{"error":{"code":403,"message":"forbidden"}}`,
+			kind:    KindAuth,
+			status:  http.StatusBadGateway,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "nested rate code",
+			frame:   `{"error":{"code":429,"message":"slow down"}}`,
+			kind:    KindRateLimited,
+			status:  http.StatusTooManyRequests,
+			errType: "rate_limit_error",
+		},
+		{
+			name:    "nested auth type",
+			frame:   `{"error":{"type":"authentication_error","message":"bad key"}}`,
+			kind:    KindAuth,
+			status:  http.StatusBadGateway,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "nested rate type",
+			frame:   `{"error":{"type":"rate_limit_error","message":"slow down"}}`,
+			kind:    KindRateLimited,
+			status:  http.StatusTooManyRequests,
+			errType: "rate_limit_error",
+		},
+		{
+			name:    "nested credit code",
+			frame:   `{"error":{"code":"credit_exhausted","message":"no balance"}}`,
+			kind:    KindCreditExhausted,
+			status:  http.StatusBadRequest,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "nested concurrency code",
+			frame:   `{"error":{"code":"concurrent_session_limit","message":"busy"}}`,
+			kind:    KindConcurrency,
+			status:  http.StatusTooManyRequests,
+			errType: "rate_limit_error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			apiErr := embeddedChatError([]byte(tc.frame), testAuth("u1"))
+			if apiErr == nil {
+				t.Fatalf("embeddedChatError(%s) = nil", tc.frame)
+			}
+			if apiErr.Kind != tc.kind || apiErr.HTTPStatus() != tc.status || apiErr.ErrorType() != tc.errType {
+				t.Fatalf("mapping = kind %v status %d type %q, want kind %v status %d type %q",
+					apiErr.Kind, apiErr.HTTPStatus(), apiErr.ErrorType(), tc.kind, tc.status, tc.errType)
+			}
+		})
+	}
+
+	for _, benign := range []string{
+		`{"message":"just a note"}`,
+		`{"error_msg":"informational"}`,
+		`{"message":"note","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+	} {
+		if apiErr := embeddedChatError([]byte(benign), testAuth("u1")); apiErr != nil {
+			t.Fatalf("benign payload %s mapped to %v", benign, apiErr)
+		}
 	}
 }
 
@@ -1187,6 +1413,66 @@ func TestChatStreamCloseIsIdempotentAndReleasesOnce(t *testing.T) {
 	}
 }
 
+func TestChatAuthStateUpdatedBeforeSlotRelease(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error_msg":"bad token"}`)
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	account := accounts["u1"]
+	activeDuringStateWrite := -1
+	provider.pool.stateWriteHook = func() {
+		account.mu.Lock()
+		activeDuringStateWrite = account.activeConcurrent
+		account.mu.Unlock()
+	}
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindAuth {
+		t.Fatalf("error = %v, want auth", err)
+	}
+	if activeDuringStateWrite != 1 {
+		t.Fatalf("state write saw activeConcurrent=%d, want 1 (NoteError must precede Release)", activeDuringStateWrite)
+	}
+	if account.activeConcurrent != 0 {
+		t.Fatalf("activeConcurrent after failure = %d, want 0", account.activeConcurrent)
+	}
+	provider.pool.stateWriteHook = nil
+}
+
+func TestChatSoftStateUpdatedBeforeSlotRelease(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error_msg":"slow down"}`)
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	account := accounts["u1"]
+	activeDuringStateWrite := -1
+	provider.pool.stateWriteHook = func() {
+		account.mu.Lock()
+		activeDuringStateWrite = account.activeConcurrent
+		account.mu.Unlock()
+	}
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindRateLimited {
+		t.Fatalf("error = %v, want rate limited", err)
+	}
+	if activeDuringStateWrite != 1 {
+		t.Fatalf("state write saw activeConcurrent=%d, want 1 (NoteError must precede Release)", activeDuringStateWrite)
+	}
+	if account.activeConcurrent != 0 {
+		t.Fatalf("activeConcurrent after failure = %d, want 0", account.activeConcurrent)
+	}
+	provider.pool.stateWriteHook = nil
+}
+
 func TestChatConcurrencyRetryThenSuccess(t *testing.T) {
 	fake, _ := newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
 		if call == 1 {
@@ -1247,6 +1533,98 @@ func TestChatConcurrencyRetryExhaustsThenFailsOver(t *testing.T) {
 	}
 	if accounts["u2"].State.CoolUntil != 0 {
 		t.Fatalf("u2 cooled unexpectedly: %+v", accounts["u2"].State)
+	}
+}
+
+func TestChatAuthErrorUsesRotatedTokenForRedaction(t *testing.T) {
+	fake, _ := newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		if r.URL.Path == "/v1/oauth2/tokens" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tokenTestPayload("u1", "refresh-new-u1", time.Now().Add(time.Hour)))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error_msg":"bad token ST-new-u1 refresh-new-u1"}`)
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	account := accounts["u1"]
+	makeT5AuthExpiring(t, account)
+
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindAuth {
+		t.Fatalf("error = %v, want auth", err)
+	}
+	for _, leaked := range []string{"ST-new-u1", "refresh-new-u1"} {
+		if strings.Contains(apiErr.SafeMessage(), leaked) {
+			t.Fatalf("rotated secret %q leaked in safe message: %q", leaked, apiErr.SafeMessage())
+		}
+		if strings.Contains(account.State.LastError, leaked) || strings.Contains(account.State.Reason, leaked) {
+			t.Fatalf("rotated secret %q leaked into state: %+v", leaked, account.State)
+		}
+	}
+	var chatCapture *t5Capture
+	for _, capture := range fake.snapshot() {
+		if capture.Path == chatCompletionsPath {
+			copied := capture
+			chatCapture = &copied
+		}
+	}
+	if chatCapture == nil {
+		t.Fatal("chat request was not sent")
+	}
+	if got := chatCapture.Header.Get("x-auth-token"); got != "ST-new-u1" {
+		t.Fatalf("chat used stale token %q, want ST-new-u1", got)
+	}
+}
+
+func makeT5AuthExpiring(t *testing.T, account *Account) {
+	t.Helper()
+	key, err := NewDPoPKey()
+	if err != nil {
+		t.Fatalf("NewDPoPKey: %v", err)
+	}
+	account.mu.Lock()
+	account.Auth.DPopPrivateKey = key
+	account.Auth.ClientID = oauthClientID()
+	account.Auth.Expiration = time.Now().Add(time.Minute)
+	account.mu.Unlock()
+}
+
+func TestChatStreamErrorUsesRotatedTokenForRedaction(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		if r.URL.Path == "/v1/oauth2/tokens" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tokenTestPayload("u1", "refresh-new-u1", time.Now().Add(time.Hour)))
+			return
+		}
+		t5WriteSSEFrames(w, t5DataFrame(`{"error_code":500,"error_msg":"boom ST-new-u1 refresh-new-u1"}`))
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	account := accounts["u1"]
+	makeT5AuthExpiring(t, account)
+
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindUpstream {
+		t.Fatalf("error = %v, want upstream", err)
+	}
+	for _, leaked := range []string{"ST-new-u1", "refresh-new-u1"} {
+		if strings.Contains(apiErr.SafeMessage(), leaked) {
+			t.Fatalf("rotated secret %q leaked in safe message: %q", leaked, apiErr.SafeMessage())
+		}
+		if strings.Contains(account.State.LastError, leaked) || strings.Contains(account.State.Reason, leaked) {
+			t.Fatalf("rotated secret %q leaked into state: %+v", leaked, account.State)
+		}
+	}
+	if account.activeConcurrent != 0 {
+		t.Fatalf("activeConcurrent = %d, want 0", account.activeConcurrent)
 	}
 }
 
@@ -1535,6 +1913,35 @@ func TestChatUsesAccountProxy(t *testing.T) {
 	}
 	if len(hosts) != 1 || hosts[0] != "snap.unit.test" {
 		t.Fatalf("proxy hosts = %#v", hosts)
+	}
+}
+
+func TestChatAllKnownZeroCreditsReturnsReadable400(t *testing.T) {
+	fake, _ := newT5Fake(t, nil)
+	provider, accounts := newT5Provider(t, "u1", "u2")
+	for _, account := range accounts {
+		if err := account.MarkCreditExhausted(); err != nil {
+			t.Fatalf("MarkCreditExhausted: %v", err)
+		}
+	}
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindCreditExhausted || apiErr.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("error = %v, want readable credit-exhausted 400", err)
+	}
+	if apiErr.SafeMessage() != allCreditsExhaustedMessage {
+		t.Fatalf("message = %q, want %q", apiErr.SafeMessage(), allCreditsExhaustedMessage)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("upstream calls = %d, want 0", fake.callCount())
+	}
+	for uid, account := range accounts {
+		if account.activeConcurrent != 0 {
+			t.Fatalf("%s slot leak: %d", uid, account.activeConcurrent)
+		}
 	}
 }
 

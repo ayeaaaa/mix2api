@@ -31,8 +31,6 @@ type CodeArtsStream struct {
 	pool    *Pool
 	account *Account
 	model   string
-	auth    Auth
-	secrets []string
 
 	created int64
 
@@ -56,7 +54,6 @@ func newCodeArtsStream(
 	pool *Pool,
 	account *Account,
 	model string,
-	auth Auth,
 ) *CodeArtsStream {
 	return &CodeArtsStream{
 		parent:  parent,
@@ -66,10 +63,15 @@ func newCodeArtsStream(
 		pool:    pool,
 		account: account,
 		model:   model,
-		auth:    auth,
-		secrets: codeartsSecretValues(auth),
 		created: time.Now().Unix(),
 	}
+}
+
+// currentAuth snapshots the live credential document. Token refresh may rotate
+// the access token while a stream is open, so error redaction always reads the
+// current value instead of a stale constructor snapshot.
+func (s *CodeArtsStream) currentAuth() Auth {
+	return currentAccountAuth(s.account)
 }
 
 // preflight reads the first data event so a 200 response carrying an embedded
@@ -90,7 +92,7 @@ func (s *CodeArtsStream) preflight() error {
 			s.hasPending = true
 			return nil
 		}
-		if embeddedErr := embeddedChatError(data, s.auth); embeddedErr != nil {
+		if embeddedErr := embeddedChatError(data, s.currentAuth()); embeddedErr != nil {
 			return embeddedErr
 		}
 		s.pending = data
@@ -135,8 +137,9 @@ func (s *CodeArtsStream) Next() ([]byte, error) {
 					return nil, &APIError{Kind: KindUpstream, Status: http.StatusBadGateway,
 						Message: chatStreamErrorMessage}
 				}
+				mapped := s.mapReadError(err)
 				_ = s.Close()
-				return nil, s.mapReadError(err)
+				return nil, mapped
 			}
 			data = next
 		}
@@ -146,7 +149,7 @@ func (s *CodeArtsStream) Next() ([]byte, error) {
 			_ = s.Close()
 			continue
 		}
-		if embeddedErr := embeddedChatError(data, s.auth); embeddedErr != nil {
+		if embeddedErr := embeddedChatError(data, s.currentAuth()); embeddedErr != nil {
 			_ = s.Close()
 			return nil, embeddedErr
 		}
@@ -359,10 +362,12 @@ func (s *CodeArtsStream) mapReadError(err error) error {
 		return io.EOF
 	}
 	if s.closed {
+		// An explicit/concurrent Close ends the caller-visible stream. Internal
+		// close for a read error happens only after this classification.
 		return io.EOF
 	}
 	return newChatError(KindUpstream, http.StatusBadGateway,
-		"codearts: read chat stream failed: "+err.Error(), s.auth)
+		"codearts: read chat stream failed: "+err.Error(), s.currentAuth())
 }
 
 // abort closes the transport without releasing the account slot. It is used
@@ -407,7 +412,10 @@ func firstChatText(value any, fallback string) string {
 }
 
 // embeddedChatError maps an in-band SSE error object to the chat error kinds.
-// Normal chunks with a zero code are ignored.
+// Normal chunks with a zero code are ignored. A top-level message without an
+// error object or code is treated as benign: v1's _raise_embedded only reacts
+// to error_code/code, and some gateways attach informational messages to
+// otherwise normal chunks.
 func embeddedChatError(data []byte, auth Auth) *APIError {
 	text := strings.TrimSpace(string(data))
 	if text == "" || text == "[DONE]" {
@@ -429,8 +437,8 @@ func embeddedChatError(data []byte, auth Auth) *APIError {
 	if chatZeroCode(code) && errorMap != nil {
 		if candidate := errorMap["code"]; chatStreamTruthy(candidate) {
 			code = candidate
-		} else {
-			code = errorMap["type"]
+		} else if candidate := errorMap["type"]; chatStreamTruthy(candidate) {
+			code = candidate
 		}
 	}
 
@@ -454,11 +462,7 @@ func embeddedChatError(data []byte, auth Auth) *APIError {
 		}
 	}
 
-	hasNormal := chatStreamTruthy(payload["choices"]) ||
-		payload["usage"] != nil || payload["delta"] != nil ||
-		payload["text"] != nil || payload["output"] != nil
-	errorish := chatStreamTruthy(errorValue) || !chatZeroCode(code) ||
-		(message != "" && !hasNormal)
+	errorish := chatStreamTruthy(errorValue) || !chatZeroCode(code)
 	if !errorish {
 		return nil
 	}
@@ -472,21 +476,84 @@ func embeddedChatError(data []byte, auth Auth) *APIError {
 	status := embeddedChatStatus(payload)
 	normalizedCode := strings.ToLower(strings.TrimSpace(modelText(code)))
 	switch {
-	case isConcurrencyMessage(message):
+	case isConcurrencyMessage(message) || isConcurrencyEmbeddedCode(normalizedCode):
 		return newChatError(KindConcurrency, http.StatusBadRequest, message, auth)
-	case isCreditExhaustedMessage(message):
+	case isCreditExhaustedMessage(message) || isCreditEmbeddedCode(normalizedCode):
 		return newChatError(KindCreditExhausted, http.StatusBadRequest, message, auth)
 	case isEmbeddedBadRequest(message, normalizedCode):
 		return newChatError(KindBadRequest, http.StatusBadRequest, message, auth)
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		isAuthEmbeddedCode(normalizedCode):
+		if status != http.StatusUnauthorized && status != http.StatusForbidden {
+			status = http.StatusUnauthorized
+		}
 		return newChatError(KindAuth, status, message, auth)
-	case status == http.StatusTooManyRequests || normalizedCode == "429":
+	case status == http.StatusTooManyRequests || isRateLimitedEmbeddedCode(normalizedCode):
 		return newChatError(KindRateLimited, http.StatusTooManyRequests, message, auth)
 	case status == http.StatusBadRequest:
 		return newChatError(KindBadRequest, http.StatusBadRequest, message, auth)
 	default:
 		return newChatError(KindUpstream, status, message, auth)
 	}
+}
+
+func isConcurrencyEmbeddedCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	if code == "tm.00001041" || strings.Contains(code, "concurren") ||
+		strings.Contains(code, "session_limit") {
+		return true
+	}
+	return false
+}
+
+func isCreditEmbeddedCode(code string) bool {
+	if code == "" || !strings.Contains(code, "credit") {
+		return false
+	}
+	for _, marker := range []string{
+		"exhaust", "insufficient", "empty", "no_credit", "zero", "not_enough",
+	} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAuthEmbeddedCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	if code == "401" || code == "403" {
+		return true
+	}
+	for _, marker := range []string{
+		"auth", "unauthorized", "forbidden", "invalid_token", "token_expired",
+	} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRateLimitedEmbeddedCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	if code == "429" {
+		return true
+	}
+	for _, marker := range []string{
+		"rate_limit", "rate limit", "ratelimit", "too_many_requests", "too many requests",
+	} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isEmbeddedBadRequest(message, code string) bool {
@@ -521,6 +588,16 @@ func embeddedChatStatus(payload map[string]any) int {
 	}
 	if value := chatEmbeddedInt(code); value >= 400 && value <= 599 {
 		return value
+	}
+	if errorMap, ok := payload["error"].(map[string]any); ok && errorMap != nil {
+		for _, key := range []string{"status", "status_code", "http_status"} {
+			if value := chatEmbeddedInt(errorMap[key]); value >= 400 && value <= 599 {
+				return value
+			}
+		}
+		if value := chatEmbeddedInt(errorMap["code"]); value >= 400 && value <= 599 {
+			return value
+		}
 	}
 	return 0
 }
