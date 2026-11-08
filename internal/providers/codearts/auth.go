@@ -272,24 +272,30 @@ func decodeExpiration(raw json.RawMessage) time.Time {
 		if err := json.Unmarshal(trimmed, &text); err != nil {
 			return time.Time{}
 		}
-		text = strings.TrimSpace(text)
-		if text == "" {
-			return time.Time{}
-		}
-		if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
-			return parsed
-		}
-		// v1's fromisoformat also accepted a naive local timestamp.
-		for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
-			if parsed, err := time.ParseInLocation(layout, text, time.Local); err == nil {
-				return parsed
-			}
-		}
-		return time.Time{}
+		return parseExpirationText(text)
 	}
 
 	// v1's _parse_expiration only accepted ISO-8601 text; numeric or other
 	// shapes are malformed and become the zero time.
+	return time.Time{}
+}
+
+// parseExpirationText parses v1's ISO-8601 expirations. A naive timestamp is
+// accepted in local time, matching Python's datetime.fromisoformat fallback.
+// Malformed and empty values become the zero time.
+func parseExpirationText(text string) time.Time {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+		return parsed
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
+		if parsed, err := time.ParseInLocation(layout, text, time.Local); err == nil {
+			return parsed
+		}
+	}
 	return time.Time{}
 }
 
@@ -313,6 +319,32 @@ func LoadAuth(path string) (Auth, error) {
 		return Auth{}, fmt.Errorf("codearts: auth file %s: cloud_dragon_token is empty", path)
 	}
 	return auth, nil
+}
+
+// verifyAuthOwnership refuses to overwrite an auth file whose embedded UID
+// differs or whose contents cannot be verified. A missing file is writable.
+// The path is included in errors; token values never are.
+func verifyAuthOwnership(path, uid string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("codearts: auth path is empty")
+	}
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return errors.New("codearts: auth uid is empty")
+	}
+
+	existing, err := LoadAuth(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("codearts: refusing to overwrite unreadable auth file %s: %w", path, err)
+	}
+	if strings.TrimSpace(existing.UserID) != uid {
+		return fmt.Errorf("%w: %s", ErrAuthPathCollision, path)
+	}
+	return nil
 }
 
 // SaveAuth writes one auth document atomically with mode 0600, creating its

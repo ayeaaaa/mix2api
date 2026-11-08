@@ -1173,24 +1173,5 @@ func (p *Pool) proxyURLForSlot(slotID string) string {
 // verifyWritableAuth refuses to overwrite a file whose embedded UID differs or
 // whose contents cannot be verified. A missing file is fine.
 func (p *Pool) verifyWritableAuth(path, uid string) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return errors.New("codearts: auth path is empty")
-	}
-	uid = strings.TrimSpace(uid)
-	if uid == "" {
-		return errors.New("codearts: auth uid is empty")
-	}
-
-	existing, err := LoadAuth(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("codearts: refusing to overwrite unreadable auth file %s: %w", path, err)
-	}
-	if strings.TrimSpace(existing.UserID) != uid {
-		return fmt.Errorf("%w: %s", ErrAuthPathCollision, path)
-	}
-	return nil
+	return verifyAuthOwnership(path, uid)
 }
