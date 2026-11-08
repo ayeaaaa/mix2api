@@ -64,10 +64,14 @@ type Provider struct {
 	// already-running per-account flight. It is nil in production.
 	modelFetchJoinHook func()
 
-	// chatRetryDelay is the pause before retrying a CodeArts concurrency
-	// rejection on the same account. Zero means the v1 two-second delay; tests
-	// may shorten it.
+	// chatRetryDelay is the base pause before retrying a CodeArts concurrency
+	// rejection on the same account. Zero means v1's two-second base (attempt N
+	// waits N*2s); tests may shorten it.
 	chatRetryDelay time.Duration
+
+	// streamIdleTimeout is a test seam for the live
+	// cfg.StreamTimeoutSeconds per-read SSE idle limit. Zero uses the setting.
+	streamIdleTimeout time.Duration
 }
 
 type healthCacheEntry struct {
@@ -103,7 +107,7 @@ func New(store *config.Store) (*Provider, error) {
 	if timeout <= 0 {
 		timeout = defaultTokenRefreshTimeout
 	}
-	client := transport.NewClient(transport.ClientOptions{})
+	client := transport.NewClient(transport.ClientOptions{RefuseRedirects: true})
 	manager := NewTokenManager(client, TokenManagerOptions{
 		Pool:     pool,
 		Timeout:  timeout,

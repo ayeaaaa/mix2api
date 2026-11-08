@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 )
 
 // CodeArts OAuth constants. Hosts and the client/plugin identity have
@@ -43,7 +44,16 @@ const (
 	oauthMaxResponseBytes   = 1 << 20
 	oauthMessageLimit       = 500
 	oauthTokenRejectBodyMax = 300
+	oauthIdentityTimeout    = 10 * time.Second
 )
+
+// oauthIdentityHTTP is the direct identity-enrichment client. It deliberately
+// bypasses account proxy slots (matching v1's credential holder) and refuses
+// redirects so the STS signature/security token is never replayed elsewhere.
+var oauthIdentityHTTP = transport.NewClient(transport.ClientOptions{
+	Timeout:         oauthIdentityTimeout,
+	RefuseRedirects: true,
+})
 
 // OAuth flow errors. They are intentionally free of callback codes, state,
 // verifier, ticket, and token values so they are safe to store and return.
@@ -1068,14 +1078,19 @@ func (s *OAuthSessions) CallbackURL(store *config.Store, sessionID, rawURL strin
 			s.mu.Unlock()
 			return OAuthResult{}, ErrOAuthSession
 		}
-	} else {
-		// A supplied secret wins when it matches a pending session. An unknown
-		// secret falls back to a supplied ticket/state, matching v1.
-		if values.Secret != "" {
-			session = s.findBySecretLocked(storeKey, values.Secret)
-			matchedBySecret = session != nil
+	} else if values.Secret != "" {
+		// v1's _find_session treats a supplied secret as authoritative: an
+		// unknown secret is rejected instead of falling back to a ticket or
+		// state that may belong to another session.
+		session = s.findBySecretLocked(storeKey, values.Secret)
+		matchedBySecret = session != nil
+		if session == nil {
+			s.mu.Unlock()
+			return OAuthResult{}, ErrOAuthSession
 		}
-		if session == nil && values.TicketID != "" {
+	} else {
+		// Only use ticket/state lookup when the callback supplied no secret.
+		if values.TicketID != "" {
 			session = s.findByStateLocked(storeKey, values.TicketID)
 			matchedByTicket = session != nil
 		}
@@ -1137,6 +1152,18 @@ func oauthIdentity(token Token) (uid, name, domain string) {
 	uid = strings.TrimSpace(token.UserID)
 	name = strings.TrimSpace(token.UserName)
 	domain = strings.TrimSpace(token.DomainID)
+	if uid == "" || name == "" {
+		lookedUID, lookedName, lookedDomain := lookupOAuthIdentity(token.Credentials)
+		if uid == "" {
+			uid = lookedUID
+		}
+		if name == "" {
+			name = lookedName
+		}
+		if domain == "" {
+			domain = lookedDomain
+		}
+	}
 	if uid == "" {
 		uid = identityFromRefreshToken(token.RefreshToken)
 	}
@@ -1148,6 +1175,96 @@ func oauthIdentity(token Token) (uid, name, domain string) {
 		name = uid
 	}
 	return uid, name, domain
+}
+
+// lookupOAuthIdentity mirrors v1's STS enrichment: caller-identity first, then
+// current/user for the display name when caller-identity only has ids. Both
+// requests are best effort with a 10s bound and never use a proxy slot. The
+// credential values are used only for request signing and are never returned
+// or included in an error.
+func lookupOAuthIdentity(creds Credentials) (uid, name, domain string) {
+	holder := Auth{
+		AccessKeyID:      creds.AccessKeyID,
+		SecretAccessKey:  creds.SecretAccessKey,
+		CloudDragonToken: creds.SecurityToken,
+	}
+	firstUID, firstName, firstDomain := "", "", ""
+	if data, err := oauthSignedIdentityGet(holder, stsHost()+"/v5/caller-identity"); err == nil {
+		firstUID = oauthFirstNonEmpty(modelText(data["principal_id"]), modelText(data["account_id"]))
+		urn := strings.TrimSpace(modelText(data["principal_urn"]))
+		if index := strings.LastIndex(urn, "/"); index >= 0 {
+			firstName = strings.TrimSpace(urn[index+1:])
+		}
+		firstDomain = strings.TrimSpace(modelText(data["account_id"]))
+		if firstUID != "" && firstName != "" && firstName != firstUID {
+			return firstUID, firstName, firstDomain
+		}
+	}
+	if data, err := oauthSignedIdentityGet(holder, snapManagerBase()+"/v1/current/user"); err == nil {
+		currentUID := strings.TrimSpace(modelText(data["user_id"]))
+		currentName := strings.TrimSpace(modelText(data["user_name"]))
+		currentDomain := strings.TrimSpace(modelText(data["domain_id"]))
+		if currentUID != "" || firstUID != "" {
+			return oauthFirstNonEmpty(firstUID, currentUID),
+				oauthFirstNonEmpty(currentName, firstName),
+				oauthFirstNonEmpty(currentDomain, firstDomain)
+		}
+	}
+	return firstUID, firstName, firstDomain
+}
+
+func oauthFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// oauthSignedIdentityGet performs one signed GET with the STS temporary
+// credentials. The response must be a JSON object; any transport/HTTP/decode
+// failure is returned to the best-effort caller without credential text.
+func oauthSignedIdentityGet(holder Auth, endpoint string) (map[string]any, error) {
+	if strings.TrimSpace(holder.AccessKeyID) == "" ||
+		strings.TrimSpace(holder.SecretAccessKey) == "" ||
+		strings.TrimSpace(holder.CloudDragonToken) == "" {
+		return nil, errors.New("codearts: identity lookup requires STS credentials")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), oauthIdentityTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, errors.New("codearts: identity lookup request is invalid")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Language", "zh-cn")
+	if err := SignRequest(request, nil, SignCredentials{
+		AccessKeyID:     holder.AccessKeyID,
+		SecretAccessKey: holder.SecretAccessKey,
+		SecurityToken:   holder.CloudDragonToken,
+	}); err != nil {
+		return nil, errors.New("codearts: identity lookup signing failed")
+	}
+	response, err := oauthIdentityHTTP.Do(ctx, request, "")
+	if err != nil {
+		return nil, errors.New("codearts: identity lookup transport failed")
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, oauthMaxResponseBytes))
+	if err != nil {
+		return nil, errors.New("codearts: identity lookup response read failed")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("codearts: identity lookup HTTP %d", response.StatusCode)
+	}
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return nil, errors.New("codearts: identity lookup response is not a JSON object")
+	}
+	return payload, nil
 }
 
 func identityFromRefreshToken(refreshToken string) string {

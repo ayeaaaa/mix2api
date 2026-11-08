@@ -187,11 +187,17 @@ type ClientOptions struct {
 	// Timeout bounds the whole request, including body reads. Zero means no
 	// timeout.
 	Timeout time.Duration
+
+	// RefuseRedirects returns a 3xx response to the caller instead of
+	// following it. Signed upstream requests must not replay their
+	// Authorization/DPoP headers at a redirect target.
+	RefuseRedirects bool
 }
 
 // Client is a shared HTTP client whose transport is selected per request.
 type Client struct {
-	timeout time.Duration
+	timeout         time.Duration
+	refuseRedirects bool
 
 	mu         sync.Mutex
 	transports map[string]*http.Transport
@@ -200,8 +206,9 @@ type Client struct {
 // NewClient returns a Client with the given options.
 func NewClient(opts ClientOptions) *Client {
 	return &Client{
-		timeout:    opts.Timeout,
-		transports: make(map[string]*http.Transport),
+		timeout:         opts.Timeout,
+		refuseRedirects: opts.RefuseRedirects,
+		transports:      make(map[string]*http.Transport),
 	}
 }
 
@@ -220,6 +227,11 @@ func (c *Client) Do(ctx context.Context, req *http.Request, proxyURL string) (*h
 		return nil, err
 	}
 	client := &http.Client{Transport: tr, Timeout: c.timeout}
+	if c.refuseRedirects {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	return client.Do(req.WithContext(ctx))
 }
 

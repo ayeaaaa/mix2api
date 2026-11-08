@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
-	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -126,13 +125,18 @@ func newT5Provider(t *testing.T, uids ...string) (*Provider, map[string]*Account
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	cfg := LoadConfig(provider.store)
-	cfg.Enabled = true
-	cfg.StreamTimeoutSeconds = 600
-	cfg.ModelsTTLSeconds = 3600
-	cfg.MaxConcurrent = 1
+	cfg, err := SaveConfig(provider.store, map[string]any{
+		"enabled":                true,
+		"stream_timeout_seconds": 600,
+		"models_ttl_seconds":     3600,
+		"max_concurrent":         1,
+	})
+	if err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
 	provider.pool.SetConfig(cfg)
 	provider.chatRetryDelay = time.Millisecond
+	provider.streamIdleTimeout = 2 * time.Second
 
 	accounts := make(map[string]*Account, len(uids))
 	for _, uid := range uids {
@@ -278,6 +282,48 @@ func TestChatDisabledProviderReturnsV1BadRequest(t *testing.T) {
 	const want = "CodeArts 出口未启用：请到设置页打开「启用 CodeArts 出口」。"
 	if apiErr.SafeMessage() != want {
 		t.Fatalf("disabled message = %q, want %q", apiErr.SafeMessage(), want)
+	}
+}
+
+func TestChatLiveSettingsDisableRejectsImmediately(t *testing.T) {
+	fake, _ := newT5Fake(t, nil)
+	provider, accounts := newT5Provider(t, "u1")
+
+	if _, err := SaveConfig(provider.store, map[string]any{"enabled": false}); err != nil {
+		t.Fatalf("disable settings: %v", err)
+	}
+	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindBadRequest ||
+		apiErr.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("disabled after live settings = %v, want v1 400", err)
+	}
+	if apiErr.SafeMessage() != disabledChatMessage {
+		t.Fatalf("live-disabled message = %q", apiErr.SafeMessage())
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("disabled realm reached upstream: calls = %d", fake.callCount())
+	}
+	if accounts["u1"].activeConcurrent != 0 {
+		t.Fatalf("disabled realm leaked a slot: %d", accounts["u1"].activeConcurrent)
+	}
+
+	if _, err := SaveConfig(provider.store, map[string]any{"enabled": true}); err != nil {
+		t.Fatalf("re-enable settings: %v", err)
+	}
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	if err != nil {
+		t.Fatalf("re-enabled OpenChat: %v", err)
+	}
+	_ = t5CollectFrames(t, stream)
+	if fake.callCount() != 1 {
+		t.Fatalf("re-enabled calls = %d, want 1", fake.callCount())
 	}
 }
 
@@ -918,19 +964,28 @@ func TestChatUnknownModelUsesDefaultOutputClamp(t *testing.T) {
 	}
 }
 
-func TestChatEmptyEventStreamIsUpstreamError(t *testing.T) {
+func TestChatEmptyEventStreamSynthesizesV1Terminal(t *testing.T) {
 	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 	})
 	provider, accounts := newT5Provider(t, "u1")
-	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
 		"model":    "GLM-5.2",
 		"messages": t5Messages(t5UserMessage("hi")),
 	}, ""))
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Kind != KindUpstream || apiErr.HTTPStatus() != http.StatusBadGateway {
-		t.Fatalf("empty stream error = %v, want upstream 502", err)
+	if err != nil {
+		t.Fatalf("empty clean-EOF stream = %v, want v1 success", err)
+	}
+	frames := t5CollectFrames(t, stream)
+	if len(frames) != 2 {
+		t.Fatalf("empty stream frames = %d, want finish + DONE", len(frames))
+	}
+	if t5Finish(frames[0]) != "stop" {
+		t.Fatalf("empty stream finish = %#v, want stop", t5Finish(frames[0]))
+	}
+	if !strings.Contains(string(frames[1]), "[DONE]") {
+		t.Fatalf("empty stream terminal = %q, want [DONE]", frames[1])
 	}
 	if accounts["u1"].activeConcurrent != 0 {
 		t.Fatalf("activeConcurrent = %d, want 0", accounts["u1"].activeConcurrent)
@@ -1160,9 +1215,9 @@ func TestChatStreamSnapshotShapes(t *testing.T) {
 	})
 }
 
-func TestChatStreamEOFBeforeDoneIsUpstreamError(t *testing.T) {
+func TestChatStreamCleanEOFBeforeDoneSynthesizesV1Success(t *testing.T) {
 	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
-		t5WriteSSEFrames(w, t5DataFrame(`{"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`))
+		t5WriteSSEFrames(w, t5DataFrame(`{"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
 	})
 	provider, accounts := newT5Provider(t, "u1")
 	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
@@ -1176,16 +1231,119 @@ func TestChatStreamEOFBeforeDoneIsUpstreamError(t *testing.T) {
 	if err != nil || t5Delta(first)["content"] != "partial" {
 		t.Fatalf("first frame = %q, err %v", first, err)
 	}
-	_, err = stream.Next()
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Kind != KindUpstream || apiErr.HTTPStatus() != http.StatusBadGateway {
-		t.Fatalf("EOF error = %v, want upstream 502", err)
+	finish, err := stream.Next()
+	if err != nil {
+		t.Fatalf("synthetic finish after clean EOF: %v", err)
+	}
+	if t5Finish(finish) != "stop" {
+		t.Fatalf("synthetic finish = %#v, want stop", t5Finish(finish))
+	}
+	usageFrame, err := stream.Next()
+	if err != nil {
+		t.Fatalf("synthetic usage after clean EOF: %v", err)
+	}
+	usage, _ := t5DecodeFrame(t, usageFrame)["usage"].(map[string]any)
+	if t5Text(usage["total_tokens"]) != "3" {
+		t.Fatalf("synthetic usage = %#v", usage)
+	}
+	done, err := stream.Next()
+	if err != nil {
+		t.Fatalf("synthetic DONE after clean EOF: %v", err)
+	}
+	if !strings.Contains(string(done), "[DONE]") {
+		t.Fatalf("synthetic terminal = %q, want [DONE]", done)
 	}
 	if accounts["u1"].activeConcurrent != 0 {
 		t.Fatalf("activeConcurrent = %d, want 0", accounts["u1"].activeConcurrent)
 	}
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("Next after error = %v", err)
+		t.Fatalf("Next after synthesized terminal = %v", err)
+	}
+}
+
+func TestChatStreamIdleTimeoutCancelsAndReleases(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		t5WriteSSEFrames(w, t5DataFrame(`{"choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}`))
+		<-r.Context().Done()
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	provider.streamIdleTimeout = 75 * time.Millisecond
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	first, err := stream.Next()
+	if err != nil || t5Delta(first)["content"] != "first" {
+		t.Fatalf("first frame = %q, err %v", first, err)
+	}
+	started := time.Now()
+	_, err = stream.Next()
+	elapsed := time.Since(started)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindUpstream ||
+		apiErr.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("idle timeout = %v, want upstream 502", err)
+	}
+	if !strings.Contains(apiErr.SafeMessage(), "idle timeout") {
+		t.Fatalf("idle timeout message = %q", apiErr.SafeMessage())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("idle timeout took %v, want per-read bound", elapsed)
+	}
+	if accounts["u1"].activeConcurrent != 0 {
+		t.Fatalf("idle timeout leaked a slot: %d", accounts["u1"].activeConcurrent)
+	}
+	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next after idle timeout = %v, want io.EOF", err)
+	}
+}
+
+func TestChatStreamPostDoneConcurrentClose(t *testing.T) {
+	newT5Fake(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		t5WriteSSEFrames(w,
+			t5DataFrame(`{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}`),
+			"data: [DONE]\n\n",
+		)
+		<-r.Context().Done()
+	})
+	provider, accounts := newT5Provider(t, "u1")
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":    "GLM-5.2",
+		"messages": t5Messages(t5UserMessage("hi")),
+	}, ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for index := 0; index < 200; index++ {
+			_, _ = stream.Next()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for index := 0; index < 200; index++ {
+			_ = stream.Close()
+		}
+	}()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("post-DONE Next/Close did not finish promptly")
+	}
+	if accounts["u1"].activeConcurrent != 0 {
+		t.Fatalf("post-DONE close leaked a slot: %d", accounts["u1"].activeConcurrent)
 	}
 }
 
@@ -1525,8 +1683,8 @@ func TestChatConcurrencyRetryExhaustsThenFailsOver(t *testing.T) {
 		t.Fatalf("OpenChat: %v", err)
 	}
 	_ = t5CollectFrames(t, stream)
-	if fake.callCount() != 3 {
-		t.Fatalf("calls = %d, want 2 on u1 + 1 on u2", fake.callCount())
+	if fake.callCount() != 4 {
+		t.Fatalf("calls = %d, want 3 on u1 + 1 on u2", fake.callCount())
 	}
 	if accounts["u1"].State.CoolUntil == 0 {
 		t.Fatal("u1 was not cooled after concurrency exhaustion")
@@ -1642,8 +1800,8 @@ func TestChatConcurrencyAllAccountsFail(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusTooManyRequests || apiErr.ErrorType() != "rate_limit_error" {
 		t.Fatalf("error = %v, want 429 rate_limit_error", err)
 	}
-	if fake.callCount() != 2 {
-		t.Fatalf("calls = %d, want initial + one retry", fake.callCount())
+	if fake.callCount() != 3 {
+		t.Fatalf("calls = %d, want v1's three concurrency attempts", fake.callCount())
 	}
 	if accounts["u1"].activeConcurrent != 0 {
 		t.Fatalf("activeConcurrent = %d", accounts["u1"].activeConcurrent)
@@ -1777,15 +1935,16 @@ func TestChatAuthTerminalDisablesAndFailsOver(t *testing.T) {
 
 func TestChatSoftFailuresFailOver(t *testing.T) {
 	cases := []struct {
-		name       string
-		status     int
-		body       string
-		wantCalls  int
-		wantCooled bool
+		name         string
+		status       int
+		body         string
+		wantCalls    int
+		wantCooled   bool
+		wantErrCount int
 	}{
 		{name: "429", status: http.StatusTooManyRequests, body: `{"error_msg":"slow down"}`, wantCalls: 2, wantCooled: true},
-		{name: "500", status: http.StatusInternalServerError, body: `{"error_msg":"boom"}`, wantCalls: 2, wantCooled: true},
-		{name: "503", status: http.StatusServiceUnavailable, body: `{"error_msg":"unavailable"}`, wantCalls: 2, wantCooled: true},
+		{name: "500", status: http.StatusInternalServerError, body: `{"error_msg":"boom"}`, wantCalls: 2, wantErrCount: 1},
+		{name: "503", status: http.StatusServiceUnavailable, body: `{"error_msg":"unavailable"}`, wantCalls: 2, wantErrCount: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1812,6 +1971,10 @@ func TestChatSoftFailuresFailOver(t *testing.T) {
 			if tc.wantCooled && accounts["u1"].State.CoolUntil == 0 {
 				t.Fatalf("u1 was not cooled: %+v", accounts["u1"].State)
 			}
+			if tc.wantErrCount > 0 && accounts["u1"].State.ErrCount != tc.wantErrCount {
+				t.Fatalf("u1 err_count = %d, want %d: %+v",
+					accounts["u1"].State.ErrCount, tc.wantErrCount, accounts["u1"].State)
+			}
 			if accounts["u1"].activeConcurrent != 0 || accounts["u2"].activeConcurrent != 0 {
 				t.Fatalf("slot leak: u1=%d u2=%d", accounts["u1"].activeConcurrent, accounts["u2"].activeConcurrent)
 			}
@@ -1831,7 +1994,11 @@ func TestChatNetworkFailureFailsOver(t *testing.T) {
 	_ = deadListener.Close()
 
 	provider, accounts := newT5Provider(t, "u1", "u2")
-	provider.Pool().ApplyProxySlots(transport.Slots{{ID: "dead", URL: deadURL, Enabled: true}})
+	if _, err := provider.store.Merge(map[string]any{"proxy_slots": []any{
+		map[string]any{"id": "dead", "url": deadURL, "enabled": true},
+	}}); err != nil {
+		t.Fatalf("persist proxy slot: %v", err)
+	}
 	if err := provider.Pool().SetProxySlot("u1", "dead"); err != nil {
 		t.Fatalf("SetProxySlot: %v", err)
 	}
@@ -1894,7 +2061,11 @@ func TestChatUsesAccountProxy(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	provider, _ := newT5Provider(t, "u1")
-	provider.Pool().ApplyProxySlots(transport.Slots{{ID: "proxy-1", URL: proxy.URL, Enabled: true}})
+	if _, err := provider.store.Merge(map[string]any{"proxy_slots": []any{
+		map[string]any{"id": "proxy-1", "url": proxy.URL, "enabled": true},
+	}}); err != nil {
+		t.Fatalf("persist proxy slot: %v", err)
+	}
 	if err := provider.Pool().SetProxySlot("u1", "proxy-1"); err != nil {
 		t.Fatalf("SetProxySlot: %v", err)
 	}
@@ -1945,7 +2116,7 @@ func TestChatAllKnownZeroCreditsReturnsReadable400(t *testing.T) {
 	}
 }
 
-func TestChatNoAccountUnavailable(t *testing.T) {
+func TestChatNoAccountUnavailableMapsV1BadGateway(t *testing.T) {
 	newT5Fake(t, nil)
 	provider, _ := newT5Provider(t)
 	_, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
@@ -1953,8 +2124,8 @@ func TestChatNoAccountUnavailable(t *testing.T) {
 		"messages": t5Messages(t5UserMessage("hi")),
 	}, ""))
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
-		t.Fatalf("error = %v, want 503", err)
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("error = %v, want v1 502", err)
 	}
 	if !strings.Contains(apiErr.SafeMessage(), "没有可用的 CodeArts 账号") {
 		t.Fatalf("message = %q", apiErr.SafeMessage())

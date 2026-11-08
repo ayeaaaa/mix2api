@@ -598,8 +598,8 @@ func TestCodeArtsConcurrencyRetryThenFailover(t *testing.T) {
 	codeartsRequireStatus(t, "concurrency failover", rec, http.StatusOK)
 	codeartsAssertContractCompletion(t, "concurrency failover", rec.Body.Bytes())
 
-	if got := fixture.fake.chatCount(fixture.accounts[0].Token); got != 2 {
-		t.Fatalf("first account chat calls = %d, want initial + one retry", got)
+	if got := fixture.fake.chatCount(fixture.accounts[0].Token); got != 3 {
+		t.Fatalf("first account chat calls = %d, want v1's three concurrency attempts", got)
 	}
 	if got := fixture.fake.chatCount(fixture.accounts[1].Token); got != 1 {
 		t.Fatalf("second account chat calls = %d, want one failover", got)

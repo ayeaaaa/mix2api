@@ -38,3 +38,42 @@ peak and off-peak rates differ (`DeepSeek-V4.1-Flash` and
 v1.6.5 parity remains **pending** for CodeArts as well; the goldens lock down
 v2's scoped semantics and must be reviewed before being replaced by recorded
 oracle assertions.
+
+### Final-review parity fixes and exclusions
+
+These are v1.6.5-aligned behavior changes, not new golden recordings:
+
+- Chat reloads live settings on entry; disabling the realm rejects `/v1/chat`
+  immediately with v1's 400 message. `/codearts/models/refresh` starts a fresh
+  discovery instead of joining an invalidated in-flight flight.
+- `stream_timeout_seconds` is enforced as a per-read SSE idle bound. A stalled
+  upstream returns a classified 502 timeout; a clean EOF before `[DONE]` is v1
+  success and synthesizes finish/usage/`[DONE]`. Only non-EOF read failures are
+  502.
+- OAuth identity enrichment uses signed STS `caller-identity` then
+  `snap-manager current/user` (10s, direct) before the JWT/hash fallback. A
+  callback with an unknown supplied secret is rejected instead of selecting a
+  session by ticket/state.
+- Chat no-account/unreachable failures keep v1's 502; only the non-chat
+  disabled `/v1/models` gate stays 503. Three concurrency attempts use v1's
+  2s/4s backoff, and ordinary 5xx failures use the normal three-strike error
+  path rather than a soft 60s cooldown.
+- Panel/check-in redaction now includes `access_key_id`; signed upstream
+  transports refuse redirects; `CodeArtsStream.closed` is atomic.
+
+Intentional v2 deviations/exclusions (do not encode as v1 output):
+
+- **Auth-path sanitization (security-improving):** v2 replaces every character
+  outside `[A-Za-z0-9._-]` with `_` (and keeps the canonical ownership check);
+  v1 only replaced path separators. v2 is deliberately stricter against path
+  traversal/collisions.
+- **Redirect refusal (security-improving):** v2's shared signed transport uses
+  `CheckRedirect: ErrUseLastResponse`; v1's urllib path could follow a redirect.
+  A 3xx from a token/catalog/chat endpoint is treated as an endpoint error.
+- **Proxy binding cleanup exclusion:** v1 clears bindings to removed slots only
+  in its `/proxy/slots/save` panel handler via `drop_missing_bindings`. That
+  slot-management route is outside the v2 CodeArts surface; v2 therefore keeps
+  a missing/disabled slot binding on disk and resolves it to direct, exactly
+  like v1's `apply_proxy_slots`.
+- **v1-only chat/model fields:** `elapsed_ms`, `first_chunk_at`, and the models
+  `catalog` block remain out of the v2 foundation contract.

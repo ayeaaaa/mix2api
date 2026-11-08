@@ -11,13 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const (
-	chatStreamID           = "chatcmpl-codearts"
-	chatStreamErrorMessage = "codearts: stream ended before the [DONE] event"
-)
+const chatStreamID = "chatcmpl-codearts"
 
 // CodeArtsStream normalizes Huawei CodeArts SSE events into OpenAI-style
 // complete SSE frames. It owns one acquired account slot and releases it
@@ -38,11 +36,24 @@ type CodeArtsStream struct {
 	hasPending bool
 	eof        bool
 	terminal   bool
-	closed     bool
 	finishSent bool
 	lastText   string
 	usage      map[string]any
 	queue      [][]byte
+
+	// closed is written by Close and read by Next; Close may race any caller
+	// after [DONE]. idleTimedOut records the per-read SSE timeout so a
+	// canceled body read maps to a classified upstream timeout rather than a
+	// generic context error.
+	closed       atomic.Bool
+	idleTimedOut atomic.Bool
+
+	// idleTimeout is v1's stream_timeout_seconds applied to each blocking
+	// upstream line read. The timer is armed only while a read is blocked and
+	// stopped as soon as the read returns.
+	idleTimeout time.Duration
+	idleMu      sync.Mutex
+	idleTimer   *time.Timer
 
 	closeOnce sync.Once
 }
@@ -54,16 +65,18 @@ func newCodeArtsStream(
 	pool *Pool,
 	account *Account,
 	model string,
+	idleTimeout time.Duration,
 ) *CodeArtsStream {
 	return &CodeArtsStream{
-		parent:  parent,
-		cancel:  cancel,
-		body:    body,
-		reader:  bufio.NewReader(body),
-		pool:    pool,
-		account: account,
-		model:   model,
-		created: time.Now().Unix(),
+		parent:      parent,
+		cancel:      cancel,
+		body:        body,
+		reader:      bufio.NewReader(body),
+		pool:        pool,
+		account:     account,
+		model:       model,
+		created:     time.Now().Unix(),
+		idleTimeout: idleTimeout,
 	}
 }
 
@@ -75,15 +88,15 @@ func (s *CodeArtsStream) currentAuth() Auth {
 }
 
 // preflight reads the first data event so a 200 response carrying an embedded
-// business error fails before the API layer writes headers. A completely empty
-// event stream is an upstream failure.
+// business error fails before the API layer writes headers. A clean EOF before
+// any event is not an error: v1's iterator synthesizes the terminal finish,
+// usage, and [DONE] frames exactly as it does for a mid-stream EOF.
 func (s *CodeArtsStream) preflight() error {
 	for {
 		data, err := s.readData()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return &APIError{Kind: KindUpstream, Status: http.StatusBadGateway,
-					Message: chatStreamErrorMessage}
+			if errors.Is(err, io.EOF) && !s.idleTimedOut.Load() {
+				return nil
 			}
 			return s.mapReadError(err)
 		}
@@ -114,7 +127,7 @@ func (s *CodeArtsStream) Next() ([]byte, error) {
 			s.queue = s.queue[1:]
 			return frame, nil
 		}
-		if s.closed || s.terminal {
+		if s.closed.Load() || s.terminal {
 			return nil, io.EOF
 		}
 		if s.parent != nil {
@@ -132,10 +145,12 @@ func (s *CodeArtsStream) Next() ([]byte, error) {
 		} else {
 			next, err := s.readData()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) && !s.idleTimedOut.Load() {
+					// v1 ends a clean EOF as a successful stream. Synthesize
+					// the missing finish, optional usage, and [DONE].
+					s.queueTerminal()
 					_ = s.Close()
-					return nil, &APIError{Kind: KindUpstream, Status: http.StatusBadGateway,
-						Message: chatStreamErrorMessage}
+					continue
 				}
 				mapped := s.mapReadError(err)
 				_ = s.Close()
@@ -322,6 +337,62 @@ func (s *CodeArtsStream) queueTerminal() {
 	s.queue = append(s.queue, []byte("data: [DONE]\n\n"))
 }
 
+// startIdle arms the per-read idle timer. Each new line read starts a fresh
+// window, matching v1's socket timeout reset on every read.
+func (s *CodeArtsStream) startIdle() {
+	if s == nil || s.idleTimeout <= 0 {
+		return
+	}
+	s.idleMu.Lock()
+	s.stopIdleLocked()
+	s.idleTimer = time.AfterFunc(s.idleTimeout, s.idleExpired)
+	s.idleMu.Unlock()
+}
+
+func (s *CodeArtsStream) stopIdle() {
+	if s == nil {
+		return
+	}
+	s.idleMu.Lock()
+	s.stopIdleLocked()
+	s.idleMu.Unlock()
+}
+
+func (s *CodeArtsStream) stopIdleLocked() {
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
+}
+
+// idleExpired records the timeout and cancels the upstream request context.
+// The body read then returns; mapReadError turns that condition into a
+// classified 502 timeout instead of a generic cancellation.
+func (s *CodeArtsStream) idleExpired() {
+	if s == nil {
+		return
+	}
+	s.idleMu.Lock()
+	if s.idleTimer == nil {
+		// The read completed and stopped this window first.
+		s.idleMu.Unlock()
+		return
+	}
+	s.idleTimer = nil
+	s.idleTimedOut.Store(true)
+	s.idleMu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+}
+
+func (s *CodeArtsStream) readLine() (string, error) {
+	s.startIdle()
+	line, err := s.reader.ReadString('\n')
+	s.stopIdle()
+	return line, err
+}
+
 // readData reads the next non-empty SSE data payload. Other fields and
 // comments are skipped, matching v1's data-line handling.
 func (s *CodeArtsStream) readData() ([]byte, error) {
@@ -329,7 +400,7 @@ func (s *CodeArtsStream) readData() ([]byte, error) {
 		if s.eof {
 			return nil, io.EOF
 		}
-		line, err := s.reader.ReadString('\n')
+		line, err := s.readLine()
 		if len(line) > 0 {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "data:") {
@@ -354,16 +425,22 @@ func (s *CodeArtsStream) readData() ([]byte, error) {
 
 func (s *CodeArtsStream) mapReadError(err error) error {
 	if s.parent != nil {
+		// Caller cancellation keeps its own classification even when an idle
+		// timer or a concurrent Close raced it.
 		if ctxErr := s.parent.Err(); ctxErr != nil {
 			return ctxErr
 		}
 	}
-	if errors.Is(err, io.EOF) {
-		return io.EOF
-	}
-	if s.closed {
+	if s.closed.Load() {
 		// An explicit/concurrent Close ends the caller-visible stream. Internal
 		// close for a read error happens only after this classification.
+		return io.EOF
+	}
+	if s.idleTimedOut.Load() {
+		return newChatError(KindUpstream, http.StatusBadGateway,
+			"codearts: stream idle timeout before the next SSE frame", s.currentAuth())
+	}
+	if errors.Is(err, io.EOF) {
 		return io.EOF
 	}
 	return newChatError(KindUpstream, http.StatusBadGateway,
@@ -391,7 +468,11 @@ func (s *CodeArtsStream) Close() error {
 		return nil
 	}
 	s.closeOnce.Do(func() {
-		s.closed = true
+		// Publish the closed state before stopping the timer: a timer that
+		// fires in this window may cancel the request, but mapReadError sees
+		// the explicit close and returns io.EOF.
+		s.closed.Store(true)
+		s.stopIdle()
 		s.abort()
 		if s.pool != nil {
 			s.pool.Release(s.account)

@@ -48,7 +48,7 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 		// Returning the seed set while disabled would advertise a realm that
 		// cannot serve chat.
 		return nil, &APIError{
-			Kind:    KindUnavailable,
+			Kind:    KindRealmDisabled,
 			Status:  http.StatusServiceUnavailable,
 			Message: disabledAdminMessage,
 		}

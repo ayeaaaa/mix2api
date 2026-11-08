@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -224,6 +225,43 @@ func newTokenTestManagerTimeout(t *testing.T, now time.Time, timeout time.Durati
 		t.Fatal("NewTokenManager returned nil")
 	}
 	return manager
+}
+
+func TestTokenRefreshRefusesRedirect(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/stolen", http.StatusTemporaryRedirect)
+	}))
+	defer tokenServer.Close()
+	t.Setenv("WB_CODEARTS_STS_HOST", tokenServer.URL)
+
+	pool, _ := tokenTestPool(t, tokenTestAuth("redirect", now.Add(-time.Minute)))
+	account := pool.Get("redirect")
+	manager := NewTokenManager(
+		transport.NewClient(transport.ClientOptions{RefuseRedirects: true}),
+		TokenManagerOptions{
+			Timeout:  time.Second,
+			Now:      func() time.Time { return now },
+			ProxyURL: func(a *Account) string { return a.ProxyURL() },
+		},
+	)
+	err := manager.Ensure(context.Background(), account)
+	if err == nil {
+		t.Fatal("redirecting token endpoint was followed")
+	}
+	if redirected.Load() != 0 {
+		t.Fatalf("redirect target received %d request(s)", redirected.Load())
+	}
+	if !errors.Is(err, ErrTokenRejected) {
+		t.Fatalf("redirect error = %v, want ErrTokenRejected", err)
+	}
 }
 
 func TestTokenEnsureNoopForValidAndZeroExpiration(t *testing.T) {

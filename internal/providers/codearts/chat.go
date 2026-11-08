@@ -41,7 +41,7 @@ const (
 	defaultMaxOutputTokens  = int64(65536)
 	chatErrorBodyMax        = 256 * 1024
 	chatConcurrencyDelay    = 2 * time.Second
-	chatConcurrencyAttempts = 2
+	chatConcurrencyAttempts = 3
 )
 
 // chatAllowedFields is the exact v1 CodeArts chat allowlist. Everything else,
@@ -85,16 +85,24 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		ctx = context.Background()
 	}
 	if p == nil || p.pool == nil {
-		return nil, &APIError{Kind: KindUnavailable, Status: http.StatusServiceUnavailable,
+		return nil, &APIError{Kind: KindUnavailable, Status: http.StatusBadGateway,
 			Message: noAccountMessage}
 	}
 
-	p.pool.mu.RLock()
-	enabled := p.pool.cfg.Enabled
-	p.pool.mu.RUnlock()
-	if !enabled {
+	// Chat is reached through the generic API, not a CodeArts admin handler.
+	// Reload live settings here so an external settings save disables (or
+	// re-enables) the realm without a process restart.
+	cfg, cfgErr := p.applySettings()
+	if cfgErr != nil {
+		return nil, cfgErr
+	}
+	if !cfg.Enabled {
 		return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
 			Message: disabledChatMessage}
+	}
+	streamTimeout := time.Duration(cfg.StreamTimeoutSeconds * float64(time.Second))
+	if p.streamIdleTimeout > 0 {
+		streamTimeout = p.streamIdleTimeout
 	}
 
 	build, buildErr := buildChatBody(req)
@@ -124,7 +132,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			continue
 		}
 
-		stream, attemptErr := p.openChatAccount(ctx, account, build)
+		stream, attemptErr := p.openChatAccount(ctx, account, build, streamTimeout)
 		if attemptErr == nil {
 			_ = p.pool.NoteSuccess(account)
 			boundUID, _ := account.currentUID()
@@ -181,8 +189,10 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			p.pool.Release(account)
 			exclude[uid] = true
 		default:
-			soft := apiErr.Status >= http.StatusInternalServerError
-			_ = p.pool.NoteError(account, attemptErr.Error(), soft, false)
+			// v1 treats an ordinary 5xx CodeArtsError as a normal error
+			// (three strikes), not a soft 60s cooldown. Only 429/concurrency
+			// and unavailable/network failures are soft.
+			_ = p.pool.NoteError(account, attemptErr.Error(), false, false)
 			p.pool.Release(account)
 			exclude[uid] = true
 		}
@@ -211,8 +221,11 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 
 // openChatAccount performs one selected account's request. The caller owns the
 // acquired slot; on error this method never releases it. Concurrency
-// rejections are retried once on the same account with a 2s pause.
-func (p *Provider) openChatAccount(ctx context.Context, account *Account, build *chatBuild) (providers.ChatStream, error) {
+// rejections are retried on the same account three times total with v1's
+// 2s/4s backoff.
+func (p *Provider) openChatAccount(
+	ctx context.Context, account *Account, build *chatBuild, streamTimeout time.Duration,
+) (providers.ChatStream, error) {
 	if p.transport == nil {
 		return nil, errors.New("codearts: chat transport is nil")
 	}
@@ -257,7 +270,7 @@ func (p *Provider) openChatAccount(ctx context.Context, account *Account, build 
 
 	var lastErr error
 	for attempt := 0; attempt < chatConcurrencyAttempts; attempt++ {
-		stream, attemptErr := p.sendChatAttempt(ctx, account, model, build.ChatID, sessionID, raw)
+		stream, attemptErr := p.sendChatAttempt(ctx, account, model, build.ChatID, sessionID, raw, streamTimeout)
 		if attemptErr == nil {
 			return stream, nil
 		}
@@ -266,7 +279,8 @@ func (p *Provider) openChatAccount(ctx context.Context, account *Account, build 
 		if !errors.As(attemptErr, &apiErr) || apiErr.Kind != KindConcurrency || attempt == chatConcurrencyAttempts-1 {
 			return nil, attemptErr
 		}
-		if err := sleepChatContext(ctx, delay); err != nil {
+		// v1 backs off 2s then 4s across its three concurrency attempts.
+		if err := sleepChatContext(ctx, delay*time.Duration(attempt+1)); err != nil {
 			return nil, err
 		}
 	}
@@ -292,6 +306,7 @@ func (p *Provider) sendChatAttempt(
 	account *Account,
 	model, chatID, sessionID string,
 	raw []byte,
+	streamTimeout time.Duration,
 ) (providers.ChatStream, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	request, err := p.newChatRequest(streamCtx, account, model, chatID, sessionID, raw)
@@ -307,7 +322,7 @@ func (p *Provider) sendChatAttempt(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, newChatError(KindUnavailable, http.StatusServiceUnavailable,
+		return nil, newChatError(KindUnavailable, http.StatusBadGateway,
 			"连不上 CodeArts 聊天接口："+err.Error(), currentAccountAuth(account))
 	}
 
@@ -323,7 +338,7 @@ func (p *Provider) sendChatAttempt(
 
 	// v1 does not gzip request bodies. Go's transport may negotiate gzip for
 	// the response's Accept-Encoding, but the request body stays plain JSON.
-	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, model)
+	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, model, streamTimeout)
 	if preflightErr := stream.preflight(); preflightErr != nil {
 		// Preflight failures have not returned a stream, so the caller still
 		// owns the slot and releases it.
@@ -340,7 +355,7 @@ func chatTokenError(err error, auth Auth) *APIError {
 		return newChatError(KindAuth, http.StatusBadGateway,
 			"CodeArts 账号令牌已失效："+err.Error(), auth)
 	}
-	return newChatError(KindUnavailable, http.StatusServiceUnavailable,
+	return newChatError(KindUnavailable, http.StatusBadGateway,
 		"CodeArts 令牌续期失败："+err.Error(), auth)
 }
 
@@ -1494,7 +1509,7 @@ func chatFloatToInt64(number float64) int64 {
 
 // allKnownCreditsExhausted reports whether every enabled account already has a
 // zero-credit snapshot. In that state v1's scheduler has no candidate at all;
-// the chat contract surfaces the readable 400 instead of a generic 503.
+// the chat contract surfaces the readable 400 instead of v1's generic 502.
 func (p *Provider) allKnownCreditsExhausted() bool {
 	if p == nil || p.pool == nil {
 		return false
@@ -1516,8 +1531,8 @@ func (p *Provider) allKnownCreditsExhausted() bool {
 	return enabled > 0
 }
 
-// noAccountError builds v1's readable 503 explanation with at most two account
-// reasons.
+// noAccountError builds v1's readable no-account explanation with at most two
+// account reasons. The generic API maps it to v1's 502, not 503.
 func (p *Provider) noAccountError() error {
 	now := p.pool.nowTime()
 	reasons := make([]string, 0, 2)
@@ -1563,5 +1578,5 @@ func (p *Provider) noAccountError() error {
 	if len(reasons) > 0 {
 		message = "没有可用的 CodeArts 账号：" + strings.Join(reasons, "；")
 	}
-	return &APIError{Kind: KindUnavailable, Status: http.StatusServiceUnavailable, Message: message}
+	return &APIError{Kind: KindUnavailable, Status: http.StatusBadGateway, Message: message}
 }

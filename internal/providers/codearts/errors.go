@@ -32,8 +32,13 @@ const (
 	KindCreditExhausted
 
 	// KindUnavailable means no local account could serve the request, or the
-	// upstream could not be reached.
+	// upstream could not be reached. v1 maps these chat failures to 502.
 	KindUnavailable
+
+	// KindRealmDisabled is the disabled-realm gate used by non-chat surfaces
+	// such as /v1/models. It keeps v1's exact 503 status while chat's local
+	// unavailable failures keep their v1 502 mapping.
+	KindRealmDisabled
 
 	// KindUpstream is any other upstream failure.
 	KindUpstream
@@ -67,11 +72,9 @@ func (e *APIError) Error() string {
 
 // HTTPStatus maps the kind to the v1 chat error status. Authentication
 // failures are 502 because the client's API key is not the rejected
-// credential. Concurrency is a 429 like v1's CodeArts mapping.
-//
-// KindUnavailable deliberately maps to 503 (not v1's generic 502): Task 5's
-// contract treats a local no-account or unreachable-upstream state as
-// service-unavailable. Every upstream status failure keeps 502.
+// credential. Concurrency is a 429 like v1's CodeArts mapping. Local
+// no-account/unreachable failures are 502 like v1's generic CodeArtsError
+// mapping; only the non-chat disabled-realm gate uses 503.
 func (e *APIError) HTTPStatus() int {
 	if e == nil {
 		return http.StatusBadGateway
@@ -81,10 +84,8 @@ func (e *APIError) HTTPStatus() int {
 		return http.StatusBadRequest
 	case KindRateLimited, KindConcurrency:
 		return http.StatusTooManyRequests
-	case KindUnavailable:
+	case KindRealmDisabled:
 		return http.StatusServiceUnavailable
-	case KindAuth:
-		return http.StatusBadGateway
 	default:
 		return http.StatusBadGateway
 	}
@@ -125,9 +126,6 @@ func newChatError(kind ErrorKind, status int, message string, auth Auth) *APIErr
 // caps the text at v1's 500-rune error budget.
 func redactChatMessage(message string, auth Auth) string {
 	values := codeartsSecretValues(auth)
-	if strings.TrimSpace(auth.AccessKeyID) != "" {
-		values = append(values, auth.AccessKeyID)
-	}
 	message = redactText(message, values)
 	message = maskProxyURL(message)
 	message = truncateRunes(message, 500)

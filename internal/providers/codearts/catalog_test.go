@@ -819,6 +819,75 @@ func TestCatalogConcurrentFetchCoalescesInFlight(t *testing.T) {
 	}
 }
 
+func TestCatalogInvalidateModelsStartsFreshFlight(t *testing.T) {
+	upstream := newCatalogUpstream()
+	provider, account := newCatalogProvider(t, upstream)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local))
+
+	started, release := upstream.blockedBuiltin()
+	defer release()
+	oldDone := make(chan struct{})
+	go func() {
+		defer close(oldDone)
+		_, _ = provider.FetchModels(context.Background(), account, true)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale discovery did not start")
+	}
+
+	provider.invalidateModels()
+	account.modelsMu.Lock()
+	flight := account.modelsFlight
+	account.modelsMu.Unlock()
+	if flight != nil {
+		t.Fatal("invalidateModels left the stale flight joinable")
+	}
+
+	joined := make(chan struct{}, 1)
+	provider.modelFetchJoinHook = func() {
+		select {
+		case joined <- struct{}{}:
+		default:
+		}
+	}
+	type fetchResult struct {
+		models []Model
+		err    error
+	}
+	fresh := make(chan fetchResult, 1)
+	go func() {
+		models, err := provider.Models(context.Background(), true)
+		fresh <- fetchResult{models: models, err: err}
+	}()
+	select {
+	case <-started:
+		// A second builtin discovery reached upstream instead of joining.
+	case <-joined:
+		t.Fatal("refresh joined the stale in-flight discovery")
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not start fresh discovery")
+	}
+	release()
+
+	select {
+	case <-oldDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale discovery did not finish")
+	}
+	result := <-fresh
+	if result.err != nil || len(result.models) == 0 {
+		t.Fatalf("fresh discovery = %d models, err %v", len(result.models), result.err)
+	}
+	account.mu.Lock()
+	stored := len(account.Models)
+	account.mu.Unlock()
+	if stored == 0 {
+		t.Fatal("fresh discovery did not publish after invalidation")
+	}
+}
+
 func TestCatalogEnrichesCapabilitiesReasoningAndCredits(t *testing.T) {
 	provider := newEmptyCatalogProvider(t)
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
@@ -1462,8 +1531,8 @@ func TestModelsDisabledRealmReturnsUnavailable(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("Models error = %v, want *APIError", err)
 	}
-	if apiErr.Kind != KindUnavailable || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
-		t.Fatalf("disabled Models error = %#v, want unavailable/503", apiErr)
+	if apiErr.Kind != KindRealmDisabled || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("disabled Models error = %#v, want realm-disabled/503", apiErr)
 	}
 	if apiErr.SafeMessage() != disabledAdminMessage {
 		t.Fatalf("disabled Models message = %q", apiErr.SafeMessage())

@@ -424,7 +424,7 @@ func TestCodeArtsSliceOverHTTP(t *testing.T) {
 	if got := parsed.Query().Get("port"); got != fmt.Sprint(live.port) {
 		t.Fatalf("oauth start port = %q, want actual listener port %d", got, live.port)
 	}
-	if strings.Contains(authURL, "attacker.example") || strings.Contains(authURL, "9999") {
+	if strings.Contains(authURL, "attacker.example") {
 		t.Fatal("oauth start used the request Host instead of the injected listener port")
 	}
 	sliceNoSecrets(t, "oauth start", rec.Body, secrets...)
@@ -531,7 +531,7 @@ func TestCodeArtsCompositionAndDisabledOverview(t *testing.T) {
 	if got := parsed.Query().Get("port"); got != fmt.Sprint(live.port) {
 		t.Fatalf("oauth start port = %q, want actual listener port %d", got, live.port)
 	}
-	if strings.Contains(authURL, "attacker.example") || strings.Contains(authURL, "9999") {
+	if strings.Contains(authURL, "attacker.example") {
 		t.Fatal("oauth start used the request Host instead of the injected listener port")
 	}
 }

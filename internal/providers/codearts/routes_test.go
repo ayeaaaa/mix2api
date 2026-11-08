@@ -315,6 +315,26 @@ func TestCodeArtsOverviewNoTokensAndStats(t *testing.T) {
 	}
 }
 
+func TestCodeArtsAccountViewRedactsAccessKeyID(t *testing.T) {
+	_, _ = newAdminUpstreams(t)
+	f := newCodeArtsRoutesFixture(t, true)
+	account := addRouteAccount(t, f.p, "u1")
+	account.mu.Lock()
+	account.State.Reason = "denied for " + account.Auth.AccessKeyID
+	account.State.LastError = "signature failed " + account.Auth.AccessKeyID
+	account.Checkin = CheckinState{"ok": false, "message": "check-in " + account.Auth.AccessKeyID}
+	account.mu.Unlock()
+
+	recorder := f.do(http.MethodGet, "/codearts/accounts", nil, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("accounts status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	raw := recorder.Body.String()
+	if strings.Contains(raw, "AK-u1") {
+		t.Fatalf("access key id leaked in account view: %s", raw)
+	}
+}
+
 func TestCodeArtsOverviewDisabledAndHealth(t *testing.T) {
 	f := newCodeArtsRoutesFixture(t, false)
 	recorder := f.do(http.MethodGet, "/codearts/overview", nil, "")

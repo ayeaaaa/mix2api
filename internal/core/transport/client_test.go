@@ -385,6 +385,38 @@ func TestDoRejectsNilInputs(t *testing.T) {
 	}
 }
 
+func TestRefuseRedirects(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		_, _ = io.WriteString(w, "stolen")
+	}))
+	defer target.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/target", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientOptions{RefuseRedirects: true})
+	defer client.Close()
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/start", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := client.Do(context.Background(), req, "")
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want 307 returned to caller", resp.StatusCode)
+	}
+	if redirected.Load() != 0 {
+		t.Fatalf("redirect target received %d request(s)", redirected.Load())
+	}
+}
+
 func TestClientTimeout(t *testing.T) {
 	unblock := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

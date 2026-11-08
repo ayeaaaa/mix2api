@@ -743,9 +743,10 @@ func redactCheckinSecretValue(value any) any {
 // codeartsSecretValues lists credential values that must never surface in a
 // reason, error, log, or admin view.
 func codeartsSecretValues(auth Auth) []string {
-	values := make([]string, 0, 5)
+	values := make([]string, 0, 6)
 	for _, value := range []string{
 		auth.CloudDragonToken,
+		auth.AccessKeyID,
 		auth.SecretAccessKey,
 		auth.RefreshToken,
 		auth.CodeVerifier,

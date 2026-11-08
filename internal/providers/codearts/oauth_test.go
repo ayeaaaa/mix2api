@@ -35,8 +35,10 @@ const goVectorSignature = "8de8b67b0182b0ad3e966bbf0e377da14e3d3850490e4272dfe98
 type oauthFake struct {
 	mu sync.Mutex
 
-	tokenCalls  int
-	ticketCalls int
+	tokenCalls       int
+	ticketCalls      int
+	identityCalls    int
+	currentUserCalls int
 
 	tokenStatus int
 	tokenBody   []byte
@@ -46,13 +48,22 @@ type oauthFake struct {
 	ticketBody   []byte
 	ticketFn     func() map[string]any
 
+	identityStatus    int
+	identityBody      []byte
+	identityFn        func() map[string]any
+	currentUserStatus int
+	currentUserBody   []byte
+	currentUserFn     func() map[string]any
+
 	lastTokenForm   url.Values
 	lastTokenHeader http.Header
 	lastDPoP        DPoPProofInfo
 	lastDPoPErr     error
 
-	lastTicketQuery  url.Values
-	lastTicketHeader http.Header
+	lastTicketQuery       url.Values
+	lastTicketHeader      http.Header
+	lastIdentityHeader    http.Header
+	lastCurrentUserHeader http.Header
 
 	ticketStarted chan struct{}
 	ticketRelease chan struct{}
@@ -142,9 +153,44 @@ func (f *oauthFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(payload)
 
+	case "/v5/caller-identity":
+		f.mu.Lock()
+		f.identityCalls++
+		f.lastIdentityHeader = r.Header.Clone()
+		status := f.identityStatus
+		raw := append([]byte(nil), f.identityBody...)
+		fn := f.identityFn
+		f.mu.Unlock()
+		writeOAuthIdentityResponse(w, status, raw, fn)
+	case "/snap-manager/v1/current/user":
+		f.mu.Lock()
+		f.currentUserCalls++
+		f.lastCurrentUserHeader = r.Header.Clone()
+		status := f.currentUserStatus
+		raw := append([]byte(nil), f.currentUserBody...)
+		fn := f.currentUserFn
+		f.mu.Unlock()
+		writeOAuthIdentityResponse(w, status, raw, fn)
+
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func writeOAuthIdentityResponse(w http.ResponseWriter, status int, raw []byte, fn func() map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	if status != 0 {
+		w.WriteHeader(status)
+	}
+	if len(raw) > 0 {
+		_, _ = w.Write(raw)
+		return
+	}
+	if fn == nil {
+		http.NotFound(w, nil)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(fn())
 }
 
 func newOAuthFake(t *testing.T) (*oauthFake, *httptest.Server) {
@@ -1347,6 +1393,96 @@ func TestOAuthIdentityFallbackAndCollision(t *testing.T) {
 	}
 }
 
+func TestOAuthIdentityEnrichmentCallerIdentityAndCurrentUser(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	store, dir := newOAuthTestStore(t)
+
+	fake.mu.Lock()
+	fake.tokenFn = func() map[string]any {
+		return map[string]any{
+			"refresh_token": "enrich-refresh",
+			"credentials": map[string]any{
+				"access_key_id": "AK-ENRICH", "secret_access_key": "SK-ENRICH",
+				"security_token": "ST-ENRICH", "expiration": "2030-01-02T03:04:05Z",
+			},
+		}
+	}
+	fake.identityFn = func() map[string]any {
+		return map[string]any{
+			"principal_id":  "principal-1",
+			"account_id":    "account-1",
+			"principal_urn": "urn:iam::account-1:user/alice",
+		}
+	}
+	fake.mu.Unlock()
+
+	sessions := NewOAuthSessions()
+	start, session := mustBegin(t, sessions, store, 8788)
+	result, err := sessions.Callback(store, start.SessionID, "CODE-IDENTITY", session.TicketID)
+	if err != nil {
+		t.Fatalf("Callback caller-identity: %v", err)
+	}
+	if result.UID != "principal-1" || result.Nickname != "alice" {
+		t.Fatalf("caller-identity result = %+v", result)
+	}
+	path, _ := AuthPath(dir, "principal-1")
+	auth, err := LoadAuth(path)
+	if err != nil {
+		t.Fatalf("caller-identity auth: %v", err)
+	}
+	if auth.UserID != "principal-1" || auth.UserName != "alice" || auth.DomainID != "account-1" {
+		t.Fatalf("caller-identity auth = %+v", auth)
+	}
+	fake.mu.Lock()
+	identityCalls := fake.identityCalls
+	currentUserCalls := fake.currentUserCalls
+	identityHeader := fake.lastIdentityHeader.Clone()
+	fake.mu.Unlock()
+	if identityCalls != 1 || currentUserCalls != 0 {
+		t.Fatalf("identity lookups = caller %d current %d, want 1/0", identityCalls, currentUserCalls)
+	}
+	if !strings.Contains(identityHeader.Get("Authorization"), "Access=AK-ENRICH") ||
+		identityHeader.Get("X-Security-Token") != "ST-ENRICH" {
+		t.Fatalf("caller-identity request was not signed with the STS credentials: %#v", identityHeader)
+	}
+
+	// caller-identity without a usable display name falls through to
+	// current/user, which supplies the uid/name/domain.
+	fake.mu.Lock()
+	fake.identityStatus = http.StatusNotFound
+	fake.identityBody = []byte(`{"error_msg":"not found"}`)
+	fake.currentUserFn = func() map[string]any {
+		return map[string]any{
+			"user_id":   "current-user",
+			"user_name": "bob",
+			"domain_id": "current-domain",
+		}
+	}
+	fake.mu.Unlock()
+	start2, session2 := mustBegin(t, sessions, store, 8788)
+	result, err = sessions.Callback(store, start2.SessionID, "CODE-CURRENT-USER", session2.TicketID)
+	if err != nil {
+		t.Fatalf("Callback current/user: %v", err)
+	}
+	if result.UID != "current-user" || result.Nickname != "bob" {
+		t.Fatalf("current/user result = %+v", result)
+	}
+	path, _ = AuthPath(dir, "current-user")
+	auth, err = LoadAuth(path)
+	if err != nil {
+		t.Fatalf("current/user auth: %v", err)
+	}
+	if auth.UserName != "bob" || auth.DomainID != "current-domain" {
+		t.Fatalf("current/user auth = %+v", auth)
+	}
+	fake.mu.Lock()
+	currentUserCalls = fake.currentUserCalls
+	fake.mu.Unlock()
+	if currentUserCalls != 1 {
+		t.Fatalf("current/user calls = %d, want 1", currentUserCalls)
+	}
+}
+
 func TestOAuthRequestTokenRefreshForm(t *testing.T) {
 	fake, server := newOAuthFake(t)
 	token, err := RequestToken(url.Values{
@@ -1481,28 +1617,38 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 		t.Fatalf("stale-state session was modified: %+v", untouched)
 	}
 
-	// An unknown supplied secret falls back to a valid state, matching v1.
-	_, session4 := mustBegin(t, sessions, store, 8788)
+	// v1's _find_session treats a supplied secret as authoritative. An unknown
+	// secret is rejected even when a valid ticket/state is also present.
+	_, sessionNoSecretState := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET&state=" +
-		url.QueryEscape(session4.TicketID) + "&secret=UNKNOWN-SECRET"
-	result, err = sessions.CallbackURL(store, "", raw)
-	if err != nil {
-		t.Fatalf("unknown secret + valid state: %v", err)
+		url.QueryEscape(sessionNoSecretState.TicketID) + "&secret=UNKNOWN-SECRET"
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("unknown secret + valid state = %v, want ErrOAuthSession", err)
 	}
-	if result.Status != "done" || session4.Status != "done" {
-		t.Fatalf("unknown secret did not fall back to state: %+v / %+v", result, session4)
+	if sessionNoSecretState.Status != "pending" {
+		t.Fatalf("unknown secret consumed the state-selected session: %+v", sessionNoSecretState)
 	}
 
-	// An unknown supplied secret also falls back to a valid ticket id.
-	_, session7 := mustBegin(t, sessions, store, 8788)
+	_, sessionNoSecretTicket := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET-TICKET&ticket_id=" +
-		url.QueryEscape(session7.TicketID) + "&secret=UNKNOWN-SECRET-2"
+		url.QueryEscape(sessionNoSecretTicket.TicketID) + "&secret=UNKNOWN-SECRET-2"
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("unknown secret + valid ticket = %v, want ErrOAuthSession", err)
+	}
+	if sessionNoSecretTicket.Status != "pending" {
+		t.Fatalf("unknown secret consumed the ticket-selected session: %+v", sessionNoSecretTicket)
+	}
+
+	// With no secret, the ticket/state lookup remains valid.
+	_, sessionTicketOnly := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET-TICKET-ONLY&ticket_id=" +
+		url.QueryEscape(sessionTicketOnly.TicketID)
 	result, err = sessions.CallbackURL(store, "", raw)
 	if err != nil {
-		t.Fatalf("unknown secret + valid ticket: %v", err)
+		t.Fatalf("no-secret ticket callback: %v", err)
 	}
-	if result.Status != "done" || session7.Status != "done" {
-		t.Fatalf("unknown secret did not fall back to ticket: %+v / %+v", result, session7)
+	if result.Status != "done" || sessionTicketOnly.Status != "done" {
+		t.Fatalf("no-secret ticket did not complete: %+v / %+v", result, sessionTicketOnly)
 	}
 
 	// A foreign redirect in an otherwise valid callback is rejected without

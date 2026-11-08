@@ -28,6 +28,29 @@ This file is the CodeArts-specific procedure and fixture provenance.
 The procedure below is how to record the real oracle later and validate or
 replace these scoped fixtures.
 
+## Final-review parity fixes and exclusions
+
+The final review aligned these behaviors with v1.6.5: live settings on chat
+entry, per-read `stream_timeout_seconds`, clean-EOF terminal synthesis, 502 for
+chat unavailable/no-account/network, three concurrency attempts with 2s/4s
+backoff, ordinary 5xx errors as non-soft, unknown-secret callback rejection,
+signed OAuth identity enrichment, access-key redaction, redirect-blocking
+signed transports, and fresh model discovery after invalidation. See
+`tests/contract/testdata/PROVENANCE.md` for the audit list.
+
+The following differences are intentional and must **not** be recorded as v1
+oracle output:
+
+- v2 sanitizes every non-`[A-Za-z0-9._-]` auth-path character (v1 only replaced
+  path separators), and still verifies the embedded UID before overwrite.
+- v2 refuses HTTP redirects on signed upstream requests; v1's urllib client
+  could follow them.
+- v1's `drop_missing_bindings` runs only from its panel proxy-slot save route.
+  That route is outside the v2 CodeArts surface; v2 preserves the binding and
+  resolves a missing/disabled slot to direct like `apply_proxy_slots`.
+- v1-only `elapsed_ms`/`first_chunk_at` chat fields and the models `catalog`
+  block remain excluded from the v2 foundation contract.
+
 ## Read-only rules
 
 - The source tree `/root/opencode/mix2api` is **read-only**. Never edit it.

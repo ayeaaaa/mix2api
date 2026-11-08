@@ -939,19 +939,26 @@ func (p *Provider) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 // invalidateModels drops every account's adopted catalogue and marks any
-// in-flight discovery stale so a forced refresh cannot republish the old set.
+// in-flight discovery stale so a forced refresh cannot join or republish the
+// old set. Clearing modelsFlight under modelsMu makes the next forced refresh
+// start a fresh discovery; the detached leader can still finish for callers
+// already waiting, but its epoch mismatch prevents it from storing results.
 func (p *Provider) invalidateModels() {
 	if p == nil || p.pool == nil {
 		return
 	}
 	for _, account := range p.pool.Accounts() {
+		// Lock order matches ensureModels/reimport: modelsMu then mu.
+		account.modelsMu.Lock()
 		account.mu.Lock()
 		account.Models = nil
 		account.modelBenefit = nil
 		account.modelsFetchedAt = time.Time{}
 		account.modelsAttemptedAt = time.Time{}
 		account.modelsEpoch++
+		account.modelsFlight = nil
 		account.mu.Unlock()
+		account.modelsMu.Unlock()
 	}
 }
 

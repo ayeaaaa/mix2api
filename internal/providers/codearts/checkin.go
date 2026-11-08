@@ -464,8 +464,5 @@ func formatCampaignID(value any) string {
 // campaign titles before they are returned or persisted in state.json.
 func redactCheckinText(text string, auth Auth) string {
 	values := codeartsSecretValues(auth)
-	if strings.TrimSpace(auth.AccessKeyID) != "" {
-		values = append(values, auth.AccessKeyID)
-	}
 	return maskProxyURL(redactText(text, values))
 }
