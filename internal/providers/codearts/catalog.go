@@ -1122,8 +1122,11 @@ func catalogErrorText(raw []byte) string {
 				return text
 			}
 		}
-		if code := decoded["error_code"]; code != nil && modelText(code) != "" && modelText(code) != "0" {
-			return "error_code=" + modelText(code)
+		for _, key := range []string{"error_code", "code"} {
+			code := strings.TrimSpace(modelText(decoded[key]))
+			if code != "" && code != "0" {
+				return key + "=" + code
+			}
 		}
 	}
 	return strings.TrimSpace(string(raw))

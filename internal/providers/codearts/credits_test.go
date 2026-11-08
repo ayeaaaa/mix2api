@@ -46,6 +46,8 @@ type creditFake struct {
 	pluginFailures   map[string]creditHTTPFailure
 	deliveries       map[string][]any
 	deliveryFailures map[string]creditHTTPFailure
+	claimFailures    map[string]creditHTTPFailure
+	confirmFailures  map[string]creditHTTPFailure
 
 	claimStarted chan struct{}
 	claimRelease chan struct{}
@@ -64,6 +66,8 @@ func newCreditFake() *creditFake {
 		pluginFailures:   make(map[string]creditHTTPFailure),
 		deliveries:       make(map[string][]any),
 		deliveryFailures: make(map[string]creditHTTPFailure),
+		claimFailures:    make(map[string]creditHTTPFailure),
+		confirmFailures:  make(map[string]creditHTTPFailure),
 	}
 }
 
@@ -158,6 +162,8 @@ func (f *creditFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pluginFailure, pluginFailed := f.pluginFailures[uid]
 	items, hasDelivery := f.deliveries[uid]
 	deliveryFailure, deliveryFailed := f.deliveryFailures[uid]
+	claimFailure, claimFailed := f.claimFailures[uid]
+	confirmFailure, confirmFailed := f.confirmFailures[uid]
 	started := f.claimStarted
 	release := f.claimRelease
 	f.mu.Unlock()
@@ -187,6 +193,10 @@ func (f *creditFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"code": 0, "message": "ok", "data": map[string]any{"items": items},
 		})
 	case creditClaimPath:
+		if claimFailed {
+			writeCreditFakeResponse(w, claimFailure.status, claimFailure.body)
+			return
+		}
 		if started != nil {
 			select {
 			case started <- struct{}{}:
@@ -198,6 +208,10 @@ func (f *creditFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeCreditFakeJSON(w, map[string]any{"code": 0, "message": "ok", "data": map[string]any{}})
 	case creditConfirmPath:
+		if confirmFailed {
+			writeCreditFakeResponse(w, confirmFailure.status, confirmFailure.body)
+			return
+		}
 		writeCreditFakeJSON(w, map[string]any{"code": 0, "message": "ok", "data": map[string]any{}})
 	default:
 		writeCreditFakeResponse(w, http.StatusNotFound, `{"error_msg":"not found"}`)
@@ -238,6 +252,30 @@ func (f *creditFake) setDelivery(uid string, items []any) {
 func (f *creditFake) failDelivery(uid string, status int, body string) {
 	f.mu.Lock()
 	f.deliveryFailures[uid] = creditHTTPFailure{status: status, body: body}
+	f.mu.Unlock()
+}
+
+func (f *creditFake) failClaim(uid string, status int, body string) {
+	f.mu.Lock()
+	f.claimFailures[uid] = creditHTTPFailure{status: status, body: body}
+	f.mu.Unlock()
+}
+
+func (f *creditFake) clearClaimFailure(uid string) {
+	f.mu.Lock()
+	delete(f.claimFailures, uid)
+	f.mu.Unlock()
+}
+
+func (f *creditFake) failConfirm(uid string, status int, body string) {
+	f.mu.Lock()
+	f.confirmFailures[uid] = creditHTTPFailure{status: status, body: body}
+	f.mu.Unlock()
+}
+
+func (f *creditFake) clearConfirmFailure(uid string) {
+	f.mu.Lock()
+	delete(f.confirmFailures, uid)
 	f.mu.Unlock()
 }
 
@@ -484,22 +522,35 @@ func TestCreditsFetchInfoCacheForceAndPriorFallback(t *testing.T) {
 
 	prior := first.Credits.Total.Remain
 	retained, err := fetchCreditsFailureFixture(t, fake, provider, account, now.Add(70*time.Second))
-	if err == nil {
-		t.Fatal("failed forced FetchInfo should report the upstream failure")
+	if err != nil {
+		t.Fatalf("stale FetchInfo must swallow the upstream failure like v1: %v", err)
 	}
 	if retained == nil || retained.Credits.Total == nil || retained.Credits.Total.Remain != prior {
 		t.Fatalf("failure did not retain prior info: %#v", retained)
-	}
-	for _, secret := range []string{"cloud-token-u1", "secret-key-u1", "refresh-token-u1", "AK-u1"} {
-		if strings.Contains(err.Error(), secret) {
-			t.Fatalf("FetchInfo error leaked %q: %v", secret, err)
-		}
 	}
 	account.mu.Lock()
 	current := account.Info
 	account.mu.Unlock()
 	if current == nil || current.Credits.Total == nil || current.Credits.Total.Remain != prior {
 		t.Fatalf("account lost prior info after failure: %#v", current)
+	}
+
+	// RefreshCredits must still distinguish a stale fallback from a real
+	// refresh, even though the public FetchInfo call returns nil error.
+	refresh, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("stale RefreshCredits: %v", err)
+	}
+	if refresh.OK || refresh.Refreshed != 0 || len(refresh.Errors) != 1 || len(refresh.Accounts) != 1 {
+		t.Fatalf("stale refresh counted as success: %+v", refresh)
+	}
+	if refresh.Accounts[0].OK || refresh.Accounts[0].Credits != nil {
+		t.Fatalf("stale refresh row = %+v", refresh.Accounts[0])
+	}
+	for _, secret := range []string{"cloud-token-u1", "secret-key-u1", "refresh-token-u1", "AK-u1"} {
+		if strings.Contains(refresh.Errors[0], secret) {
+			t.Fatalf("refresh error leaked %q: %s", secret, refresh.Errors[0])
+		}
 	}
 
 	// No prior snapshot: the failure is returned without installing one.
@@ -521,6 +572,128 @@ func fetchCreditsFailureFixture(t *testing.T, fake *creditFake, provider *Provid
 	fake.failPlugin("u1", http.StatusBadGateway,
 		`{"error_msg":"bad cloud-token-u1 secret-key-u1 refresh-token-u1 AK-u1"}`)
 	return provider.FetchInfo(context.Background(), account, true)
+}
+
+func TestCreditsRefreshErrorCapAndRemovedAccountSkip(t *testing.T) {
+	fake := newCreditFake()
+	provider, _ := newCreditsProvider(t, fake)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 18, 0, 0, 0, time.Local))
+	for _, uid := range []string{"u1", "u2", "u3", "u4"} {
+		addCreditsAccount(t, provider, uid)
+		fake.failPlugin(uid, http.StatusBadGateway, `{"error_msg":"bad"}`)
+	}
+
+	result, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	if result.OK || result.Refreshed != 0 {
+		t.Fatalf("all-failed refresh = %+v", result)
+	}
+	if len(result.Accounts) != 4 {
+		t.Fatalf("rows = %d, want 4", len(result.Accounts))
+	}
+	if len(result.Errors) != creditRefreshErrorLimit {
+		t.Fatalf("errors = %#v, want v1 cap %d", result.Errors, creditRefreshErrorLimit)
+	}
+	for _, row := range result.Accounts {
+		if row.OK || row.Credits != nil {
+			t.Fatalf("failed row = %+v", row)
+		}
+	}
+
+	// A removed account left in the in-memory pool is not live and must be
+	// skipped by both refresh and all-account check-in.
+	fake = newCreditFake()
+	provider, _ = newCreditsProvider(t, fake)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 18, 30, 0, 0, time.Local))
+	live := addCreditsAccount(t, provider, "u-live")
+	removed := addCreditsAccount(t, provider, "u-removed")
+	removed.mu.Lock()
+	removed.removed = true
+	removed.mu.Unlock()
+	fake.setDelivery("u-live", []any{})
+
+	refresh, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits with removed account: %v", err)
+	}
+	if !refresh.OK || refresh.Refreshed != 1 || len(refresh.Accounts) != 1 || refresh.Accounts[0].UID != "u-live" {
+		t.Fatalf("removed account not skipped by refresh: %+v", refresh)
+	}
+	checkins, err := provider.CheckinAll(context.Background())
+	if err != nil {
+		t.Fatalf("CheckinAll with removed account: %v", err)
+	}
+	if !checkins.OK || len(checkins.Results) != 1 || checkins.Results[0].UID != "u-live" {
+		t.Fatalf("removed account not skipped by check-in: %+v", checkins)
+	}
+	if got := fake.callCountFor("u-removed", creditPluginPath); got != 0 {
+		t.Fatalf("removed account plugin calls = %d", got)
+	}
+	if got := fake.callCountFor("u-removed", creditDeliveryPath); got != 0 {
+		t.Fatalf("removed account delivery calls = %d", got)
+	}
+	if !live.Healthy(time.Now()) {
+		t.Fatal("live account should remain healthy")
+	}
+}
+
+func TestCreditsNonScalarFieldsAreSafe(t *testing.T) {
+	now := time.Date(2026, 11, 8, 19, 0, 0, 0, time.Local)
+	info := parseAccountInfo(map[string]any{
+		"metrics": []any{map[string]any{
+			"name":                           creditTotalPackageMetric,
+			"package_credit_amount":          []any{1, 2},
+			"package_credit_used":            map[string]any{"bad": true},
+			"package_credit_remain":          []any{3},
+			"package_credit_expiring_amount": nil,
+		}},
+		"package": map[string]any{
+			"is_credit_package": map[string]any{"truthy": true},
+			"package_name_cn":   []any{"ignored"},
+		},
+		"model_metrics": []any{map[string]any{
+			"model_id": "m1", "enable": []any{}, "is_luxury": map[string]any{"x": 1},
+		}},
+	}, now)
+	if info.IsCreditPackage {
+		t.Fatal("non-boolean is_credit_package must not enable the flag")
+	}
+	if info.PackageName != "" {
+		t.Fatalf("non-scalar package name = %q", info.PackageName)
+	}
+	if info.Credits.Total == nil || info.Credits.Total.Amount != 0 || info.Credits.Total.Remain != 0 {
+		t.Fatalf("non-scalar metrics must normalize to zero: %+v", info.Credits.Total)
+	}
+	if len(info.Models) != 1 || !info.Models[0].Enabled || info.Models[0].Luxury {
+		t.Fatalf("non-scalar model flags = %+v", info.Models)
+	}
+	if got := campaignCreditAmount(map[string]any{
+		"pendingTotalAmount": []any{100}, "benefitAmount": 42.5,
+	}); got != 42.5 {
+		t.Fatalf("non-scalar pending fallback = %v, want benefitAmount 42.5", got)
+	}
+	if isCheckinCampaign(map[string]any{"campaignId": map[string]any{"x": 1}, "type": []any{"USER_LOGIN"}}) {
+		t.Fatal("non-scalar campaign fields must not classify as check-in")
+	}
+}
+
+func TestCreditsErrorTextCodeFallback(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"error_msg":"boom","code":400}`, "boom"},
+		{`{"code":400}`, "code=400"},
+		{`{"error_code":"InferHub.002002009.404"}`, "error_code=InferHub.002002009.404"},
+		{`{"code":0,"error_code":"0"}`, `{"code":0,"error_code":"0"}`},
+	}
+	for _, testCase := range cases {
+		if got := catalogErrorText([]byte(testCase.body)); got != testCase.want {
+			t.Fatalf("catalogErrorText(%s) = %q, want %q", testCase.body, got, testCase.want)
+		}
+	}
 }
 
 func TestCreditsRefreshMixedResultsSkipDisabledAndNoOverallFailure(t *testing.T) {

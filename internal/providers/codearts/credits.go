@@ -71,10 +71,23 @@ type CreditsRefreshResult struct {
 }
 
 // FetchInfo refreshes one account's package/credit/statistics snapshot. It
-// returns the cached snapshot for 60 seconds unless force is set. A failed
-// refresh returns the last good snapshot alongside the error so callers can
-// still render the panel; a cold failure returns no snapshot.
+// returns the cached snapshot for 60 seconds unless force is set. Matching v1's
+// ensure_account_info, a failed refresh silently returns the last good snapshot
+// when one exists; only a cold failure returns an error.
 func (p *Provider) FetchInfo(ctx context.Context, a *Account, force bool) (*AccountInfo, error) {
+	info, err := p.fetchInfo(ctx, a, force)
+	if err != nil {
+		if prior := a.infoSnapshot(); prior != nil {
+			return prior, nil
+		}
+		return nil, err
+	}
+	return info, nil
+}
+
+// fetchInfo is the raw statistics fetch used by RefreshCredits, which must
+// distinguish a stale fallback from a genuinely refreshed account.
+func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*AccountInfo, error) {
 	if p == nil {
 		return nil, errors.New("codearts: provider is nil")
 	}
@@ -118,9 +131,6 @@ func (p *Provider) FetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 		AfterSign: afterSign,
 	})
 	if err != nil {
-		if prior := a.infoSnapshot(); prior != nil {
-			return prior, err
-		}
 		return nil, err
 	}
 
@@ -263,7 +273,7 @@ func (p *Provider) RefreshCredits(ctx context.Context) (CreditsRefreshResult, er
 				continue
 			}
 		}
-		info, err := p.FetchInfo(ctx, account, true)
+		info, err := p.fetchInfo(ctx, account, true)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return result, ctxErr
@@ -294,7 +304,7 @@ func (result *CreditsRefreshResult) addFailure(row CreditsRefreshRow, nickname s
 	if message == "" {
 		message = "unknown error"
 	}
-	entry := nickname + ": " + redactDisplayText(message, creditRefreshErrorRunes)
+	entry := nickname + ": " + truncateDisplayText(message, creditRefreshErrorRunes)
 	result.Errors = append(result.Errors, entry)
 }
 
@@ -431,16 +441,16 @@ func (p *Provider) signedJSON(ctx context.Context, a *Account, options signedJSO
 }
 
 // redactedCreditsError renders an account failure for a panel row. It caps the
-// text and removes known credentials, proxy userinfo, and token-shaped values.
+// text and removes known credentials, the signed Access key, and proxy userinfo.
 func redactedCreditsError(err error, auth Auth, limit int) string {
 	if err == nil {
 		return ""
 	}
 	text := catalogSafeError(err.Error(), auth)
-	return redactDisplayText(text, limit)
+	return truncateDisplayText(text, limit)
 }
 
-func redactDisplayText(text string, limit int) string {
+func truncateDisplayText(text string, limit int) string {
 	text = truncateRunes(strings.TrimSpace(text), limit)
 	return text
 }

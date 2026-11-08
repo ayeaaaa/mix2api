@@ -34,13 +34,18 @@ type CheckinResult struct {
 	batch bool
 }
 
-// CheckinAccountResult is one per-account row in CheckinAll.
+// CheckinAccountResult is one per-account row in CheckinAll. errorOnly marks a
+// transport/refresh failure row, which v1 renders as {uid, ok, message} with no
+// credits or campaigns. Normal rows always include an array of campaigns, even
+// when empty (busy or no eligible campaign).
 type CheckinAccountResult struct {
 	UID       string                  `json:"uid"`
 	OK        bool                    `json:"ok"`
 	Credits   float64                 `json:"credits"`
 	Message   string                  `json:"message"`
 	Campaigns []CheckinCampaignResult `json:"campaigns,omitempty"`
+
+	errorOnly bool
 }
 
 // MarshalJSON keeps v1's two response shapes: a single account always has a
@@ -72,14 +77,27 @@ func (r CheckinResult) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON keeps CheckinAccountResult's UID alongside the v1 account fields.
+// Error rows omit credits and campaigns; normal rows always keep the campaigns
+// array, including [] for a busy or no-campaign run.
 func (r CheckinAccountResult) MarshalJSON() ([]byte, error) {
+	if r.errorOnly {
+		return json.Marshal(struct {
+			UID     string `json:"uid"`
+			OK      bool   `json:"ok"`
+			Message string `json:"message"`
+		}{UID: r.UID, OK: r.OK, Message: r.Message})
+	}
+	campaigns := r.Campaigns
+	if campaigns == nil {
+		campaigns = make([]CheckinCampaignResult, 0)
+	}
 	return json.Marshal(struct {
 		UID       string                  `json:"uid"`
 		OK        bool                    `json:"ok"`
 		Credits   float64                 `json:"credits"`
 		Message   string                  `json:"message"`
-		Campaigns []CheckinCampaignResult `json:"campaigns,omitempty"`
-	}{UID: r.UID, OK: r.OK, Credits: r.Credits, Message: r.Message, Campaigns: r.Campaigns})
+		Campaigns []CheckinCampaignResult `json:"campaigns"`
+	}{UID: r.UID, OK: r.OK, Credits: r.Credits, Message: r.Message, Campaigns: campaigns})
 }
 
 // isCheckinCampaign mirrors v1's type/event classifier. Historical campaign
@@ -152,6 +170,9 @@ func campaignIDIsCheckin(value any) bool {
 // Checkin runs one manual account check-in. Manual callers may target a
 // disabled account, matching v1's panel action; a concurrent call for the same
 // account gets v1's "正在签到" result instead of double-claiming.
+//
+// An empty uid is not an all-accounts request here: Task 8's route must dispatch
+// an empty/missing uid to CheckinAll. Checkin("") returns ErrAccountNotFound.
 func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, error) {
 	if p == nil {
 		return CheckinResult{}, errors.New("codearts: provider is nil")
@@ -204,6 +225,7 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 		}
 
 		row, err := p.runCheckin(ctx, account)
+		errorOnly := false
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return result, ctxErr
@@ -212,6 +234,7 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 				OK:      false,
 				Message: redactedCreditsError(err, creditsAccountAuth(account), creditErrorMessageRunes),
 			}
+			errorOnly = true
 		}
 		result.Results = append(result.Results, CheckinAccountResult{
 			UID:       uid,
@@ -219,6 +242,7 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 			Credits:   row.Credits,
 			Message:   row.Message,
 			Campaigns: row.Campaigns,
+			errorOnly: errorOnly,
 		})
 		total += row.Credits
 		if !row.OK {

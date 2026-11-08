@@ -350,6 +350,41 @@ func TestCheckinAllSkipsDisabledAndAggregatesErrors(t *testing.T) {
 	if !good.Healthy(time.Now()) {
 		t.Fatal("successful all-checkin should leave the good account healthy")
 	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["campaigns"]; ok {
+		t.Fatalf("batch result must not have top-level campaigns: %s", encoded)
+	}
+	rows, _ := body["results"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("batch results = %#v", body["results"])
+	}
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		switch row["uid"] {
+		case "u-good":
+			if _, ok := row["credits"]; !ok {
+				t.Fatalf("good row missing credits: %#v", row)
+			}
+			if campaigns, ok := row["campaigns"].([]any); !ok || len(campaigns) != 1 {
+				t.Fatalf("good row campaigns = %#v", row["campaigns"])
+			}
+		case "u-bad":
+			if _, ok := row["credits"]; ok {
+				t.Fatalf("error row must omit credits: %#v", row)
+			}
+			if _, ok := row["campaigns"]; ok {
+				t.Fatalf("error row must omit campaigns: %#v", row)
+			}
+		}
+	}
 }
 
 func TestCheckinManualSingleBypassesDisabledAndUnknownUID(t *testing.T) {
@@ -432,8 +467,8 @@ func TestCheckinConcurrentCallersHaveOneWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(busyJSON), `"campaigns":[]`) {
-		t.Fatalf("busy result must keep the v1 campaigns array: %s", busyJSON)
+	if !strings.Contains(string(busyJSON), `"campaigns":[]`) || !strings.Contains(string(busyJSON), `"credits":0`) {
+		t.Fatalf("busy result must keep the v1 credits/campaigns fields: %s", busyJSON)
 	}
 	if got := fake.callCount(creditClaimPath); got != 1 {
 		t.Fatalf("claim calls = %d, want 1", got)
@@ -474,6 +509,118 @@ func TestCheckinSequentialIdempotencyDoesNotClaimTwice(t *testing.T) {
 	}
 	if got := fake.callCount(creditConfirmPath); got != 1 {
 		t.Fatalf("confirm calls after two check-ins = %d, want 1", got)
+	}
+}
+
+func TestCheckinNoCampaignJSONShape(t *testing.T) {
+	fake := newCreditFake()
+	provider, _ := newCreditsProvider(t, fake)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 15, 30, 0, 0, time.Local))
+	addCreditsAccount(t, provider, "u1")
+	fake.setDelivery("u1", []any{})
+
+	result, err := provider.Checkin(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	if !result.OK || result.Credits != 0 || result.Message != creditNoCampaignsMessage {
+		t.Fatalf("no-campaign result = %+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if campaigns, ok := body["campaigns"].([]any); !ok || len(campaigns) != 0 {
+		t.Fatalf("single result must keep campaigns: %s", encoded)
+	}
+	if _, ok := body["credits"]; !ok {
+		t.Fatalf("single result must keep credits: %s", encoded)
+	}
+	if _, ok := body["results"]; ok {
+		t.Fatalf("single result must omit results: %s", encoded)
+	}
+}
+
+func TestCheckinClaimAndConfirmFailuresRemainRetryable(t *testing.T) {
+	fake := newCreditFake()
+	provider, _ := newCreditsProvider(t, fake)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 15, 45, 0, 0, time.Local))
+	first := addCreditsAccount(t, provider, "u1")
+	first.SetInfo(accountInfo(0, 0))
+	eligible := checkinCampaignFixture(1, "每日签到", "USER_LOGIN", "ELIGIBLE", nil)
+	eligible["pendingTotalAmount"] = 100
+	fake.setDelivery("u1", []any{eligible})
+	fake.failClaim("u1", http.StatusBadGateway, `{"error_msg":"bad secret-key-u1 cloud-token-u1"}`)
+
+	if _, err := provider.Checkin(context.Background(), "u1"); err == nil {
+		t.Fatal("claim failure must be returned")
+	} else if strings.Contains(err.Error(), "secret-key-u1") {
+		t.Fatalf("claim error leaked secret: %v", err)
+	}
+	first.mu.Lock()
+	firstCheckin := cloneCheckin(first.Checkin)
+	firstInfo := first.Info
+	first.mu.Unlock()
+	if firstCheckin != nil || firstInfo == nil || !first.CreditExhausted() {
+		t.Fatalf("failed claim wrote state/cleared snapshot: checkin=%#v info=%#v", firstCheckin, firstInfo)
+	}
+
+	fake.clearClaimFailure("u1")
+	retried, err := provider.Checkin(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("retried Checkin: %v", err)
+	}
+	if !retried.OK || retried.Credits != 100 {
+		t.Fatalf("retried result = %+v", retried)
+	}
+	if got := fake.callCountFor("u1", creditClaimPath); got != 2 {
+		t.Fatalf("claim retry calls = %d, want 2", got)
+	}
+
+	second := addCreditsAccount(t, provider, "u2")
+	second.SetInfo(accountInfo(0, 0))
+	fake.setDelivery("u2", []any{eligible})
+	fake.failConfirm("u2", http.StatusBadGateway, `{"error_msg":"bad secret-key-u2"}`)
+	if _, err := provider.Checkin(context.Background(), "u2"); err == nil {
+		t.Fatal("confirm failure must be returned")
+	} else if strings.Contains(err.Error(), "secret-key-u2") {
+		t.Fatalf("confirm error leaked secret: %v", err)
+	}
+	second.mu.Lock()
+	secondCheckin := cloneCheckin(second.Checkin)
+	secondInfo := second.Info
+	second.mu.Unlock()
+	if secondCheckin != nil || secondInfo == nil || !second.CreditExhausted() {
+		t.Fatalf("failed confirm wrote state/cleared snapshot: checkin=%#v info=%#v", secondCheckin, secondInfo)
+	}
+
+	// Upstream now reports the already-claimed status, so retry confirms only.
+	fake.clearConfirmFailure("u2")
+	fake.setDelivery("u2", []any{
+		checkinCampaignFixture(1, "每日签到", "USER_LOGIN", "CLAIMED", nil),
+	})
+	confirmed, err := provider.Checkin(context.Background(), "u2")
+	if err != nil {
+		t.Fatalf("retried confirm: %v", err)
+	}
+	if !confirmed.OK || confirmed.Credits != 0 || confirmed.Campaigns[0].Message != "已补确认" {
+		t.Fatalf("retried confirm result = %+v", confirmed)
+	}
+	if got := fake.callCountFor("u2", creditClaimPath); got != 1 {
+		t.Fatalf("confirm retry claimed again: %d", got)
+	}
+	if got := fake.callCountFor("u2", creditConfirmPath); got != 2 {
+		t.Fatalf("confirm retry calls = %d, want 2", got)
+	}
+	second.mu.Lock()
+	secondCheckin = cloneCheckin(second.Checkin)
+	second.mu.Unlock()
+	if secondCheckin == nil || secondCheckin["ok"] != true {
+		t.Fatalf("retried confirm did not persist: %#v", secondCheckin)
 	}
 }
 
