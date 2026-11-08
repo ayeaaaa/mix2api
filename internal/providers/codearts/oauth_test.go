@@ -165,6 +165,27 @@ func newOAuthTestStore(t *testing.T) (*config.Store, string) {
 	return store, dir
 }
 
+func blockTicketEndpoint(fake *oauthFake) (<-chan struct{}, func()) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	releaseFn := func() { once.Do(func() { close(release) }) }
+	fake.mu.Lock()
+	fake.ticketStarted = started
+	fake.ticketRelease = release
+	fake.mu.Unlock()
+	return started, releaseFn
+}
+
+func waitTicketStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ticket poll did not reach the fake upstream")
+	}
+}
+
 func mustBegin(t *testing.T, sessions *OAuthSessions, store *config.Store, port int) (OAuthStart, *oauthSession) {
 	t.Helper()
 	start, err := sessions.Begin(store, port)
@@ -976,6 +997,144 @@ func TestOAuthCodeCallbackWinsDuringTicketPoll(t *testing.T) {
 	}
 }
 
+func TestOAuthCapDoesNotEvictTicketPolling(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	store, _ := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+	started, releaseTicket := blockTicketEndpoint(fake)
+	defer releaseTicket()
+
+	first, firstSession := mustBegin(t, sessions, store, 8788)
+	firstSession.CreatedAt = sessions.nowTime().Add(-time.Second)
+	for i := 0; i < oauthMaxSessions-1; i++ {
+		if _, err := sessions.Begin(store, 8788); err != nil {
+			t.Fatalf("fill session %d: %v", i, err)
+		}
+	}
+	if _, err := sessions.Continue(store, first.SessionID, "CAP-SECRET",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+
+	type pollResult struct {
+		poll OAuthPoll
+		err  error
+	}
+	polls := make(chan pollResult, 1)
+	go func() {
+		poll, err := sessions.Poll(store, first.SessionID)
+		polls <- pollResult{poll: poll, err: err}
+	}()
+	waitTicketStarted(t, started)
+
+	// At the cap, Begin must evict a settled session rather than the oldest
+	// session whose ticket request is already in flight.
+	created, err := sessions.Begin(store, 8788)
+	if err != nil {
+		t.Fatalf("Begin at cap during ticket poll: %v", err)
+	}
+	key := mustStoreKey(t, store)
+	sessions.mu.Lock()
+	count := len(sessions.byStore[key])
+	_, firstExists := sessions.byStore[key][first.SessionID]
+	_, createdExists := sessions.byStore[key][created.SessionID]
+	polling := firstSession.TicketPolling
+	sessions.mu.Unlock()
+	if !firstExists || !polling {
+		t.Fatalf("cap evicted the in-flight ticket-poll session")
+	}
+	if !createdExists || count != oauthMaxSessions {
+		t.Fatalf("cap did not replace a settled session: count=%d created=%v", count, createdExists)
+	}
+
+	releaseTicket()
+	select {
+	case got := <-polls:
+		if got.err != nil {
+			t.Fatalf("poll after cap: %v", got.err)
+		}
+		if got.poll.Status != "done" {
+			t.Fatalf("poll after cap = %+v, want done", got.poll)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ticket poll did not finish")
+	}
+}
+
+func TestOAuthCodeFailurePreservesTicketPoll(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	store, dir := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+
+	fake.mu.Lock()
+	fake.tokenStatus = http.StatusBadRequest
+	fake.tokenBody = []byte(`{"error":"invalid_grant","error_msg":"code rejected"}`)
+	fake.ticketFn = func() map[string]any {
+		payload := defaultTokenPayload()
+		payload["user_id"] = "ticket-user"
+		payload["user_name"] = "ticket-user"
+		return payload
+	}
+	fake.mu.Unlock()
+	started, releaseTicket := blockTicketEndpoint(fake)
+	defer releaseTicket()
+
+	start, session := mustBegin(t, sessions, store, 8788)
+	if _, err := sessions.Continue(store, start.SessionID, "FALLBACK-SECRET",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+
+	type pollResult struct {
+		poll OAuthPoll
+		err  error
+	}
+	polls := make(chan pollResult, 1)
+	go func() {
+		poll, err := sessions.Poll(store, start.SessionID)
+		polls <- pollResult{poll: poll, err: err}
+	}()
+	waitTicketStarted(t, started)
+
+	// The code exchange fails while the ticket request is blocked. The session
+	// must stay recoverable and use the valid ticket result once it arrives.
+	if _, err := sessions.Callback(store, start.SessionID, "BAD-CODE", session.TicketID); err == nil {
+		t.Fatalf("bad code callback was accepted")
+	} else if errors.Is(err, ErrOAuthReplay) {
+		t.Fatalf("bad code callback was rejected as a replay: %v", err)
+	}
+	sessions.mu.Lock()
+	status := session.Status
+	polling := session.TicketPolling
+	sessions.mu.Unlock()
+	if status != "pending" {
+		t.Fatalf("code failure made the fallback session terminal: %s", status)
+	}
+	if !polling {
+		t.Fatalf("code failure lost the in-flight ticket poll")
+	}
+
+	releaseTicket()
+	select {
+	case got := <-polls:
+		if got.err != nil {
+			t.Fatalf("ticket poll after code failure: %v", got.err)
+		}
+		if got.poll.Status != "done" || got.poll.Account == nil || got.poll.Account.UID != "ticket-user" {
+			t.Fatalf("ticket fallback poll = %+v, want ticket-user done", got.poll)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ticket poll did not finish after code failure")
+	}
+	path, err := AuthPath(dir, "ticket-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth, err := LoadAuth(path); err != nil || auth.CloudDragonToken != "ST" {
+		t.Fatalf("ticket result was not persisted: %+v, %v", auth, err)
+	}
+}
+
 func TestOAuthTicketFallbackRequiresUserID(t *testing.T) {
 	fake, _ := newOAuthFake(t)
 	store, dir := newOAuthTestStore(t)
@@ -1278,16 +1437,28 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 		t.Fatalf("stale-state session was modified: %+v", untouched)
 	}
 
-	// A supplied but unknown secret is rejected without falling back to a
-	// valid state.
+	// An unknown supplied secret falls back to a valid state, matching v1.
 	_, session4 := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET&state=" +
 		url.QueryEscape(session4.TicketID) + "&secret=UNKNOWN-SECRET"
-	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
-		t.Fatalf("unknown secret = %v, want ErrOAuthSession", err)
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("unknown secret + valid state: %v", err)
 	}
-	if session4.Status != "pending" {
-		t.Fatalf("unknown secret modified the session: %+v", session4)
+	if result.Status != "done" || session4.Status != "done" {
+		t.Fatalf("unknown secret did not fall back to state: %+v / %+v", result, session4)
+	}
+
+	// An unknown supplied secret also falls back to a valid ticket id.
+	_, session7 := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET-TICKET&ticket_id=" +
+		url.QueryEscape(session7.TicketID) + "&secret=UNKNOWN-SECRET-2"
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("unknown secret + valid ticket: %v", err)
+	}
+	if result.Status != "done" || session7.Status != "done" {
+		t.Fatalf("unknown secret did not fall back to ticket: %+v / %+v", result, session7)
 	}
 
 	// A foreign redirect in an otherwise valid callback is rejected without
