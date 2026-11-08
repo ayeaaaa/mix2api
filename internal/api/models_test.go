@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -157,4 +158,104 @@ func TestModelsMethodNotAllowedEnvelope(t *testing.T) {
 
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/models?realm=raccoon", "{}", nil)
 	requireErrorEnvelope(t, rec, http.StatusMethodNotAllowed, "invalid_request_error")
+}
+
+func TestModelsRealmHeaderPrecedence(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
+	beta := &stubProvider{id: "beta", realm: "beta", models: []providers.Model{{"id": "beta-model"}}}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{alpha, beta}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=alpha", "",
+		map[string]string{"X-Realm": "beta"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	if body["realm"] != "beta" {
+		t.Fatalf("realm = %#v, want header realm beta", body["realm"])
+	}
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "beta-model" {
+		t.Fatalf("data = %#v, want beta-model", data)
+	}
+
+	rec = serveRequest(srv.Handler, http.MethodGet, "/v1/models", "",
+		map[string]string{"X-Realm": "alpha"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("header-only status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("header-only body %s: %v", rec.Body, err)
+	}
+	if body["realm"] != "alpha" {
+		t.Fatalf("header-only realm = %#v", body["realm"])
+	}
+}
+
+func TestModelsUnknownProviderErrorDoesNotLeakLocalDetail(t *testing.T) {
+	provider := &stubProvider{
+		id: "raccoon", realm: "raccoon",
+		modelsErr: errors.New("open /root/private/raccoon/u-abc.json: uid u-abc"),
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=raccoon", "", nil)
+
+	failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "invalid_request_error")
+	if failure["message"] != "upstream request failed" {
+		t.Fatalf("message = %#v", failure["message"])
+	}
+	assertNoSensitiveText(t, rec.Body.String(), "/root/private", "u-abc", ".json")
+}
+
+func TestModelsRealmAllWorkBuddyIDPrefix(t *testing.T) {
+	intl := &stubProvider{
+		id: "workbuddy", realm: "intl",
+		models: []providers.Model{{"id": "intl-model"}},
+	}
+	cn := &stubProvider{
+		id: "workbuddy-cn", realm: "cn",
+		models: []providers.Model{{"id": "cn-model"}},
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	data := body["data"].([]any)
+	if len(data) != 2 {
+		t.Fatalf("data = %#v, want intl and cn models", data)
+	}
+}
+
+func TestModelsRealmAllFiltersNonWorkBuddyIdentity(t *testing.T) {
+	intl := &stubProvider{
+		id: "workbuddy", realm: "intl",
+		models: []providers.Model{{"id": "intl-model"}},
+	}
+	cn := &stubProvider{
+		id: "raccoon", realm: "cn",
+		models: []providers.Model{{"id": "cn-model"}},
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "intl-model" {
+		t.Fatalf("data = %#v, want only intl-model", data)
+	}
 }

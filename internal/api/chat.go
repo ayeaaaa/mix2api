@@ -129,10 +129,10 @@ func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequ
 		return nil, localFailure(http.StatusBadRequest, "invalid JSON body")
 	}
 
-	model, ok := decodeJSONString(payload["model"])
-	if !ok || model == "" {
-		return nil, localFailure(http.StatusBadRequest, "model is required")
-	}
+	// The body model is optional here so HandleChat's explicit model parameter
+	// can supply it; the final "model is required" check happens after that
+	// override is applied.
+	model, _ := decodeJSONString(payload["model"])
 
 	rawMessages, hasMessages := payload["messages"]
 	var messages []json.RawMessage
@@ -150,10 +150,7 @@ func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequ
 
 	// Realm precedence mirrors v1: X-Realm first, then ?realm, then the body
 	// extension. realm is a gateway extension; never forward it upstream.
-	realm := strings.TrimSpace(r.Header.Get("X-Realm"))
-	if realm == "" {
-		realm = strings.TrimSpace(r.URL.Query().Get("realm"))
-	}
+	realm := realmFromRequest(r)
 	if realm == "" {
 		if bodyRealm, ok := decodeJSONString(payload["realm"]); ok {
 			realm = bodyRealm
@@ -170,6 +167,17 @@ func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequ
 		sessionKey: chatSessionKey(r, payload),
 		headers:    r.Header.Clone(),
 	}, nil
+}
+
+func realmFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	realm := strings.TrimSpace(r.Header.Get("X-Realm"))
+	if realm == "" {
+		realm = strings.TrimSpace(r.URL.Query().Get("realm"))
+	}
+	return realm
 }
 
 func decodeJSONString(raw json.RawMessage) (string, bool) {
@@ -220,7 +228,7 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 			candidates := s.workBuddyProviders()
 			if len(candidates) == 0 {
 				return nil, localFailure(http.StatusBadRequest,
-					"realm=all is only available for WorkBuddy (intl/cn); no WorkBuddy realm is registered")
+					"realm=all is only available for WorkBuddy providers (intl/cn); none is registered")
 			}
 			return s.resolveAmong(ctx, candidates, request.model, "all")
 		}
@@ -311,11 +319,25 @@ func (s *Server) providerForRealm(realm string) providers.Provider {
 func (s *Server) workBuddyProviders() []providers.Provider {
 	candidates := make([]providers.Provider, 0, 2)
 	for _, realm := range []string{"intl", "cn"} {
-		if provider := s.providerForRealm(realm); provider != nil {
+		provider := s.providerForRealm(realm)
+		if provider != nil && isWorkBuddyProvider(provider) {
 			candidates = append(candidates, provider)
 		}
 	}
 	return candidates
+}
+
+// isWorkBuddyProvider recognizes the WorkBuddy implementation identity. Realm
+// names alone are not enough: another provider could claim intl/cn, while
+// realm=all is a WorkBuddy-only discovery/chat contract.
+func isWorkBuddyProvider(provider providers.Provider) bool {
+	if provider == nil {
+		return false
+	}
+	id := strings.ToLower(strings.TrimSpace(provider.ID()))
+	return id == "workbuddy" ||
+		strings.HasPrefix(id, "workbuddy-") ||
+		strings.HasPrefix(id, "workbuddy_")
 }
 
 // writeChatStream passes provider frames through unchanged. SSE headers are

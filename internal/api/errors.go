@@ -31,21 +31,20 @@ func localFailure(status int, message string) *apiFailure {
 }
 
 // providerFailure converts a provider error to the v1 wire envelope. Errors that
-// implement providers.HTTPError declare their own status and type; everything
-// else is an upstream 502. Unknown or invalid status values are clamped to 502
-// so a provider cannot emit a malformed response code.
+// implement providers.HTTPError declare their own status, type, and safe
+// message. Every other error becomes a generic 502: raw local/provider error
+// text is never echoed because it can contain auth-file paths or account UIDs.
 func providerFailure(err error) *apiFailure {
 	if err == nil {
 		return localFailure(http.StatusBadGateway, "upstream request failed")
 	}
 
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		message = "upstream request failed"
-	}
-
 	var httpErr providers.HTTPError
 	if errors.As(err, &httpErr) {
+		message := strings.TrimSpace(err.Error())
+		if message == "" {
+			message = "upstream request failed"
+		}
 		status := httpErr.HTTPStatus()
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
@@ -57,7 +56,7 @@ func providerFailure(err error) *apiFailure {
 		return &apiFailure{Status: status, Type: errType, Message: message}
 	}
 
-	return localFailure(http.StatusBadGateway, message)
+	return localFailure(http.StatusBadGateway, "upstream request failed")
 }
 
 // writeFailure writes err as a v1 error envelope. *apiFailure values are used

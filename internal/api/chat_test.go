@@ -333,8 +333,11 @@ func TestChatStreamingMidstreamErrorEmitsSSEError(t *testing.T) {
 	if !strings.Contains(body, `"type":"upstream_error"`) {
 		t.Fatalf("missing SSE error frame: %q", body)
 	}
-	if !strings.Contains(body, "upstream read failed") {
-		t.Fatalf("missing error message: %q", body)
+	if !strings.Contains(body, `"message":"upstream request failed"`) {
+		t.Fatalf("missing generic error message: %q", body)
+	}
+	if strings.Contains(body, "upstream read failed") {
+		t.Fatalf("midstream error leaked raw provider text: %q", body)
 	}
 	if strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("midstream error must not emit [DONE]: %q", body)
@@ -499,17 +502,18 @@ func TestChatNonStreamingReadErrorIsBadGateway(t *testing.T) {
 
 func TestChatErrorMapping(t *testing.T) {
 	cases := []struct {
-		name    string
-		err     error
-		status  int
-		errType string
+		name        string
+		err         error
+		status      int
+		errType     string
+		wantMessage string
 	}{
-		{"bad request", &mappedTestError{status: http.StatusBadRequest, errType: "invalid_request_error", message: "bad"}, http.StatusBadRequest, "invalid_request_error"},
-		{"auth", &mappedTestError{status: http.StatusBadGateway, errType: "invalid_request_error", message: "auth"}, http.StatusBadGateway, "invalid_request_error"},
-		{"rate limit", &mappedTestError{status: http.StatusTooManyRequests, errType: "rate_limit_error", message: "slow"}, http.StatusTooManyRequests, "rate_limit_error"},
-		{"unavailable", &mappedTestError{status: http.StatusServiceUnavailable, errType: "invalid_request_error", message: "down"}, http.StatusServiceUnavailable, "invalid_request_error"},
-		{"upstream", &mappedTestError{status: http.StatusBadGateway, errType: "invalid_request_error", message: "upstream"}, http.StatusBadGateway, "invalid_request_error"},
-		{"unknown", errors.New("plain failure"), http.StatusBadGateway, "invalid_request_error"},
+		{"bad request", &mappedTestError{status: http.StatusBadRequest, errType: "invalid_request_error", message: "bad"}, http.StatusBadRequest, "invalid_request_error", "bad"},
+		{"auth", &mappedTestError{status: http.StatusBadGateway, errType: "invalid_request_error", message: "auth"}, http.StatusBadGateway, "invalid_request_error", "auth"},
+		{"rate limit", &mappedTestError{status: http.StatusTooManyRequests, errType: "rate_limit_error", message: "slow"}, http.StatusTooManyRequests, "rate_limit_error", "slow"},
+		{"unavailable", &mappedTestError{status: http.StatusServiceUnavailable, errType: "invalid_request_error", message: "down"}, http.StatusServiceUnavailable, "invalid_request_error", "down"},
+		{"upstream", &mappedTestError{status: http.StatusBadGateway, errType: "invalid_request_error", message: "upstream"}, http.StatusBadGateway, "invalid_request_error", "upstream"},
+		{"unknown", errors.New("plain failure"), http.StatusBadGateway, "invalid_request_error", "upstream request failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -522,7 +526,10 @@ func TestChatErrorMapping(t *testing.T) {
 			srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
 			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
 				`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
-			requireErrorEnvelope(t, rec, tc.status, tc.errType)
+			failure := requireErrorEnvelope(t, rec, tc.status, tc.errType)
+			if failure["message"] != tc.wantMessage {
+				t.Fatalf("message = %#v, want %q", failure["message"], tc.wantMessage)
+			}
 		})
 	}
 }
@@ -685,5 +692,225 @@ func TestChatMethodAndBodyValidation(t *testing.T) {
 	} {
 		rec = serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions", body, nil)
 		requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	}
+}
+
+func assertNoSensitiveText(t *testing.T, body string, needles ...string) {
+	t.Helper()
+	for _, needle := range needles {
+		if strings.Contains(body, needle) {
+			t.Fatalf("response leaked %q: %s", needle, body)
+		}
+	}
+}
+
+func TestChatUnknownProviderErrorDoesNotLeakLocalDetail(t *testing.T) {
+	localErr := errors.New("open /root/private/raccoon/u-abc.json: uid u-abc")
+	provider := &stubProvider{
+		id:      "raccoon",
+		realm:   "raccoon",
+		models:  []providers.Model{{"id": "m1"}},
+		openErr: localErr,
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+
+	failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "invalid_request_error")
+	if failure["message"] != "upstream request failed" {
+		t.Fatalf("message = %#v", failure["message"])
+	}
+	assertNoSensitiveText(t, rec.Body.String(), "/root/private", "u-abc", ".json")
+}
+
+func TestChatMidstreamUnknownErrorDoesNotLeakLocalDetail(t *testing.T) {
+	stream := newStubStream(
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n",
+	)
+	stream.terminal = errors.New("open /root/private/raccoon/u-abc.json: uid u-abc")
+	provider := &stubProvider{
+		id:         "raccoon",
+		realm:      "raccoon",
+		models:     []providers.Model{{"id": "m1"}},
+		openStream: stream,
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"message":"upstream request failed"`) {
+		t.Fatalf("missing generic SSE error: %q", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("midstream error emitted [DONE]: %q", body)
+	}
+	assertNoSensitiveText(t, body, "/root/private", "u-abc", ".json")
+}
+
+func TestChatNonStreamCleanEOFWithoutDone(t *testing.T) {
+	stream := newStubStream(
+		"data: {\"id\":\"chatcmpl-1\",\"created\":100,\"model\":\"m1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+	)
+	provider := &stubProvider{
+		id:         "raccoon",
+		realm:      "raccoon",
+		models:     []providers.Model{{"id": "m1"}},
+		openStream: stream,
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var completion map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &completion); err != nil {
+		t.Fatalf("body %s: %v", rec.Body, err)
+	}
+	choices := completion["choices"].([]any)
+	choice := choices[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	if message["content"] != "ok" || choice["finish_reason"] != "stop" {
+		t.Fatalf("completion = %#v", completion)
+	}
+	if !stream.isClosed() {
+		t.Fatal("stream was not closed")
+	}
+}
+
+func TestChatSessionKeyExtraction(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		body    string
+		want    string
+	}{
+		{
+			name:    "header",
+			headers: map[string]string{"X-Conversation-Id": "conv-header"},
+			body:    `{"model":"m1","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			want:    "conv-header",
+		},
+		{
+			name: "body conversation_id",
+			body: `{"model":"m1","messages":[{"role":"user","content":"hi"}],"conversation_id":"conv-body","stream":true}`,
+			want: "conv-body",
+		},
+		{
+			name: "body session_id",
+			body: `{"model":"m1","messages":[{"role":"user","content":"hi"}],"session_id":"sess-body","stream":true}`,
+			want: "sess-body",
+		},
+		{
+			name: "metadata conversation_id",
+			body: `{"model":"m1","messages":[{"role":"user","content":"hi"}],"metadata":{"conversation_id":"conv-meta"},"stream":true}`,
+			want: "conv-meta",
+		},
+		{
+			name:    "header wins over body",
+			headers: map[string]string{"Session-Id": "sess-header"},
+			body:    `{"model":"m1","messages":[{"role":"user","content":"hi"}],"session_id":"sess-body","stream":true}`,
+			want:    "sess-header",
+		},
+		{
+			name: "none",
+			body: `{"model":"m1","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &stubProvider{
+				id:         "raccoon",
+				realm:      "raccoon",
+				models:     []providers.Model{{"id": "m1"}},
+				openStream: newStubStream("data: [DONE]\n\n"),
+			}
+			srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions", tc.body, tc.headers)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			requests := provider.opened()
+			if len(requests) != 1 {
+				t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+			}
+			if requests[0].SessionKey != tc.want {
+				t.Fatalf("SessionKey = %q, want %q", requests[0].SessionKey, tc.want)
+			}
+		})
+	}
+}
+
+func TestChatBodyLimitReturns413(t *testing.T) {
+	provider := &stubProvider{
+		id:         "raccoon",
+		realm:      "raccoon",
+		models:     []providers.Model{{"id": "m1"}},
+		openStream: newStubStream("data: [DONE]\n\n"),
+	}
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{provider}})
+	body := `{"model":"m1","messages":[{"role":"user","content":"hi"}],"pad":"` +
+		strings.Repeat("x", maxChatBodyBytes) + `"}`
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions", body, nil)
+	requireErrorEnvelope(t, rec, http.StatusRequestEntityTooLarge, "invalid_request_error")
+	if len(provider.opened()) != 0 {
+		t.Fatalf("oversized request reached provider: %#v", provider.opened())
+	}
+}
+
+func TestHandleChatModelParameterSuppliesMissingBodyModel(t *testing.T) {
+	provider := &stubProvider{
+		id:         "raccoon",
+		realm:      "raccoon",
+		models:     []providers.Model{{"id": "m1"}},
+		openStream: newStubStream("data: [DONE]\n\n"),
+	}
+	server := New(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	server.HandleChat(rec, req, provider, "m1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := provider.opened()
+	if len(requests) != 1 || requests[0].Model != "m1" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	var rawModel string
+	if err := json.Unmarshal(requests[0].Raw["model"], &rawModel); err != nil || rawModel != "m1" {
+		t.Fatalf("forwarded model = %q (err=%v), want m1", rawModel, err)
+	}
+}
+
+func TestRealmAllRequiresWorkBuddyIdentity(t *testing.T) {
+	makeProvider := func(id, realm, model string) *stubProvider {
+		return &stubProvider{
+			id: id, realm: realm,
+			models:     []providers.Model{{"id": model}},
+			openStream: newStubStream("data: [DONE]\n\n"),
+		}
+	}
+	intl := makeProvider("raccoon", "intl", "intl-model")
+	cn := makeProvider("raccoon", "cn", "cn-model")
+	srv := NewServer(ServerOptions{Providers: []providers.Provider{intl, cn}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=all", "", nil)
+	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+
+	rec = serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=all",
+		`{"model":"intl-model","messages":[{"role":"user","content":"hi"}]}`, nil)
+	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 {
+		t.Fatalf("realm=all opened a non-WorkBuddy provider")
 	}
 }
