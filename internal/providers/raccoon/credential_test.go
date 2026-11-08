@@ -70,6 +70,52 @@ func accountAuthSnapshot(a *Account) Auth {
 	return a.Auth
 }
 
+func managerStateCount(manager *TokenManager, account *Account) int {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	count := 0
+	for key := range manager.states {
+		if key.account == account {
+			count++
+		}
+	}
+	return count
+}
+
+func TestStaleStateLookupDoesNotEvictNewerEpoch(t *testing.T) {
+	account := &Account{
+		Auth: Auth{UID: "u-epoch", AccessToken: makeUnsignedJWT(t, map[string]any{
+			"sub": "u-epoch",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})},
+	}
+	account.credentialMu.Lock()
+	account.flightEpoch = 2
+	account.credentialMu.Unlock()
+
+	manager := NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{})
+	newer := &accountRefreshState{epoch: 2}
+	manager.states = map[accountRefreshKey]*accountRefreshState{
+		{account: account, epoch: 2}: newer,
+	}
+
+	stale := manager.stateForEpoch(account, 0)
+	if stale == newer || stale.epoch != 0 {
+		t.Fatalf("stale lookup returned the newer epoch state: %+v", stale)
+	}
+	if got := manager.states[accountRefreshKey{account: account, epoch: 2}]; got != newer {
+		t.Fatal("stale lookup evicted a newer epoch's flight state")
+	}
+
+	current := manager.stateFor(account)
+	if current != newer {
+		t.Fatal("current lookup did not reuse the existing same-epoch flight state")
+	}
+	if count := managerStateCount(manager, account); count != 1 {
+		t.Fatalf("same-epoch state count = %d, want 1 after monotonic eviction", count)
+	}
+}
+
 // twoFlightRefreshServer blocks every request on release and signals the first
 // and second calls, so a test can prove a fresh account did not join an old
 // flight.
@@ -187,6 +233,10 @@ func TestRefreshVsRemoveDoesNotResurrectAuth(t *testing.T) {
 	if err := p.Remove("u-rm"); err != nil {
 		release()
 		t.Fatalf("Remove during refresh: %v", err)
+	}
+	if got := managerStateCount(tm, account); got != 0 {
+		release()
+		t.Fatalf("Remove retained %d stale flight states", got)
 	}
 	release()
 	if err := waitError(t, refreshErr, "refresh after remove"); !errors.Is(err, ErrAccountDeleted) {
@@ -390,6 +440,10 @@ func TestReimportDoesNotJoinOldFlight(t *testing.T) {
 		release()
 		t.Fatalf("re-import: %v", err)
 	}
+	if got := managerStateCount(tm, account); got != 0 {
+		release()
+		t.Fatalf("re-import retained %d stale flight states", got)
+	}
 
 	newErr := make(chan error, 1)
 	go func() { newErr <- tm.Refresh(context.Background(), account) }()
@@ -410,6 +464,42 @@ func TestReimportDoesNotJoinOldFlight(t *testing.T) {
 	}
 	if got := tm.Generation(account); got != 2 {
 		t.Fatalf("generation = %d, want 2 (re-import + refresh)", got)
+	}
+}
+
+func TestPoolForgetsManagerStateOnRemoveAndReimport(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-forget", "", poolExpiry(now), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+	manager := p.NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{})
+
+	account := p.Get("u-forget")
+	_ = manager.stateFor(account)
+	if got := managerStateCount(manager, account); got != 1 {
+		t.Fatalf("seeded flight state count = %d", got)
+	}
+	if err := p.Remove("u-forget"); err != nil {
+		t.Fatal(err)
+	}
+	if got := managerStateCount(manager, account); got != 0 {
+		t.Fatalf("Remove retained %d flight states", got)
+	}
+
+	token := makeUnsignedJWT(t, map[string]any{"sub": "u-forget", "exp": poolExpiry(now).Unix()})
+	reimported, err := p.Add(Auth{UID: "u-forget", AccessToken: token, RefreshToken: "refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = manager.stateFor(reimported)
+	if got := managerStateCount(manager, reimported); got != 1 {
+		t.Fatalf("seeded re-import flight state count = %d", got)
+	}
+	if _, err := p.Add(Auth{UID: "u-forget", AccessToken: token, RefreshToken: "refresh-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := managerStateCount(manager, reimported); got != 0 {
+		t.Fatalf("re-import retained %d old-epoch flight states", got)
 	}
 }
 

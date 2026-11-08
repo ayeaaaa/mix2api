@@ -62,6 +62,10 @@ type Pool struct {
 	affinity map[string]string
 	order    []string
 
+	// tokenManagers are managers created through NewTokenManager. Remove/Add
+	// use them to forget stale flight bookkeeping for this pool.
+	tokenManagers []*TokenManager
+
 	// authOpsMu serializes Add/Remove/SetProxySlot membership and auth-file
 	// operations. It is never nested around a refresh network request, and
 	// pool.mu is not held across credential I/O.
@@ -876,8 +880,26 @@ func (p *Pool) NewTokenManager(client *transport.Client, opts TokenManagerOption
 	manager := NewTokenManager(client, opts)
 	if p != nil {
 		manager.OnStateChange = func(*Account) { _ = p.SaveState() }
+		p.mu.Lock()
+		p.tokenManagers = append(p.tokenManagers, manager)
+		p.mu.Unlock()
 	}
 	return manager
+}
+
+// forgetTokenManagers runs fn for every manager created by this pool. Directly
+// constructed TokenManager users must call ForgetAccount/ForgetAccountBefore
+// themselves after Remove/re-import.
+func (p *Pool) forgetTokenManagers(fn func(*TokenManager)) {
+	if p == nil || fn == nil {
+		return
+	}
+	p.mu.RLock()
+	managers := append([]*TokenManager(nil), p.tokenManagers...)
+	p.mu.RUnlock()
+	for _, manager := range managers {
+		fn(manager)
+	}
 }
 
 // SetConfig replaces the pool configuration and applies max_concurrent to
@@ -1212,6 +1234,7 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	}
 	account.authGeneration++
 	account.flightEpoch++
+	flightEpoch := account.flightEpoch
 
 	account.mu.Lock()
 	account.Auth = saved
@@ -1221,6 +1244,10 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	account.maxConcurrent = max
 	account.mu.Unlock()
 	account.credentialMu.Unlock()
+
+	p.forgetTokenManagers(func(manager *TokenManager) {
+		manager.ForgetAccountBefore(account, flightEpoch)
+	})
 
 	p.mu.Lock()
 	delete(p.preserved, saved.UID)
@@ -1306,6 +1333,8 @@ func (p *Pool) Remove(uid string) error {
 	delete(p.preserved, accountUID)
 	p.dropAffinityLocked(accountUID)
 	p.mu.Unlock()
+
+	p.forgetTokenManagers(func(manager *TokenManager) { manager.ForgetAccount(account) })
 
 	return p.SaveState()
 }

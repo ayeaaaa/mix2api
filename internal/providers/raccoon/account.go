@@ -24,7 +24,8 @@ const (
 
 var (
 	// ErrCredentialsChanged aborts a refresh whose captured credential
-	// generation no longer matches (re-import, proxy change, or another write).
+	// generation no longer matches (re-import, delete, or another credential
+	// write). Proxy-only bindings never invalidate a refresh.
 	ErrCredentialsChanged = errors.New("raccoon: account credentials changed during token refresh")
 
 	// ErrAccountDeleted aborts credential work after Remove has tombstoned the

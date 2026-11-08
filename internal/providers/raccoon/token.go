@@ -176,8 +176,8 @@ func (m *TokenManager) RefreshIfGeneration(ctx context.Context, a *Account, gene
 }
 
 // Generation returns the credential generation for an account. It increases
-// once per successful refresh and on every explicit auth rewrite (re-import,
-// proxy-slot binding, removal).
+// once per successful refresh and on every credential rewrite (re-import or
+// removal). Proxy-slot bindings deliberately do not advance it.
 func (m *TokenManager) Generation(a *Account) uint64 {
 	if m == nil || a == nil {
 		return 0
@@ -246,18 +246,32 @@ func (m *TokenManager) validateCall(ctx context.Context, a *Account) error {
 
 func (m *TokenManager) stateFor(a *Account) *accountRefreshState {
 	epoch := a.flightEpochValue()
-	key := accountRefreshKey{account: a, epoch: epoch}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Re-read under the manager lock: a stale pre-lock capture must never
+	// evict a newer epoch's state or create a competing same-epoch flight.
+	if current := a.flightEpochValue(); current != epoch {
+		epoch = current
+	}
+	return m.stateForEpochLocked(a, epoch)
+}
+
+// stateForEpoch returns flight state for an explicit epoch. Eviction is
+// monotonic: only older epochs for this account are forgotten, never a newer
+// epoch that may already have an in-flight refresh.
+func (m *TokenManager) stateForEpoch(a *Account, epoch uint64) *accountRefreshState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateForEpochLocked(a, epoch)
+}
+
+func (m *TokenManager) stateForEpochLocked(a *Account, epoch uint64) *accountRefreshState {
+	key := accountRefreshKey{account: a, epoch: epoch}
 	if m.states == nil {
 		m.states = make(map[accountRefreshKey]*accountRefreshState)
 	}
-	// A Remove/Add or re-import starts a new flight epoch. Forget the previous
-	// state so a fresh request cannot join a tombstoned flight; an old flight
-	// keeps its pointer and still completes safely.
 	for existing := range m.states {
-		if existing.account == a && existing.epoch != epoch {
+		if existing.account == a && existing.epoch < epoch {
 			delete(m.states, existing)
 		}
 	}
@@ -267,6 +281,37 @@ func (m *TokenManager) stateFor(a *Account) *accountRefreshState {
 		m.states[key] = state
 	}
 	return state
+}
+
+// ForgetAccount drops all flight bookkeeping for a removed account. A flight
+// already in progress keeps its state pointer and completes; future lookups
+// cannot join it.
+func (m *TokenManager) ForgetAccount(a *Account) {
+	if m == nil || a == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.states {
+		if key.account == a {
+			delete(m.states, key)
+		}
+	}
+}
+
+// ForgetAccountBefore drops older-epoch bookkeeping after a re-import while
+// preserving any state a fresh request has already created for the new epoch.
+func (m *TokenManager) ForgetAccountBefore(a *Account, epoch uint64) {
+	if m == nil || a == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.states {
+		if key.account == a && key.epoch < epoch {
+			delete(m.states, key)
+		}
+	}
 }
 
 func waitRefresh(ctx context.Context, call *refreshCall) error {
