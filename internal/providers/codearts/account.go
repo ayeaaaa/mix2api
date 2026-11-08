@@ -41,6 +41,20 @@ type AccountCredits struct {
 	Unit     string       `json:"unit"`
 }
 
+// ModelInfo is one model row from the statistics/plugin model_metrics list.
+// It is the v1 panel metadata, not a chat catalogue entry: id/name come from
+// model_id/model_name, description from model_desc, and enabled is false only
+// for a literal JSON false.
+type ModelInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+	Enabled     bool   `json:"enabled"`
+	Status      string `json:"status"`
+	Luxury      bool   `json:"luxury"`
+}
+
 // AccountInfo is the provider-owned account/package snapshot used for
 // scheduling and the panel. Task 7 fills it from the upstream statistics
 // endpoint; Task 6 only consumes the credit totals.
@@ -53,6 +67,7 @@ type AccountInfo struct {
 	StartDate       string         `json:"start_date"`
 	EndDate         string         `json:"end_date"`
 	Credits         AccountCredits `json:"credits"`
+	Models          []ModelInfo    `json:"models"`
 	FetchedAt       float64        `json:"fetched_at"`
 }
 
@@ -105,7 +120,9 @@ type AccountView struct {
 // guarded by mu. Model discovery itself is serialized by modelsMu and may hold
 // the network for a long time; it is never acquired while mu is held. Path and
 // pool are set once while the account is being loaded/imported and are
-// read-only afterwards.
+// read-only afterwards. Lock order: modelsMu, infoMu, and checkinMu may be held
+// across network I/O before briefly taking mu; mu is never held while any of
+// them is acquired.
 type Account struct {
 	Auth    Auth
 	State   AccountState
@@ -130,6 +147,16 @@ type Account struct {
 	maxConcurrent    int
 	lastUsed         time.Time
 	removed          bool
+
+	// infoMu serializes statistics/plugin refreshes for this account. It may
+	// be held across network I/O and is never acquired while mu is held.
+	infoMu sync.Mutex
+
+	// checkinMu is held across one check-in run. It is intentionally a
+	// non-blocking per-account lock (TryLock) so a concurrent panel/manual
+	// check-in reports the v1 "already running" result instead of claiming a
+	// campaign twice. It is never acquired while mu is held.
+	checkinMu sync.Mutex
 
 	// modelsMu serializes live model discovery for this account and guards the
 	// in-flight flight pointer. It may be held across network I/O and is never
@@ -322,6 +349,63 @@ func (a *Account) ClearCreditExhausted() {
 	}
 	a.mu.Lock()
 	a.Info = nil
+	a.mu.Unlock()
+}
+
+// infoSnapshot returns a private copy of the current account-info snapshot.
+func (a *Account) infoSnapshot() *AccountInfo {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cloneAccountInfo(a.Info)
+}
+
+// freshInfo returns the cached snapshot when it is younger than ttl. The v1
+// check uses the stored fetch timestamp, so a check-in can invalidate the cache
+// without discarding the last known display values.
+func (a *Account) freshInfo(now time.Time, ttl time.Duration) (*AccountInfo, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Info == nil || a.Info.FetchedAt <= 0 {
+		return nil, false
+	}
+	fetched := timeFromUnix(a.Info.FetchedAt)
+	if fetched.IsZero() || now.Sub(fetched) >= ttl {
+		return nil, false
+	}
+	return cloneAccountInfo(a.Info), true
+}
+
+// invalidateInfo expires the cached snapshot without clearing the displayed
+// values. v1 resets info_fetched_at to zero after every check-in so the next
+// overview performs a fresh statistics request.
+func (a *Account) invalidateInfo() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.Info != nil {
+		a.Info.FetchedAt = 0
+	}
+	a.mu.Unlock()
+}
+
+// setCheckin installs the v1 account check-in document under the account lock.
+func (a *Account) setCheckin(ok bool, message string, checkedAt time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.Checkin = CheckinState{
+		"ok":         ok,
+		"message":    message,
+		"checked_at": checkedAt.In(time.Local).Format("2006-01-02T15:04:05"),
+	}
 	a.mu.Unlock()
 }
 
@@ -545,6 +629,7 @@ func cloneAccountInfo(info *AccountInfo) *AccountInfo {
 		Bonus:    cloneCreditTotal(info.Credits.Bonus),
 		Unit:     info.Credits.Unit,
 	}
+	copied.Models = append([]ModelInfo(nil), info.Models...)
 	return &copied
 }
 
