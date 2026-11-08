@@ -89,6 +89,19 @@ var oauthHTTPClient = &http.Client{
 	},
 }
 
+// tokenEndpointDoer is the request sink for token endpoint calls. The login
+// flow uses the package oauth client, while the refresh manager injects the
+// shared core transport so an account proxy and configured timeout apply.
+type tokenEndpointDoer interface {
+	Do(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error)
+}
+
+type oauthEndpointDoer struct{}
+
+func (oauthEndpointDoer) Do(_ context.Context, req *http.Request, _ string) (*http.Response, error) {
+	return oauthHTTPClient.Do(req)
+}
+
 func envString(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
@@ -1239,8 +1252,24 @@ func RequestToken(form url.Values, dpopJWK json.RawMessage) (Token, error) {
 
 // RequestTokenContext is RequestToken with a caller context.
 func RequestTokenContext(ctx context.Context, form url.Values, dpopJWK json.RawMessage) (Token, error) {
+	return requestTokenContextWith(ctx, oauthEndpointDoer{}, "", form, dpopJWK)
+}
+
+// requestTokenContextWith is the shared token request implementation. The
+// refresh manager injects the core transport and the account proxy; the login
+// flow keeps its package client and no proxy override.
+func requestTokenContextWith(
+	ctx context.Context,
+	doer tokenEndpointDoer,
+	proxyURL string,
+	form url.Values,
+	dpopJWK json.RawMessage,
+) (Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if doer == nil {
+		return Token{}, fmt.Errorf("%w: token request transport is missing", ErrTokenTransport)
 	}
 	endpoint := stsHost() + oauthTokenEndpoint
 	proof, err := DPoPProof(dpopJWK, http.MethodPost, endpoint, "")
@@ -1256,7 +1285,7 @@ func RequestTokenContext(ctx context.Context, form url.Values, dpopJWK json.RawM
 	request.Header.Set("DPoP", proof)
 
 	sensitive := tokenRequestSecretValues(form, dpopJWK)
-	response, err := oauthHTTPClient.Do(request)
+	response, err := doer.Do(ctx, request, proxyURL)
 	if err != nil {
 		return Token{}, oauthTransportError("token request failed", err, sensitive...)
 	}

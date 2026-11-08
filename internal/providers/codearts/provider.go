@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
@@ -18,10 +19,11 @@ type Provider struct {
 	store       *config.Store
 	accountsDir string
 
-	mu        sync.RWMutex
-	cfg       Config
-	pool      *Pool
-	transport *transport.Client
+	mu           sync.RWMutex
+	cfg          Config
+	pool         *Pool
+	transport    *transport.Client
+	tokenManager *TokenManager
 }
 
 // New returns the production CodeArts provider. The accounts directory is the
@@ -45,12 +47,25 @@ func New(store *config.Store) (*Provider, error) {
 		return nil, err
 	}
 
+	timeout := time.Duration(cfg.TimeoutSeconds * float64(time.Second))
+	if timeout <= 0 {
+		timeout = defaultTokenRefreshTimeout
+	}
+	client := transport.NewClient(transport.ClientOptions{})
+	manager := NewTokenManager(client, TokenManagerOptions{
+		Pool:     pool,
+		Timeout:  timeout,
+		Now:      func() time.Time { return pool.nowTime() },
+		ProxyURL: func(account *Account) string { return account.ProxyURL() },
+	})
+
 	return &Provider{
-		store:       store,
-		accountsDir: accountsDir,
-		cfg:         cfg,
-		pool:        pool,
-		transport:   transport.NewClient(transport.ClientOptions{}),
+		store:        store,
+		accountsDir:  accountsDir,
+		cfg:          cfg,
+		pool:         pool,
+		transport:    client,
+		tokenManager: manager,
 	}, nil
 }
 
@@ -66,6 +81,15 @@ func (p *Provider) NewPool() *Pool {
 // Pool returns the provider-owned account pool.
 func (p *Provider) Pool() *Pool {
 	return p.NewPool()
+}
+
+// TokenManager returns the provider-owned token refresh manager. It is built
+// during New and performs no network I/O until Ensure or Keepalive runs.
+func (p *Provider) TokenManager() *TokenManager {
+	if p == nil {
+		return nil
+	}
+	return p.tokenManager
 }
 
 // Config returns the current CodeArts configuration snapshot.
