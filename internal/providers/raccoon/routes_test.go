@@ -163,6 +163,15 @@ func newRoutesFixture(t *testing.T) *routesFixture {
 }
 
 func newRoutesFixtureFor(t *testing.T, uid string, expiresIn time.Duration) *routesFixture {
+	return newRoutesFixtureWithSetup(t, uid, expiresIn, nil)
+}
+
+func newRoutesFixtureWithSetup(
+	t *testing.T,
+	uid string,
+	expiresIn time.Duration,
+	setup func(dir string),
+) *routesFixture {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	token := makeUnsignedJWTNoT(uid, now.Add(expiresIn))
@@ -172,6 +181,9 @@ func newRoutesFixtureFor(t *testing.T, uid string, expiresIn time.Duration) *rou
 	t.Setenv("WB_RACCOON_BASE_URL", server.URL)
 
 	dir := t.TempDir()
+	if setup != nil {
+		setup(dir)
+	}
 	store := config.New(filepath.Join(dir, "settings.json"))
 	provider, err := New(store)
 	if err != nil {
@@ -259,6 +271,8 @@ func routeInt(value any) int {
 }
 
 func TestRaccoonRoutesRequirePanel(t *testing.T) {
+	// This test intentionally asserts route metadata only. The 401 panel gate
+	// is enforced by external API middleware, not by the provider or adapter.
 	f := newRoutesFixture(t)
 	required := []string{
 		"/raccoon/overview", "/raccoon/accounts", "/raccoon/accounts/import",
@@ -486,6 +500,358 @@ func TestImportFlatAndNestedAuth(t *testing.T) {
 	}
 }
 
+func TestImportAuthPathCollisionDoesNotOverwrite(t *testing.T) {
+	f := newRoutesFixtureWithSetup(t, "pu-routes", time.Hour, func(dir string) {
+		writePoolAuth(t, dir, "a_b", "", time.Now().Add(time.Hour), nil)
+	})
+	existingPath, err := AuthPath(f.dir, "a_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := f.p.pool.Get("a_b")
+	if existing == nil {
+		t.Fatal("existing collision fixture account was not loaded")
+	}
+
+	collidingUID := "a/b"
+	collidingToken := makeUnsignedJWTNoT(collidingUID, f.now.Add(time.Hour))
+	f.fake.allow(collidingToken)
+	rec := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+		"access_token":  collidingToken,
+		"refresh_token": "refresh-" + collidingUID,
+	}, "")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("colliding import succeeded: %s", rec.Body)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("colliding import status=%d body=%s", rec.Code, rec.Body)
+	}
+	after, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("colliding import overwrote the existing auth file")
+	}
+	if f.p.pool.Get(collidingUID) != nil {
+		t.Fatal("colliding import created a phantom account")
+	}
+	if f.p.pool.Get("a_b") != existing {
+		t.Fatal("colliding import replaced the existing account")
+	}
+	if saved, err := LoadAuth(existingPath); err != nil || saved.UID != "a_b" {
+		t.Fatalf("existing auth file changed: auth=%#v err=%v", saved, err)
+	}
+	if raccoonEnabled(t, f) {
+		t.Fatal("colliding import enabled the realm")
+	}
+}
+
+func TestOAuthExchangeAuthPathCollisionDoesNotOverwrite(t *testing.T) {
+	f := newRoutesFixtureWithSetup(t, "pu-routes", time.Hour, func(dir string) {
+		writePoolAuth(t, dir, "a_b", "", time.Now().Add(time.Hour), nil)
+	})
+	existingPath, err := AuthPath(f.dir, "a_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.fake.mu.Lock()
+	f.fake.exchangeCode = "collision-code"
+	f.fake.exchangeToken = makeUnsignedJWTNoT("a/b", f.now.Add(time.Hour))
+	f.fake.mu.Unlock()
+	started := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
+		map[string]any{}, "127.0.0.1:54321"))
+	callback := f.do(http.MethodPost, "/raccoon/accounts/oauth/callback", map[string]any{
+		"session_id": routeText(started["session_id"]),
+		"code":       "collision-code",
+	}, "")
+	if callback.Code == http.StatusOK {
+		t.Fatalf("colliding OAuth exchange succeeded: %s", callback.Body)
+	}
+	if callback.Code != http.StatusBadGateway {
+		t.Fatalf("colliding OAuth exchange status=%d body=%s", callback.Code, callback.Body)
+	}
+	after, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("colliding OAuth exchange overwrote the existing auth file")
+	}
+	if f.p.pool.Get("a/b") != nil {
+		t.Fatal("colliding OAuth exchange created a phantom account")
+	}
+	if f.p.pool.Get("a_b") == nil {
+		t.Fatal("colliding OAuth exchange removed the existing account")
+	}
+	if raccoonEnabled(t, f) {
+		t.Fatal("colliding OAuth exchange enabled the realm")
+	}
+	if calls, _ := f.fake.exchangeSnapshot(); calls != 1 {
+		t.Fatalf("OAuth exchange calls = %d, want 1", calls)
+	}
+	poll := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/poll",
+		map[string]any{"session_id": routeText(started["session_id"])}, ""))
+	if poll["status"] != "error" {
+		t.Fatalf("failed OAuth session = %#v", poll)
+	}
+}
+
+func TestImportRollbackOnEnableFailure(t *testing.T) {
+	t.Run("new account", func(t *testing.T) {
+		f := newRoutesFixture(t)
+		token := makeUnsignedJWTNoT("pu-enable-fail", f.now.Add(time.Hour))
+		f.fake.allow(token)
+		if err := os.MkdirAll(f.store.Path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rec := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+			"access_token": token,
+		}, "")
+		if rec.Code == http.StatusOK {
+			t.Fatalf("import succeeded despite enable failure: %s", rec.Body)
+		}
+		path, err := AuthPath(f.dir, "pu-enable-fail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("enable failure left the auth file: %v", err)
+		}
+		if f.p.pool.Get("pu-enable-fail") != nil {
+			t.Fatal("enable failure left a phantom pool account")
+		}
+	})
+
+	t.Run("existing account", func(t *testing.T) {
+		f := newRoutesFixture(t)
+		firstToken := makeUnsignedJWTNoT("pu-reimport-fail", f.now.Add(time.Hour))
+		f.fake.allow(firstToken)
+		first := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+			"access_token":    firstToken,
+			"refresh_token":   "refresh-old",
+			"office_org_name": "Old Org",
+		}, "")
+		if first.Code != http.StatusOK {
+			t.Fatalf("first import status=%d body=%s", first.Code, first.Body)
+		}
+		path, err := AuthPath(f.dir, "pu-reimport-fail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.Remove(f.store.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(f.store.Path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		newToken := makeUnsignedJWTNoT("pu-reimport-fail", f.now.Add(2*time.Hour))
+		f.fake.allow(newToken)
+		rec := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+			"access_token":    newToken,
+			"refresh_token":   "refresh-new",
+			"office_org_name": "New Org",
+		}, "")
+		if rec.Code == http.StatusOK {
+			t.Fatalf("re-import succeeded despite enable failure: %s", rec.Body)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Fatal("enable failure did not restore the previous auth file")
+		}
+		account := f.p.pool.Get("pu-reimport-fail")
+		if account == nil {
+			t.Fatal("enable failure removed the existing account")
+		}
+		if account.Auth.OfficeOrgName != "Old Org" || account.Auth.AccessToken != firstToken {
+			t.Fatalf("enable failure did not restore account credentials: %#v", account.Auth)
+		}
+	})
+}
+
+func TestImportRollbackOnAddFailure(t *testing.T) {
+	f := newRoutesFixture(t)
+	statePath := filepath.Join(f.dir, "raccoon", "state.json")
+	if err := os.MkdirAll(statePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	token := makeUnsignedJWTNoT("pu-add-fail", f.now.Add(time.Hour))
+	f.fake.allow(token)
+	rec := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+		"access_token": token,
+	}, "")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("import succeeded despite state failure: %s", rec.Body)
+	}
+	path, err := AuthPath(f.dir, "pu-add-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("add failure left the auth file: %v", err)
+	}
+	if f.p.pool.Get("pu-add-fail") != nil {
+		t.Fatal("add failure left a phantom pool account")
+	}
+	if raccoonEnabled(t, f) {
+		t.Fatal("add failure enabled the realm")
+	}
+}
+
+func TestImportAppliesSettingsToNewAccount(t *testing.T) {
+	f := newRoutesFixture(t)
+	if _, err := f.store.Merge(map[string]any{
+		"proxy_slots": []any{
+			map[string]any{
+				"id": "slot-new", "url": "http://127.0.0.1:7890", "enabled": true,
+			},
+		},
+		"limits": map[string]any{
+			"reserve_credits": map[string]any{"global": 10},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	uid := "pu-import-settings"
+	token := makeUnsignedJWTNoT(uid, f.now.Add(time.Hour))
+	f.fake.allow(token)
+	rec := f.do(http.MethodPost, "/raccoon/accounts/import", map[string]any{
+		"access_token": token, "proxySlot": "slot-new",
+	}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import status=%d body=%s", rec.Code, rec.Body)
+	}
+	account := decodeRouteJSON(t, rec)["account"].(map[string]any)
+	if account["proxy_slot"] != "slot-new" || account["proxy"] != "http://127.0.0.1:7890" {
+		t.Fatalf("import did not resolve proxy slot: %#v", account)
+	}
+	if routeInt(account["reserve_credits"]) != 10 {
+		t.Fatalf("import did not apply limits: %#v", account)
+	}
+}
+
+func raccoonEnabled(t *testing.T, f *routesFixture) bool {
+	t.Helper()
+	settings, err := f.store.Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	raw, _ := settings["raccoon"].(map[string]any)
+	return isTrue(raw["enabled"])
+}
+
+func TestAdminErrorStatusMapping(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		status  int
+		errType string
+	}{
+		{
+			name:    "network transport",
+			err:     &APIError{Kind: KindTransient, Message: "cannot reach upstream"},
+			status:  http.StatusServiceUnavailable,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "upstream 500",
+			err:     &APIError{Kind: KindUpstream, Status: 500, Message: "upstream failed"},
+			status:  http.StatusBadGateway,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "bad request",
+			err:     &APIError{Kind: KindBadRequest, Status: 400, Message: "bad"},
+			status:  http.StatusBadRequest,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "auth",
+			err:     &APIError{Kind: KindAuth, Status: 401, Message: "auth"},
+			status:  http.StatusBadGateway,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "rate limited",
+			err:     &APIError{Kind: KindRateLimited, Status: 429, Message: "slow down"},
+			status:  http.StatusTooManyRequests,
+			errType: "rate_limit_error",
+		},
+		{
+			name:    "unavailable",
+			err:     &APIError{Kind: KindUnavailable, Status: 503, Message: "no account"},
+			status:  http.StatusServiceUnavailable,
+			errType: "invalid_request_error",
+		},
+		{
+			name:    "not found",
+			err:     &APIError{Kind: KindNotFound, Status: 404, Message: "missing"},
+			status:  http.StatusConflict,
+			errType: "invalid_request_error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := adminErrorFrom(tc.err)
+			if failure.Status != tc.status || failure.Type != tc.errType {
+				t.Fatalf("adminErrorFrom = %#v, want status %d type %s",
+					failure, tc.status, tc.errType)
+			}
+		})
+	}
+}
+
+func TestAdminErrorStatusMappingRoutes(t *testing.T) {
+	t.Run("network is 503", func(t *testing.T) {
+		f := newRoutesFixture(t)
+		f.importFlat(t, f.uid, f.token, nil)
+		f.p.SetBaseURL("http://127.0.0.1:1")
+		rec := f.do(http.MethodPost, "/raccoon/accounts/grant-desktop",
+			map[string]any{"uid": f.uid}, "")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("network grant status=%d body=%s", rec.Code, rec.Body)
+		}
+		errObject := routeErrorBody(t, decodeRouteJSON(t, rec))
+		if routeInt(errObject["code"]) != http.StatusServiceUnavailable {
+			t.Fatalf("network envelope = %#v", errObject)
+		}
+	})
+
+	t.Run("upstream 5xx is 502", func(t *testing.T) {
+		f := newRoutesFixture(t)
+		f.importFlat(t, f.uid, f.token, nil)
+		f.fake.points.update(func(points *pointsFake) {
+			points.desktopStatus = http.StatusInternalServerError
+		})
+		rec := f.do(http.MethodPost, "/raccoon/accounts/grant-desktop",
+			map[string]any{"uid": f.uid}, "")
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("upstream grant status=%d body=%s", rec.Code, rec.Body)
+		}
+		errObject := routeErrorBody(t, decodeRouteJSON(t, rec))
+		if routeInt(errObject["code"]) != http.StatusBadGateway {
+			t.Fatalf("upstream envelope = %#v", errObject)
+		}
+	})
+}
+
 func TestImportOverviewAndGrant(t *testing.T) {
 	f := newRoutesFixture(t)
 	imported := f.importFlat(t, f.uid, f.token, nil)
@@ -576,8 +942,15 @@ func TestUnknownRaccoonRoute404(t *testing.T) {
 		if routeText(errObject["message"]) == "" {
 			t.Fatalf("%s missing error message", method)
 		}
+		if routeText(errObject["message"]) != "unknown raccoon endpoint" {
+			t.Fatalf("%s unknown message = %q, want provider semantics",
+				method, errObject["message"])
+		}
 	}
 
+	// Go's ServeMux may answer a known path with the wrong method as 404 or
+	// 405 depending on pattern specificity; v1 also only promises a 4xx. When
+	// 405 is chosen, the adapter still returns the JSON envelope.
 	methodMismatch := f.do(http.MethodPost, "/raccoon/overview", map[string]any{}, "")
 	if methodMismatch.Code != http.StatusNotFound && methodMismatch.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("method mismatch status=%d body=%s", methodMismatch.Code, methodMismatch.Body)
@@ -913,6 +1286,54 @@ func TestOAuthManualCallbackValidation(t *testing.T) {
 	parsed, _ := url.Parse(secondURL)
 	if parsed.Query().Get("state") != secondState {
 		t.Fatal("test callback URL lost state")
+	}
+}
+
+func TestOAuthConcurrentClaimExchangesOnce(t *testing.T) {
+	f := newRoutesFixture(t)
+	f.fake.mu.Lock()
+	f.fake.exchangeCode = "concurrent-code"
+	f.fake.mu.Unlock()
+	started := decodeRouteJSON(t, f.do(http.MethodPost, "/raccoon/accounts/oauth/start",
+		map[string]any{}, "127.0.0.1:54321"))
+	sessionID := routeText(started["session_id"])
+
+	const callbacks = 8
+	codes := make(chan int, callbacks)
+	var group sync.WaitGroup
+	for index := 0; index < callbacks; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			rec := f.do(http.MethodPost, "/raccoon/accounts/oauth/callback", map[string]any{
+				"session_id": sessionID,
+				"code":       "concurrent-code",
+			}, "")
+			codes <- rec.Code
+		}()
+	}
+	group.Wait()
+	close(codes)
+
+	successes, conflicts := 0, 0
+	for code := range codes {
+		switch code {
+		case http.StatusOK:
+			successes++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("callback status = %d", code)
+		}
+	}
+	if successes != 1 || conflicts != callbacks-1 {
+		t.Fatalf("concurrent claims success=%d conflict=%d", successes, conflicts)
+	}
+	if calls, _ := f.fake.exchangeSnapshot(); calls != 1 {
+		t.Fatalf("concurrent claim exchanged %d times", calls)
+	}
+	if f.p.pool.Get("pu-oauth") == nil {
+		t.Fatal("concurrent claim did not save exactly one account")
 	}
 }
 

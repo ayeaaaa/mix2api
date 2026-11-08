@@ -9,12 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -67,8 +65,16 @@ func adminErrorFrom(err error) *adminError {
 			errType = "rate_limit_error"
 		case KindUnavailable:
 			status = http.StatusServiceUnavailable
-		case KindTransient, KindUpstream:
+		case KindUpstream:
 			status = http.StatusBadGateway
+		case KindTransient:
+			if apiErr.Status == 0 {
+				// A transport/network failure has no upstream HTTP response;
+				// v1 maps RaccoonUnavailable to 503, not a bad gateway.
+				status = http.StatusServiceUnavailable
+			} else {
+				status = http.StatusBadGateway
+			}
 		}
 		message := strings.TrimSpace(apiErr.Message)
 		if message == "" {
@@ -211,6 +217,12 @@ func requestPort(r *http.Request) (int, *adminError) {
 	return port, nil
 }
 
+// RouteNotFoundMessage is an optional hint consumed by the generic API route
+// adapter so an unknown platform path answers with provider semantics.
+func (p *Provider) RouteNotFoundMessage() string {
+	return "unknown raccoon endpoint"
+}
+
 // Routes returns the complete v1 admin/OAuth route list. Panel authentication
 // is declared through AuthPanel and enforced by the API middleware; the OAuth
 // browser callback is public and validates its own state.
@@ -299,62 +311,26 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// saveAndEnable persists the auth file, enables the realm, then adds the
-// account to the pool. The auth file is rolled back if the enable write fails,
-// matching v1 _save_and_enable.
+// saveAndEnable imports/replaces the account and enables the realm as one pool
+// transaction. Pool.AddWithCommit holds authOpsMu and verifies the canonical
+// file's embedded UID before writing; if enabling the realm fails, it restores
+// the previous auth file/account or removes the new one. After commit the
+// shared settings are projected again so a freshly imported account sees the
+// current proxy slots, limits, and concurrency values.
 func (p *Provider) saveAndEnable(auth Auth) (*Account, error) {
-	cleanAuth(&auth)
-	if auth.AccessToken == "" {
-		return nil, errors.New("raccoon: auth requires access_token")
-	}
-	if auth.UID == "" {
-		auth.UID = auth.uidFromCredentials()
-	}
-	if auth.UID == "" {
-		return nil, errors.New("raccoon: auth requires uid")
-	}
-	path, err := AuthPath(p.accountsDir, auth.UID)
+	account, err := p.pool.AddWithCommit(auth, func(committed *Account) error {
+		cfg, err := SaveConfig(p.store, map[string]any{"enabled": true})
+		if err != nil {
+			return err
+		}
+		p.pool.SetConfig(cfg)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	var backup []byte
-	hadBackup := false
-	if data, readErr := os.ReadFile(path); readErr == nil {
-		backup = data
-		hadBackup = true
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return nil, fmt.Errorf("raccoon: read existing auth file: %w", readErr)
-	}
-
-	if err := SaveAuth(path, auth); err != nil {
-		return nil, err
-	}
-	saved, err := LoadAuth(path)
-	if err != nil {
-		restoreAuthFile(path, backup, hadBackup)
-		return nil, err
-	}
-	cfg, err := SaveConfig(p.store, map[string]any{"enabled": true})
-	if err != nil {
-		restoreAuthFile(path, backup, hadBackup)
-		return nil, err
-	}
-	p.pool.SetConfig(cfg)
-
-	account, err := p.pool.Add(saved)
-	if err != nil {
-		return nil, err
-	}
+	_, _ = p.applySettings()
 	return account, nil
-}
-
-func restoreAuthFile(path string, backup []byte, existed bool) {
-	if existed {
-		_ = secrets.WritePrivate(path, backup)
-		return
-	}
-	_ = os.Remove(path)
 }
 
 func (p *Provider) handleAccountAction(action string) http.HandlerFunc {

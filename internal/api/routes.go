@@ -14,23 +14,34 @@ import (
 
 // RegisterProviderRoutes mounts a provider's declared routes on mux. AuthClass
 // is metadata for the caller's middleware; this adapter deliberately does not
-// authenticate or inspect provider payloads. Known paths are mounted with
-// their method, and path groups with multiple routes get a sub-tree handler so
+// authenticate or inspect provider payloads. Panel/API-key enforcement remains
+// the API/Task 14 middleware's obligation. Known paths are mounted with their
+// method, and path groups with multiple routes get a sub-tree handler so
 // unknown or method-mismatched paths still return the v1 JSON error envelope.
 func RegisterProviderRoutes(mux *http.ServeMux, provider providers.Provider) {
 	if mux == nil || provider == nil {
 		return
 	}
-	RegisterRoutes(mux, provider.Routes())
+	notFoundMessage := "not found"
+	if messenger, ok := provider.(interface{ RouteNotFoundMessage() string }); ok {
+		if message := strings.TrimSpace(messenger.RouteNotFoundMessage()); message != "" {
+			notFoundMessage = message
+		}
+	}
+	registerRoutes(mux, provider.Routes(), notFoundMessage)
 }
 
 // RegisterRoutes is RegisterProviderRoutes without the Provider wrapper.
 func RegisterRoutes(mux *http.ServeMux, routes []providers.Route) {
+	registerRoutes(mux, routes, "not found")
+}
+
+func registerRoutes(mux *http.ServeMux, routes []providers.Route, notFoundMessage string) {
 	if mux == nil {
 		return
 	}
 
-	table := newProviderRouteTable(routes)
+	table := newProviderRouteTable(routes, notFoundMessage)
 	groupCount := make(map[string]int)
 	for _, route := range routes {
 		path := strings.TrimSpace(route.Path)
@@ -73,11 +84,18 @@ func routePrefix(path string) string {
 }
 
 type providerRouteTable struct {
-	byPath map[string]map[string]http.HandlerFunc
+	byPath          map[string]map[string]http.HandlerFunc
+	notFoundMessage string
 }
 
-func newProviderRouteTable(routes []providers.Route) *providerRouteTable {
-	table := &providerRouteTable{byPath: make(map[string]map[string]http.HandlerFunc)}
+func newProviderRouteTable(routes []providers.Route, notFoundMessage string) *providerRouteTable {
+	if strings.TrimSpace(notFoundMessage) == "" {
+		notFoundMessage = "not found"
+	}
+	table := &providerRouteTable{
+		byPath:          make(map[string]map[string]http.HandlerFunc),
+		notFoundMessage: notFoundMessage,
+	}
 	for _, route := range routes {
 		path := strings.TrimSpace(route.Path)
 		if path == "" || route.Handler == nil {
@@ -110,7 +128,7 @@ func (t *providerRouteTable) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	methods, knownPath := t.byPath[r.URL.Path]
 	if !knownPath {
-		writeProviderRouteError(w, http.StatusNotFound, "not found")
+		writeProviderRouteError(w, http.StatusNotFound, t.notFoundMessage)
 		return
 	}
 	handler := methods[strings.ToUpper(r.Method)]

@@ -16,6 +16,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/accountstate"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
 const (
@@ -1205,6 +1206,19 @@ func (p *Pool) NoteError(a *Account, message string, soft, terminal bool) error 
 // writes share the account's credentialMu, so a refresh captured before the
 // import cannot overwrite it.
 func (p *Pool) Add(auth Auth) (*Account, error) {
+	return p.addWithCommit(auth, nil)
+}
+
+// AddWithCommit runs the same import/replace operation as Add and invokes
+// commit while authOpsMu is held, before releasing the import transaction. If
+// either the add or commit fails, the auth file, pool membership, and any
+// replaced in-memory account are restored. commit must not call Add, Remove, or
+// SetProxySlot: those methods take authOpsMu themselves.
+func (p *Pool) AddWithCommit(auth Auth, commit func(*Account) error) (*Account, error) {
+	return p.addWithCommit(auth, commit)
+}
+
+func (p *Pool) addWithCommit(auth Auth, commit func(*Account) error) (*Account, error) {
 	if p == nil {
 		return nil, errors.New("raccoon: pool is nil")
 	}
@@ -1228,26 +1242,43 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	defer p.authOpsMu.Unlock()
 
 	if account := p.Get(auth.UID); account != nil {
-		return p.reimportAccount(account, path, auth)
+		return p.reimportAccountWithCommit(account, path, auth, commit)
 	}
+	return p.addNewAccountWithCommit(path, auth, commit)
+}
 
+// addNewAccountWithCommit adds one new UID and rolls back the file, state entry,
+// and pool membership if the state write or commit fails.
+func (p *Pool) addNewAccountWithCommit(
+	path string,
+	auth Auth,
+	commit func(*Account) error,
+) (*Account, error) {
+	// verifyWritableAuth must run before any write: it is the only check that
+	// prevents a sanitized filename collision from overwriting another UID.
 	if err := p.verifyWritableAuth(path, auth.UID); err != nil {
 		return nil, err
 	}
-	if err := SaveAuth(path, auth); err != nil {
-		return nil, err
-	}
-	saved, err := LoadAuth(path)
+	backup, existed, err := readAuthFileBackup(path)
 	if err != nil {
 		return nil, err
 	}
 
+	if err := SaveAuth(path, auth); err != nil {
+		return nil, errors.Join(err, restoreAuthFileBackup(path, backup, existed))
+	}
+	saved, err := LoadAuth(path)
+	if err != nil {
+		return nil, errors.Join(err, restoreAuthFileBackup(path, backup, existed))
+	}
+
 	p.mu.Lock()
 	max := maxConcurrentFor(p.cfg)
-	state, ok := p.preserved[saved.UID]
+	state, hadPreserved := p.preserved[saved.UID]
+	preservedState := state
 	delete(p.preserved, saved.UID)
 	p.mu.Unlock()
-	if !ok {
+	if !hadPreserved {
 		state = accountstate.State{UID: saved.UID, TasksEnabled: true}
 	}
 	state.UID = saved.UID
@@ -1268,9 +1299,191 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	p.mu.Unlock()
 
 	if err := p.SaveState(); err != nil {
-		return nil, err
+		rollbackErr := p.rollbackNewAccount(
+			account, saved.UID, path, backup, existed, preservedState, hadPreserved,
+		)
+		return nil, errors.Join(err, rollbackErr)
+	}
+	if commit != nil {
+		if err := commit(account); err != nil {
+			rollbackErr := p.rollbackNewAccount(
+				account, saved.UID, path, backup, existed, preservedState, hadPreserved,
+			)
+			return nil, errors.Join(err, rollbackErr)
+		}
 	}
 	return account, nil
+}
+
+// reimportAccountWithCommit replaces an existing account and restores the prior
+// file and in-memory account if the replacement or commit fails.
+func (p *Pool) reimportAccountWithCommit(
+	account *Account,
+	path string,
+	auth Auth,
+	commit func(*Account) error,
+) (*Account, error) {
+	snapshot, err := snapshotAccountForImport(account)
+	if err != nil {
+		return nil, err
+	}
+	backup, existed, err := readAuthFileBackup(path)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.RLock()
+	preserved, hadPreserved := p.preserved[snapshot.uid]
+	p.mu.RUnlock()
+
+	updated, err := p.reimportAccount(account, path, auth)
+	if err != nil {
+		rollbackErr := p.rollbackReimportedAccount(
+			account, snapshot, path, backup, existed, preserved, hadPreserved,
+		)
+		return nil, errors.Join(err, rollbackErr)
+	}
+	if commit != nil {
+		if err := commit(updated); err != nil {
+			rollbackErr := p.rollbackReimportedAccount(
+				account, snapshot, path, backup, existed, preserved, hadPreserved,
+			)
+			return nil, errors.Join(err, rollbackErr)
+		}
+	}
+	return updated, nil
+}
+
+type accountImportSnapshot struct {
+	uid           string
+	auth          Auth
+	path          string
+	proxySlot     string
+	proxy         string
+	models        []providers.Model
+	maxConcurrent int
+	state         accountstate.State
+}
+
+func snapshotAccountForImport(account *Account) (accountImportSnapshot, error) {
+	if account == nil {
+		return accountImportSnapshot{}, ErrAccountNotFound
+	}
+	account.credentialMu.Lock()
+	defer account.credentialMu.Unlock()
+	account.mu.Lock()
+	defer account.mu.Unlock()
+	if account.Deleted {
+		return accountImportSnapshot{}, ErrAccountDeleted
+	}
+	return accountImportSnapshot{
+		uid:           strings.TrimSpace(account.Auth.UID),
+		auth:          account.Auth,
+		path:          account.Path,
+		proxySlot:     account.proxySlot,
+		proxy:         account.proxy,
+		models:        cloneModels(account.Models),
+		maxConcurrent: account.maxConcurrent,
+		state:         account.State,
+	}, nil
+}
+
+func (p *Pool) rollbackNewAccount(
+	account *Account,
+	uid, path string,
+	backup []byte,
+	existed bool,
+	preserved accountstate.State,
+	hadPreserved bool,
+) error {
+	p.forgetTokenManagers(func(manager *TokenManager) { manager.ForgetAccount(account) })
+
+	p.mu.Lock()
+	kept := p.accounts[:0]
+	for _, candidate := range p.accounts {
+		if candidate != account {
+			kept = append(kept, candidate)
+		}
+	}
+	p.accounts = kept
+	if hadPreserved {
+		p.preserved[uid] = preserved
+	} else {
+		delete(p.preserved, uid)
+	}
+	p.mu.Unlock()
+
+	fileErr := restoreAuthFileBackup(path, backup, existed)
+	stateErr := p.SaveState()
+	return errors.Join(fileErr, stateErr)
+}
+
+func (p *Pool) rollbackReimportedAccount(
+	account *Account,
+	snapshot accountImportSnapshot,
+	path string,
+	backup []byte,
+	existed bool,
+	preserved accountstate.State,
+	hadPreserved bool,
+) error {
+	currentUID, _ := account.currentUID()
+
+	account.credentialMu.Lock()
+	account.mu.Lock()
+	account.Auth = snapshot.auth
+	account.Path = snapshot.path
+	account.proxySlot = snapshot.proxySlot
+	account.proxy = snapshot.proxy
+	account.Models = cloneModels(snapshot.models)
+	account.maxConcurrent = snapshot.maxConcurrent
+	account.State = snapshot.state
+	account.Deleted = false
+	account.authGeneration++
+	account.flightEpoch++
+	epoch := account.flightEpoch
+	account.mu.Unlock()
+	account.credentialMu.Unlock()
+
+	p.forgetTokenManagers(func(manager *TokenManager) {
+		manager.ForgetAccountBefore(account, epoch)
+	})
+
+	p.mu.Lock()
+	delete(p.preserved, currentUID)
+	if hadPreserved {
+		p.preserved[snapshot.uid] = preserved
+	} else {
+		delete(p.preserved, snapshot.uid)
+	}
+	p.mu.Unlock()
+
+	fileErr := restoreAuthFileBackup(path, backup, existed)
+	stateErr := p.SaveState()
+	return errors.Join(fileErr, stateErr)
+}
+
+func readAuthFileBackup(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("raccoon: read auth backup %s: %w", path, err)
+}
+
+func restoreAuthFileBackup(path string, backup []byte, existed bool) error {
+	if existed {
+		if err := secrets.WritePrivate(path, backup); err != nil {
+			return fmt.Errorf("raccoon: restore auth file %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("raccoon: remove rolled-back auth file %s: %w", path, err)
+	}
+	return nil
 }
 
 // reimportAccount replaces credentials on the canonical *Account while

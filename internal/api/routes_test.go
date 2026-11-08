@@ -16,6 +16,14 @@ type adapterTestProvider struct {
 
 func (p adapterTestProvider) Routes() []providers.Route { return p.routes }
 
+type adapterNamedProvider struct {
+	adapterTestProvider
+}
+
+func (p adapterNamedProvider) RouteNotFoundMessage() string {
+	return "unknown test endpoint"
+}
+
 func TestRegisterProviderRoutesDispatchesAndKeepsEnvelopes(t *testing.T) {
 	routes := []providers.Route{
 		{
@@ -76,5 +84,36 @@ func TestRegisterProviderRoutesDispatchesAndKeepsEnvelopes(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/callback", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("callback status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestRegisterProviderRoutesUsesProviderNotFoundMessage(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterProviderRoutes(mux, adapterNamedProvider{adapterTestProvider{routes: []providers.Route{
+		{
+			Method: http.MethodGet, Path: "/x/one", Auth: providers.AuthPanel,
+			Handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+		},
+		{
+			Method: http.MethodGet, Path: "/x/two", Auth: providers.AuthPanel,
+			Handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+		},
+	}}})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x/missing", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	var body map[string]map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"]["message"] != "unknown test endpoint" {
+		t.Fatalf("message = %#v", body["error"]["message"])
 	}
 }
