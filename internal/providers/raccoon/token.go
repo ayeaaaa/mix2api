@@ -98,7 +98,7 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	state := m.stateFor(a)
 
 	state.mu.Lock()
-	if !tokenExpiringSoon(a.Auth, now) {
+	if !a.refreshDue(now) {
 		state.mu.Unlock()
 		return nil
 	}
@@ -116,7 +116,7 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		return m.ensureFailure(a, state, err)
 	}
 
-	oldAuth := a.Auth
+	oldAuth := a.authSnapshot()
 	call := &refreshCall{done: make(chan struct{})}
 	state.inflight = call
 	state.mu.Unlock()
@@ -140,7 +140,7 @@ func (m *TokenManager) ensureFailure(a *Account, state *accountRefreshState, err
 		return err
 	}
 	state.mu.Lock()
-	expired := tokenExpired(a.Auth, m.now())
+	expired := a.tokenIsExpired(m.now())
 	state.mu.Unlock()
 	if IsTransientError(err) && !expired {
 		return nil
@@ -192,7 +192,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account, expected *uint64
 		return waitRefresh(ctx, call)
 	}
 
-	oldAuth := a.Auth
+	oldAuth := a.authSnapshot()
 	call := &refreshCall{done: make(chan struct{})}
 	state.inflight = call
 	state.mu.Unlock()
@@ -217,9 +217,10 @@ func (m *TokenManager) validateCall(ctx context.Context, a *Account) error {
 }
 
 func (m *TokenManager) stateFor(a *Account) *accountRefreshState {
-	key := accountRefreshKey{path: strings.TrimSpace(a.Path)}
+	path, uid := a.authPathAndUID()
+	key := accountRefreshKey{path: path}
 	if key.path == "" {
-		key.uid = strings.TrimSpace(a.Auth.UID)
+		key.uid = uid
 	}
 	if key.path == "" && key.uid == "" {
 		key.account = a
@@ -268,23 +269,14 @@ func (m *TokenManager) performRefresh(
 	var stateChanged bool
 	state.mu.Lock()
 	if err == nil {
-		a.Auth = updated
-		if !a.State.ManualDisabled && (a.State.Disabled || a.State.Reason != "" || !a.State.CoolUntil.IsZero()) {
-			a.State.Disabled = false
-			a.State.Reason = ""
-			a.State.CoolUntil = time.Time{}
-			stateChanged = true
-		}
+		stateChanged = a.setRefreshedAuth(updated)
 		state.generation++
 		call.err = nil
 	} else {
 		// A manual disable is a panel decision. A failed refresh must not
 		// replace its reason or otherwise alter that state.
-		if IsAuthError(err) && !a.State.ManualDisabled {
-			a.State.Disabled = true
-			a.State.Reason = err.Error()
-			a.State.CoolUntil = time.Time{}
-			stateChanged = true
+		if IsAuthError(err) {
+			stateChanged = a.markAuthFailure(err.Error())
 		}
 		call.err = err
 	}
@@ -299,7 +291,7 @@ func (m *TokenManager) performRefresh(
 }
 
 func (m *TokenManager) requestRefresh(ctx context.Context, a *Account, oldAuth Auth) (Auth, error) {
-	path := strings.TrimSpace(a.Path)
+	path, _ := a.authPathAndUID()
 	if path == "" {
 		return Auth{}, errors.New("raccoon: token refresh requires an auth path")
 	}
