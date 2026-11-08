@@ -1,0 +1,5 @@
+# Local v1.6.5 oracle copies are for recording goldens only and must never be
+# committed. See README.md for the copy/patch/record procedure.
+v1.6.5/
+__pycache__/
+*.pyc

@@ -1,0 +1,92 @@
+{
+  "object": "list",
+  "realm": "raccoon",
+  "data": [
+    {
+      "id": "raccoon-090dd3",
+      "object": "model",
+      "owned_by": "sensetime",
+      "provider": "raccoon",
+      "name": "Raccoon-Work",
+      "context_window": 1000000,
+      "context_length": 1000000,
+      "max_input_tokens": 1000000,
+      "max_tokens": 100000,
+      "max_output_tokens": 100000,
+      "max_completion_tokens": 100000,
+      "max_output": 100000,
+      "capabilities": {
+        "vision": true,
+        "tool_calls": true,
+        "reasoning": true
+      },
+      "supports_vision": true,
+      "supports_images": true,
+      "supports_tool_calls": true,
+      "supports_reasoning": true,
+      "vision": true,
+      "multimodal": true,
+      "abilities": {
+        "vision": true,
+        "functionCall": true,
+        "function_call": true,
+        "reasoning": true
+      },
+      "input_modalities": ["text", "image"],
+      "output_modalities": ["text"],
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "architecture": {
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"],
+        "modality": "text+image->text"
+      },
+      "tags": ["general", "code", "vision", "reasoning"]
+    },
+    {
+      "id": "sn-glm-5-3",
+      "object": "model",
+      "owned_by": "sensetime",
+      "provider": "raccoon",
+      "name": "GLM-5-3",
+      "context_window": 1000000,
+      "context_length": 1000000,
+      "max_input_tokens": 1000000,
+      "max_tokens": 100000,
+      "max_output_tokens": 100000,
+      "max_completion_tokens": 100000,
+      "max_output": 100000,
+      "capabilities": {
+        "vision": false,
+        "tool_calls": true,
+        "reasoning": true
+      },
+      "supports_vision": false,
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_reasoning": true,
+      "vision": false,
+      "multimodal": false,
+      "abilities": {
+        "vision": false,
+        "functionCall": true,
+        "function_call": true,
+        "reasoning": true
+      },
+      "input_modalities": ["text"],
+      "output_modalities": ["text"],
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "architecture": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+        "modality": "text->text"
+      },
+      "tags": ["code", "reasoning"]
+    }
+  ]
+}

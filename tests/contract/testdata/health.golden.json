@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "version": "v2-contract",
+  "providers": {
+    "raccoon": {
+      "ok": true,
+      "configured": true,
+      "accounts": 1,
+      "healthy": 1,
+      "catalog_source": "raccoon",
+      "models": 2
+    }
+  }
+}
