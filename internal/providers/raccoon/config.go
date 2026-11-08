@@ -1,5 +1,5 @@
-// Package raccoon implements the Raccoon provider's configuration and
-// account-file model.
+// Package raccoon implements the Raccoon provider's configuration,
+// account-file model, HTTP client, and token refresh.
 package raccoon
 
 import (
