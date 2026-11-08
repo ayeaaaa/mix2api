@@ -5,6 +5,7 @@
     {
       "id": "raccoon-090dd3",
       "object": "model",
+      "created": "<timestamp>",
       "owned_by": "sensetime",
       "provider": "raccoon",
       "name": "Raccoon-Work",
@@ -48,6 +49,7 @@
     {
       "id": "sn-glm-5-3",
       "object": "model",
+      "created": "<timestamp>",
       "owned_by": "sensetime",
       "provider": "raccoon",
       "name": "GLM-5-3",

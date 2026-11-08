@@ -45,7 +45,14 @@ func NormalizeJSON(data []byte) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("contract: normalize JSON: %w", err)
 	}
-	return normalizeJSONValue(value, ""), nil
+	return normalizeJSONValue(value, "", normalizeContext{}), nil
+}
+
+// normalizeContext carries just enough parent information to distinguish a
+// semantic identity (a model or account ID) from an opaque generated ID. It is
+// deliberately not a generic "normalize every UUID" switch.
+type normalizeContext struct {
+	semanticID bool
 }
 
 func decodeJSONValue(data []byte) (any, error) {
@@ -62,9 +69,13 @@ func decodeJSONValue(data []byte) (any, error) {
 	return value, nil
 }
 
-func normalizeJSONValue(value any, key string) any {
+func normalizeJSONValue(value any, key string, parent normalizeContext) any {
 	switch typed := value.(type) {
 	case map[string]any:
+		context := parent
+		if isSemanticIdentityMap(typed) {
+			context.semanticID = true
+		}
 		out := make(map[string]any, len(typed))
 		for childKey, childValue := range typed {
 			if isDroppedDynamicKey(childKey) {
@@ -74,19 +85,46 @@ func normalizeJSONValue(value any, key string) any {
 				out[childKey] = normalizeTimestampValue(childValue)
 				continue
 			}
-			out[childKey] = normalizeJSONValue(childValue, childKey)
+			childContext := context
+			if isSemanticCollectionKey(childKey) {
+				childContext.semanticID = true
+			}
+			out[childKey] = normalizeJSONValue(childValue, childKey, childContext)
 		}
 		return out
 	case []any:
 		out := make([]any, len(typed))
 		for index, item := range typed {
-			out[index] = normalizeJSONValue(item, "")
+			out[index] = normalizeJSONValue(item, "", parent)
 		}
 		return out
 	case string:
-		return normalizeStringValue(typed, key)
+		return normalizeStringValue(typed, key, parent)
 	default:
 		return value
+	}
+}
+
+// isSemanticIdentityMap marks model/account-shaped objects. Identity values in
+// these contexts are semantic even when they coincide with a UUID shape.
+func isSemanticIdentityMap(value map[string]any) bool {
+	if object, _ := value["object"].(string); strings.EqualFold(strings.TrimSpace(object), "model") {
+		return true
+	}
+	for _, key := range []string{"uid", "account_id", "nickname"} {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isSemanticCollectionKey(key string) bool {
+	switch canonicalKey(key) {
+	case "models", "accounts", "account":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -174,18 +212,21 @@ var dynamicIDPrefixes = []string{
 	"cmpl_", "cmpl-",
 }
 
-func normalizeStringValue(value, key string) string {
+func normalizeStringValue(value, key string, context normalizeContext) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return value
 	}
+	if context.semanticID && isIdentityFieldKey(key) {
+		return value
+	}
 	if uuidPattern.MatchString(trimmed) {
-		if preservesContentKey(key) {
+		if !isUUIDDynamicKey(key, context) || preservesContentKey(key) {
 			return value
 		}
 		return UUIDValue
 	}
-	if isDynamicIDKey(key) {
+	if !context.semanticID && isDynamicIDKey(key) {
 		lower := strings.ToLower(trimmed)
 		for _, prefix := range dynamicIDPrefixes {
 			if strings.HasPrefix(lower, prefix) {
@@ -194,6 +235,32 @@ func normalizeStringValue(value, key string) string {
 		}
 	}
 	return value
+}
+
+// isUUIDDynamicKey limits UUID replacement to identifiers whose key/context is
+// known to be generated. A UUID-shaped model or account ID is semantic and must
+// survive, while request/session/trace/chat UUIDs are normalized.
+func isUUIDDynamicKey(key string, context normalizeContext) bool {
+	if context.semanticID && isIdentityFieldKey(key) {
+		return false
+	}
+	if preservesContentKey(key) {
+		return false
+	}
+	canonical := canonicalKey(key)
+	if canonical == "uuid" || strings.HasSuffix(canonical, "uuid") ||
+		strings.HasSuffix(canonical, "guid") {
+		return true
+	}
+	return isDynamicIDKey(key)
+}
+
+func isIdentityFieldKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower == "id" || canonicalKey(key) == "modelid" || canonicalKey(key) == "uid" {
+		return true
+	}
+	return strings.HasSuffix(lower, "_id")
 }
 
 // isTimestampKey recognizes wire timestamp spellings. It deliberately does not
@@ -328,7 +395,7 @@ func NormalizeSSE(data []byte) ([]Event, error) {
 		if !ok {
 			generic = append(generic, Event{
 				Type: frame.event,
-				Data: normalizeJSONValue(value, ""),
+				Data: normalizeJSONValue(value, "", normalizeContext{}),
 			})
 			continue
 		}
@@ -346,7 +413,7 @@ func NormalizeSSE(data []byte) ([]Event, error) {
 			continue
 		}
 
-		normalized := normalizeJSONValue(object, "")
+		normalized := normalizeJSONValue(object, "", normalizeContext{})
 		if _, hasError := object["error"]; hasError && frame.event == "" {
 			generic = append(generic, Event{Type: "error", Data: normalized})
 			continue
@@ -473,7 +540,7 @@ func (a *streamAggregate) absorbChat(object map[string]any) {
 	}
 
 	if usage, ok := object["usage"].(map[string]any); ok && len(usage) > 0 {
-		if normalized, ok := normalizeJSONValue(usage, "").(map[string]any); ok {
+		if normalized, ok := normalizeJSONValue(usage, "", normalizeContext{}).(map[string]any); ok {
 			a.usage = normalized
 		}
 	}
@@ -515,7 +582,7 @@ func (a *streamAggregate) absorbToolCalls(value any) {
 			a.toolCalls[index] = entry
 		}
 		if id, ok := call["id"].(string); ok && strings.TrimSpace(id) != "" {
-			entry.ID = normalizeStringValue(id, "id")
+			entry.ID = normalizeStringValue(id, "id", normalizeContext{})
 		}
 		if kind, ok := call["type"].(string); ok && strings.TrimSpace(kind) != "" {
 			entry.Type = kind
@@ -532,8 +599,9 @@ func (a *streamAggregate) absorbToolCalls(value any) {
 }
 
 func (a *streamAggregate) absorbLegacyFunctionCall(function map[string]any) {
-	name, _ := function["name"].(string)
-	if strings.TrimSpace(name) == "" {
+	name, hasName := function["name"].(string)
+	arguments, hasArguments := function["arguments"].(string)
+	if (!hasName || strings.TrimSpace(name) == "") && !hasArguments {
 		return
 	}
 	entry := a.toolCalls[0]
@@ -541,10 +609,10 @@ func (a *streamAggregate) absorbLegacyFunctionCall(function map[string]any) {
 		entry = &ToolCall{Index: 0}
 		a.toolCalls[0] = entry
 	}
-	if entry.Name == "" {
+	if strings.TrimSpace(name) != "" && entry.Name == "" {
 		entry.Name = name
 	}
-	if arguments, ok := function["arguments"].(string); ok {
+	if hasArguments {
 		entry.Arguments += arguments
 	}
 }

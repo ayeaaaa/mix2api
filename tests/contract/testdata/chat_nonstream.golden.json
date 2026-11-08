@@ -1,5 +1,7 @@
 {
+  "id": "<dynamic>",
   "object": "chat.completion",
+  "created": "<timestamp>",
   "model": "raccoon-090dd3",
   "choices": [
     {

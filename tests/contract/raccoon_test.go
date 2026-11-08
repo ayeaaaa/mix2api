@@ -173,6 +173,83 @@ func TestNormalizeJSONIgnoresDynamicFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeJSONUUIDScope(t *testing.T) {
+	payload := []byte(`{
+	  "models": [{"id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "name": "UUID Model"}],
+	  "model_id": "11111111-2222-4333-8444-555555555555",
+	  "account_id": "550e8400-e29b-41d4-a716-446655440000",
+	  "session_id": "123e4567-e89b-12d3-a456-426614174000",
+	  "request_id": "0f0f0f0f-0e0e-4d0d-8c0c-0b0b0b0b0b0b",
+	  "uuid": "99999999-8888-4777-8666-555555555555",
+	  "trace_uuid": "7a7a7a7a-7b7b-4c7c-8d7d-7e7e7e7e7e7e",
+	  "checksum": "6b6b6b6b-6c6c-4d6d-8e8e-6f6f6f6f6f6f"
+	}`)
+
+	got, err := NormalizeJSON(payload)
+	if err != nil {
+		t.Fatalf("NormalizeJSON: %v", err)
+	}
+	root := got.(map[string]any)
+
+	models := root["models"].([]any)
+	model := models[0].(map[string]any)
+	if model["id"] != "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" {
+		t.Errorf("UUID-shaped model id was erased: %#v", model["id"])
+	}
+	if root["model_id"] != "11111111-2222-4333-8444-555555555555" {
+		t.Errorf("model_id content was erased: %#v", root["model_id"])
+	}
+	if root["account_id"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("account_id content was erased: %#v", root["account_id"])
+	}
+	for _, key := range []string{"session_id", "request_id"} {
+		if _, present := root[key]; present {
+			t.Errorf("dynamic %s was not removed: %#v", key, root[key])
+		}
+	}
+	if root["uuid"] != UUIDValue || root["trace_uuid"] != UUIDValue {
+		t.Errorf("dynamic uuid fields were not normalized: %#v %#v", root["uuid"], root["trace_uuid"])
+	}
+	if root["checksum"] != "6b6b6b6b-6c6c-4d6d-8e8e-6f6f6f6f6f6f" {
+		t.Errorf("UUID-shaped non-ID content was normalized globally: %#v", root["checksum"])
+	}
+}
+
+func TestNormalizeSSELegacyFunctionCallMergesArguments(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"function_call":{"name":"lookup","arguments":"{\"q\":"}}}]}`,
+		"",
+		`data: {"choices":[{"index":0,"delta":{"function_call":{"arguments":"\"go\"}"}}}]}`,
+		"",
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	events, err := NormalizeSSE([]byte(stream))
+	if err != nil {
+		t.Fatalf("NormalizeSSE: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want one merged event: %#v", len(events), events)
+	}
+	want := Event{
+		Type:         "chat.completion.chunk",
+		Objects:      []string{"chat.completion.chunk"},
+		FinishReason: "tool_calls",
+		ToolCalls: []ToolCall{{
+			Index:     0,
+			Name:      "lookup",
+			Arguments: `{"q":"go"}`,
+		}},
+		Done: true,
+	}
+	if !reflect.DeepEqual(events[0], want) {
+		t.Fatalf("legacy function_call merge mismatch:\ngot:  %#v\nwant: %#v", events[0], want)
+	}
+}
+
 func TestNormalizeSSEMergesChunks(t *testing.T) {
 	stream := strings.Join([]string{
 		": keepalive",
@@ -187,7 +264,7 @@ func TestNormalizeSSEMergesChunks(t *testing.T) {
 		"",
 		`data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}`,
 		"",
-		`data: {"choices":[{"index":0,"delta":{"content":"lo","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"look","arguments":"{\"a\":"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"content":"lo","tool_calls":[{"index":1,"id":"call_second","type":"function","function":{"name":"second","arguments":"{\"b\":2}"}},{"index":0,"id":"call_abc","type":"function","function":{"name":"look","arguments":"{\"a\":"}}]}}]}`,
 		"",
 		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}`,
 		"",
@@ -219,6 +296,12 @@ func TestNormalizeSSEMergesChunks(t *testing.T) {
 			Type:      "function",
 			Name:      "look",
 			Arguments: `{"a":1}`,
+		}, {
+			Index:     1,
+			ID:        DynamicValue,
+			Type:      "function",
+			Name:      "second",
+			Arguments: `{"b":2}`,
 		}},
 		Usage: map[string]any{
 			"prompt_tokens":     json.Number("10"),
@@ -232,6 +315,23 @@ func TestNormalizeSSEMergesChunks(t *testing.T) {
 	}
 }
 
+func TestGoldenJSONRejectsExtraAndMissingStableFields(t *testing.T) {
+	golden := []byte(`{"ok": true, "object": "list", "data": []}`)
+	matching := []byte(`{"object": "list", "ok": true, "data": []}`)
+	extra := []byte(`{"ok": true, "object": "list", "data": [], "extra": "stable"}`)
+	missing := []byte(`{"ok": true, "object": "list"}`)
+
+	if err := normalizedJSONMismatch(matching, golden); err != nil {
+		t.Fatalf("matching payload rejected: %v", err)
+	}
+	if err := normalizedJSONMismatch(extra, golden); err == nil {
+		t.Fatal("extra stable field was ignored by golden comparison")
+	}
+	if err := normalizedJSONMismatch(missing, golden); err == nil {
+		t.Fatal("missing stable field was ignored by golden comparison")
+	}
+}
+
 func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 	fixture := newContractFixture(t)
 
@@ -242,6 +342,7 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
+		fixture.assertCatalogRequest(t)
 		root := decodeJSONBody(t, rec.Body.Bytes())
 		if root["object"] != "list" || root["realm"] != "raccoon" {
 			t.Fatalf("models envelope = %#v", root)
@@ -258,7 +359,7 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 		if !reflect.DeepEqual(ids, wantIDs) {
 			t.Fatalf("model ids = %#v, want %#v", ids, wantIDs)
 		}
-		assertGoldenJSON(t, root, "models.golden.json")
+		assertGoldenJSON(t, rec.Body.Bytes(), "models.golden.json")
 
 		fixture.fake.mu.Lock()
 		catalogCalls = fixture.fake.catalogCalls
@@ -288,7 +389,11 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 		if providerHealth["base_url"] != fixture.upstream.URL {
 			t.Fatalf("base_url = %#v, want %q", providerHealth["base_url"], fixture.upstream.URL)
 		}
-		assertGoldenJSON(t, root, "health.golden.json")
+		// The fake upstream's port is the only health value that changes per run. It
+		// is replaced by a stable placeholder, then both sides go through
+		// NormalizeJSON; everything else must match the full golden.
+		healthBody := bytes.ReplaceAll(rec.Body.Bytes(), []byte(fixture.upstream.URL), []byte("<upstream>"))
+		assertGoldenJSON(t, healthBody, "health.golden.json")
 	})
 
 	t.Run("chat_stream", func(t *testing.T) {
@@ -301,6 +406,7 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 		if got := fixture.chatCalls(); got != before+1 {
 			t.Fatalf("fake chat calls = %d, want %d", got, before+1)
 		}
+		fixture.assertLastChatRequest(t)
 		if got := rec.Header().Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
 			t.Fatalf("content type = %q", got)
 		}
@@ -325,6 +431,7 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 		if got := fixture.chatCalls(); got != before+1 {
 			t.Fatalf("fake chat calls = %d, want %d", got, before+1)
 		}
+		fixture.assertLastChatRequest(t)
 		root := decodeJSONBody(t, rec.Body.Bytes())
 		choices, ok := root["choices"].([]any)
 		if !ok || len(choices) != 1 {
@@ -344,7 +451,7 @@ func TestRaccoonGoldenHealthModelsChat(t *testing.T) {
 			usage["total_tokens"].(json.Number).String() != "5" {
 			t.Fatalf("usage = %#v", usage)
 		}
-		assertGoldenJSON(t, root, "chat_nonstream.golden.json")
+		assertGoldenJSON(t, rec.Body.Bytes(), "chat_nonstream.golden.json")
 	})
 }
 
@@ -355,6 +462,7 @@ type contractFixture struct {
 	provider *raccoon.Provider
 	upstream *httptest.Server
 	fake     *contractUpstream
+	token    string
 }
 
 func newContractFixture(t *testing.T) *contractFixture {
@@ -379,9 +487,10 @@ func newContractFixture(t *testing.T) *contractFixture {
 	if err != nil {
 		t.Fatalf("AuthPath: %v", err)
 	}
+	token := unsignedJWT(uid, now.Add(2*time.Hour))
 	if err := raccoon.SaveAuth(authPath, raccoon.Auth{
 		UID:            uid,
-		AccessToken:    unsignedJWT(uid, now.Add(2*time.Hour)),
+		AccessToken:    token,
 		RefreshToken:   "refresh-" + uid,
 		OfficeIdentity: "personal",
 		OfficeOrgName:  "Contract Org",
@@ -403,6 +512,7 @@ func newContractFixture(t *testing.T) *contractFixture {
 		provider: provider,
 		upstream: upstream,
 		fake:     fake,
+		token:    token,
 	}
 }
 
@@ -430,6 +540,78 @@ func (f *contractFixture) chatCalls() int {
 	return f.fake.chatCalls
 }
 
+func (f *contractFixture) assertCatalogRequest(t *testing.T) {
+	t.Helper()
+	f.fake.mu.Lock()
+	defer f.fake.mu.Unlock()
+	if len(f.fake.catalogHeaders) == 0 {
+		t.Fatal("fake upstream saw no catalog request")
+	}
+	header := f.fake.catalogHeaders[len(f.fake.catalogHeaders)-1]
+	assertRaccoonIdentityHeaders(t, header, f.token)
+	if got := header.Get("Accept"); got != "application/json" {
+		t.Fatalf("catalog Accept = %q, want application/json", got)
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("catalog Cache-Control = %q, want no-store", got)
+	}
+}
+
+func (f *contractFixture) assertLastChatRequest(t *testing.T) {
+	t.Helper()
+	f.fake.mu.Lock()
+	defer f.fake.mu.Unlock()
+	if len(f.fake.chatHeaders) == 0 || len(f.fake.chatBodies) == 0 {
+		t.Fatal("fake upstream saw no chat request")
+	}
+	header := f.fake.chatHeaders[len(f.fake.chatHeaders)-1]
+	assertRaccoonIdentityHeaders(t, header, f.token)
+	if got := header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("chat Accept = %q, want text/event-stream", got)
+	}
+	if got := header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("chat Content-Type = %q, want application/json", got)
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("chat Cache-Control = %q, want no-store", got)
+	}
+
+	body := f.fake.chatBodies[len(f.fake.chatBodies)-1]
+	if body["model"] != "raccoon-090dd3" {
+		t.Fatalf("upstream model = %#v, want trimmed raccoon-090dd3", body["model"])
+	}
+	if body["stream"] != true {
+		t.Fatalf("upstream stream = %#v, want forced true", body["stream"])
+	}
+	if _, forwarded := body["realm"]; forwarded {
+		t.Fatalf("realm leaked upstream: %#v", body)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("upstream messages = %#v", body["messages"])
+	}
+	message := messages[0].(map[string]any)
+	if message["role"] != "user" || message["content"] != "hello" {
+		t.Fatalf("upstream message = %#v", message)
+	}
+}
+
+func assertRaccoonIdentityHeaders(t *testing.T, header http.Header, token string) {
+	t.Helper()
+	if got := header.Get("Authorization"); got != "Bearer "+token {
+		t.Fatalf("Authorization = %q, want account bearer", got)
+	}
+	if got := header.Get("X-Client-Platform"); got != raccoon.ClientPlatform {
+		t.Fatalf("X-Client-Platform = %q, want %q", got, raccoon.ClientPlatform)
+	}
+	if got := header.Get("X-Client-Version"); got != raccoon.ClientVersion {
+		t.Fatalf("X-Client-Version = %q, want %q", got, raccoon.ClientVersion)
+	}
+	if got := header.Get("X-Raccoon-Language"); got != raccoon.ClientLanguage {
+		t.Fatalf("X-Raccoon-Language = %q, want %q", got, raccoon.ClientLanguage)
+	}
+}
+
 func unsignedJWT(uid string, expiry time.Time) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(
@@ -444,9 +626,11 @@ func unsignedJWT(uid string, expiry time.Time) string {
 type contractUpstream struct {
 	mu sync.Mutex
 
-	catalogCalls int
-	chatCalls    int
-	chatBodies   []map[string]any
+	catalogCalls   int
+	chatCalls      int
+	catalogHeaders []http.Header
+	chatHeaders    []http.Header
+	chatBodies     []map[string]any
 }
 
 func (u *contractUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -454,6 +638,7 @@ func (u *contractUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == raccoon.CatalogPath:
 		u.mu.Lock()
 		u.catalogCalls++
+		u.catalogHeaders = append(u.catalogHeaders, r.Header.Clone())
 		u.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(contractCatalogFixture))
@@ -463,6 +648,7 @@ func (u *contractUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		u.mu.Lock()
 		u.chatCalls++
+		u.chatHeaders = append(u.chatHeaders, r.Header.Clone())
 		u.chatBodies = append(u.chatBodies, body)
 		u.mu.Unlock()
 
@@ -564,51 +750,33 @@ func decodeGoldenFile(t *testing.T, name string, target any) {
 	}
 }
 
-// assertGoldenJSON compares the actual object against the golden shape. The
-// golden deliberately carries a stable subset: fields absent from the golden
-// (base_url, dynamic ids, panel/overview data v2 does not implement) are not
-// asserted and must not be fabricated as parity.
-func assertGoldenJSON(t *testing.T, actual map[string]any, name string) {
+// assertGoldenJSON normalizes both sides with NormalizeJSON and requires the
+// complete scoped payloads to match. It does not project the actual object onto
+// a golden-shaped subset: an extra or missing stable field fails the test.
+// Dynamic fields are expected as the same sentinel/removed form on both sides;
+// the only per-run substitution is the fake upstream URL in the health golden.
+func assertGoldenJSON(t *testing.T, actual []byte, name string) {
 	t.Helper()
-	var want any
-	decodeGoldenFile(t, name, &want)
-	projected := projectToShape(t, actual, want)
-	if !reflect.DeepEqual(projected, want) {
-		t.Fatalf("golden %s mismatch:\ngot:  %#v\nwant: %#v", name, projected, want)
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read golden %s: %v", name, err)
+	}
+	if err := normalizedJSONMismatch(actual, raw); err != nil {
+		t.Fatalf("golden %s mismatch: %v", name, err)
 	}
 }
 
-func projectToShape(t *testing.T, actual any, shape any) any {
-	t.Helper()
-	switch want := shape.(type) {
-	case map[string]any:
-		got, ok := actual.(map[string]any)
-		if !ok {
-			t.Fatalf("shape wants object, actual is %T", actual)
-		}
-		out := make(map[string]any, len(want))
-		for key, value := range want {
-			actualValue, present := got[key]
-			if !present {
-				t.Fatalf("missing golden field %q", key)
-			}
-			out[key] = projectToShape(t, actualValue, value)
-		}
-		return out
-	case []any:
-		got, ok := actual.([]any)
-		if !ok {
-			t.Fatalf("shape wants array, actual is %T", actual)
-		}
-		if len(got) != len(want) {
-			t.Fatalf("array length = %d, want %d", len(got), len(want))
-		}
-		out := make([]any, len(want))
-		for index := range want {
-			out[index] = projectToShape(t, got[index], want[index])
-		}
-		return out
-	default:
-		return actual
+func normalizedJSONMismatch(actual, golden []byte) error {
+	got, err := NormalizeJSON(actual)
+	if err != nil {
+		return fmt.Errorf("normalize actual: %w", err)
 	}
+	want, err := NormalizeJSON(golden)
+	if err != nil {
+		return fmt.Errorf("normalize golden: %w", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("normalized payloads differ:\ngot:  %#v\nwant: %#v", got, want)
+	}
+	return nil
 }
