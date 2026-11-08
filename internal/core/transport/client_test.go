@@ -307,6 +307,37 @@ func TestTransportReusePerNormalizedProxyURL(t *testing.T) {
 	}
 }
 
+func TestSocks5hNormalizesToSocks5(t *testing.T) {
+	client := NewClient(ClientOptions{})
+	defer client.Close()
+
+	tr, err := client.transportFor("socks5h://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("transportFor socks5h: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://upstream.invalid/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	selected, err := tr.Proxy(req)
+	if err != nil {
+		t.Fatalf("transport proxy: %v", err)
+	}
+	if selected == nil || selected.Scheme != "socks5" {
+		t.Fatalf("socks5h proxy scheme = %v, want socks5", selected)
+	}
+	if selected.Host != "127.0.0.1:1080" {
+		t.Fatalf("socks5h proxy host = %q, want %q", selected.Host, "127.0.0.1:1080")
+	}
+	plain, err := client.transportFor("socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("transportFor socks5: %v", err)
+	}
+	if plain != tr {
+		t.Fatal("socks5h and socks5 proxy URLs did not share a transport")
+	}
+}
+
 func TestProxyErrorsRedactCredentials(t *testing.T) {
 	client := NewClient(ClientOptions{})
 	defer client.Close()
@@ -315,18 +346,25 @@ func TestProxyErrorsRedactCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	for _, proxyURL := range []string{
-		"http://alice:s3cret@[::1",
-		"http://alice:s3cret@host:badport",
-		"http://alice:s3cret@",
-		"ftp://alice:s3cret@proxy.example:21",
-	} {
-		_, err := client.Do(context.Background(), req, proxyURL)
+	cases := []struct {
+		proxyURL string
+		secrets  []string
+	}{
+		{"http://alice:p/ss@host:8080", []string{"alice", "p/ss"}},
+		{"http://alice:s3cret@[::1", []string{"alice", "s3cret"}},
+		{"http://alice:s3cret@host:badport", []string{"alice", "s3cret"}},
+		{"http://alice:s3cret@", []string{"alice", "s3cret"}},
+		{"ftp://alice:s3cret@proxy.example:21", []string{"alice", "s3cret"}},
+	}
+	for _, c := range cases {
+		_, err := client.Do(context.Background(), req, c.proxyURL)
 		if err == nil {
-			t.Fatalf("Do with invalid proxy %q unexpectedly succeeded", proxyURL)
+			t.Fatalf("Do with invalid proxy %q unexpectedly succeeded", c.proxyURL)
 		}
-		if strings.Contains(err.Error(), "s3cret") {
-			t.Fatalf("error leaks proxy password: %v", err)
+		for _, secret := range c.secrets {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error for %q leaks credential %q: %v", c.proxyURL, secret, err)
+			}
 		}
 	}
 }

@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 )
 
 // Slot is one configured proxy slot from the legacy settings file.
@@ -158,6 +156,12 @@ func normalizeProxyURL(raw string) string {
 		}
 		raw = strings.TrimSpace(raw[index+len("://"):])
 	}
+	// net/http only understands socks5. Its SOCKS5 client sends host names to
+	// the proxy, so the socks5h behavior is already what we get. Normalizing
+	// also lets socks5h and socks5 share one cached transport.
+	if scheme == "socks5h" {
+		scheme = "socks5"
+	}
 
 	parts := strings.Split(raw, ":")
 	if len(parts) == 4 && allDigits(parts[1]) {
@@ -265,15 +269,16 @@ func newTransport(proxyURL string) (*http.Transport, error) {
 
 	parsed, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("transport: invalid proxy URL: %s", secrets.Redact(err.Error()))
+		// Do not echo the parse error: it can contain raw userinfo.
+		return nil, errors.New("transport: invalid proxy URL")
 	}
 	switch parsed.Scheme {
-	case "http", "https", "socks5", "socks5h":
+	case "http", "https", "socks5":
 	default:
 		return nil, fmt.Errorf("transport: unsupported proxy scheme %q", parsed.Scheme)
 	}
 	if parsed.Host == "" {
-		return nil, fmt.Errorf("transport: proxy URL %s has no host", secrets.Redact(proxyURL))
+		return nil, errors.New("transport: proxy URL has no host")
 	}
 
 	tr.Proxy = http.ProxyURL(parsed)
