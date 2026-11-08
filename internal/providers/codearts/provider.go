@@ -32,6 +32,11 @@ type Provider struct {
 	// modelFetchJoinHook is a test seam invoked when a discovery call joins an
 	// already-running per-account flight. It is nil in production.
 	modelFetchJoinHook func()
+
+	// chatRetryDelay is the pause before retrying a CodeArts concurrency
+	// rejection on the same account. Zero means the v1 two-second delay; tests
+	// may shorten it.
+	chatRetryDelay time.Duration
 }
 
 // New returns the production CodeArts provider. The accounts directory is the
