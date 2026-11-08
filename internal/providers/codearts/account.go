@@ -131,13 +131,19 @@ type Account struct {
 	lastUsed         time.Time
 	removed          bool
 
-	// modelsMu serializes live model discovery for this account. It may be
-	// held across network I/O and is never acquired while mu is held, so a
-	// concurrent catalog read never waits on upstream. modelsFetchedAt records
-	// the last successful discovery and is guarded by mu.
-	modelsMu        sync.Mutex
-	modelsFetchedAt time.Time
-	modelsFlight    *modelFetchFlight
+	// modelsMu serializes live model discovery for this account and guards the
+	// in-flight flight pointer. It may be held across network I/O and is never
+	// acquired while mu is held, so a concurrent catalog read never waits on
+	// upstream. modelsFetchedAt, modelsAttemptedAt, and modelsEpoch are guarded
+	// by mu: fetchedAt is the last successful catalogue, attemptedAt is the last
+	// discovery attempt (including failures, used for backoff), and epoch is
+	// advanced by a re-import so an in-flight fetch cannot republish stale
+	// models into the cleared account.
+	modelsMu          sync.Mutex
+	modelsFetchedAt   time.Time
+	modelsAttemptedAt time.Time
+	modelsEpoch       uint64
+	modelsFlight      *modelFetchFlight
 
 	// authGeneration advances only when the credential document is replaced
 	// (re-import or token rotation), never for a proxy-only auth save. Refresh

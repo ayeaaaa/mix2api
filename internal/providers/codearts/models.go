@@ -9,14 +9,25 @@ import (
 	"time"
 )
 
-const canonicalOneZeroOneSeven = "deepseek-v4.1-flash-1017"
+const (
+	canonicalOneZeroOneSeven = "deepseek-v4.1-flash-1017"
+
+	// modelsCatalogFetchTimeout is v1 model_entries' 8-second discovery
+	// timeout for the provider-wide /v1/models refresh.
+	modelsCatalogFetchTimeout = 8 * time.Second
+
+	// maxCatalogTTLSeconds matches v1's CATALOG_TTL ceiling even when the
+	// user configures a longer models_ttl_seconds.
+	maxCatalogTTLSeconds = 3600.0
+)
 
 // Models returns the provider-wide `/v1/models` catalogue: the union of every
 // enabled account's last-good catalogue plus the published official and
 // benefit-seed models. Disabled and manual-disabled accounts are skipped
 // exactly like v1. Refreshes honor cfg.ModelsTTLSeconds (300 seconds by
-// default); force bypasses the TTL. A failed refresh keeps the account's last
-// good catalogue. Discovery failures never fail the whole catalogue.
+// default, capped at one hour); force bypasses the TTL and failure backoff. A
+// failed refresh keeps the account's last good catalogue. Discovery failures
+// never fail the whole catalogue.
 func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 	if p == nil {
 		return nil, errors.New("codearts: provider is nil")
@@ -32,6 +43,7 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 			disabled := account.removed || account.State.Disabled || account.State.ManualDisabled
 			prior := cloneModels(account.Models)
 			fetchedAt := account.modelsFetchedAt
+			attemptedAt := account.modelsAttemptedAt
 			account.mu.Unlock()
 			if disabled {
 				continue
@@ -43,10 +55,11 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 			}
 
 			models := prior
-			if force || len(prior) == 0 || !p.catalogFresh(fetchedAt) {
-				// FetchModels coalesces concurrent callers per account and
-				// rechecks freshness under the account lock.
-				refreshed, _ := p.ensureModels(ctx, account, force)
+			if force || len(prior) == 0 || !p.catalogFresh(catalogLastAttempt(fetchedAt, attemptedAt)) {
+				// Use v1 model_entries' 8-second discovery budget. The account
+				// flight coalesces concurrent callers and rechecks freshness
+				// under the account lock.
+				refreshed, _ := p.ensureModelsForCatalog(ctx, account, force)
 				if len(refreshed) > 0 {
 					models = refreshed
 				}
@@ -59,10 +72,13 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 
 	merged := mergeModelCatalogs(sets...)
 	merged = mergeModelCatalogs(merged, officialCoreModels(), benefitSeedCoreModels())
-	if len(merged) == 0 {
-		merged = seedFallbackModels()
-	}
 	return p.wireModels(merged), nil
+}
+
+func (p *Provider) ensureModelsForCatalog(ctx context.Context, account *Account, force bool) ([]Model, error) {
+	refreshCtx, cancel := context.WithTimeout(ctx, modelsCatalogFetchTimeout)
+	defer cancel()
+	return p.ensureModels(refreshCtx, account, force)
 }
 
 // wireModels formats the merged core catalogue into the v1 `/v1/models` wire
@@ -151,22 +167,25 @@ func (p *Provider) wireModels(models []Model) []Model {
 			inputs = append(inputs, "image")
 		}
 
-		entry["capabilities"] = map[string]any{
+		capabilities := map[string]any{
 			"vision":     vision,
 			"tool_calls": true,
-			"reasoning":  reasoning,
 		}
+		if reasoning {
+			// v1 only advertises reasoning keys for models with an effort list.
+			capabilities["reasoning"] = true
+			entry["supports_reasoning"] = true
+		}
+		entry["capabilities"] = capabilities
 		entry["supports_vision"] = vision
 		entry["supports_images"] = vision
 		entry["supports_tool_calls"] = true
-		entry["supports_reasoning"] = reasoning
 		entry["vision"] = vision
 		entry["multimodal"] = vision
 		entry["abilities"] = map[string]any{
 			"vision":        vision,
 			"functionCall":  true,
 			"function_call": true,
-			"reasoning":     reasoning,
 		}
 		entry["input_modalities"] = inputs
 		entry["output_modalities"] = []string{"text"}
@@ -239,13 +258,15 @@ func CanonicalModel(account *Account, model string) string {
 }
 
 // AgentPickerModels returns the catalogue as the agent/one-click picker needs
-// it: lowercase ids, including the explicit lowercase 1017 alias, while the
-// `/v1/models` catalogue keeps the upstream display ids.
+// it. v1 lowercases only the CodeArts official console ids; live/builtin ids
+// keep their original spelling. The lowercase 1017 alias is always present,
+// while the `/v1/models` catalogue keeps upstream display ids.
 func (p *Provider) AgentPickerModels(ctx context.Context, force bool) ([]Model, error) {
 	models, err := p.Models(ctx, force)
 	if err != nil {
 		return nil, err
 	}
+	official := officialModelKeySet()
 	out := make([]Model, 0, len(models)+1)
 	seen := make(map[string]bool, len(models)+1)
 	for _, item := range models {
@@ -254,12 +275,16 @@ func (p *Provider) AgentPickerModels(ctx context.Context, force bool) ([]Model, 
 			continue
 		}
 		key := strings.ToLower(id)
+		pickerID := id
+		if official[key] {
+			pickerID = key
+		}
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		entry := cloneModel(item)
-		entry["id"] = key
+		entry["id"] = pickerID
 		out = append(out, entry)
 	}
 	if !seen[canonicalOneZeroOneSeven] {
@@ -271,6 +296,14 @@ func (p *Provider) AgentPickerModels(ctx context.Context, force bool) ([]Model, 
 	return out, nil
 }
 
+func officialModelKeySet() map[string]bool {
+	out := make(map[string]bool, len(codeartsOfficialModels))
+	for _, id := range codeartsOfficialModels {
+		out[strings.ToLower(id)] = true
+	}
+	return out
+}
+
 func (p *Provider) modelsTTL() time.Duration {
 	seconds := defaultModelsTTLSeconds
 	if p != nil && p.pool != nil {
@@ -280,6 +313,9 @@ func (p *Provider) modelsTTL() time.Duration {
 		if configured > 0 && !math.IsNaN(configured) && !math.IsInf(configured, 0) {
 			seconds = configured
 		}
+	}
+	if seconds > maxCatalogTTLSeconds {
+		seconds = maxCatalogTTLSeconds
 	}
 	return time.Duration(seconds * float64(time.Second))
 }

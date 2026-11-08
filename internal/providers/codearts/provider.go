@@ -28,6 +28,10 @@ type Provider struct {
 	// catalogHTTPTimeout bounds each upstream model-discovery call. Tests may
 	// lower it; zero means the package default.
 	catalogHTTPTimeout time.Duration
+
+	// modelFetchJoinHook is a test seam invoked when a discovery call joins an
+	// already-running per-account flight. It is nil in production.
+	modelFetchJoinHook func()
 }
 
 // New returns the production CodeArts provider. The accounts directory is the

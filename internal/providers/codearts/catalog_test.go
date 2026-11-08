@@ -266,6 +266,15 @@ func (f *catalogUpstream) lastAbsolute(path string) bool {
 	return values[len(values)-1]
 }
 
+func (f *catalogUpstream) lastClaimBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.claimBody) == 0 {
+		return ""
+	}
+	return f.claimBody[len(f.claimBody)-1]
+}
+
 func (f *catalogUpstream) blockedBuiltin() (<-chan struct{}, func()) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -330,6 +339,7 @@ func setAccountCatalog(t *testing.T, account *Account, models []Model, fetchedAt
 	account.Models = cloneModels(models)
 	account.modelBenefit = nil
 	account.modelsFetchedAt = fetchedAt
+	account.modelsAttemptedAt = time.Time{}
 	account.mu.Unlock()
 }
 
@@ -561,7 +571,10 @@ func TestCatalogIDsStayExactAndOneZeroOneSevenAlias(t *testing.T) {
 		t.Fatalf("agent picker kept a mixed-case 1017 duplicate: %v", catalogModelIDs(picker))
 	}
 	if !catalogHasExactID(picker, "kimi-k3") {
-		t.Fatalf("agent picker did not use lowercase ids: %v", catalogModelIDs(picker))
+		t.Fatalf("agent picker did not lowercase an official model id: %v", catalogModelIDs(picker))
+	}
+	if !catalogHasExactID(picker, "Agent-Only-Model") || catalogHasExactID(picker, "agent-only-model") {
+		t.Fatalf("agent picker changed a live/non-official id: %v", catalogModelIDs(picker))
 	}
 }
 
@@ -622,15 +635,69 @@ func TestCatalogFetchFailureRetainsLastGood(t *testing.T) {
 	catalogModelByID(t, catalog, "Kimi-K3")
 }
 
-func TestCatalogEmptyDiscoverySeedsOnlyWithoutPriorCatalog(t *testing.T) {
-	t.Run("no prior catalog", func(t *testing.T) {
+func TestCatalogEmptySuccessAndSeedFallback(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+
+	t.Run("empty success still produces official catalogue", func(t *testing.T) {
 		upstream := newCatalogUpstream()
 		upstream.setCatalogs(nil, []any{}, []any{}, []any{})
 		provider, account := newCatalogProvider(t, upstream)
-		setCatalogNow(t, provider, time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local))
+		setCatalogNow(t, provider, now)
+		models, err := provider.FetchModels(context.Background(), account, true)
+		if err != nil {
+			t.Fatalf("a valid empty discovery must not error: %v", err)
+		}
+		for _, id := range []string{"GLM-5.2", "Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4.1-Flash-1017"} {
+			catalogModelByID(t, models, id)
+		}
+		if catalogHasID(models, "Qwen3.5-397B-A17B-VL") || catalogHasID(models, "deepseek-v4-flash-0731") {
+			t.Fatalf("empty success used the wider cold seed: %v", catalogModelIDs(models))
+		}
+		account.mu.Lock()
+		stored := len(account.Models)
+		fetchedAt := account.modelsFetchedAt
+		attemptedAt := account.modelsAttemptedAt
+		account.mu.Unlock()
+		if stored != len(codeartsOfficialModels) || fetchedAt.IsZero() || attemptedAt.IsZero() {
+			t.Fatalf("empty success was not adopted: stored=%d fetched=%v attempted=%v", stored, fetchedAt, attemptedAt)
+		}
+	})
+
+	t.Run("empty success keeps prior as base", func(t *testing.T) {
+		upstream := newCatalogUpstream()
+		upstream.setCatalogs(nil, []any{}, []any{}, []any{})
+		provider, account := newCatalogProvider(t, upstream)
+		setCatalogNow(t, provider, now)
+		prior := []Model{{"id": "Prior-Only", "name": "Prior-Only"}}
+		setAccountCatalog(t, account, prior, now.Add(-time.Hour))
+		models, err := provider.FetchModels(context.Background(), account, true)
+		if err != nil {
+			t.Fatalf("FetchModels: %v", err)
+		}
+		catalogModelByID(t, models, "Prior-Only")
+		catalogModelByID(t, models, "Kimi-K3")
+		if catalogHasID(models, "Qwen3.5-397B-A17B-VL") {
+			t.Fatalf("empty success fell back to the cold seed: %v", catalogModelIDs(models))
+		}
+		account.mu.Lock()
+		fetchedAt := account.modelsFetchedAt
+		attemptedAt := account.modelsAttemptedAt
+		account.mu.Unlock()
+		if !fetchedAt.Equal(now) || !attemptedAt.Equal(now) {
+			t.Fatalf("empty success did not stamp fetched/attempted: %v/%v", fetchedAt, attemptedAt)
+		}
+	})
+
+	t.Run("total failure without prior seeds", func(t *testing.T) {
+		upstream := newCatalogUpstream()
+		for _, path := range []string{catalogAgentListPath, catalogBuiltinPath, catalogBenefitPath} {
+			upstream.fail(path, http.StatusInternalServerError, `{"error_msg":"down"}`)
+		}
+		provider, account := newCatalogProvider(t, upstream)
+		setCatalogNow(t, provider, now)
 		models, err := provider.FetchModels(context.Background(), account, true)
 		if err == nil {
-			t.Fatal("empty discovery should report that no source returned models")
+			t.Fatal("total discovery failure should be reported")
 		}
 		for _, id := range []string{"GLM-5.2", "Qwen3.5-397B-A17B-VL", "deepseek-v4-pro-0813"} {
 			catalogModelByID(t, models, id)
@@ -642,7 +709,7 @@ func TestCatalogEmptyDiscoverySeedsOnlyWithoutPriorCatalog(t *testing.T) {
 		upstream.fail(catalogAgentListPath, http.StatusInternalServerError, `{"error_msg":"agent down"}`)
 		upstream.fail(catalogBenefitPath, http.StatusInternalServerError, `{"error_msg":"benefit down"}`)
 		provider, account := newCatalogProvider(t, upstream)
-		setCatalogNow(t, provider, time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local))
+		setCatalogNow(t, provider, now)
 		models, err := provider.FetchModels(context.Background(), account, true)
 		if err != nil {
 			t.Fatalf("one failed source must not fail discovery: %v", err)
@@ -652,9 +719,9 @@ func TestCatalogEmptyDiscoverySeedsOnlyWithoutPriorCatalog(t *testing.T) {
 	})
 }
 
-func TestCatalogModelsTTLForceAndCoalescing(t *testing.T) {
+func TestCatalogModelsTTLAndForce(t *testing.T) {
 	upstream := newCatalogUpstream()
-	provider, account := newCatalogProvider(t, upstream)
+	provider, _ := newCatalogProvider(t, upstream)
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
 	setCatalogNow(t, provider, now)
 
@@ -687,12 +754,23 @@ func TestCatalogModelsTTLForceAndCoalescing(t *testing.T) {
 	if got := upstream.callCount(catalogBuiltinPath); got != first+2 {
 		t.Fatalf("force did not bypass TTL: calls = %d", got)
 	}
+}
 
-	account.mu.Lock()
-	account.modelsFetchedAt = time.Time{}
-	account.mu.Unlock()
+func TestCatalogConcurrentFetchCoalescesInFlight(t *testing.T) {
+	upstream := newCatalogUpstream()
+	provider, account := newCatalogProvider(t, upstream)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local))
+
 	started, release := upstream.blockedBuiltin()
 	defer release()
+	joined := make(chan struct{}, 1)
+	provider.modelFetchJoinHook = func() {
+		select {
+		case joined <- struct{}{}:
+		default:
+		}
+	}
+
 	var wg sync.WaitGroup
 	results := make([][]Model, 2)
 	errs := make([]error, 2)
@@ -700,13 +778,18 @@ func TestCatalogModelsTTLForceAndCoalescing(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			results[index], errs[index] = provider.FetchModels(context.Background(), account, false)
+			results[index], errs[index] = provider.FetchModels(context.Background(), account, true)
 		}(i)
 	}
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("concurrent discovery did not reach the builtin endpoint")
+		t.Fatal("leader did not reach the builtin endpoint")
+	}
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second caller did not join the in-flight discovery")
 	}
 	before := upstream.callCount(catalogBuiltinPath)
 	release()
@@ -720,7 +803,7 @@ func TestCatalogModelsTTLForceAndCoalescing(t *testing.T) {
 		}
 	}
 	if got := upstream.callCount(catalogBuiltinPath); got != before {
-		t.Fatalf("concurrent fetch stampeded upstream: calls = %d, before = %d", got, before)
+		t.Fatalf("concurrent force fetch stamped out: calls = %d, before = %d", got, before)
 	}
 }
 
@@ -846,6 +929,16 @@ func TestCatalogEnrichesCapabilitiesReasoningAndCredits(t *testing.T) {
 	if got, _ := abilities["functionCall"].(bool); !got {
 		t.Fatalf("Qwen abilities.functionCall = %v", abilities["functionCall"])
 	}
+	capabilities = catalogMap(t, qwen["capabilities"])
+	if _, ok := capabilities["reasoning"]; ok {
+		t.Fatalf("non-reasoning model advertised capabilities.reasoning: %v", capabilities)
+	}
+	if _, ok := qwen["supports_reasoning"]; ok {
+		t.Fatalf("non-reasoning model advertised supports_reasoning: %v", qwen["supports_reasoning"])
+	}
+	if _, ok := abilities["reasoning"]; ok {
+		t.Fatalf("non-reasoning model advertised abilities.reasoning: %v", abilities)
+	}
 	if _, ok := qwen["credits"]; ok {
 		t.Fatalf("Qwen advertised a price without a rate: %v", qwen["credits"])
 	}
@@ -895,27 +988,60 @@ func TestCatalogEnrichesCapabilitiesReasoningAndCredits(t *testing.T) {
 	}
 }
 
-func TestCatalogSkipsDisabledAccounts(t *testing.T) {
-	upstream := newCatalogUpstream()
-	provider, account := newCatalogProvider(t, upstream)
-	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
-	setCatalogNow(t, provider, now)
-	setAccountCatalog(t, account, []Model{{"id": "Disabled-Only", "name": "Disabled-Only"}}, now)
-	account.mu.Lock()
-	account.State.Disabled = true
-	account.mu.Unlock()
+func TestCatalogSkipsDisabledManualAndRemovedAccounts(t *testing.T) {
+	cases := []struct {
+		name  string
+		state AccountState
+	}{
+		{name: "disabled", state: AccountState{Disabled: true}},
+		{name: "manual disabled", state: AccountState{ManualDisabled: true}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstream := newCatalogUpstream()
+			provider, account := newCatalogProvider(t, upstream)
+			now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+			setCatalogNow(t, provider, now)
+			setAccountCatalog(t, account, []Model{{"id": "Hidden-Only", "name": "Hidden-Only"}}, now)
+			account.mu.Lock()
+			account.State.Disabled = testCase.state.Disabled
+			account.State.ManualDisabled = testCase.state.ManualDisabled
+			account.mu.Unlock()
 
-	models, err := provider.Models(context.Background(), false)
-	if err != nil {
-		t.Fatalf("Models: %v", err)
+			models, err := provider.Models(context.Background(), false)
+			if err != nil {
+				t.Fatalf("Models: %v", err)
+			}
+			if catalogHasID(models, "Hidden-Only") {
+				t.Fatalf("disabled account catalog leaked: %v", catalogModelIDs(models))
+			}
+			catalogModelByID(t, models, "GLM-5.2")
+			if got := upstream.callCount(catalogBuiltinPath); got != 0 {
+				t.Fatalf("disabled account was refreshed: calls = %d", got)
+			}
+		})
 	}
-	if catalogHasID(models, "Disabled-Only") {
-		t.Fatalf("disabled account catalog leaked: %v", catalogModelIDs(models))
-	}
-	catalogModelByID(t, models, "GLM-5.2")
-	if got := upstream.callCount(catalogBuiltinPath); got != 0 {
-		t.Fatalf("disabled account was refreshed: calls = %d", got)
-	}
+
+	t.Run("removed", func(t *testing.T) {
+		upstream := newCatalogUpstream()
+		provider, account := newCatalogProvider(t, upstream)
+		now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+		setCatalogNow(t, provider, now)
+		setAccountCatalog(t, account, []Model{{"id": "Hidden-Only", "name": "Hidden-Only"}}, now)
+		account.mu.Lock()
+		account.removed = true
+		account.mu.Unlock()
+		models, err := provider.Models(context.Background(), false)
+		if err != nil {
+			t.Fatalf("Models: %v", err)
+		}
+		if catalogHasID(models, "Hidden-Only") {
+			t.Fatalf("removed account catalog leaked: %v", catalogModelIDs(models))
+		}
+		if got := upstream.callCount(catalogBuiltinPath); got != 0 {
+			t.Fatalf("removed account was refreshed: calls = %d", got)
+		}
+	})
 }
 
 func TestCatalogAgentSelectionFallsBack(t *testing.T) {
@@ -1038,6 +1164,9 @@ func TestCatalogSignedHeadersAndProxy(t *testing.T) {
 	if got := claimHeader.Get("Agent-Type"); got != "" {
 		t.Fatalf("benefit claim Agent-Type = %q", got)
 	}
+	if got := upstream.lastClaimBody(); got != "{}" {
+		t.Fatalf("benefit claim body = %q, want {}", got)
+	}
 }
 
 func TestCatalogErrorsRedactSecrets(t *testing.T) {
@@ -1067,6 +1196,10 @@ func TestCatalogTTLDefault(t *testing.T) {
 	provider.pool.SetConfig(Config{})
 	if got := provider.modelsTTL(); got != 300*time.Second {
 		t.Fatalf("modelsTTL = %v, want 300s", got)
+	}
+	provider.pool.SetConfig(Config{ModelsTTLSeconds: 86400})
+	if got := provider.modelsTTL(); got != 3600*time.Second {
+		t.Fatalf("modelsTTL = %v, want the 1h v1 ceiling", got)
 	}
 }
 
@@ -1121,7 +1254,7 @@ func TestCatalogWireNormalizesLower1017ForOldClients(t *testing.T) {
 	}
 }
 
-func TestCatalogV1WireSetAndOrderParity(t *testing.T) {
+func TestCatalogV1WireSetParity(t *testing.T) {
 	upstream := newCatalogUpstream()
 	upstream.setCatalogs(nil, []any{
 		map[string]any{
@@ -1162,16 +1295,139 @@ func TestCatalogV1WireSetAndOrderParity(t *testing.T) {
 			t.Fatalf("wire catalog missing %q: %v", id, catalogModelIDs(models))
 		}
 	}
+	// Exact ordering is a consequence of the current fixture/merge order, not
+	// a v1 wire guarantee, so this test deliberately checks membership only.
+	entry1017 := catalogModelByID(t, models, "DeepSeek-V4.1-Flash-1017")
+	if _, ok := entry1017["context_window"]; ok {
+		t.Fatalf("1017 advertised a context limit without a catalogue value: %v", entry1017)
+	}
+	if _, ok := entry1017["max_tokens"]; ok {
+		t.Fatalf("1017 advertised an output limit without a catalogue value: %v", entry1017)
+	}
+}
 
-	filtered := make([]string, 0)
-	for _, item := range models {
-		id := catalogString(t, item["id"])
-		if strings.HasPrefix(strings.ToLower(id), "glm-") {
-			filtered = append(filtered, id)
+func TestCatalogFailureBackoffHonorsTTL(t *testing.T) {
+	upstream := newCatalogUpstream()
+	provider, account := newCatalogProvider(t, upstream)
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	setCatalogNow(t, provider, now)
+	setAccountCatalog(t, account, []Model{{"id": "Prior-Only", "name": "Prior-Only"}}, now.Add(-time.Hour))
+	for _, path := range []string{catalogAgentListPath, catalogBuiltinPath, catalogBenefitPath} {
+		upstream.fail(path, http.StatusBadGateway, `{"error_msg":"down"}`)
+	}
+
+	if _, err := provider.Models(context.Background(), false); err != nil {
+		t.Fatalf("first failed Models: %v", err)
+	}
+	if got := upstream.callCount(catalogBuiltinPath); got != 1 {
+		t.Fatalf("first failed refresh calls = %d", got)
+	}
+	account.mu.Lock()
+	fetchedAt := account.modelsFetchedAt
+	attemptedAt := account.modelsAttemptedAt
+	account.mu.Unlock()
+	if !fetchedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("failed refresh replaced fetchedAt: %v", fetchedAt)
+	}
+	if !attemptedAt.Equal(now) {
+		t.Fatalf("failed refresh did not record attemptedAt: %v", attemptedAt)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := provider.Models(context.Background(), false); err != nil {
+			t.Fatalf("backoff Models[%d]: %v", i, err)
+		}
+		if _, err := provider.FetchModels(context.Background(), account, false); err != nil {
+			t.Fatalf("backoff FetchModels[%d]: %v", i, err)
 		}
 	}
-	wantOrder := []string{"GLM-5.2", "GLM-4.7", "GLM-5.3-Flash", "GLM-5.3", "GLM-5.2-ArkTS-SPARK"}
-	if strings.Join(filtered, ",") != strings.Join(wantOrder, ",") {
-		t.Fatalf("glm order = %v, want %v", filtered, wantOrder)
+	if got := upstream.callCount(catalogBuiltinPath); got != 1 {
+		t.Fatalf("failure backoff hammered upstream: calls = %d", got)
+	}
+
+	setCatalogNow(t, provider, now.Add(301*time.Second))
+	if _, err := provider.Models(context.Background(), false); err != nil {
+		t.Fatalf("retry Models: %v", err)
+	}
+	if got := upstream.callCount(catalogBuiltinPath); got != 2 {
+		t.Fatalf("expired failure backoff did not retry: calls = %d", got)
+	}
+
+	if _, err := provider.Models(context.Background(), true); err != nil {
+		t.Fatalf("forced Models: %v", err)
+	}
+	if got := upstream.callCount(catalogBuiltinPath); got != 3 {
+		t.Fatalf("force did not bypass failure backoff: calls = %d", got)
+	}
+}
+
+func TestCatalogTokenEnsureFailureDoesNotBlockDiscovery(t *testing.T) {
+	upstream := newCatalogUpstream()
+	provider, account := newCatalogProvider(t, upstream)
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	setCatalogNow(t, provider, now)
+	account.mu.Lock()
+	account.Auth.Expiration = now.Add(-time.Hour)
+	account.mu.Unlock()
+
+	models, err := provider.FetchModels(context.Background(), account, true)
+	if err != nil {
+		t.Fatalf("token refresh failure blocked discovery: %v", err)
+	}
+	catalogModelByID(t, models, "GLM-4.7")
+	catalogModelByID(t, models, "Kimi-K3")
+	if got := upstream.callCount("/v1/oauth2/tokens"); got == 0 {
+		upstream.mu.Lock()
+		calls := upstream.calls
+		upstream.mu.Unlock()
+		t.Fatalf("expired account did not attempt a token refresh; calls=%v", calls)
+	}
+}
+
+func TestCatalogReimportInvalidatesInFlightDiscovery(t *testing.T) {
+	upstream := newCatalogUpstream()
+	provider, account := newCatalogProvider(t, upstream)
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	setCatalogNow(t, provider, now)
+
+	started, release := upstream.blockedBuiltin()
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = provider.FetchModels(context.Background(), account, true)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("discovery did not reach the builtin endpoint")
+	}
+
+	reimport := testAuth("u1")
+	reimport.Expiration = now.Add(4 * time.Hour)
+	if _, err := provider.Pool().Add(reimport); err != nil {
+		t.Fatalf("reimport: %v", err)
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight discovery did not finish")
+	}
+
+	account.mu.Lock()
+	stored := len(account.Models)
+	fetchedAt := account.modelsFetchedAt
+	attemptedAt := account.modelsAttemptedAt
+	account.mu.Unlock()
+	if stored != 0 || !fetchedAt.IsZero() || !attemptedAt.IsZero() {
+		t.Fatalf("late discovery repopulated reimported account: models=%d fetched=%v attempted=%v",
+			stored, fetchedAt, attemptedAt)
+	}
+	account.modelsMu.Lock()
+	flight := account.modelsFlight
+	account.modelsMu.Unlock()
+	if flight != nil {
+		t.Fatal("reimport did not clear the in-flight discovery")
 	}
 }

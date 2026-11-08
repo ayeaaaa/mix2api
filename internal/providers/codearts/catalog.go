@@ -569,19 +569,19 @@ func creditLabel(rows any) string {
 }
 
 // FetchModels refreshes one account's live agent-center, builtin, and benefit
-// catalogues in parallel, merges them with the official/benefit-seed catalogue,
-// and stores the result on the account. It honors the configured TTL unless
-// force is set. Concurrent discovery for one account is coalesced. Partial
-// source failures keep every successful source. When no source yields a model,
-// the previous account catalogue is retained; the cold seed is only installed
-// when the account has never had a catalogue.
+// catalogues in parallel and merges the official console catalogue. A valid
+// response with zero live models still produces the official catalogue; only
+// a total source failure retains the previous account catalogue, and the cold
+// seed is installed only when such a failure also has no catalog/prior. TTL
+// and failure backoff are honored unless force is set. Concurrent discovery
+// for one account is coalesced.
 func (p *Provider) FetchModels(ctx context.Context, a *Account, force bool) ([]Model, error) {
 	return p.ensureModels(ctx, a, force)
 }
 
 // ensureModels performs discovery under the account lock. Non-forced callers
-// return a fresh catalogue without contacting upstream; concurrent callers
-// join the current flight.
+// return a fresh catalogue or a recent last-good result during failure backoff
+// without contacting upstream. Concurrent callers join the current flight.
 func (p *Provider) ensureModels(ctx context.Context, a *Account, force bool) ([]Model, error) {
 	if p == nil {
 		return nil, errors.New("codearts: provider is nil")
@@ -596,20 +596,30 @@ func (p *Provider) ensureModels(ctx context.Context, a *Account, force bool) ([]
 	a.modelsMu.Lock()
 	if flight := a.modelsFlight; flight != nil {
 		a.modelsMu.Unlock()
+		if p.modelFetchJoinHook != nil {
+			p.modelFetchJoinHook()
+		}
 		return waitModelFetch(ctx, flight)
 	}
 	if !force {
-		models, fetchedAt := accountModelsSnapshot(a)
-		if len(models) > 0 && p.catalogFresh(fetchedAt) {
+		models, fetchedAt, attemptedAt := accountModelsSnapshot(a)
+		if len(models) > 0 && p.catalogFresh(catalogLastAttempt(fetchedAt, attemptedAt)) {
 			a.modelsMu.Unlock()
 			return models, nil
 		}
 	}
-	flight := &modelFetchFlight{done: make(chan struct{})}
+
+	// Capture the publish epoch while the flight lock is held. A re-import
+	// takes the same lock, so it either invalidates this flight or increments
+	// the epoch before the fetch can publish a stale catalogue.
+	a.mu.Lock()
+	epoch := a.modelsEpoch
+	a.mu.Unlock()
+	flight := &modelFetchFlight{done: make(chan struct{}), epoch: epoch}
 	a.modelsFlight = flight
 	a.modelsMu.Unlock()
 
-	models, err := p.fetchModelsLocked(ctx, a)
+	models, err := p.fetchModelsLocked(ctx, a, epoch)
 
 	a.modelsMu.Lock()
 	flight.models = cloneModels(models)
@@ -624,11 +634,14 @@ func (p *Provider) ensureModels(ctx context.Context, a *Account, force bool) ([]
 
 // modelFetchFlight coalesces concurrent discovery for one account. The leader
 // publishes its result and closes done before removing the flight from the
-// account; a late joiner retries the freshness check after acquiring the lock.
+// account. The epoch ties the result to the credential generation that started
+// the fetch; a re-import clears the flight and advances the epoch so a late
+// fetch cannot repopulate the cleared account.
 type modelFetchFlight struct {
 	done   chan struct{}
 	models []Model
 	err    error
+	epoch  uint64
 }
 
 func waitModelFetch(ctx context.Context, flight *modelFetchFlight) ([]Model, error) {
@@ -640,7 +653,7 @@ func waitModelFetch(ctx context.Context, flight *modelFetchFlight) ([]Model, err
 	}
 }
 
-func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account) ([]Model, error) {
+func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account, epoch uint64) ([]Model, error) {
 	// A token refresh failure does not invalidate the current signed
 	// credential pair for a read-only catalogue request.
 	if p.tokenManager != nil {
@@ -674,47 +687,57 @@ func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account) ([]Model, 
 
 	sets := make([][]Model, 0, 3)
 	failures := make([]error, 0, 3)
-	total := 0
+	successes := 0
 	for _, result := range results {
 		if result.err != nil {
 			failures = append(failures, fmt.Errorf("codearts: model discovery %s: %w", result.name, result.err))
+			continue
 		}
+		successes++
 		if len(result.items) > 0 {
 			sets = append(sets, result.items)
-			total += len(result.items)
 		}
 	}
-	failure := errors.Join(failures...)
-	if failure == nil {
-		failure = errors.New("codearts: model discovery returned no models")
-	}
+	now := p.catalogNow()
 
-	if total > 0 {
-		official := officialCoreModels()
-		merged := mergeModelCatalogs(sets...)
-		merged = mergeModelCatalogs(merged, official)
-		p.storeAccountModels(a, merged, p.catalogNow())
+	if successes > 0 {
+		// A successful source is valid even when it returns no models. A true
+		// empty response keeps the last-good account catalogue as its base; an
+		// account with no prior gets the official catalogue, never the wider
+		// cold seed.
+		base := mergeModelCatalogs(sets...)
+		if len(sets) == 0 {
+			prior, _, _ := accountModelsSnapshot(a)
+			if len(prior) > 0 {
+				base = prior
+			}
+		}
+		merged := mergeModelCatalogs(base, officialCoreModels())
+		p.storeAccountModels(a, merged, now, epoch)
 		return cloneModels(merged), nil
 	}
 
-	// No live source produced anything. Keep the last good account catalogue
-	// untouched; an account that has never discovered a catalogue falls back
-	// to the cold seed.
-	prior, _ := accountModelsSnapshot(a)
+	failure := errors.Join(failures...)
+	// Every source failed. Keep the last good catalogue; only an account that
+	// has genuinely never had a catalogue falls back to the cold seed.
+	prior, _, _ := accountModelsSnapshot(a)
 	if len(prior) > 0 {
+		p.noteModelAttempt(a, now, epoch)
 		return prior, failure
 	}
 	seed := seedFallbackModels()
-	p.storeAccountModels(a, seed, p.catalogNow())
+	p.storeAccountModels(a, seed, now, epoch)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return cloneModels(seed), ctxErr
 	}
 	return cloneModels(seed), failure
 }
 
-func (p *Provider) storeAccountModels(a *Account, models []Model, fetchedAt time.Time) {
+// storeAccountModels publishes a successful discovery (or seed fallback). It
+// refuses when a re-import advanced the epoch while the fetch was running.
+func (p *Provider) storeAccountModels(a *Account, models []Model, fetchedAt time.Time, epoch uint64) bool {
 	if a == nil {
-		return
+		return false
 	}
 	copied := cloneModels(models)
 	benefit := make(map[string]bool, len(copied))
@@ -726,26 +749,53 @@ func (p *Provider) storeAccountModels(a *Account, models []Model, fetchedAt time
 		benefit[strings.ToLower(id)] = modelBool(item["benefit"])
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.removed || a.modelsEpoch != epoch {
+		return false
+	}
 	a.Models = copied
 	a.modelBenefit = benefit
 	a.modelsFetchedAt = fetchedAt
-	a.mu.Unlock()
+	a.modelsAttemptedAt = fetchedAt
+	return true
 }
 
-func accountModelsSnapshot(a *Account) ([]Model, time.Time) {
+// noteModelAttempt records a failed refresh for the TTL/backoff window without
+// replacing the last-good catalogue. A re-import invalidates the attempt too.
+func (p *Provider) noteModelAttempt(a *Account, attemptedAt time.Time, epoch uint64) bool {
 	if a == nil {
-		return nil, time.Time{}
+		return false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return cloneModels(a.Models), a.modelsFetchedAt
-}
-
-func (p *Provider) catalogFresh(fetchedAt time.Time) bool {
-	if fetchedAt.IsZero() {
+	if a.removed || a.modelsEpoch != epoch {
 		return false
 	}
-	age := p.catalogNow().Sub(fetchedAt)
+	a.modelsAttemptedAt = attemptedAt
+	return true
+}
+
+func accountModelsSnapshot(a *Account) ([]Model, time.Time, time.Time) {
+	if a == nil {
+		return nil, time.Time{}, time.Time{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cloneModels(a.Models), a.modelsFetchedAt, a.modelsAttemptedAt
+}
+
+func catalogLastAttempt(fetchedAt, attemptedAt time.Time) time.Time {
+	if attemptedAt.After(fetchedAt) {
+		return attemptedAt
+	}
+	return fetchedAt
+}
+
+func (p *Provider) catalogFresh(lastAttempt time.Time) bool {
+	if lastAttempt.IsZero() {
+		return false
+	}
+	age := p.catalogNow().Sub(lastAttempt)
 	return age >= 0 && age < p.modelsTTL()
 }
 

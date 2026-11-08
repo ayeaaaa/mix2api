@@ -1007,15 +1007,19 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	}
 	proxy := p.proxyURLForSlot(strings.TrimSpace(saved.ProxySlot))
 
+	account.modelsMu.Lock()
 	account.mu.Lock()
 	account.Auth = saved
 	account.Path = path
 	account.proxySlot = strings.TrimSpace(saved.ProxySlot)
 	account.proxy = proxy
 	account.authGeneration++
+	account.modelsEpoch++
 	account.Models = nil
 	account.modelBenefit = nil
 	account.modelsFetchedAt = time.Time{}
+	account.modelsAttemptedAt = time.Time{}
+	account.modelsFlight = nil
 	account.State.Name = uid
 	if !account.State.ManualDisabled {
 		account.State.Disabled = false
@@ -1025,6 +1029,7 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 		account.State.CoolUntil = 0
 	}
 	account.mu.Unlock()
+	account.modelsMu.Unlock()
 
 	if p.addAccountHook != nil {
 		p.addAccountHook(account)
