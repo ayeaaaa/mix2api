@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -84,8 +85,11 @@ func TestStoreRoundTrip(t *testing.T) {
 	if !b.LastUsed.Equal(now.Add(-time.Minute)) {
 		t.Fatalf("LastUsed = %v, want %v", b.LastUsed, now.Add(-time.Minute))
 	}
-	if !b.TasksEnabled || b.ActiveConcurrent != 1 || b.MaxConcurrent != 2 {
+	if !b.TasksEnabled || b.MaxConcurrent != 2 {
 		t.Fatalf("other state fields changed: %+v", b)
+	}
+	if b.ActiveConcurrent != 0 {
+		t.Fatalf("ActiveConcurrent = %d, want reset to 0 on load", b.ActiveConcurrent)
 	}
 	if got["uid-a"].UID != "uid-a" {
 		t.Fatalf("UID for uid-a = %q", got["uid-a"].UID)
@@ -95,7 +99,10 @@ func TestStoreRoundTrip(t *testing.T) {
 func TestSaveStoreDeterministicSortedByUID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	states := map[string]State{
-		"zeta":  {UID: "zeta", Note: "z"},
+		"zeta": {UID: "zeta", Note: "z", Extra: map[string]json.RawMessage{
+			"zzz": json.RawMessage(`{"n":1}`),
+			"aaa": json.RawMessage(`[1,2]`),
+		}},
 		"alpha": {UID: "alpha", Note: "a"},
 		"mike":  {UID: "mike", Note: "m"},
 	}
@@ -124,6 +131,11 @@ func TestSaveStoreDeterministicSortedByUID(t *testing.T) {
 	zeta := strings.Index(raw, `"zeta"`)
 	if alpha < 0 || mike < 0 || zeta < 0 || !(alpha < mike && mike < zeta) {
 		t.Fatalf("UID keys are not sorted: %s", raw)
+	}
+	aaa := strings.Index(raw, `"aaa"`)
+	zzz := strings.Index(raw, `"zzz"`)
+	if aaa < 0 || zzz < 0 || aaa > zzz {
+		t.Fatalf("extra keys are not sorted: %s", raw)
 	}
 }
 
@@ -192,12 +204,13 @@ func TestLoadStoreInvalidFileReturnsEmptyMap(t *testing.T) {
 	}
 }
 
-func TestLoadStoreSkipsInvalidEntries(t *testing.T) {
+func TestLoadStoreToleratesInvalidEntriesAndNonObjects(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	body := `{
 		"good": {"manual_disabled": true, "note": "ok", "cool_until": "2026-11-08T01:02:03Z"},
-		"bad-type": {"active_concurrent": "many"},
-		"bad-time": {"cool_until": 12345},
+		"bad-type": {"active_concurrent": "many", "manual_disabled": true, "note": "survive"},
+		"bad-time": {"cool_until": "not-a-time", "manual_disabled": true},
+		"legacy": {"cool_until": 12345, "manual_disabled": true},
 		"scalar": 5,
 		"null": null,
 		"": {"note": "empty uid"}
@@ -210,8 +223,8 @@ func TestLoadStoreSkipsInvalidEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore error = %v, want nil", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("LoadStore = %#v, want only the good entry", got)
+	if len(got) != 4 {
+		t.Fatalf("LoadStore = %#v, want good/bad-type/bad-time/legacy", got)
 	}
 	good, ok := got["good"]
 	if !ok {
@@ -222,6 +235,18 @@ func TestLoadStoreSkipsInvalidEntries(t *testing.T) {
 	}
 	if !good.CoolUntil.Equal(time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)) {
 		t.Fatalf("good CoolUntil = %v", good.CoolUntil)
+	}
+	badType := got["bad-type"]
+	if !badType.ManualDisabled || badType.Note != "survive" || badType.ActiveConcurrent != 0 {
+		t.Fatalf("entry with a bad known field lost good data: %+v", badType)
+	}
+	badTime := got["bad-time"]
+	if !badTime.ManualDisabled || !badTime.CoolUntil.IsZero() {
+		t.Fatalf("entry with a bad timestamp = %+v", badTime)
+	}
+	legacy := got["legacy"]
+	if !legacy.ManualDisabled || !legacy.CoolUntil.Equal(time.Unix(12345, 0)) {
+		t.Fatalf("numeric timestamp entry = %+v", legacy)
 	}
 }
 
@@ -286,6 +311,248 @@ func TestSaveStoreEmptyMap(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("LoadStore = %#v, want empty map", got)
+	}
+}
+
+func TestLegacyV1FixtureRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{
+		"pu-v1": {
+			"disabled": true,
+			"manual_disabled": true,
+			"disabled_by": "manual",
+			"reason": "manual disable",
+			"cool_until": 1800000000.75,
+			"err_count": 4,
+			"last_error": "upstream 500",
+			"note": "operator note",
+			"tasks_enabled": true,
+			"last_used": 1760000000,
+			"max_concurrent": 3,
+			"active_concurrent": 2,
+			"future_key": {"nested": [1, 2, 3]},
+			"future_string": "keep me"
+		},
+		"pu-plain": {"note": "second account"}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	wantCool := time.Unix(1800000000, 750000000).UTC()
+	wantLastUsed := time.Unix(1760000000, 0).UTC()
+
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore error = %v, want nil", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("LoadStore returned %d entries, want 2: %#v", len(got), got)
+	}
+	state := got["pu-v1"]
+	if state.UID != "pu-v1" {
+		t.Fatalf("UID = %q, want pu-v1", state.UID)
+	}
+	if !state.Disabled || !state.ManualDisabled || state.DisabledBy != "manual" {
+		t.Fatalf("disable fields = %+v", state)
+	}
+	if state.Reason != "manual disable" || state.ErrCount != 4 || state.LastError != "upstream 500" {
+		t.Fatalf("error fields = %+v", state)
+	}
+	if state.Note != "operator note" || !state.TasksEnabled || state.MaxConcurrent != 3 {
+		t.Fatalf("account fields = %+v", state)
+	}
+	if state.ActiveConcurrent != 0 {
+		t.Fatalf("ActiveConcurrent = %d, want reset to 0", state.ActiveConcurrent)
+	}
+	if !state.CoolUntil.Equal(wantCool) {
+		t.Fatalf("CoolUntil = %v, want %v", state.CoolUntil, wantCool)
+	}
+	if !state.LastUsed.Equal(wantLastUsed) {
+		t.Fatalf("LastUsed = %v, want %v", state.LastUsed, wantLastUsed)
+	}
+	if len(state.Extra) != 2 {
+		t.Fatalf("Extra = %#v, want two unknown keys", state.Extra)
+	}
+	assertJSONValue(t, state.Extra["future_key"], `{"nested":[1,2,3]}`)
+	assertJSONValue(t, state.Extra["future_string"], `"keep me"`)
+
+	if err := SaveStore(path, got); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var saved map[string]map[string]any
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("saved state is not JSON: %v\n%s", err, data)
+	}
+	if got := saved["pu-v1"]["cool_until"]; got != wantCool.Format(time.RFC3339Nano) {
+		t.Fatalf("saved cool_until = %#v, want RFC3339 %q", got, wantCool.Format(time.RFC3339Nano))
+	}
+	if got := saved["pu-v1"]["last_used"]; got != wantLastUsed.Format(time.RFC3339Nano) {
+		t.Fatalf("saved last_used = %#v, want RFC3339 %q", got, wantLastUsed.Format(time.RFC3339Nano))
+	}
+	if got := saved["pu-v1"]["active_concurrent"]; got != float64(0) {
+		t.Fatalf("saved active_concurrent = %#v, want 0", got)
+	}
+	if _, ok := saved["pu-v1"]["future_key"]; !ok {
+		t.Fatalf("future_key was dropped on save: %s", data)
+	}
+	if _, ok := saved["pu-v1"]["future_string"]; !ok {
+		t.Fatalf("future_string was dropped on save: %s", data)
+	}
+
+	reloaded, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore after save: %v", err)
+	}
+	again := reloaded["pu-v1"]
+	if !again.ManualDisabled || again.DisabledBy != "manual" || again.ErrCount != 4 ||
+		again.LastError != "upstream 500" || again.Note != "operator note" || !again.TasksEnabled {
+		t.Fatalf("state changed across save/load: %+v", again)
+	}
+	if !again.CoolUntil.Equal(wantCool) || !again.LastUsed.Equal(wantLastUsed) {
+		t.Fatalf("timestamps changed across save/load: %+v", again)
+	}
+	assertJSONValue(t, again.Extra["future_key"], `{"nested":[1,2,3]}`)
+	assertJSONValue(t, again.Extra["future_string"], `"keep me"`)
+}
+
+func TestStateUIDKeyIsAuthoritative(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{"by-key": {"uid": "stale", "note": "keep"}}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if got["by-key"].UID != "by-key" {
+		t.Fatalf("UID = %q, want by-key", got["by-key"].UID)
+	}
+	if _, ok := got["by-key"].Extra["uid"]; ok {
+		t.Fatalf("entry uid leaked into Extra: %#v", got["by-key"].Extra)
+	}
+
+	if err := SaveStore(path, map[string]State{"by-key": {UID: "other", Note: "keep"}}); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "other") || strings.Contains(string(data), `"uid"`) {
+		t.Fatalf("save used State.UID instead of the map key: %s", data)
+	}
+}
+
+func TestLoadStoreLegacyNumericTimestamps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{
+		"pu-legacy": {
+			"disabled": true,
+			"manual_disabled": true,
+			"reason": "manual disable",
+			"cool_until": 1800000000,
+			"last_used": 1760000000.25,
+			"note": "keep",
+			"tasks_enabled": true
+		},
+		"pu-zero": {"cool_until": 0, "last_used": 0.0, "note": "never used"}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore error = %v, want nil", err)
+	}
+	state, ok := got["pu-legacy"]
+	if !ok {
+		t.Fatalf("legacy entry was dropped: %#v", got)
+	}
+	if !state.Disabled || !state.ManualDisabled || state.Reason != "manual disable" {
+		t.Fatalf("legacy flags were not preserved: %+v", state)
+	}
+	if state.Note != "keep" || !state.TasksEnabled {
+		t.Fatalf("legacy fields were not preserved: %+v", state)
+	}
+	if !state.CoolUntil.Equal(time.Unix(1800000000, 0)) {
+		t.Fatalf("CoolUntil = %v, want Unix 1800000000", state.CoolUntil)
+	}
+	if !state.LastUsed.Equal(time.Unix(1760000000, 250000000)) {
+		t.Fatalf("LastUsed = %v, want Unix 1760000000.25", state.LastUsed)
+	}
+	zero := got["pu-zero"]
+	if !zero.CoolUntil.IsZero() || !zero.LastUsed.IsZero() {
+		t.Fatalf("legacy zero timestamps did not become zero time: %+v", zero)
+	}
+}
+
+func TestLoadStoreResetsActiveConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	body := `{"uid": {"active_concurrent": 7, "max_concurrent": 3, "last_used": "2026-11-08T01:02:03Z"}}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore error = %v, want nil", err)
+	}
+	state, ok := got["uid"]
+	if !ok {
+		t.Fatalf("entry was dropped: %#v", got)
+	}
+	if state.ActiveConcurrent != 0 {
+		t.Fatalf("ActiveConcurrent = %d, want 0 after load", state.ActiveConcurrent)
+	}
+	if state.MaxConcurrent != 3 {
+		t.Fatalf("MaxConcurrent = %d, want 3", state.MaxConcurrent)
+	}
+}
+
+func TestSaveStoreSkipsEmptyUID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	states := map[string]State{
+		"":   {UID: "", Note: "drop me"},
+		"ok": {UID: "ok", Note: "keep me"},
+	}
+	if err := SaveStore(path, states); err != nil {
+		t.Fatalf("SaveStore: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "drop me") {
+		t.Fatalf("empty UID entry was written: %s", data)
+	}
+	got, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if len(got) != 1 || got["ok"].Note != "keep me" {
+		t.Fatalf("LoadStore = %#v, want only the ok entry", got)
+	}
+}
+
+func assertJSONValue(t *testing.T, raw json.RawMessage, want string) {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal(raw, &gotValue); err != nil {
+		t.Fatalf("unmarshal got JSON %q: %v", raw, err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("unmarshal want JSON %q: %v", want, err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("JSON = %#v, want %#v", gotValue, wantValue)
 	}
 }
 
