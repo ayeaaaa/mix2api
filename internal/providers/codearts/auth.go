@@ -280,18 +280,39 @@ func decodeExpiration(raw json.RawMessage) time.Time {
 	return time.Time{}
 }
 
-// parseExpirationText parses v1's ISO-8601 expirations. A naive timestamp is
-// accepted in local time, matching Python's datetime.fromisoformat fallback.
-// Malformed and empty values become the zero time.
+// parseExpirationText parses v1's ISO-8601 expirations. It follows Python's
+// datetime.fromisoformat tolerance: space separators, comma fractions, basic
+// time/date forms, and +hh, +hhmm, +hh:mm offsets are accepted. A timestamp
+// without an offset is interpreted in local time, and malformed values become
+// the zero time.
 func parseExpirationText(text string) time.Time {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return time.Time{}
 	}
-	if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
-		return parsed
+	if strings.HasSuffix(text, "Z") || strings.HasSuffix(text, "z") {
+		text = text[:len(text)-1] + "+00:00"
 	}
-	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
+	if !strings.Contains(text, "T") && strings.Contains(text, " ") {
+		text = strings.Replace(text, " ", "T", 1)
+	}
+	text = strings.ReplaceAll(text, ",", ".")
+
+	layouts := []string{
+		"2006-01-02T15:04:05.999999999Z07:00",
+		"2006-01-02T15:04:05.999999999Z0700",
+		"2006-01-02T15:04:05.999999999Z07",
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04",
+		"2006-01-02",
+		"20060102T150405.999999999Z07:00",
+		"20060102T150405.999999999Z0700",
+		"20060102T150405.999999999Z07",
+		"20060102T150405.999999999",
+		"20060102T1504",
+		"20060102",
+	}
+	for _, layout := range layouts {
 		if parsed, err := time.ParseInLocation(layout, text, time.Local); err == nil {
 			return parsed
 		}

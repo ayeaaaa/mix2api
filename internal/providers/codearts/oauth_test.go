@@ -53,6 +53,9 @@ type oauthFake struct {
 
 	lastTicketQuery  url.Values
 	lastTicketHeader http.Header
+
+	ticketStarted chan struct{}
+	ticketRelease chan struct{}
 }
 
 func defaultTokenPayload() map[string]any {
@@ -111,7 +114,19 @@ func (f *oauthFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status := f.ticketStatus
 		raw := append([]byte(nil), f.ticketBody...)
 		fn := f.ticketFn
+		started := f.ticketStarted
+		release := f.ticketRelease
 		f.mu.Unlock()
+
+		if started != nil {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+		}
+		if release != nil {
+			<-release
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if status != 0 {
@@ -747,6 +762,20 @@ func TestOAuthCallbackRedirectValidation(t *testing.T) {
 	if !session.TicketFallback || session.Secret != "SECRET-1" {
 		t.Fatalf("fallback not armed: %+v", session)
 	}
+
+	// A second callback must not overwrite the recorded secret with a
+	// different one.
+	if _, err := sessions.Continue(store, start.SessionID, "SECRET-2",
+		"https://portal.example.test/portal/continue"); !errors.Is(err, ErrOAuthState) {
+		t.Fatalf("mismatched continue secret = %v, want ErrOAuthState", err)
+	}
+	if session.Secret != "SECRET-1" {
+		t.Fatalf("mismatched callback overwrote the secret: %q", session.Secret)
+	}
+	if _, err := sessions.Continue(store, start.SessionID, "SECRET-1",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("repeat matching continue: %v", err)
+	}
 }
 
 func TestOAuthTicketFallbackPoll(t *testing.T) {
@@ -859,6 +888,150 @@ func TestOAuthTicketFallbackPoll(t *testing.T) {
 		t.Fatalf("terminal session polled again")
 	}
 	fake.mu.Unlock()
+}
+
+func TestOAuthCodeCallbackWinsDuringTicketPoll(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	store, dir := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+
+	fake.mu.Lock()
+	fake.tokenFn = func() map[string]any {
+		payload := defaultTokenPayload()
+		payload["user_id"] = "code-user"
+		payload["user_name"] = "code-user"
+		return payload
+	}
+	fake.ticketFn = func() map[string]any {
+		payload := defaultTokenPayload()
+		payload["user_id"] = "ticket-user"
+		payload["user_name"] = "ticket-user"
+		return payload
+	}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseTicket := func() { releaseOnce.Do(func() { close(release) }) }
+	fake.ticketStarted = started
+	fake.ticketRelease = release
+	fake.mu.Unlock()
+	defer releaseTicket()
+
+	start, session := mustBegin(t, sessions, store, 8788)
+	if _, err := sessions.Continue(store, start.SessionID, "RACE-SECRET",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+
+	type pollResult struct {
+		poll OAuthPoll
+		err  error
+	}
+	done := make(chan pollResult, 1)
+	go func() {
+		poll, err := sessions.Poll(store, start.SessionID)
+		done <- pollResult{poll: poll, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ticket poll did not reach the fake upstream")
+	}
+
+	// The ticket poll is blocked in the network. A valid code callback must
+	// still be able to claim the session and take priority.
+	result, err := sessions.Callback(store, start.SessionID, "CODE-WINS", session.TicketID)
+	if err != nil {
+		t.Fatalf("Callback during ticket poll: %v", err)
+	}
+	if result.UID != "code-user" || result.Status != "done" {
+		t.Fatalf("code callback result = %+v", result)
+	}
+	releaseTicket()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("ticket poll: %v", got.err)
+		}
+		if got.poll.Status != "done" {
+			t.Fatalf("ticket poll result = %+v, want done", got.poll)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ticket poll did not finish")
+	}
+
+	codePath, err := AuthPath(dir, "code-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth, err := LoadAuth(codePath); err != nil || auth.CloudDragonToken != "ST" {
+		t.Fatalf("code auth not saved: %+v, %v", auth, err)
+	}
+	ticketPath, err := AuthPath(dir, "ticket-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAuth(ticketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("late ticket result was persisted: %v", err)
+	}
+}
+
+func TestOAuthTicketFallbackRequiresUserID(t *testing.T) {
+	fake, _ := newOAuthFake(t)
+	store, dir := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+
+	fake.mu.Lock()
+	ticketRefresh := "eyJhbGciOiJub25lIn0." + b64url([]byte(`{"sub":"ticket-sub"}`)) + ".sig"
+	fake.ticketFn = func() map[string]any {
+		return map[string]any{
+			"refresh_token": ticketRefresh,
+			"credentials": map[string]any{
+				"access_key_id": "AK", "secret_access_key": "SK", "security_token": "ST",
+			},
+		}
+	}
+	fake.mu.Unlock()
+
+	start, _ := mustBegin(t, sessions, store, 8788)
+	if _, err := sessions.Continue(store, start.SessionID, "TICKET-SECRET",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	poll, err := sessions.Poll(store, start.SessionID)
+	if err != nil {
+		t.Fatalf("Poll without user_id: %v", err)
+	}
+	if poll.Status != "pending" || !poll.OK {
+		t.Fatalf("ticket response without user_id = %+v, want pending", poll)
+	}
+	sum := sha256.Sum256([]byte(ticketRefresh))
+	hashUID := "codearts-" + hex.EncodeToString(sum[:])[:12]
+	for _, uid := range []string{"ticket-sub", hashUID} {
+		path, _ := AuthPath(dir, uid)
+		if _, err := LoadAuth(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("ticket fallback persisted guessed identity %q: %v", uid, err)
+		}
+	}
+
+	// A later poll with a real user_id still succeeds (per-poll retry).
+	fake.mu.Lock()
+	fake.ticketFn = defaultTokenPayload
+	fake.mu.Unlock()
+	poll, err = sessions.Poll(store, start.SessionID)
+	if err != nil {
+		t.Fatalf("Poll with user_id: %v", err)
+	}
+	if poll.Status != "done" {
+		t.Fatalf("ticket retry = %+v, want done", poll)
+	}
+	if _, err := AuthPath(dir, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := AuthPath(dir, "u1")
+	if auth, err := LoadAuth(path); err != nil || auth.CloudDragonToken != "ST" {
+		t.Fatalf("ticket auth not saved after retry: %+v, %v", auth, err)
+	}
 }
 
 func TestOAuthIdentityFallbackAndCollision(t *testing.T) {
@@ -1051,15 +1224,81 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 		t.Fatalf("CallbackURL secret did not arm the fallback")
 	}
 
+	// A stale state naming another session must not defeat a supplied secret:
+	// the secret selects the armed session and the code is redeemed there.
+	start3, _ := mustBegin(t, sessions, store, 8788)
+	stale, staleSession := mustBegin(t, sessions, store, 8788)
+	if _, err := sessions.Continue(store, start3.SessionID, "SECRET-PRIORITY",
+		"https://portal.example.test/portal/continue"); err != nil {
+		t.Fatalf("arm priority session: %v", err)
+	}
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-PRIORITY&state=" +
+		url.QueryEscape(staleSession.TicketID) + "&secret=SECRET-PRIORITY"
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("CallbackURL secret priority: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("secret priority result = %+v", result)
+	}
+	sessions.mu.Lock()
+	selected := sessions.byStore[mustStoreKey(t, store)][start3.SessionID]
+	untouched := sessions.byStore[mustStoreKey(t, store)][stale.SessionID]
+	sessions.mu.Unlock()
+	if selected == nil || selected.Status != "done" {
+		t.Fatalf("secret-selected session was not completed: %+v", selected)
+	}
+	if untouched == nil || untouched.Status != "pending" || untouched.TicketFallback {
+		t.Fatalf("stale-state session was modified: %+v", untouched)
+	}
+
+	// A supplied ticket_id is authoritative over a separate stale state.
+	start6, _ := mustBegin(t, sessions, store, 8788)
+	stale2, stale2Session := mustBegin(t, sessions, store, 8788)
+	sessions.mu.Lock()
+	start6Session := sessions.byStore[mustStoreKey(t, store)][start6.SessionID]
+	sessions.mu.Unlock()
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-TICKET&ticket_id=" +
+		url.QueryEscape(start6Session.TicketID) + "&state=" + url.QueryEscape(stale2Session.TicketID)
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("CallbackURL ticket priority: %v", err)
+	}
+	if result.Status != "done" {
+		t.Fatalf("ticket priority result = %+v", result)
+	}
+	sessions.mu.Lock()
+	selected = sessions.byStore[mustStoreKey(t, store)][start6.SessionID]
+	untouched = sessions.byStore[mustStoreKey(t, store)][stale2.SessionID]
+	sessions.mu.Unlock()
+	if selected == nil || selected.Status != "done" {
+		t.Fatalf("ticket-selected session was not completed: %+v", selected)
+	}
+	if untouched == nil || untouched.Status != "pending" {
+		t.Fatalf("stale-state session was modified: %+v", untouched)
+	}
+
+	// A supplied but unknown secret is rejected without falling back to a
+	// valid state.
+	_, session4 := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET&state=" +
+		url.QueryEscape(session4.TicketID) + "&secret=UNKNOWN-SECRET"
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("unknown secret = %v, want ErrOAuthSession", err)
+	}
+	if session4.Status != "pending" {
+		t.Fatalf("unknown secret modified the session: %+v", session4)
+	}
+
 	// A foreign redirect in an otherwise valid callback is rejected without
 	// arming the fallback.
-	start3, session3 := mustBegin(t, sessions, store, 8788)
+	start5, session5 := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?secret=SECRET-URL-2&redirect=" +
 		url.QueryEscape("https://evil.example/x")
-	if _, err := sessions.CallbackURL(store, start3.SessionID, raw); !errors.Is(err, ErrOAuthRedirect) {
+	if _, err := sessions.CallbackURL(store, start5.SessionID, raw); !errors.Is(err, ErrOAuthRedirect) {
 		t.Fatalf("foreign callback redirect = %v, want ErrOAuthRedirect", err)
 	}
-	if session3.TicketFallback {
+	if session5.TicketFallback {
 		t.Fatalf("foreign callback redirect armed the fallback")
 	}
 }
@@ -1122,6 +1361,35 @@ func TestOAuthPublicJSONContainsNoSecrets(t *testing.T) {
 	for _, secret := range []string{session.Secret, session.Verifier, "ST", "AK", "SK"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("poll leaked %q: %s", secret, raw)
+		}
+	}
+}
+
+func TestOAuthExpirationParsingPythonISOForms(t *testing.T) {
+	utc := time.UTC
+	cases := []struct {
+		text string
+		want time.Time
+	}{
+		{"2030-01-02 03:04:05", time.Date(2030, 1, 2, 3, 4, 5, 0, time.Local)},
+		{"2030-01-02T03:04:05.123456789", time.Date(2030, 1, 2, 3, 4, 5, 123456789, time.Local)},
+		{"2030-01-02 03:04:05+0800", time.Date(2030, 1, 1, 19, 4, 5, 0, utc)},
+		{"2030-01-02T03:04:05+08", time.Date(2030, 1, 1, 19, 4, 5, 0, utc)},
+		{"2030-01-02T03:04:05,5+08:00", time.Date(2030, 1, 1, 19, 4, 5, 500000000, utc)},
+		{"2030-01-02", time.Date(2030, 1, 2, 0, 0, 0, 0, time.Local)},
+		{"2030-01-02T03:04", time.Date(2030, 1, 2, 3, 4, 0, 0, time.Local)},
+		{"20300102T030405Z", time.Date(2030, 1, 2, 3, 4, 5, 0, utc)},
+		{"20300102T030405+0800", time.Date(2030, 1, 1, 19, 4, 5, 0, utc)},
+	}
+	for _, test := range cases {
+		got := parseExpirationText(test.text)
+		if !got.Equal(test.want) {
+			t.Fatalf("parseExpirationText(%q) = %v, want %v", test.text, got, test.want)
+		}
+	}
+	for _, text := range []string{"", "not-a-time", "2030-13-40T99:99:99"} {
+		if got := parseExpirationText(text); !got.IsZero() {
+			t.Fatalf("parseExpirationText(%q) = %v, want zero", text, got)
 		}
 	}
 }

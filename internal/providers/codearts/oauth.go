@@ -200,6 +200,8 @@ type oauthSession struct {
 	Message        string
 	AuthURL        string
 	TicketFallback bool
+	TicketPolling  bool
+	SecretSet      bool
 	Account        *OAuthAccount
 	SavedAuth      *Auth
 }
@@ -493,6 +495,7 @@ func (s *OAuthSessions) failSession(storeKey, sessionID, message string) {
 	}
 	session.Status = "error"
 	session.Message = truncateOAuthMessage(message, oauthMessageLimit)
+	session.TicketPolling = false
 	session.Account = nil
 }
 
@@ -510,15 +513,17 @@ func (s *OAuthSessions) completeSession(storeKey, sessionID string, auth Auth) *
 	}
 	session.Status = "done"
 	session.Message = "登录成功：" + nickname
+	session.TicketPolling = false
 	session.Account = account
 	saved := auth
 	session.SavedAuth = &saved
 	return account
 }
 
-// Poll returns one session's public state. A session armed by Continue or a
-// code-less callback performs one ticket poll per transition; done and error
-// sessions are terminal and never contact the upstream again.
+// Poll returns one session's public state. A pending fallback session performs
+// one ticket poll per invocation; a valid code callback can claim the session
+// while that request is in flight and takes priority over the ticket result.
+// Done and error sessions are terminal and never contact the upstream again.
 func (s *OAuthSessions) Poll(store *config.Store, sessionID string) (OAuthPoll, error) {
 	storeKey, err := oauthStoreKey(store)
 	if err != nil {
@@ -543,56 +548,98 @@ func (s *OAuthSessions) Poll(store *config.Store, sessionID string) (OAuthPoll, 
 		s.mu.Unlock()
 		return poll, nil
 	}
-	// Serialize the ticket exchange with a possible code callback.
-	session.Status = "exchanging"
-	session.Message = "正在获取登录结果…"
+	if session.TicketPolling {
+		// Another poll already has a ticket request in flight.
+		poll := s.publicPollLocked(session)
+		s.mu.Unlock()
+		return poll, nil
+	}
+	// Do not change Status: a valid code callback must be able to claim the
+	// pending session while the ticket request is blocked in the network.
+	session.TicketPolling = true
 	snapshot := *session
+	snapshotSecret := snapshot.Secret
 	s.mu.Unlock()
 
 	token, ticketErr := s.pollTicket(snapshot.TicketID, snapshot.Secret)
-	if ticketErr != nil {
-		message := redactOAuthValues(ticketErr.Error(), snapshot.TicketID, snapshot.Secret)
-		s.failSession(storeKey, sessionID, message)
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		current := s.findLocked(storeKey, sessionID)
-		if current == nil {
-			return OAuthPoll{}, ErrOAuthSession
-		}
-		return s.publicPollLocked(current), nil
-	}
-	if strings.TrimSpace(token.Credentials.SecurityToken) == "" {
-		s.mu.Lock()
-		if current := s.findLocked(storeKey, sessionID); current != nil && current.Status == "exchanging" {
-			current.Status = "pending"
-			current.Message = "等待浏览器完成登录…"
-			poll := s.publicPollLocked(current)
-			s.mu.Unlock()
-			return poll, nil
-		}
-		s.mu.Unlock()
-	} else {
-		auth, saveErr := s.saveOAuthAuth(store, &snapshot, token)
-		if saveErr != nil {
-			s.failSession(storeKey, sessionID, saveErr.Error())
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			current := s.findLocked(storeKey, sessionID)
-			if current == nil {
-				return OAuthPoll{}, ErrOAuthSession
-			}
-			return s.publicPollLocked(current), nil
-		}
-		s.completeSession(storeKey, sessionID, auth)
-	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	current := s.findLocked(storeKey, sessionID)
 	if current == nil {
+		s.mu.Unlock()
 		return OAuthPoll{}, ErrOAuthSession
 	}
-	return s.publicPollLocked(current), nil
+	// A code callback claimed the session (or another path finished it) while
+	// the ticket request was in flight: discard the ticket result/error.
+	if current.Status != "pending" || !current.TicketPolling {
+		poll := s.publicPollLocked(current)
+		s.mu.Unlock()
+		return poll, nil
+	}
+	// A new callback secret arrived during the request; retry with the new
+	// secret on the next poll instead of persisting a stale result.
+	if !constantTimeEqual(current.Secret, snapshotSecret) {
+		current.TicketPolling = false
+		current.Message = "等待浏览器完成登录…"
+		poll := s.publicPollLocked(current)
+		s.mu.Unlock()
+		return poll, nil
+	}
+	if ticketErr != nil {
+		current.Status = "error"
+		current.Message = truncateOAuthMessage(
+			redactOAuthValues(ticketErr.Error(), snapshot.TicketID, snapshot.Secret),
+			oauthMessageLimit,
+		)
+		current.TicketPolling = false
+		current.Account = nil
+		poll := s.publicPollLocked(current)
+		s.mu.Unlock()
+		return poll, nil
+	}
+	// v1's ticket fallback only persists a response that carries a user_id.
+	// The code path keeps the token/JWT-sub/refresh-hash fallback instead.
+	if strings.TrimSpace(token.Credentials.SecurityToken) == "" ||
+		strings.TrimSpace(token.UserID) == "" {
+		current.TicketPolling = false
+		current.Message = "等待浏览器完成登录…"
+		poll := s.publicPollLocked(current)
+		s.mu.Unlock()
+		return poll, nil
+	}
+
+	// The ticket token is valid and the session is still pending: reserve it
+	// for persistence so a racing code callback cannot consume the same slot.
+	current.Status = "exchanging"
+	current.Message = "正在保存登录结果…"
+	current.TicketPolling = false
+	saveSnapshot := *current
+	s.mu.Unlock()
+
+	auth, saveErr := s.saveOAuthAuth(store, &saveSnapshot, token)
+	if saveErr != nil {
+		s.failSession(storeKey, sessionID, saveErr.Error())
+		s.mu.Lock()
+		current := s.findLocked(storeKey, sessionID)
+		if current == nil {
+			s.mu.Unlock()
+			return OAuthPoll{}, ErrOAuthSession
+		}
+		poll := s.publicPollLocked(current)
+		s.mu.Unlock()
+		return poll, nil
+	}
+	s.completeSession(storeKey, sessionID, auth)
+
+	s.mu.Lock()
+	current = s.findLocked(storeKey, sessionID)
+	if current == nil {
+		s.mu.Unlock()
+		return OAuthPoll{}, ErrOAuthSession
+	}
+	poll := s.publicPollLocked(current)
+	s.mu.Unlock()
+	return poll, nil
 }
 
 func (s *OAuthSessions) pollTicket(ticketID, secret string) (Token, error) {
@@ -690,6 +737,7 @@ func (s *OAuthSessions) Callback(store *config.Store, sessionID, code, state str
 	}
 	session.Status = "exchanging"
 	session.Message = "正在兑换授权码…"
+	session.TicketPolling = false
 	snapshot := *session
 	s.mu.Unlock()
 
@@ -797,6 +845,10 @@ func (s *OAuthSessions) Continue(store *config.Store, sessionID, secret, redirec
 		s.mu.Unlock()
 		return OAuthPoll{}, ErrOAuthReplay
 	}
+	if session.SecretSet && !constantTimeEqual(session.Secret, secret) {
+		s.mu.Unlock()
+		return OAuthPoll{}, ErrOAuthState
+	}
 	s.mu.Unlock()
 
 	if !safeOAuthRedirect(redirect) {
@@ -812,7 +864,11 @@ func (s *OAuthSessions) Continue(store *config.Store, sessionID, secret, redirec
 	if session.Status != "pending" {
 		return OAuthPoll{}, ErrOAuthReplay
 	}
+	if session.SecretSet && !constantTimeEqual(session.Secret, secret) {
+		return OAuthPoll{}, ErrOAuthState
+	}
 	session.Secret = secret
+	session.SecretSet = true
 	session.TicketFallback = true
 	session.Message = "回调已接收，继续等待授权结果…"
 	poll := s.publicPollLocked(session)
@@ -902,6 +958,8 @@ func (s *OAuthSessions) CallbackURL(store *config.Store, sessionID, rawURL strin
 	s.mu.Lock()
 	sessions := s.sessionsFor(storeKey)
 	s.gcLocked(sessions, now)
+	matchedBySecret := false
+	matchedByTicket := false
 	var session *oauthSession
 	if sessionID != "" {
 		session = sessions[sessionID]
@@ -909,12 +967,23 @@ func (s *OAuthSessions) CallbackURL(store *config.Store, sessionID, rawURL strin
 			s.mu.Unlock()
 			return OAuthResult{}, ErrOAuthSession
 		}
-	} else {
-		if state != "" {
-			session = s.findByStateLocked(storeKey, state)
+	} else if values.Secret != "" {
+		// v1 gives a supplied callback secret priority: if it matches a pending
+		// session, that session wins even when state names another one. If it
+		// matches nothing, do not fall back to state.
+		session = s.findBySecretLocked(storeKey, values.Secret)
+		if session == nil {
+			s.mu.Unlock()
+			return OAuthResult{}, ErrOAuthSession
 		}
-		if session == nil && values.Secret != "" {
-			session = s.findBySecretLocked(storeKey, values.Secret)
+		matchedBySecret = true
+	} else {
+		if values.TicketID != "" {
+			session = s.findByStateLocked(storeKey, values.TicketID)
+			matchedByTicket = session != nil
+		}
+		if session == nil && state != "" {
+			session = s.findByStateLocked(storeKey, state)
 		}
 	}
 	if session == nil {
@@ -924,6 +993,11 @@ func (s *OAuthSessions) CallbackURL(store *config.Store, sessionID, rawURL strin
 	if values.Port != 0 && values.Port != session.Port {
 		s.mu.Unlock()
 		return OAuthResult{}, ErrOAuthCallbackURL
+	}
+	if matchedBySecret || matchedByTicket {
+		// A supplied secret/ticket is authoritative; the separate state value
+		// may be stale (for example another session's ticket id).
+		state = ""
 	}
 	sessionID = session.ID
 	s.mu.Unlock()
