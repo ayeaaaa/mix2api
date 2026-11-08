@@ -16,11 +16,17 @@ func main() {
 	if port == "" {
 		port = defaultPort
 	}
+	setup, err := setupProviders()
+	if err != nil {
+		// Startup failures may name local paths but never credential values.
+		log.Fatalf("startup: %v", err)
+	}
 	srv := api.NewServer(api.ServerOptions{
-		Addr:    ":" + port,
-		Version: version.Version,
+		Addr:      ":" + port,
+		Version:   version.Version,
+		Providers: setup.Providers,
 	})
-	log.Printf("listening on %s", srv.Addr)
+	log.Printf("listening on %s with %d provider(s)", srv.Addr, len(setup.Providers))
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
