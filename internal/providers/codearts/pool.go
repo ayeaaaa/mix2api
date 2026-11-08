@@ -19,6 +19,13 @@ const (
 	// evicted, matching v1's simple cap.
 	maxAffinityEntries = 4096
 	affinityEvictCount = 1024
+
+	// noteSoftCooldown, noteErrThreshold, and noteErrCooldown mirror v1
+	// note_error: soft failures cool for 60s, while three ordinary failures in
+	// a row trigger a 600s cooldown and reset the counter.
+	noteSoftCooldown = 60 * time.Second
+	noteErrThreshold = 3
+	noteErrCooldown  = 600 * time.Second
 )
 
 var (
@@ -47,9 +54,19 @@ type PoolStats struct {
 // v1 list-state persistence, scheduler guards, session affinity, and proxy slot
 // resolution.
 //
-// Lock order: authOpsMu -> account.mu; stateMu -> pool.mu -> account.mu (only
-// after releasing pool.mu); pool.mu -> account.mu is never nested. stateMu and
-// authOpsMu are never held together.
+// Pool locks are instance-local. Task 9 must ensure exactly one Pool exists per
+// accounts directory (per process); two Provider instances pointed at the same
+// directory would still race on state.json even though each Pool is internally
+// consistent.
+//
+// Lock order:
+//   - authOpsMu may be held across runtimeMu, pool.mu, account.mu, stateMu, and
+//     auth-file I/O.
+//   - runtimeMu may be held across a brief pool.mu access (released before
+//     account locks) and account.mu.
+//   - stateMu may be held across a brief pool.mu access and account.mu.
+//   - pool.mu is never held while account.mu is taken; account.mu is never held
+//     while pool.mu or stateMu is taken.
 type Pool struct {
 	dir       string
 	folder    string
@@ -65,6 +82,11 @@ type Pool struct {
 	// authOpsMu serializes Add/Remove/SetProxySlot auth-file operations.
 	authOpsMu sync.Mutex
 
+	// runtimeMu serializes runtime projections of config/proxy settings onto
+	// accounts, so an Add/re-import final reapply cannot lose a concurrent
+	// SetConfig/ApplyProxySlots update (or vice versa).
+	runtimeMu sync.Mutex
+
 	// stateMu serializes every full-file state snapshot and write so an older
 	// snapshot cannot overwrite a later manual disable, note, or check-in.
 	stateMu sync.Mutex
@@ -72,6 +94,11 @@ type Pool struct {
 	// stateWriteHook is a test seam invoked after the snapshot is built and
 	// before the state file write, while stateMu is held.
 	stateWriteHook func()
+
+	// addAccountHook is a test seam invoked after a new account is constructed
+	// (or an existing account re-imported) but before the final runtime
+	// projection. Tests use it to simulate a settings change in that window.
+	addAccountHook func(*Account)
 
 	// preserved keeps state entries whose auth file is absent or malformed. A
 	// later save must not silently wipe their notes, manual disables, check-in
@@ -406,9 +433,17 @@ func (p *Pool) Stats() PoolStats {
 }
 
 // Pick chooses a healthy account under its concurrency limit: session affinity
-// first, then model-capable candidates. Matching v1, when no candidate claims
-// the model, model-unknown accounts remain eligible so a missing or stale
-// catalog cannot take the provider offline.
+// first, then model capability, then v1's rank
+// (active_concurrent, urgent, last_used, uid).
+//
+// Model capability follows v1's `capable or candidates` fallback: if at least
+// one eligible account claims the requested model, only those capable accounts
+// are considered; if none claim it, every candidate (including accounts with an
+// unknown/stale catalog) remains eligible.
+//
+// Expiring-credit priority is the "urgent" rank field only. It breaks ties
+// within the same active-concurrency tier; a busy expiring account never
+// outranks a less busy non-expiring account, matching v1 exactly.
 func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account, error) {
 	if p == nil {
 		return nil, ErrNoAccount
@@ -468,6 +503,9 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 		return nil, ErrNoAccount
 	}
 
+	// v1 uses `capable or candidates`: capability narrows the set only when at
+	// least one eligible candidate claims the model. Otherwise every candidate is
+	// eligible, keeping an unknown or stale catalog from taking the pool offline.
 	selected := candidates
 	capable := make([]candidate, 0, len(candidates))
 	for _, item := range candidates {
@@ -568,6 +606,73 @@ func (p *Pool) Release(a *Account) {
 		a.activeConcurrent--
 	}
 	a.mu.Unlock()
+}
+
+// NoteSuccess clears transient failure state after a successful request:
+// err_count, cool_until, and last_error. Matching v1, a manual disable and its
+// reason are untouched. State is written only when something changed.
+func (p *Pool) NoteSuccess(a *Account) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("codearts: pool is nil")
+	}
+
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+
+	a.mu.Lock()
+	changed := a.State.ErrCount != 0 || a.State.CoolUntil != 0 || a.State.LastError != ""
+	if changed {
+		a.State.ErrCount = 0
+		a.State.CoolUntil = 0
+		a.State.LastError = ""
+	}
+	a.mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return p.saveStateLocked()
+}
+
+// NoteError records a request failure with v1 semantics. A terminal failure
+// disables the account unless it is manually disabled, in which case manual
+// state and reason are never overwritten. A soft failure sets a 60s cooldown.
+// Ordinary failures increment err_count and, on the third consecutive failure,
+// set a 600s cooldown and reset the counter. The message is redacted and capped
+// at 200 runes, and state is persisted on every call.
+func (p *Pool) NoteError(a *Account, message string, soft, terminal bool) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("codearts: pool is nil")
+	}
+	now := p.nowTime()
+
+	return p.mutateState(func() {
+		a.mu.Lock()
+		redacted := truncateRunes(redactText(message, codeartsSecretValues(a.Auth)), maxStateNoteRunes)
+		a.State.LastError = redacted
+		switch {
+		case terminal:
+			if !a.State.ManualDisabled {
+				a.State.Disabled = true
+				a.State.ManualDisabled = false
+				a.State.Reason = redacted
+			}
+		case soft:
+			a.State.CoolUntil = unixSeconds(now.Add(noteSoftCooldown))
+		default:
+			a.State.ErrCount++
+			if a.State.ErrCount >= noteErrThreshold {
+				a.State.CoolUntil = unixSeconds(now.Add(noteErrCooldown))
+				a.State.ErrCount = 0
+			}
+		}
+		a.mu.Unlock()
+	})
 }
 
 // Disable applies a manual disable. The manual marker keeps a later credits or
@@ -716,12 +821,17 @@ func (p *Pool) SetProxySlot(uid, slotID string) error {
 
 // ApplyProxySlots replaces the slot list and resolves every account binding.
 // Missing or disabled slots resolve to direct while the persisted binding
-// stays on disk for re-enabling.
+// stays on disk for re-enabling. runtimeMu serializes the projection with
+// concurrent Add/re-import so a new account cannot keep a stale URL.
 func (p *Pool) ApplyProxySlots(slots transport.Slots) {
 	if p == nil {
 		return
 	}
 	copied := append(transport.Slots(nil), slots...)
+
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
+
 	p.mu.Lock()
 	p.slots = copied
 	accounts := append([]*Account(nil), p.accounts...)
@@ -736,12 +846,16 @@ func (p *Pool) ApplyProxySlots(slots transport.Slots) {
 }
 
 // SetConfig replaces the pool configuration and applies max_concurrent to
-// every account.
+// every account. runtimeMu serializes the projection with Add/re-import.
 func (p *Pool) SetConfig(cfg Config) {
 	if p == nil {
 		return
 	}
 	max := maxConcurrentFor(cfg)
+
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
+
 	p.mu.Lock()
 	p.cfg = cfg
 	accounts := append([]*Account(nil), p.accounts...)
@@ -749,6 +863,29 @@ func (p *Pool) SetConfig(cfg Config) {
 	for _, account := range accounts {
 		account.setMaxConcurrent(max)
 	}
+}
+
+// reapplyRuntimeSettings projects the latest cfg and proxy slots onto one
+// account. Add and re-import call it after membership/auth changes so a
+// settings update racing the import cannot leave the account with stale
+// max_concurrent or proxy values.
+func (p *Pool) reapplyRuntimeSettings(account *Account) {
+	if p == nil || account == nil {
+		return
+	}
+
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
+
+	p.mu.RLock()
+	cfg := p.cfg
+	slots := append(transport.Slots(nil), p.slots...)
+	p.mu.RUnlock()
+
+	account.mu.Lock()
+	account.maxConcurrent = normalizedMaxConcurrent(maxConcurrentFor(cfg))
+	account.proxy = slots.URL(account.proxySlotLocked())
+	account.mu.Unlock()
 }
 
 // ApplyLimits is reserved for provider-wide scheduling limits. CodeArts v1 has
@@ -806,11 +943,15 @@ func (p *Pool) addNewAccount(path string, auth Auth) (*Account, error) {
 		state = AccountState{Name: uid, TasksEnabled: true}
 	}
 	account := p.newAccount(saved, path, state, maxConcurrent)
+	if p.addAccountHook != nil {
+		p.addAccountHook(account)
+	}
 
 	p.mu.Lock()
 	delete(p.preserved, uid)
 	p.accounts = append(p.accounts, account)
 	p.mu.Unlock()
+	p.reapplyRuntimeSettings(account)
 
 	if err := p.SaveState(); err != nil {
 		account.mu.Lock()
@@ -881,6 +1022,11 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 		account.State.CoolUntil = 0
 	}
 	account.mu.Unlock()
+
+	if p.addAccountHook != nil {
+		p.addAccountHook(account)
+	}
+	p.reapplyRuntimeSettings(account)
 
 	p.mu.Lock()
 	delete(p.preserved, uid)

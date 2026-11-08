@@ -724,3 +724,459 @@ func TestProviderNewCreatesPool(t *testing.T) {
 		t.Fatal("New with an empty store path should fail")
 	}
 }
+
+func TestAccountInfoSnapshotHelpers(t *testing.T) {
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u1", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u1")
+
+	info := accountInfo(0, 7)
+	account.SetInfo(info)
+	if !account.CreditExhausted() {
+		t.Fatal("SetInfo did not install a zero-credit snapshot")
+	}
+	if got := account.ExpiringCreditRemain(); got != 7 {
+		t.Fatalf("ExpiringCreditRemain = %v, want 7", got)
+	}
+
+	// SetInfo must keep a private copy: a later caller mutation cannot race
+	// with the scheduler or change the installed snapshot.
+	info.Credits.Total.Remain = 50
+	info.Credits.Total.Expiring = 3
+	if !account.CreditExhausted() || account.ExpiringCreditRemain() != 7 {
+		t.Fatal("SetInfo retained the caller-owned snapshot")
+	}
+
+	account.SetInfo(accountInfo(10, 0))
+	if account.CreditExhausted() || !account.Healthy(p.nowTime()) {
+		t.Fatal("positive snapshot should unpark the account")
+	}
+
+	account.SetInfo(accountInfo(0, 5))
+	account.ClearCreditExhausted()
+	if account.CreditExhausted() || !account.Healthy(p.nowTime()) {
+		t.Fatal("ClearCreditExhausted should drop the zero-credit snapshot")
+	}
+	account.SetInfo(nil)
+	if account.CreditExhausted() {
+		t.Fatal("nil snapshot must not be exhausted")
+	}
+
+	// Race-detector coverage for the locked helpers.
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				account.SetInfo(accountInfo(float64(j%2), float64(j%5)))
+				_ = account.ExpiringCreditRemain()
+				_ = account.Healthy(time.Now())
+				_ = account.View()
+				if j%3 == 0 {
+					account.ClearCreditExhausted()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestPoolNoteSuccessAndNoteError(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u1", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	p.now = func() time.Time { return now }
+	account := p.Get("u1")
+
+	if err := p.NoteError(account, "first failure", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if account.State.LastError != "first failure" || account.State.ErrCount != 1 || account.State.CoolUntil != 0 {
+		t.Fatalf("ordinary error state = %+v", account.State)
+	}
+	if err := p.NoteError(account, "second failure", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if account.State.ErrCount != 2 {
+		t.Fatalf("err_count after second failure = %d, want 2", account.State.ErrCount)
+	}
+	if err := p.NoteError(account, "third failure", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if account.State.ErrCount != 0 {
+		t.Fatalf("err_count should reset after threshold, got %d", account.State.ErrCount)
+	}
+	if want := unixSeconds(now.Add(600 * time.Second)); account.State.CoolUntil != want {
+		t.Fatalf("cool_until = %v, want %v", account.State.CoolUntil, want)
+	}
+	if err := p.NoteSuccess(account); err != nil {
+		t.Fatal(err)
+	}
+	if account.State.ErrCount != 0 || account.State.CoolUntil != 0 || account.State.LastError != "" {
+		t.Fatalf("NoteSuccess did not clear transient state: %+v", account.State)
+	}
+	cleared, err := LoadState(filepath.Join(dir, "codearts", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared["u1"].ErrCount != 0 || cleared["u1"].CoolUntil != 0 || cleared["u1"].LastError != "" {
+		t.Fatalf("NoteSuccess was not persisted: %+v", cleared["u1"])
+	}
+
+	if err := p.NoteError(account, "soft failure", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if want := unixSeconds(now.Add(60 * time.Second)); account.State.CoolUntil != want {
+		t.Fatalf("soft cool_until = %v, want %v", account.State.CoolUntil, want)
+	}
+	if account.State.ErrCount != 0 {
+		t.Fatalf("soft error must not increment err_count, got %d", account.State.ErrCount)
+	}
+
+	// Terminal failure on a normal account disables it with the v1 reason.
+	if err := p.NoteError(account, "auth dead", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if !account.State.Disabled || account.State.ManualDisabled || account.State.Reason != "auth dead" {
+		t.Fatalf("terminal error state = %+v", account.State)
+	}
+	reloaded := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	if !reloaded.Get("u1").State.Disabled || reloaded.Get("u1").State.ManualDisabled {
+		t.Fatalf("terminal disable was not persisted: %+v", reloaded.Get("u1").State)
+	}
+
+	// A manual disable must never be overwritten by a terminal failure.
+	if err := reloaded.Enable("u1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.Disable("u1", "manual disable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.NoteError(reloaded.Get("u1"), "token rejected", false, true); err != nil {
+		t.Fatal(err)
+	}
+	manual := reloaded.Get("u1")
+	if !manual.State.ManualDisabled || !manual.State.Disabled || manual.State.Reason != "manual disable" {
+		t.Fatalf("terminal error overwrote manual disable: %+v", manual.State)
+	}
+	if manual.State.LastError != "token rejected" {
+		t.Fatalf("terminal error did not record last_error: %+v", manual.State)
+	}
+	again := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	if !again.Get("u1").State.ManualDisabled || again.Get("u1").State.Reason != "manual disable" {
+		t.Fatalf("manual terminal state was not persisted: %+v", again.Get("u1").State)
+	}
+
+	// Error messages are capped to v1's 200-rune note limit.
+	if err := again.NoteError(again.Get("u1"), strings.Repeat("错", 250), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := len([]rune(again.Get("u1").State.LastError)); got != 200 {
+		t.Fatalf("last_error length = %d runes, want 200", got)
+	}
+}
+
+func TestPoolStateWritesCannotOverwriteLaterMutation(t *testing.T) {
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u1", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	p.stateWriteHook = func() {
+		p.stateWriteHook = nil
+		close(entered)
+		<-release
+	}
+
+	saveDone := make(chan error, 1)
+	go func() { saveDone <- p.SaveState() }()
+	<-entered
+
+	disableDone := make(chan error, 1)
+	noteDone := make(chan error, 1)
+	go func() { disableDone <- p.Disable("u1", "manual disable") }()
+	go func() { noteDone <- p.SetNote("u1", "later note") }()
+
+	// Both mutations block on stateMu while the older snapshot waits to write.
+	close(release)
+	if err := <-saveDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-disableDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-noteDone; err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := LoadState(filepath.Join(dir, "codearts", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := states["u1"]
+	if !state.Disabled || !state.ManualDisabled || state.Note != "later note" {
+		t.Fatalf("older save overwrote later mutations: %+v", state)
+	}
+}
+
+func TestPoolAddReappliesRuntimeSettings(t *testing.T) {
+	dir := t.TempDir()
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	slot := transport.Slots{{
+		ID:      "slot-1",
+		URL:     "http://user:password@proxy.example:8080",
+		Enabled: true,
+	}}
+
+	// Simulate a settings change in the window after Add built the account
+	// from the old config and before it joined/reapplied the pool.
+	p.addAccountHook = func(*Account) {
+		p.addAccountHook = nil
+		p.SetConfig(Config{MaxConcurrent: 4, CreditsExpiringPriority: true})
+		p.ApplyProxySlots(slot)
+	}
+	auth := testAuth("u1")
+	auth.ProxySlot = "slot-1"
+	added, err := p.Add(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view := added.View(); view.MaxConcurrent != 4 || view.ProxySlot != "slot-1" {
+		t.Fatalf("Add did not reapply config/proxy: %+v", view)
+	}
+	if added.ProxyURL() != "http://user:password@proxy.example:8080" {
+		t.Fatalf("Add proxy URL = %q", added.ProxyURL())
+	}
+
+	// Re-import must reapply the same way after replacing credentials.
+	slot2 := transport.Slots{{
+		ID:      "slot-1",
+		URL:     "http://other:secret@proxy2.example:9090",
+		Enabled: true,
+	}}
+	p.addAccountHook = func(*Account) {
+		p.addAccountHook = nil
+		p.SetConfig(Config{MaxConcurrent: 5, CreditsExpiringPriority: true})
+		p.ApplyProxySlots(slot2)
+	}
+	if _, err := p.Add(testAuth("u1")); err != nil {
+		t.Fatal(err)
+	}
+	reimported := p.Get("u1")
+	if view := reimported.View(); view.MaxConcurrent != 5 || view.ProxySlot != "slot-1" {
+		t.Fatalf("re-import did not reapply config/proxy: %+v", view)
+	}
+	if reimported.ProxyURL() != "http://other:secret@proxy2.example:9090" {
+		t.Fatalf("re-import proxy URL = %q", reimported.ProxyURL())
+	}
+}
+
+func TestPoolPickLeastActiveBeforeExpiringPriority(t *testing.T) {
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u-expiring", "")
+	writeTestAuth(t, dir, "u-normal", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 2, CreditsExpiringPriority: true})
+	expiring := p.Get("u-expiring")
+	expiring.Info = accountInfo(100, 9)
+
+	// v1 rank is (active_concurrent, urgent, last_used, uid): a busy expiring
+	// account loses to an idle non-expiring account even though priority is on.
+	if !p.Acquire(expiring) {
+		t.Fatal("acquire expiring account")
+	}
+	got, err := p.Pick("", "", nil)
+	if err != nil || poolUID(t, got) != "u-normal" {
+		t.Fatalf("Pick with busy expiring account = %v, %v; want u-normal", got, err)
+	}
+	p.Release(expiring)
+
+	// Within the same concurrency tier, expiring credits now win.
+	got, err = p.Pick("", "", nil)
+	if err != nil || poolUID(t, got) != "u-expiring" {
+		t.Fatalf("Pick within same concurrency tier = %v, %v; want u-expiring", got, err)
+	}
+}
+
+func TestPoolAuthCanonicalPrecedenceAndAliasRemoval(t *testing.T) {
+	dir := t.TempDir()
+	canonicalPath, err := AuthPath(dir, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasPath := filepath.Join(dir, "codearts", "codearts-alias.json")
+	canonical := testAuth("u1")
+	canonical.UserName = "Canonical"
+	alias := testAuth("u1")
+	alias.UserName = "Alias"
+	alias.CloudDragonToken = "alias-token"
+	if err := SaveAuth(aliasPath, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAuth(canonicalPath, canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u1")
+	if account == nil {
+		t.Fatal("u1 not loaded")
+	}
+	if account.Auth.UserName != "Canonical" || account.Path != canonicalPath {
+		t.Fatalf("canonical auth did not win: name=%q path=%q", account.Auth.UserName, account.Path)
+	}
+
+	// An alias-only account must be removable through its alias file.
+	aliasDir := t.TempDir()
+	aliasOnly := filepath.Join(aliasDir, "codearts", "codearts-alias.json")
+	if err := SaveAuth(aliasOnly, testAuth("u-alias")); err != nil {
+		t.Fatal(err)
+	}
+	aliasPool := newTestPool(t, aliasDir, Config{MaxConcurrent: 1})
+	if got := aliasPool.Get("u-alias"); got == nil || got.Path != aliasOnly {
+		t.Fatalf("alias account not loaded from its file: %+v", got)
+	}
+	if err := aliasPool.Remove("u-alias"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(aliasOnly); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("alias auth file still exists after Remove: %v", err)
+	}
+}
+
+func TestPoolSetProxySlotAndRemoveRefuseForeignAuthFile(t *testing.T) {
+	dir := t.TempDir()
+	foreignPath, err := AuthPath(dir, "a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAuth(foreignPath, testAuth("a/b")); err != nil {
+		t.Fatal(err)
+	}
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+
+	// A sanitized filename collision makes account a_b believe it owns the
+	// file written for a/b. Neither SetProxySlot nor Remove may touch it.
+	foreignAccount := &Account{
+		Auth:          testAuth("a_b"),
+		State:         AccountState{Name: "a_b", TasksEnabled: true},
+		Path:          foreignPath,
+		pool:          p,
+		maxConcurrent: 1,
+	}
+	p.mu.Lock()
+	p.accounts = append(p.accounts, foreignAccount)
+	p.mu.Unlock()
+
+	if err := p.SetProxySlot("a_b", "slot-1"); !errors.Is(err, ErrAuthPathCollision) {
+		t.Fatalf("SetProxySlot collision = %v, want ErrAuthPathCollision", err)
+	}
+	stored, err := LoadAuth(foreignPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.UserID != "a/b" || stored.ProxySlot != "" {
+		t.Fatalf("collision target was modified: %+v", stored)
+	}
+
+	if err := p.Remove("a_b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(foreignPath); err != nil {
+		t.Fatalf("Remove deleted a foreign uid's auth file: %v", err)
+	}
+	stored, err = LoadAuth(foreignPath)
+	if err != nil || stored.UserID != "a/b" {
+		t.Fatalf("foreign auth file changed after Remove: %+v, %v", stored, err)
+	}
+	if p.Get("a/b") == nil {
+		t.Fatal("foreign Remove also removed the legitimate a/b account")
+	}
+}
+
+func TestPoolViewCheckinRedactionAndFixedCreditUnit(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u1", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u1")
+	info := accountInfo(5, 1)
+	info.Credits.Unit = "points"
+	account.SetInfo(info)
+	token := account.Auth.CloudDragonToken
+	account.Checkin = CheckinState{
+		"ok":           true,
+		"checked_at":   "2026-01-01T10:00:00",
+		"message":      "claimed with " + token,
+		"access_token": "checkin-access-token",
+		"campaigns": []any{map[string]any{
+			"campaign_id": float64(7),
+			"ok":          true,
+			"title":       "每日签到",
+		}},
+		"nested": map[string]any{
+			"refresh_token": "checkin-refresh-token",
+			"note":          "keep me",
+			"items": []any{map[string]any{
+				"secret_key": "nested-secret-value",
+				"title":      "nested campaign",
+			}},
+		},
+	}
+
+	view := account.viewAt(now)
+	if view.Credits == nil || view.Credits.Unit != "credit" {
+		t.Fatalf("credits unit = %+v, want credit", view.Credits)
+	}
+	if view.Checkin["ok"] != true || view.Checkin["checked_at"] != "2026-01-01T10:00:00" {
+		t.Fatalf("expected checkin fields lost: %#v", view.Checkin)
+	}
+	if view.Checkin["access_token"] != "<redacted>" {
+		t.Fatalf("access_token = %#v", view.Checkin["access_token"])
+	}
+	message, _ := view.Checkin["message"].(string)
+	if strings.Contains(message, token) {
+		t.Fatalf("checkin message leaked the token: %q", message)
+	}
+	campaigns, ok := view.Checkin["campaigns"].([]any)
+	if !ok || len(campaigns) != 1 {
+		t.Fatalf("campaigns = %#v", view.Checkin["campaigns"])
+	}
+	nested, ok := view.Checkin["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested = %#v", view.Checkin["nested"])
+	}
+	if nested["refresh_token"] != "<redacted>" || nested["note"] != "keep me" {
+		t.Fatalf("nested fields = %#v", nested)
+	}
+	items, ok := nested["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("nested items = %#v", nested["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok || item["secret_key"] != "<redacted>" || item["title"] != "nested campaign" {
+		t.Fatalf("nested item = %#v", items[0])
+	}
+
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{
+		token,
+		"checkin-access-token",
+		"checkin-refresh-token",
+		"nested-secret-value",
+	} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("view leaked %q: %s", secret, encoded)
+		}
+	}
+	// Redaction applies only to the public copy, never to the persisted map.
+	if account.Checkin["access_token"] != "checkin-access-token" {
+		t.Fatalf("view redaction mutated the stored checkin: %#v", account.Checkin)
+	}
+}

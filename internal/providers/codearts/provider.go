@@ -26,6 +26,10 @@ type Provider struct {
 
 // New returns the production CodeArts provider. The accounts directory is the
 // directory containing the shared settings file, matching v1's layout.
+//
+// Task 9 composition must create exactly one Provider/Pool per accounts
+// directory in a process: Pool locks are instance-local, so two Pools over the
+// same state.json would still race with each other.
 func New(store *config.Store) (*Provider, error) {
 	if store == nil || strings.TrimSpace(store.Path) == "" {
 		return nil, errors.New("codearts: config store is required")

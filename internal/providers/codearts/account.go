@@ -275,6 +275,33 @@ func (a *Account) MarkCreditExhausted() error {
 	return a.pool.SaveState()
 }
 
+// SetInfo installs a private copy of the latest account/package snapshot.
+// Callers may reuse or mutate info after the call without racing the scheduler
+// or admin views. Task 7 refreshes credits through this method.
+func (a *Account) SetInfo(info *AccountInfo) {
+	if a == nil {
+		return
+	}
+	copied := cloneAccountInfo(info)
+	a.mu.Lock()
+	a.Info = copied
+	a.mu.Unlock()
+}
+
+// ClearCreditExhausted drops the last credit snapshot so a successful check-in
+// can unpark the account immediately. Matching v1, the next overview/credits
+// refresh repopulates the snapshot with positive credits. The snapshot is not
+// part of state.json, so no state write is needed. Task 7 owns check-in
+// persistence and calls this helper after a successful claim.
+func (a *Account) ClearCreditExhausted() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.Info = nil
+	a.mu.Unlock()
+}
+
 // View returns the public v1-compatible snapshot.
 func (a *Account) View() AccountView {
 	if a == nil {
@@ -329,7 +356,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		}
 	}
 
-	checkin := a.checkinLocked()
+	checkin := sanitizeCheckin(a.checkinLocked(), secretValues)
 
 	return AccountView{
 		Name:             uid,
@@ -470,7 +497,7 @@ func publicCredits(info *AccountInfo) *CreditsView {
 		Amount:   total.Amount,
 		Used:     total.Used,
 		Expiring: total.Expiring,
-		Unit:     firstNonEmpty(info.Credits.Unit, "credit"),
+		Unit:     "credit",
 		Package:  info.PackageName,
 		EndDate:  info.EndDate,
 	}
@@ -481,6 +508,29 @@ func packageName(info *AccountInfo) string {
 		return ""
 	}
 	return info.PackageName
+}
+
+func cloneAccountInfo(info *AccountInfo) *AccountInfo {
+	if info == nil {
+		return nil
+	}
+	copied := *info
+	copied.Credits = AccountCredits{
+		Total:    cloneCreditTotal(info.Credits.Total),
+		Basic:    cloneCreditTotal(info.Credits.Basic),
+		OnDemand: cloneCreditTotal(info.Credits.OnDemand),
+		Bonus:    cloneCreditTotal(info.Credits.Bonus),
+		Unit:     info.Credits.Unit,
+	}
+	return &copied
+}
+
+func cloneCreditTotal(total *CreditTotal) *CreditTotal {
+	if total == nil {
+		return nil
+	}
+	copied := *total
+	return &copied
 }
 
 func cloneCheckin(checkin CheckinState) CheckinState {
@@ -494,13 +544,92 @@ func cloneCheckin(checkin CheckinState) CheckinState {
 	return copied
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
+const redactedCheckinValue = "<redacted>"
+
+var (
+	checkinKeyNormalizer = strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
+	checkinSecretParts   = []string{
+		"token", "secret", "password", "authorization", "credential",
+		"apikey", "privatekey", "cookie", "verifier", "signature",
+	}
+)
+
+// sanitizeCheckin returns a deep public copy of a check-in document. Values
+// under token-like keys are replaced with the redaction marker, while expected
+// fields (ok, checked_at, message, credits, campaigns, ...) keep their shape.
+// String values elsewhere are scrubbed of known auth secrets.
+func sanitizeCheckin(checkin CheckinState, secretValues []string) CheckinState {
+	if checkin == nil {
+		return nil
+	}
+	return sanitizeCheckinMap(map[string]any(checkin), secretValues)
+}
+
+func sanitizeCheckinMap(input map[string]any, secretValues []string) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		if secretLikeCheckinKey(key) {
+			out[key] = redactCheckinSecretValue(value)
+			continue
+		}
+		out[key] = sanitizeCheckinValue(value, secretValues)
+	}
+	return out
+}
+
+func sanitizeCheckinValue(value any, secretValues []string) any {
+	switch typed := value.(type) {
+	case CheckinState:
+		return sanitizeCheckin(typed, secretValues)
+	case map[string]any:
+		return sanitizeCheckinMap(typed, secretValues)
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			if secretLikeCheckinKey(key) {
+				out[key] = redactCheckinSecretValue(item).(string)
+				continue
+			}
+			out[key] = redactText(item, secretValues)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = sanitizeCheckinValue(item, secretValues)
+		}
+		return out
+	case []string:
+		out := make([]string, len(typed))
+		for index, item := range typed {
+			out[index] = redactText(item, secretValues)
+		}
+		return out
+	case string:
+		return redactText(typed, secretValues)
+	default:
+		return value
+	}
+}
+
+func secretLikeCheckinKey(key string) bool {
+	normalized := checkinKeyNormalizer.Replace(strings.ToLower(strings.TrimSpace(key)))
+	for _, part := range checkinSecretParts {
+		if strings.Contains(normalized, part) {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+func redactCheckinSecretValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	if text, ok := value.(string); ok && text == "" {
+		return ""
+	}
+	return redactedCheckinValue
 }
 
 // codeartsSecretValues lists credential values that must never surface in a
