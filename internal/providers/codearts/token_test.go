@@ -31,9 +31,11 @@ type tokenRefreshFake struct {
 	proofErrs   []error
 	proxyTarget []string
 
-	delay  time.Duration
-	status int
-	body   string
+	delay   time.Duration
+	status  int
+	body    string
+	started chan struct{}
+	release chan struct{}
 	// payload builds a successful response. A nil payload uses
 	// defaultTokenTestPayload.
 	payload func(form url.Values) map[string]any
@@ -56,8 +58,19 @@ func (f *tokenRefreshFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body := f.body
 	delay := f.delay
 	payload := f.payload
+	started := f.started
+	release := f.release
 	f.mu.Unlock()
 
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
 	if delay > 0 {
 		time.Sleep(delay)
 	}
@@ -122,17 +135,26 @@ func (f *tokenRefreshFake) reset() {
 	f.mu.Unlock()
 }
 
-// sameDPoPKey compares JWK values semantically; SaveAuth may re-indent the
-// raw JSON object while preserving the same key material.
-func sameDPoPKey(left, right json.RawMessage) bool {
-	compact := func(raw json.RawMessage) []byte {
-		var buf bytes.Buffer
-		if err := json.Compact(&buf, raw); err != nil {
-			return nil
-		}
-		return buf.Bytes()
+// blockTokenRefreshFake parks the token endpoint after recording the request.
+// The returned release function is safe to call more than once.
+func blockTokenRefreshFake(fake *tokenRefreshFake) (<-chan struct{}, func()) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.mu.Lock()
+	fake.started = started
+	fake.release = release
+	fake.mu.Unlock()
+	var once sync.Once
+	return started, func() { once.Do(func() { close(release) }) }
+}
+
+func waitTokenRefreshStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("token refresh did not reach the fake upstream")
 	}
-	return bytes.Equal(compact(left), compact(right))
 }
 
 func tokenTestAuth(uid string, expiration time.Time) Auth {
@@ -176,9 +198,14 @@ func tokenTestPool(t *testing.T, auths ...Auth) (*Pool, string) {
 
 func newTokenTestManager(t *testing.T, now time.Time) *TokenManager {
 	t.Helper()
-	client := transport.NewClient(transport.ClientOptions{Timeout: 5 * time.Second})
+	return newTokenTestManagerTimeout(t, now, 5*time.Second)
+}
+
+func newTokenTestManagerTimeout(t *testing.T, now time.Time, timeout time.Duration) *TokenManager {
+	t.Helper()
+	client := transport.NewClient(transport.ClientOptions{})
 	manager := NewTokenManager(client, TokenManagerOptions{
-		Timeout:  5 * time.Second,
+		Timeout:  timeout,
 		Now:      func() time.Time { return now },
 		ProxyURL: func(a *Account) string { return a.ProxyURL() },
 	})
@@ -347,6 +374,343 @@ func TestTokenEnsureRefreshesAndPersistsRotation(t *testing.T) {
 	}
 }
 
+func TestTokenEnsureKeepsEstablishedUserID(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	originalPath := account.Path
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u2", "refresh-u1-new", now.Add(time.Hour))
+	}
+
+	if err := manager.Ensure(context.Background(), account); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if account.Auth.UserID != "u1" {
+		t.Fatalf("user_id changed to %q, want established u1", account.Auth.UserID)
+	}
+	if account.Path != originalPath {
+		t.Fatalf("path changed to %q, want %q", account.Path, originalPath)
+	}
+	reloaded, err := LoadAuth(originalPath)
+	if err != nil {
+		t.Fatalf("LoadAuth: %v", err)
+	}
+	if reloaded.UserID != "u1" {
+		t.Fatalf("persisted user_id = %q, want u1", reloaded.UserID)
+	}
+	if pool.Get("u1") != account {
+		t.Fatal("pool lost the established u1 account")
+	}
+	if pool.Get("u2") != nil {
+		t.Fatal("refresh response created a u2 account")
+	}
+}
+
+func TestTokenAuthGenerationAdvancesOnCredentialReplacementNotProxySlot(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	auth := tokenTestAuth("u1", now.Add(2*time.Hour))
+	pool, _ := tokenTestPool(t, auth)
+	pool.ApplyProxySlots(transport.Slots{
+		{ID: "slot-1", URL: "http://proxy.example.test:8080", Enabled: true},
+	})
+	account := pool.Get("u1")
+	generation := account.tokenSnapshot().generation
+
+	if err := pool.SetProxySlot("u1", "slot-1"); err != nil {
+		t.Fatalf("SetProxySlot: %v", err)
+	}
+	if got := account.tokenSnapshot().generation; got != generation {
+		t.Fatalf("proxy-only save advanced generation from %d to %d", generation, got)
+	}
+
+	replacement := tokenTestAuth("u1", now.Add(2*time.Hour))
+	replacement.RefreshToken = "refresh-u1-reimport"
+	replacement.CloudDragonToken = "cloud-reimport"
+	if _, err := pool.Add(replacement); err != nil {
+		t.Fatalf("Add re-import: %v", err)
+	}
+	if got := account.tokenSnapshot().generation; got <= generation {
+		t.Fatalf("re-import generation = %d, want > %d", got, generation)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-reimport" {
+		t.Fatalf("re-import credentials = %+v", account.Auth)
+	}
+}
+
+func TestTokenStillCurrentTracksGenerationNotProxySlot(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	auth := tokenTestAuth("u1", now.Add(2*time.Hour))
+	pool, _ := tokenTestPool(t, auth)
+	pool.ApplyProxySlots(transport.Slots{
+		{ID: "slot-1", URL: "http://proxy.example.test:8080", Enabled: true},
+	})
+	account := pool.Get("u1")
+	manager := newTokenTestManager(t, now)
+	snapshot := account.tokenSnapshot()
+
+	if err := pool.SetProxySlot("u1", "slot-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.stillCurrent(account, snapshot) {
+		t.Fatal("proxy-only save made the credential snapshot stale")
+	}
+
+	replacement := tokenTestAuth("u1", now.Add(2*time.Hour))
+	replacement.RefreshToken = "refresh-u1-reimport"
+	if _, err := pool.Add(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if manager.stillCurrent(account, snapshot) {
+		t.Fatal("credential re-import did not invalidate the snapshot")
+	}
+}
+
+func TestTokenEnsureConcurrentSetProxySlotMergesRefresh(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	const proxyURL = "http://proxy.example.test:8080"
+	pool.ApplyProxySlots(transport.Slots{
+		{ID: "slot-1", URL: proxyURL, Enabled: true},
+	})
+	account := pool.Get("u1")
+	generation := account.tokenSnapshot().generation
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+	started, release := blockTokenRefreshFake(fake)
+
+	errs := make(chan error, 1)
+	go func() { errs <- manager.Ensure(context.Background(), account) }()
+	waitTokenRefreshStarted(t, started)
+	if err := pool.SetProxySlot("u1", "slot-1"); err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	if err := <-errs; err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-new" {
+		t.Fatalf("refresh was discarded after proxy-only save: %+v", account.Auth)
+	}
+	if account.Auth.ProxySlot != "slot-1" {
+		t.Fatalf("proxySlot = %q, want slot-1", account.Auth.ProxySlot)
+	}
+	if account.ProxyURL() != proxyURL {
+		t.Fatalf("resolved proxy = %q, want %q", account.ProxyURL(), proxyURL)
+	}
+	reloaded, err := LoadAuth(account.Path)
+	if err != nil {
+		t.Fatalf("LoadAuth: %v", err)
+	}
+	if reloaded.RefreshToken != "refresh-u1-new" || reloaded.ProxySlot != "slot-1" {
+		t.Fatalf("persisted auth = %+v", reloaded)
+	}
+	if !sameDPoPKey(account.Auth.DPopPrivateKey, json.RawMessage(fixedDPoPJWK)) {
+		t.Fatalf("DPoP key changed: %s", account.Auth.DPopPrivateKey)
+	}
+	if got := account.tokenSnapshot().generation; got <= generation {
+		t.Fatalf("refresh generation = %d, want > %d", got, generation)
+	}
+}
+
+func TestTokenEnsureConcurrentReimportWins(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+	started, release := blockTokenRefreshFake(fake)
+
+	errs := make(chan error, 1)
+	go func() { errs <- manager.Ensure(context.Background(), account) }()
+	waitTokenRefreshStarted(t, started)
+	replacement := tokenTestAuth("u1", now.Add(2*time.Hour))
+	replacement.RefreshToken = "refresh-u1-reimport"
+	replacement.CloudDragonToken = "cloud-reimport"
+	if _, err := pool.Add(replacement); err != nil {
+		t.Fatalf("Add re-import: %v", err)
+	}
+	release()
+
+	if err := <-errs; err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-reimport" ||
+		account.Auth.CloudDragonToken != "cloud-reimport" {
+		t.Fatalf("in-flight refresh overwrote re-imported credentials: %+v", account.Auth)
+	}
+	reloaded, err := LoadAuth(account.Path)
+	if err != nil {
+		t.Fatalf("LoadAuth: %v", err)
+	}
+	if reloaded.RefreshToken != "refresh-u1-reimport" {
+		t.Fatalf("persisted credentials = %+v", reloaded)
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1", calls)
+	}
+}
+
+func TestTokenEnsureConcurrentSingleFlightFailure(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	fake.status = http.StatusInternalServerError
+	fake.body = `{"error":"upstream","error_msg":"refresh-u1-old"}`
+	started, release := blockTokenRefreshFake(fake)
+
+	const callers = 20
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- manager.Ensure(context.Background(), account)
+		}()
+	}
+	close(start)
+	<-started
+	time.Sleep(100 * time.Millisecond)
+	release()
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err == nil {
+			t.Fatal("failed shared flight returned nil")
+		}
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1", calls)
+	}
+}
+
+func TestTokenEnsureTimeoutReturnsTransportError(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManagerTimeout(t, now, 25*time.Millisecond)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	fake.delay = 200 * time.Millisecond
+
+	start := time.Now()
+	err := manager.Ensure(context.Background(), account)
+	if err == nil {
+		t.Fatal("Ensure returned nil, want timeout error")
+	}
+	if !errors.Is(err, ErrTokenTransport) {
+		t.Fatalf("error = %v, want ErrTokenTransport", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("refresh took %v, timeout was not enforced", elapsed)
+	}
+}
+
+func breakTokenStatePersistence(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "codearts", "state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("replace state file with directory: %v", err)
+	}
+}
+
+func TestTokenEnsureTerminalFailureReportsStatePersistenceError(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, dir := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	breakTokenStatePersistence(t, dir)
+	fake.status = http.StatusUnauthorized
+	fake.body = `{"error":"invalid_grant","error_msg":"refresh-u1-old has been used"}`
+
+	err := manager.Ensure(context.Background(), account)
+	if err == nil {
+		t.Fatal("Ensure returned nil, want joined state persistence error")
+	}
+	if !errors.Is(err, ErrTokenRejected) {
+		t.Fatalf("error = %v, want ErrTokenRejected", err)
+	}
+	if !strings.Contains(err.Error(), "state") {
+		t.Fatalf("error did not report state persistence failure: %v", err)
+	}
+	if !account.State.Disabled || account.State.ManualDisabled {
+		t.Fatalf("state = %+v, want in-memory terminal disable", account.State)
+	}
+}
+
+func TestTokenEnsureSuccessReportsStatePersistenceError(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, dir := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	breakTokenStatePersistence(t, dir)
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+
+	err := manager.Ensure(context.Background(), account)
+	if err == nil {
+		t.Fatal("Ensure returned nil, want state persistence error")
+	}
+	if !strings.Contains(err.Error(), "state") {
+		t.Fatalf("error did not report state persistence failure: %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-new" {
+		t.Fatalf("credentials were not rotated before state failure: %+v", account.Auth)
+	}
+}
+
+func TestTokenEnsureMissingRefreshTokenReportsStatePersistenceError(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	auth.RefreshToken = ""
+	pool, dir := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	breakTokenStatePersistence(t, dir)
+
+	err := manager.Ensure(context.Background(), account)
+	if !errors.Is(err, ErrRefreshTokenMissing) {
+		t.Fatalf("Ensure = %v, want ErrRefreshTokenMissing", err)
+	}
+	if !strings.Contains(err.Error(), "state") {
+		t.Fatalf("error did not report state persistence failure: %v", err)
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 0 {
+		t.Fatalf("token endpoint calls = %d, want 0", calls)
+	}
+	if !account.State.Disabled || account.State.ManualDisabled {
+		t.Fatalf("state = %+v, want in-memory terminal disable", account.State)
+	}
+}
+
 func TestTokenEnsureConcurrentSingleFlight(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	fake, _ := newTokenRefreshFake(t)
@@ -389,7 +753,7 @@ func TestTokenEnsureConcurrentSingleFlight(t *testing.T) {
 	}
 }
 
-func TestTokenEnsureManualDisablePreservedAfterRefresh(t *testing.T) {
+func TestTokenEnsureManualDisableSkipsRefresh(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	fake, _ := newTokenRefreshFake(t)
 	manager := newTokenTestManager(t, now)
@@ -406,21 +770,21 @@ func TestTokenEnsureManualDisablePreservedAfterRefresh(t *testing.T) {
 	if err := manager.Ensure(context.Background(), account); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 0 {
+		t.Fatalf("token endpoint calls = %d, want 0 for a manual disable", calls)
+	}
 	if !account.State.Disabled || !account.State.ManualDisabled {
 		t.Fatalf("manual disable cleared: %+v", account.State)
 	}
 	if account.State.Reason != "manual disable" {
 		t.Fatalf("reason = %q, want manual disable", account.State.Reason)
 	}
-	if account.State.LastError != "manual disable" {
-		t.Fatalf("last_error = %q", account.State.LastError)
-	}
-	if account.Auth.RefreshToken != "refresh-u1-new" {
-		t.Fatalf("token not rotated: %q", account.Auth.RefreshToken)
+	if account.Auth.RefreshToken != "refresh-u1-old" {
+		t.Fatalf("manual-disabled account spent its refresh token: %q", account.Auth.RefreshToken)
 	}
 }
 
-func TestTokenEnsureSuccessClearsNonManualDisable(t *testing.T) {
+func TestTokenEnsureSuccessClearsOnlyV1Fields(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	fake, _ := newTokenRefreshFake(t)
 	manager := newTokenTestManager(t, now)
@@ -433,6 +797,10 @@ func TestTokenEnsureSuccessClearsNonManualDisable(t *testing.T) {
 	if !account.State.Disabled || account.State.ManualDisabled {
 		t.Fatalf("setup state = %+v", account.State)
 	}
+	account.mu.Lock()
+	account.State.ErrCount = 2
+	account.State.CoolUntil = unixSeconds(now.Add(time.Hour))
+	account.mu.Unlock()
 	fake.payload = func(form url.Values) map[string]any {
 		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
 	}
@@ -441,9 +809,14 @@ func TestTokenEnsureSuccessClearsNonManualDisable(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 	if account.State.Disabled || account.State.ManualDisabled ||
-		account.State.Reason != "" || account.State.LastError != "" ||
-		account.State.ErrCount != 0 {
-		t.Fatalf("transient state not cleared: %+v", account.State)
+		account.State.Reason != "" || account.State.LastError != "" {
+		t.Fatalf("v1 failure fields not cleared: %+v", account.State)
+	}
+	if account.State.ErrCount != 2 {
+		t.Fatalf("err_count = %d, want scheduler history preserved at 2", account.State.ErrCount)
+	}
+	if account.State.CoolUntil != unixSeconds(now.Add(time.Hour)) {
+		t.Fatalf("cool_until = %v, want preserved", account.State.CoolUntil)
 	}
 }
 
@@ -505,21 +878,31 @@ func TestTokenEnsureTerminalFailuresDisableNonManual(t *testing.T) {
 	}
 }
 
-func TestTokenEnsureTerminalFailurePreservesManualDisable(t *testing.T) {
+func TestTokenEnsureConcurrentDisableVsRefreshPreservesManualState(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	fake, _ := newTokenRefreshFake(t)
 	manager := newTokenTestManager(t, now)
 	auth := tokenTestAuth("u1", now.Add(-time.Minute))
 	pool, _ := tokenTestPool(t, auth)
 	account := pool.Get("u1")
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+	started, release := blockTokenRefreshFake(fake)
+
+	errs := make(chan error, 1)
+	go func() { errs <- manager.Ensure(context.Background(), account) }()
+	waitTokenRefreshStarted(t, started)
 	if err := pool.Disable("u1", "manual disable"); err != nil {
 		t.Fatal(err)
 	}
-	fake.status = http.StatusUnauthorized
-	fake.body = `{"error":"invalid_grant","error_msg":"refresh-u1-old has been used"}`
+	release()
 
-	if err := manager.Ensure(context.Background(), account); err == nil {
-		t.Fatal("Ensure returned nil, want terminal error")
+	if err := <-errs; err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-new" {
+		t.Fatalf("token not rotated: %q", account.Auth.RefreshToken)
 	}
 	if !account.State.Disabled || !account.State.ManualDisabled {
 		t.Fatalf("manual disable cleared: %+v", account.State)
@@ -787,6 +1170,53 @@ func TestTokenKeepaliveSkipsDisabledAndCollectsErrors(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "refresh-u5-old") {
 		t.Fatalf("Keepalive error leaked a refresh token: %v", err)
+	}
+}
+
+func TestTokenKeepaliveStopsAfterCancellation(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auths := []Auth{
+		tokenTestAuth("u1", now.Add(-time.Minute)),
+		tokenTestAuth("u2", now.Add(-time.Minute)),
+	}
+	pool, _ := tokenTestPool(t, auths...)
+	manager.pool = pool
+	fake.payload = func(form url.Values) map[string]any {
+		refresh := form.Get("refresh_token")
+		uid := strings.TrimSuffix(strings.TrimPrefix(refresh, "refresh-"), "-old")
+		return tokenTestPayload(uid, "refresh-"+uid+"-new", now.Add(time.Hour))
+	}
+	started, release := blockTokenRefreshFake(fake)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		refreshed int
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() {
+		refreshed, err := manager.Keepalive(ctx)
+		done <- result{refreshed: refreshed, err: err}
+	}()
+	waitTokenRefreshStarted(t, started)
+	cancel()
+	release()
+
+	got := <-done
+	if got.refreshed != 1 {
+		t.Fatalf("refreshed = %d, want 1", got.refreshed)
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("Keepalive error = %v, want context.Canceled", got.err)
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1 after cancellation", calls)
+	}
+	if pool.Get("u2").Auth.RefreshToken != "refresh-u2-old" {
+		t.Fatalf("keepalive refreshed an account after cancellation: %q",
+			pool.Get("u2").Auth.RefreshToken)
 	}
 }
 

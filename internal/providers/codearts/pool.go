@@ -181,12 +181,13 @@ func (p *Pool) newAccount(auth Auth, path string, state AccountState, maxConcurr
 	uid := strings.TrimSpace(auth.UserID)
 	state.Name = uid
 	account := &Account{
-		Auth:          auth,
-		State:         state,
-		Path:          path,
-		proxySlot:     strings.TrimSpace(auth.ProxySlot),
-		pool:          p,
-		maxConcurrent: maxConcurrent,
+		Auth:           auth,
+		State:          state,
+		Path:           path,
+		proxySlot:      strings.TrimSpace(auth.ProxySlot),
+		pool:           p,
+		maxConcurrent:  maxConcurrent,
+		authGeneration: 1,
 	}
 	if state.Checkin != nil {
 		account.Checkin = cloneCheckin(CheckinState(state.Checkin))
@@ -1011,6 +1012,7 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	account.Path = path
 	account.proxySlot = strings.TrimSpace(saved.ProxySlot)
 	account.proxy = proxy
+	account.authGeneration++
 	account.Models = nil
 	account.modelBenefit = nil
 	account.State.Name = uid

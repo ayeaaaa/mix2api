@@ -77,6 +77,7 @@ type tokenAccountSnapshot struct {
 	disabled       bool
 	manualDisabled bool
 	removed        bool
+	generation     uint64
 }
 
 // NewTokenManager returns a manager using the shared core transport. The
@@ -120,6 +121,11 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	snapshot := a.tokenSnapshot()
 	if snapshot.removed {
 		return ErrAccountNotFound
+	}
+	if snapshot.manualDisabled {
+		// A manual disable is an operator decision. Do not spend the
+		// account's one-time refresh token until Enable clears it.
+		return nil
 	}
 	if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
 		return nil
@@ -213,44 +219,54 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 	if snapshot.removed {
 		return ErrAccountNotFound
 	}
+	if snapshot.manualDisabled {
+		return nil
+	}
 	if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
 		return nil
 	}
 
 	auth := snapshot.auth
-	if !usableDPoPKey(auth.DPopPrivateKey) {
+	for attempt := 0; attempt < 2 && !usableDPoPKey(auth.DPopPrivateKey); attempt++ {
 		key, err := NewDPoPKey()
 		if err != nil {
 			return err
 		}
 		auth.DPopPrivateKey = key
-		wrote, err := m.writeAuth(a, snapshot, auth)
+		wrote, generation, err := m.writeAuth(a, snapshot, auth)
 		if err != nil {
 			return err
 		}
-		if !wrote {
-			// A login/refresh replaced the credentials while the key was being
-			// generated. Refresh only the latest view if it is still due.
-			snapshot = a.tokenSnapshot()
-			if snapshot.removed {
-				return ErrAccountNotFound
-			}
-			if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
-				return nil
-			}
-			auth = snapshot.auth
-			if !usableDPoPKey(auth.DPopPrivateKey) {
-				return errors.New("codearts: generated DPoP key was not applied")
-			}
-		} else {
+		if wrote {
 			snapshot.auth = auth
+			snapshot.generation = generation
+			break
 		}
+		// A login/refresh replaced or proxy-updated the credentials while the
+		// key was being generated. Re-read and retry once for the latest view.
+		snapshot = a.tokenSnapshot()
+		if snapshot.removed {
+			return ErrAccountNotFound
+		}
+		if snapshot.manualDisabled {
+			return nil
+		}
+		if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
+			return nil
+		}
+		auth = snapshot.auth
+	}
+	if !usableDPoPKey(auth.DPopPrivateKey) {
+		return errors.New("codearts: generated DPoP key was not applied")
 	}
 
 	refreshToken := strings.TrimSpace(auth.RefreshToken)
 	if refreshToken == "" {
-		m.noteTerminal(a, ErrRefreshTokenMissing.Error())
-		return ErrRefreshTokenMissing
+		if !m.stillCurrent(a, snapshot) {
+			return nil
+		}
+		noteErr := m.noteTerminal(a, ErrRefreshTokenMissing.Error())
+		return errors.Join(ErrRefreshTokenMissing, noteErr)
 	}
 
 	clientID := strings.TrimSpace(auth.ClientID)
@@ -280,7 +296,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 	}
 
 	updated := authFromRefreshToken(auth, token, m.nowTime())
-	wrote, err := m.writeAuth(a, snapshot, updated)
+	wrote, _, err := m.writeAuth(a, snapshot, updated)
 	if err != nil {
 		return err
 	}
@@ -288,8 +304,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 		// A newer credential document won the race; do not overwrite it.
 		return nil
 	}
-	m.noteSuccess(a)
-	return nil
+	return m.noteSuccess(a)
 }
 
 func (m *TokenManager) handleRefreshFailure(a *Account, snapshot tokenAccountSnapshot, auth Auth, err error) error {
@@ -299,8 +314,8 @@ func (m *TokenManager) handleRefreshFailure(a *Account, snapshot tokenAccountSna
 
 	if isTerminalRefreshError(err) {
 		message := fmt.Sprintf("refresh_token 已失效或被拒，需要重新登录：%s", err.Error())
-		m.noteTerminal(a, message)
-		return err
+		noteErr := m.noteTerminal(a, message)
+		return errors.Join(err, noteErr)
 	}
 
 	// v1 swallows transient failures while the current access token is still
@@ -317,18 +332,55 @@ func (m *TokenManager) stillCurrent(a *Account, snapshot tokenAccountSnapshot) b
 	if a == nil {
 		return false
 	}
+	if pool := a.pool; pool != nil {
+		pool.authOpsMu.Lock()
+		defer pool.authOpsMu.Unlock()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.uidLocked() != snapshot.uid {
+	if a.removed || a.uidLocked() != snapshot.uid ||
+		a.authGeneration != snapshot.generation {
 		return false
 	}
-	return sameRefreshCredentials(a.Auth, snapshot.auth)
+	return sameCredentialIdentity(a.Auth, snapshot.auth)
 }
 
-func sameRefreshCredentials(current, previous Auth) bool {
+// sameCredentialIdentity compares refresh-only credential identity
+// semantically, so a proxy-slot save that reloads and re-indents the raw JWK
+// does not invalidate an in-flight refresh.
+func sameCredentialIdentity(current, previous Auth) bool {
 	return strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
-		bytes.Equal(current.DPopPrivateKey, previous.DPopPrivateKey) &&
-		current.CloudDragonToken == previous.CloudDragonToken
+		current.CloudDragonToken == previous.CloudDragonToken &&
+		sameDPoPKey(current.DPopPrivateKey, previous.DPopPrivateKey)
+}
+
+func sameDPoPKey(left, right json.RawMessage) bool {
+	compact := func(raw json.RawMessage) []byte {
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+			return nil
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, trimmed); err != nil {
+			return trimmed
+		}
+		return buf.Bytes()
+	}
+	leftJSON, rightJSON := compact(left), compact(right)
+	if leftJSON == nil || rightJSON == nil {
+		return leftJSON == nil && rightJSON == nil
+	}
+	if bytes.Equal(leftJSON, rightJSON) {
+		return true
+	}
+	leftKey, leftErr := parseDPoPPrivateKey(leftJSON)
+	rightKey, rightErr := parseDPoPPrivateKey(rightJSON)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return leftKey.D.Cmp(rightKey.D) == 0 &&
+		leftKey.X.Cmp(rightKey.X) == 0 &&
+		leftKey.Y.Cmp(rightKey.Y) == 0
 }
 
 func usableDPoPKey(raw json.RawMessage) bool {
@@ -339,12 +391,15 @@ func usableDPoPKey(raw json.RawMessage) bool {
 	return err == nil
 }
 
-// writeAuth verifies path ownership, persists candidate atomically, and only
-// then publishes it on the account. It returns false without writing when a
-// newer credential document replaced the snapshot.
-func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, candidate Auth) (bool, error) {
+// writeAuth verifies generation, path ownership, and credential identity,
+// persists candidate atomically, and only then publishes it on the account. It
+// returns false without writing when a newer credential document replaced the
+// snapshot. A concurrent proxy-only save keeps the same generation and
+// semantic identity, so the refreshed token is merged with the latest
+// ProxySlot rather than discarded.
+func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, candidate Auth) (bool, uint64, error) {
 	if a == nil {
-		return false, ErrAccountNotFound
+		return false, 0, ErrAccountNotFound
 	}
 
 	var pool *Pool
@@ -358,14 +413,16 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 	defer a.mu.Unlock()
 
 	if a.removed {
-		return false, ErrAccountNotFound
+		return false, a.authGeneration, ErrAccountNotFound
 	}
 	uid := a.uidLocked()
 	if strings.TrimSpace(uid) == "" {
-		return false, errors.New("codearts: token refresh requires a user_id")
+		return false, a.authGeneration, errors.New("codearts: token refresh requires a user_id")
 	}
-	if uid != snapshot.uid || !sameRefreshCredentials(a.Auth, snapshot.auth) {
-		return false, nil
+	if a.authGeneration != snapshot.generation ||
+		uid != snapshot.uid ||
+		!sameCredentialIdentity(a.Auth, snapshot.auth) {
+		return false, a.authGeneration, nil
 	}
 
 	path := strings.TrimSpace(a.Path)
@@ -373,29 +430,34 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 		path = strings.TrimSpace(snapshot.path)
 	}
 	if path == "" {
-		return false, errors.New("codearts: token refresh requires an auth path")
+		return false, a.authGeneration, errors.New("codearts: token refresh requires an auth path")
 	}
 	if err := verifyAuthOwnership(path, uid); err != nil {
-		return false, err
+		return false, a.authGeneration, err
 	}
 
 	// Preserve a proxy binding that changed while the request was in flight.
 	candidate.ProxySlot = a.Auth.ProxySlot
 	if err := SaveAuth(path, candidate); err != nil {
-		return false, fmt.Errorf("codearts: save refreshed auth: %w", err)
+		return false, a.authGeneration, fmt.Errorf("codearts: save refreshed auth: %w", err)
 	}
 	a.Auth = candidate
 	a.Path = path
-	return true, nil
+	a.authGeneration++
+	return true, a.authGeneration, nil
 }
 
-// authFromRefreshToken merges a successful token response exactly like v1
-// update_auth: identity fields only when returned, all STS credentials, the
-// rotated refresh token, and updated_at. PKCE/client identity, the DPoP key,
-// proxy slot, and unknown fields are preserved.
+// authFromRefreshToken merges a successful token response like v1
+// update_auth: all STS credentials, the rotated refresh token, normalized
+// identity fields when returned, and updated_at. PKCE/client identity, the
+// DPoP key, proxy slot, unknown fields, and the established UID are preserved.
 func authFromRefreshToken(old Auth, token Token, now time.Time) Auth {
 	updated := old
-	if value := strings.TrimSpace(token.UserID); value != "" {
+	// Keep the established UID. Accepting a changed identity would leave the
+	// credential document under its old canonical path while changing the
+	// pool's authoritative UID, risking collisions with another account.
+	if value := strings.TrimSpace(token.UserID); value != "" &&
+		strings.TrimSpace(updated.UserID) == "" {
 		updated.UserID = value
 	}
 	if value := strings.TrimSpace(token.UserName); value != "" {
@@ -448,9 +510,9 @@ func isTerminalRefreshError(err error) bool {
 	return false
 }
 
-func (m *TokenManager) noteTerminal(a *Account, message string) {
+func (m *TokenManager) noteTerminal(a *Account, message string) error {
 	if a == nil {
-		return
+		return nil
 	}
 	a.mu.Lock()
 	secrets := codeartsSecretValues(a.Auth)
@@ -458,8 +520,7 @@ func (m *TokenManager) noteTerminal(a *Account, message string) {
 	message = redactText(message, secrets)
 
 	if pool := a.pool; pool != nil {
-		_ = pool.NoteError(a, message, false, true)
-		return
+		return pool.NoteError(a, message, false, true)
 	}
 
 	a.mu.Lock()
@@ -469,33 +530,34 @@ func (m *TokenManager) noteTerminal(a *Account, message string) {
 		a.State.Disabled = true
 		a.State.Reason = a.State.LastError
 	}
+	return nil
 }
 
-// noteTokenSuccess mirrors v1 update_auth's state cleanup: transient failures
-// are cleared, but a manual disable and its reason remain untouched.
-func (m *TokenManager) noteSuccess(a *Account) {
+// noteTokenSuccess mirrors v1 update_auth's state cleanup: only disabled,
+// reason, and last_error are cleared for a non-manual failure. Error counters
+// and cooldowns are intentionally left to the scheduler.
+func (m *TokenManager) noteSuccess(a *Account) error {
 	if a == nil {
-		return
+		return nil
 	}
 	if pool := a.pool; pool != nil {
-		_ = pool.noteTokenSuccess(a)
-		return
+		return pool.noteTokenSuccess(a)
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.State.ManualDisabled {
-		return
+		return nil
 	}
-	a.State.ErrCount = 0
-	a.State.CoolUntil = 0
 	a.State.LastError = ""
 	a.State.Disabled = false
 	a.State.Reason = ""
+	return nil
 }
 
-// noteTokenSuccess clears non-manual failure state after a successful token
-// rotation and persists one state snapshot.
+// noteTokenSuccess clears v1's post-login failure fields after a successful
+// token rotation and persists one state snapshot. err_count and cool_until are
+// scheduler history and are not touched by v1 update_auth.
 func (p *Pool) noteTokenSuccess(a *Account) error {
 	if a == nil {
 		return nil
@@ -509,8 +571,6 @@ func (p *Pool) noteTokenSuccess(a *Account) error {
 		if a.State.ManualDisabled {
 			return
 		}
-		a.State.ErrCount = 0
-		a.State.CoolUntil = 0
 		a.State.LastError = ""
 		a.State.Disabled = false
 		a.State.Reason = ""
@@ -555,9 +615,17 @@ func (m *TokenManager) Keepalive(ctx context.Context) (int, error) {
 			}
 			redacted := redactOAuthError(err, codeartsSecretValues(snapshot.auth)...)
 			errs = append(errs, fmt.Errorf("codearts: refresh %s: %w", uid, redacted))
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				errs = append(errs, ctxErr)
+				break
+			}
 			continue
 		}
 		refreshed++
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			errs = append(errs, ctxErr)
+			break
+		}
 	}
 
 	if len(errs) > 0 {
@@ -580,5 +648,6 @@ func (a *Account) tokenSnapshot() tokenAccountSnapshot {
 		disabled:       a.State.Disabled,
 		manualDisabled: a.State.ManualDisabled,
 		removed:        a.removed,
+		generation:     a.authGeneration,
 	}
 }

@@ -127,6 +127,12 @@ type Account struct {
 	maxConcurrent    int
 	lastUsed         time.Time
 	removed          bool
+
+	// authGeneration advances only when the credential document is replaced
+	// (re-import or token rotation), never for a proxy-only auth save. Refresh
+	// flights capture it so a rotated response cannot overwrite newer
+	// credentials.
+	authGeneration uint64
 }
 
 // Healthy reports whether the account may serve a request at now. Manual
