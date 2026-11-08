@@ -31,8 +31,10 @@ envelopes, concurrency retry/failover, and credit-exhausted failover/readable
 400.
 
 Dynamic values are explicit placeholders: `base_url`, per-second
-`token_remaining`, the 1017 peak/off-peak `credits` multiplier, timestamps, and
-generated IDs. See `tests/oracle/codearts.md` for the read-only v1.6.5 oracle
-procedure. Actual v1.6.5 parity remains **pending** for CodeArts as well; the
-goldens lock down v2's scoped semantics and must be reviewed before being
-replaced by recorded oracle assertions.
+`token_remaining`, the time-of-day `credits` multiplier on every model whose
+peak and off-peak rates differ (`DeepSeek-V4.1-Flash` and
+`DeepSeek-V4.1-Flash-1017`), timestamps, and generated IDs. See
+`tests/oracle/codearts.md` for the read-only v1.6.5 oracle procedure. Actual
+v1.6.5 parity remains **pending** for CodeArts as well; the goldens lock down
+v2's scoped semantics and must be reviewed before being replaced by recorded
+oracle assertions.

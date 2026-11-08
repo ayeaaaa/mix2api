@@ -419,7 +419,7 @@
       "context_length": 1000000,
       "context_window": 1000000,
       "created": "<timestamp>",
-      "credits": "x0.09",
+      "credits": "<time_of_day_credits>",
       "credits_note": "peak 0.18x / off-peak 0.09x",
       "credits_offpeak": "x0.09",
       "credits_peak": "x0.18",

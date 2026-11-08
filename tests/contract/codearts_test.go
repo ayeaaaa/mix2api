@@ -36,7 +36,10 @@ const (
 	codeartsDisplay1017        = "DeepSeek-V4.1-Flash-1017"
 )
 
-var codeartsTokenRemainingPattern = regexp.MustCompile(`^(?:[0-9]+h[0-9]+m|[0-9]+m)$`)
+var (
+	codeartsTokenRemainingPattern = regexp.MustCompile(`^(?:[0-9]+h[0-9]+m|[0-9]+m)$`)
+	codeartsWireTimePattern       = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$`)
+)
 
 // codeartsExpectedModelIDs is the exact union the v1.6.5 fake upstream and the
 // published official/benefit seed sets produce. The order is the provider's
@@ -159,15 +162,28 @@ func TestCodeArtsGoldenHealthModelsChat(t *testing.T) {
 			entry["provider"] != "codearts" || entry["name"] != codeartsDisplay1017 {
 			t.Fatalf("1017 model identity = %#v", entry)
 		}
-		credits, _ := entry["credits"].(string)
-		peak, _ := entry["credits_peak"].(string)
-		offpeak, _ := entry["credits_offpeak"].(string)
-		if peak != "x0.18" || offpeak != "x0.12" {
-			t.Fatalf("1017 peak/off-peak credits = %q/%q, want x0.18/x0.12", peak, offpeak)
+		timeOfDay := make(map[string]bool)
+		for id, candidate := range entries {
+			peak, _ := candidate["credits_peak"].(string)
+			offpeak, _ := candidate["credits_offpeak"].(string)
+			if peak == "" || offpeak == "" || peak == offpeak {
+				continue
+			}
+			timeOfDay[id] = true
+			credits, _ := candidate["credits"].(string)
+			if credits != peak && credits != offpeak {
+				t.Fatalf("%s credits = %q, want the current peak (%q) or off-peak (%q) rate",
+					id, credits, peak, offpeak)
+			}
 		}
-		if credits != peak && credits != offpeak {
-			t.Fatalf("1017 credits = %q, want the current peak (%q) or off-peak (%q) rate",
-				credits, peak, offpeak)
+		for _, id := range []string{"DeepSeek-V4.1-Flash", codeartsDisplay1017} {
+			if !timeOfDay[id] {
+				t.Fatalf("%s did not expose distinct peak/off-peak credits (have %v)", id, timeOfDay)
+			}
+		}
+		if len(timeOfDay) != 2 {
+			t.Fatalf("time-of-day models = %v, want exactly DeepSeek-V4.1-Flash and %s",
+				timeOfDay, codeartsDisplay1017)
 		}
 		fixture.assertNoSecrets(t, "models", rec.Body.Bytes())
 		codeartsAssertGoldenJSON(t, rec.Body.Bytes(), "codearts_models.golden.json", func(body []byte) []byte {
@@ -317,8 +333,8 @@ func TestCodeArtsGoldenOverviewCheckinCreditsModelsRefresh(t *testing.T) {
 				t.Fatalf("overview token_remaining = %q, want a non-empty duration", remaining)
 			}
 			expiresAt, _ := account["expires_at"].(string)
-			if strings.TrimSpace(expiresAt) == "" {
-				t.Fatalf("overview expires_at is empty: %#v", account)
+			if !codeartsWireTimePattern.MatchString(expiresAt) {
+				t.Fatalf("overview expires_at = %q, want YYYY-MM-DDTHH:MM:SS wire time", expiresAt)
 			}
 		}
 		stats := root["stats"].(map[string]any)
@@ -671,8 +687,14 @@ func codeartsAssertContractCompletion(t *testing.T, where string, body []byte) {
 	if !ok || len(choices) != 1 {
 		t.Fatalf("%s completion choices = %#v", where, completion["choices"])
 	}
-	choice := choices[0].(map[string]any)
-	message := choice["message"].(map[string]any)
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		t.Fatalf("%s completion choice = %T, want object", where, choices[0])
+	}
+	message, ok := choice["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s completion message = %T, want object", where, choice["message"])
+	}
 	if message["role"] != "assistant" || message["content"] != "你好" {
 		t.Fatalf("%s completion message = %#v", where, message)
 	}
@@ -1380,9 +1402,9 @@ func codeartsEncodeJSON(t *testing.T, value any) []byte {
 	return encoded
 }
 
-// codeartsPrepareModels replaces only the time-of-day 1017 credit multiplier
-// with a stable placeholder. Peak/off-peak metadata stays fully compared, and
-// the test separately asserts the live rate is one of the two published values.
+// codeartsPrepareModels replaces every time-of-day credit multiplier (models
+// whose published peak and off-peak rates differ) with a stable placeholder.
+// The test separately asserts each live value is one of those two rates.
 func codeartsPrepareModels(t *testing.T, body []byte) []byte {
 	t.Helper()
 	value := codeartsDecodeJSON(t, body)
@@ -1393,7 +1415,12 @@ func codeartsPrepareModels(t *testing.T, body []byte) []byte {
 	data, _ := root["data"].([]any)
 	for _, raw := range data {
 		entry, _ := raw.(map[string]any)
-		if entry == nil || entry["id"] != codeartsDisplay1017 {
+		if entry == nil {
+			continue
+		}
+		peak, _ := entry["credits_peak"].(string)
+		offpeak, _ := entry["credits_offpeak"].(string)
+		if peak == "" || offpeak == "" || peak == offpeak {
 			continue
 		}
 		if _, present := entry["credits"]; present {

@@ -20,8 +20,8 @@ This file is the CodeArts-specific procedure and fixture provenance.
 - `NormalizeJSON` and `NormalizeSSE` compare the complete scoped payloads. No
   key projection is used: an extra or missing stable field fails. The only
   value placeholders are documented dynamic values (`base_url`,
-  `token_remaining`, the 1017 time-of-day credit multiplier, timestamps,
-  generated IDs).
+  `token_remaining`, every time-of-day credit multiplier (models whose peak
+  and off-peak rates differ), timestamps, generated IDs).
 - v1.6.5 oracle parity is therefore **pending**: the v2 regression fixtures
   pass, but no recorded v1.6.5 payloads have been committed in this branch.
 
@@ -270,11 +270,13 @@ hand-picked subset. For CodeArts specifically:
 - `base_url` becomes `<upstream>` after replacing the fake URL; the port changes
   per run.
 - `accounts[].token_remaining` is a per-second countdown; use `<duration>`.
-- The `DeepSeek-V4.1-Flash-1017` `credits` multiplier depends on local peak
-  hours (`08:00-20:59` -> `x0.18`, otherwise `x0.12`). Compare a
+- Every model whose `credits_peak` differs from `credits_offpeak` has a
+  time-of-day `credits` multiplier. In the current catalogue that is
+  `DeepSeek-V4.1-Flash` (`x0.18` peak / `x0.09` off-peak) and
+  `DeepSeek-V4.1-Flash-1017` (`x0.18` / `x0.12`). Compare a
   `<time_of_day_credits>` placeholder while asserting the live value is one of
-  those two rates; `credits_peak`, `credits_offpeak`, and `credits_note` stay
-  fully compared.
+  the model's two published rates; `credits_peak`, `credits_offpeak`, and
+  `credits_note` stay fully compared.
 - Generated chat IDs (`chatcmpl-*`, `call_*`, request/session/trace IDs) become
   `<dynamic>` only in identifier fields. Model IDs and account IDs are semantic
   and must survive.
