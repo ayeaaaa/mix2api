@@ -100,9 +100,12 @@ type AccountView struct {
 // Account is one CodeArts account's v1 credentials, list-state entry,
 // provider-owned snapshots, and runtime scheduler fields.
 //
-// Auth, State, Info, Checkin, Models, the model benefit map, the proxy binding,
-// and the concurrency counters are guarded by mu. Path and pool are set once
-// while the account is being loaded/imported and are read-only afterwards.
+// Auth, State, Info, Checkin, Models, the model benefit map, the last model
+// discovery timestamp, the proxy binding, and the concurrency counters are
+// guarded by mu. Model discovery itself is serialized by modelsMu and may hold
+// the network for a long time; it is never acquired while mu is held. Path and
+// pool are set once while the account is being loaded/imported and are
+// read-only afterwards.
 type Account struct {
 	Auth    Auth
 	State   AccountState
@@ -127,6 +130,14 @@ type Account struct {
 	maxConcurrent    int
 	lastUsed         time.Time
 	removed          bool
+
+	// modelsMu serializes live model discovery for this account. It may be
+	// held across network I/O and is never acquired while mu is held, so a
+	// concurrent catalog read never waits on upstream. modelsFetchedAt records
+	// the last successful discovery and is guarded by mu.
+	modelsMu        sync.Mutex
+	modelsFetchedAt time.Time
+	modelsFlight    *modelFetchFlight
 
 	// authGeneration advances only when the credential document is replaced
 	// (re-import or token rotation), never for a proxy-only auth save. Refresh

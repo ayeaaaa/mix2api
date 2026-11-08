@@ -1015,6 +1015,7 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	account.authGeneration++
 	account.Models = nil
 	account.modelBenefit = nil
+	account.modelsFetchedAt = time.Time{}
 	account.State.Name = uid
 	if !account.State.ManualDisabled {
 		account.State.Disabled = false

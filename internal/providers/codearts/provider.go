@@ -24,6 +24,10 @@ type Provider struct {
 	pool         *Pool
 	transport    *transport.Client
 	tokenManager *TokenManager
+
+	// catalogHTTPTimeout bounds each upstream model-discovery call. Tests may
+	// lower it; zero means the package default.
+	catalogHTTPTimeout time.Duration
 }
 
 // New returns the production CodeArts provider. The accounts directory is the
@@ -60,12 +64,13 @@ func New(store *config.Store) (*Provider, error) {
 	})
 
 	return &Provider{
-		store:        store,
-		accountsDir:  accountsDir,
-		cfg:          cfg,
-		pool:         pool,
-		transport:    client,
-		tokenManager: manager,
+		store:              store,
+		accountsDir:        accountsDir,
+		cfg:                cfg,
+		pool:               pool,
+		transport:          client,
+		tokenManager:       manager,
+		catalogHTTPTimeout: catalogHTTPTimeout,
 	}, nil
 }
 
