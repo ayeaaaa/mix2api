@@ -157,6 +157,17 @@ func waitTokenRefreshStarted(t *testing.T, started <-chan struct{}) {
 	}
 }
 
+func waitTokenRefreshJoiners(t *testing.T, joined <-chan struct{}, want int) {
+	t.Helper()
+	for i := 0; i < want; i++ {
+		select {
+		case <-joined:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d callers joined the refresh flight", i, want)
+		}
+	}
+}
+
 func tokenTestAuth(uid string, expiration time.Time) Auth {
 	return Auth{
 		UserID:           uid,
@@ -563,6 +574,86 @@ func TestTokenEnsureConcurrentReimportWins(t *testing.T) {
 	}
 }
 
+func TestTokenEnsureIdenticalReimportKeepsRotatedToken(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	base := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, base)
+	account := pool.Get("u1")
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+	started, release := blockTokenRefreshFake(fake)
+
+	errs := make(chan error, 1)
+	go func() { errs <- manager.Ensure(context.Background(), account) }()
+	waitTokenRefreshStarted(t, started)
+
+	// Same credential material, different metadata: this is the identical
+	// re-import that used to bump authGeneration and discard the rotation.
+	identical := base
+	identical.UpdatedAt = base.UpdatedAt + 99
+	identical.extraFields = map[string]json.RawMessage{
+		"future_field": json.RawMessage(`{"keep":true,"reimport":true}`),
+		"new_field":    json.RawMessage(`42`),
+	}
+	if _, err := pool.Add(identical); err != nil {
+		t.Fatalf("identical re-import: %v", err)
+	}
+	reimportGeneration := account.tokenSnapshot().generation
+	release()
+
+	if err := <-errs; err != nil {
+		t.Fatalf("Ensure after identical re-import: %v", err)
+	}
+	if calls, _, _, _, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1", calls)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-new" {
+		t.Fatalf("rotated token was discarded: %q", account.Auth.RefreshToken)
+	}
+	reloaded, err := LoadAuth(account.Path)
+	if err != nil {
+		t.Fatalf("LoadAuth: %v", err)
+	}
+	if reloaded.RefreshToken != "refresh-u1-new" {
+		t.Fatalf("persisted token = %q, want refresh-u1-new", reloaded.RefreshToken)
+	}
+	if reloaded.UpdatedAt != now.Unix() {
+		t.Fatalf("updated_at = %d, want refresh timestamp %d", reloaded.UpdatedAt, now.Unix())
+	}
+	var future map[string]any
+	if err := json.Unmarshal(reloaded.extraFields["future_field"], &future); err != nil {
+		t.Fatalf("decode merged extra: %v", err)
+	}
+	if future["reimport"] != true || future["keep"] != true {
+		t.Fatalf("latest extras were not merged: %v", future)
+	}
+	if !bytes.Equal(bytes.TrimSpace(reloaded.extraFields["new_field"]), []byte(`42`)) {
+		t.Fatalf("new extra was not merged: %s", reloaded.extraFields["new_field"])
+	}
+	if got := account.tokenSnapshot().generation; got <= reimportGeneration {
+		t.Fatalf("generation = %d, want > re-import generation %d", got, reimportGeneration)
+	}
+
+	// The account must remain usable for the next rotation.
+	account.mu.Lock()
+	account.Auth.Expiration = now.Add(-time.Minute)
+	account.mu.Unlock()
+	fake.mu.Lock()
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-second", now.Add(time.Hour))
+	}
+	fake.mu.Unlock()
+	if err := manager.Ensure(context.Background(), account); err != nil {
+		t.Fatalf("next refresh: %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-second" {
+		t.Fatalf("next refresh token = %q", account.Auth.RefreshToken)
+	}
+}
+
 func TestTokenEnsureConcurrentSingleFlightFailure(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	fake, _ := newTokenRefreshFake(t)
@@ -575,6 +666,8 @@ func TestTokenEnsureConcurrentSingleFlightFailure(t *testing.T) {
 	started, release := blockTokenRefreshFake(fake)
 
 	const callers = 20
+	joined := make(chan struct{}, callers-1)
+	manager.flightJoinHook = func() { joined <- struct{}{} }
 	start := make(chan struct{})
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
@@ -587,8 +680,8 @@ func TestTokenEnsureConcurrentSingleFlightFailure(t *testing.T) {
 		}()
 	}
 	close(start)
-	<-started
-	time.Sleep(100 * time.Millisecond)
+	waitTokenRefreshStarted(t, started)
+	waitTokenRefreshJoiners(t, joined, callers-1)
 	release()
 	wg.Wait()
 	close(errs)
@@ -718,12 +811,14 @@ func TestTokenEnsureConcurrentSingleFlight(t *testing.T) {
 	auth := tokenTestAuth("u1", now.Add(-time.Minute))
 	pool, _ := tokenTestPool(t, auth)
 	account := pool.Get("u1")
-	fake.delay = 75 * time.Millisecond
 	fake.payload = func(form url.Values) map[string]any {
 		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
 	}
+	started, release := blockTokenRefreshFake(fake)
 
 	const callers = 20
+	joined := make(chan struct{}, callers-1)
+	manager.flightJoinHook = func() { joined <- struct{}{} }
 	start := make(chan struct{})
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
@@ -736,6 +831,9 @@ func TestTokenEnsureConcurrentSingleFlight(t *testing.T) {
 		}()
 	}
 	close(start)
+	waitTokenRefreshStarted(t, started)
+	waitTokenRefreshJoiners(t, joined, callers-1)
+	release()
 	wg.Wait()
 	close(errs)
 
@@ -1170,6 +1268,39 @@ func TestTokenKeepaliveSkipsDisabledAndCollectsErrors(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "refresh-u5-old") {
 		t.Fatalf("Keepalive error leaked a refresh token: %v", err)
+	}
+}
+
+func TestTokenEnsureTerminalFailureAfterReimportDoesNotDisableNewCredentials(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(-time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	replacement := tokenTestAuth("u1", now.Add(2*time.Hour))
+	replacement.RefreshToken = "refresh-u1-reimport"
+	replacement.CloudDragonToken = "cloud-reimport"
+	fake.status = http.StatusUnauthorized
+	fake.body = `{"error":"invalid_grant","error_msg":"refresh-u1-old has been used"}`
+	started, release := blockTokenRefreshFake(fake)
+
+	errs := make(chan error, 1)
+	go func() { errs <- manager.Ensure(context.Background(), account) }()
+	waitTokenRefreshStarted(t, started)
+	if _, err := pool.Add(replacement); err != nil {
+		t.Fatalf("Add re-import: %v", err)
+	}
+	release()
+
+	if err := <-errs; err != nil {
+		t.Fatalf("superseded terminal failure should be ignored, got %v", err)
+	}
+	if account.Auth.RefreshToken != "refresh-u1-reimport" {
+		t.Fatalf("re-import credentials = %+v", account.Auth)
+	}
+	if account.State.Disabled || account.State.ManualDisabled {
+		t.Fatalf("new credentials were disabled by the old failure: %+v", account.State)
 	}
 }
 

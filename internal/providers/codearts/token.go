@@ -60,6 +60,10 @@ type TokenManager struct {
 
 	mu      sync.Mutex
 	flights map[*Account]*tokenRefreshFlight
+
+	// flightJoinHook is a test seam invoked after a caller joins an existing
+	// refresh flight and before it waits for the result. Nil in production.
+	flightJoinHook func()
 }
 
 type tokenRefreshFlight struct {
@@ -134,6 +138,9 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	m.mu.Lock()
 	if flight := m.flights[a]; flight != nil {
 		m.mu.Unlock()
+		if m.flightJoinHook != nil {
+			m.flightJoinHook()
+		}
 		if err := waitTokenRefresh(ctx, flight); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
@@ -262,10 +269,10 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 
 	refreshToken := strings.TrimSpace(auth.RefreshToken)
 	if refreshToken == "" {
-		if !m.stillCurrent(a, snapshot) {
+		applied, noteErr := m.noteTerminalIfCurrent(a, snapshot, ErrRefreshTokenMissing.Error())
+		if !applied {
 			return nil
 		}
-		noteErr := m.noteTerminal(a, ErrRefreshTokenMissing.Error())
 		return errors.Join(ErrRefreshTokenMissing, noteErr)
 	}
 
@@ -308,16 +315,18 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 }
 
 func (m *TokenManager) handleRefreshFailure(a *Account, snapshot tokenAccountSnapshot, auth Auth, err error) error {
-	if !m.stillCurrent(a, snapshot) {
-		return nil
-	}
-
 	if isTerminalRefreshError(err) {
 		message := fmt.Sprintf("refresh_token 已失效或被拒，需要重新登录：%s", err.Error())
-		noteErr := m.noteTerminal(a, message)
+		applied, noteErr := m.noteTerminalIfCurrent(a, snapshot, message)
+		if !applied {
+			return nil
+		}
 		return errors.Join(err, noteErr)
 	}
 
+	if !m.stillCurrent(a, snapshot) {
+		return nil
+	}
 	// v1 swallows transient failures while the current access token is still
 	// valid, and reports them once it has expired.
 	if tokenExpired(auth.Expiration, m.nowTime()) {
@@ -338,19 +347,73 @@ func (m *TokenManager) stillCurrent(a *Account, snapshot tokenAccountSnapshot) b
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.removed || a.uidLocked() != snapshot.uid ||
+	return stillCurrentLocked(a, snapshot)
+}
+
+func stillCurrentLocked(a *Account, snapshot tokenAccountSnapshot) bool {
+	if a == nil || a.removed {
+		return false
+	}
+	if a.uidLocked() != snapshot.uid ||
 		a.authGeneration != snapshot.generation {
 		return false
 	}
 	return sameCredentialIdentity(a.Auth, snapshot.auth)
 }
 
-// sameCredentialIdentity compares refresh-only credential identity
-// semantically, so a proxy-slot save that reloads and re-indents the raw JWK
-// does not invalidate an in-flight refresh.
+// noteTerminalIfCurrent verifies the refresh snapshot and applies the terminal
+// disable while authOpsMu is held, so a concurrent re-import/proxy save cannot
+// intercept the check between verification and the state mutation. NoteError
+// takes stateMu and Account.mu in the documented authOpsMu -> stateMu ->
+// Account.mu order.
+func (m *TokenManager) noteTerminalIfCurrent(
+	a *Account,
+	snapshot tokenAccountSnapshot,
+	message string,
+) (bool, error) {
+	if a == nil {
+		return false, nil
+	}
+	if pool := a.pool; pool != nil {
+		pool.authOpsMu.Lock()
+		defer pool.authOpsMu.Unlock()
+
+		a.mu.Lock()
+		current := stillCurrentLocked(a, snapshot)
+		secrets := codeartsSecretValues(a.Auth)
+		a.mu.Unlock()
+		if !current {
+			return false, nil
+		}
+		return true, pool.NoteError(a, redactText(message, secrets), false, true)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !stillCurrentLocked(a, snapshot) {
+		return false, nil
+	}
+	message = redactText(message, codeartsSecretValues(a.Auth))
+	a.State.LastError = truncateRunes(message, maxStateNoteRunes)
+	if !a.State.ManualDisabled {
+		a.State.Disabled = true
+		a.State.Reason = a.State.LastError
+	}
+	return true, nil
+}
+
+// sameCredentialIdentity compares the credential material that identifies an
+// account across auth-document rewrites. UpdatedAt, proxy binding, unknown
+// extras, and display fields are intentionally excluded so a semantically
+// identical re-import does not invalidate an in-flight refresh.
 func sameCredentialIdentity(current, previous Auth) bool {
-	return strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
+	return strings.TrimSpace(current.UserID) == strings.TrimSpace(previous.UserID) &&
+		strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
 		current.CloudDragonToken == previous.CloudDragonToken &&
+		current.AccessKeyID == previous.AccessKeyID &&
+		current.SecretAccessKey == previous.SecretAccessKey &&
+		current.ClientID == previous.ClientID &&
+		current.CodeVerifier == previous.CodeVerifier &&
 		sameDPoPKey(current.DPopPrivateKey, previous.DPopPrivateKey)
 }
 
@@ -419,11 +482,14 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 	if strings.TrimSpace(uid) == "" {
 		return false, a.authGeneration, errors.New("codearts: token refresh requires a user_id")
 	}
-	if a.authGeneration != snapshot.generation ||
-		uid != snapshot.uid ||
-		!sameCredentialIdentity(a.Auth, snapshot.auth) {
+	if uid != snapshot.uid || !sameCredentialIdentity(a.Auth, snapshot.auth) {
 		return false, a.authGeneration, nil
 	}
+	// A generation bump with identical credential material is an identical
+	// re-import (for example a panel re-save that changed only updated_at,
+	// proxy fields, or extras). The rotated one-time token is still valid for
+	// the current credentials, so merge the latest metadata and publish it.
+	candidate = mergeTokenAuthMetadata(candidate, a.Auth, snapshot.auth)
 
 	path := strings.TrimSpace(a.Path)
 	if path == "" {
@@ -436,8 +502,6 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 		return false, a.authGeneration, err
 	}
 
-	// Preserve a proxy binding that changed while the request was in flight.
-	candidate.ProxySlot = a.Auth.ProxySlot
 	if err := SaveAuth(path, candidate); err != nil {
 		return false, a.authGeneration, fmt.Errorf("codearts: save refreshed auth: %w", err)
 	}
@@ -445,6 +509,26 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 	a.Path = path
 	a.authGeneration++
 	return true, a.authGeneration, nil
+}
+
+// mergeTokenAuthMetadata keeps the latest proxy binding, extras, and a
+// re-imported updated_at while preserving the refreshed credential payload.
+func mergeTokenAuthMetadata(candidate, current, snapshot Auth) Auth {
+	candidate.ProxySlot = current.ProxySlot
+	if candidate.UpdatedAt == snapshot.UpdatedAt {
+		candidate.UpdatedAt = current.UpdatedAt
+	}
+	if len(current.extraFields) > 0 {
+		merged := make(map[string]json.RawMessage, len(candidate.extraFields)+len(current.extraFields))
+		for key, value := range candidate.extraFields {
+			merged[key] = value
+		}
+		for key, value := range current.extraFields {
+			merged[key] = value
+		}
+		candidate.extraFields = merged
+	}
+	return candidate
 }
 
 // authFromRefreshToken merges a successful token response like v1
@@ -508,29 +592,6 @@ func isTerminalRefreshError(err error) bool {
 		}
 	}
 	return false
-}
-
-func (m *TokenManager) noteTerminal(a *Account, message string) error {
-	if a == nil {
-		return nil
-	}
-	a.mu.Lock()
-	secrets := codeartsSecretValues(a.Auth)
-	a.mu.Unlock()
-	message = redactText(message, secrets)
-
-	if pool := a.pool; pool != nil {
-		return pool.NoteError(a, message, false, true)
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.State.LastError = truncateRunes(message, maxStateNoteRunes)
-	if !a.State.ManualDisabled {
-		a.State.Disabled = true
-		a.State.Reason = a.State.LastError
-	}
-	return nil
 }
 
 // noteTokenSuccess mirrors v1 update_auth's state cleanup: only disabled,
