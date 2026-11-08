@@ -14,20 +14,25 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
 )
 
-// Default data directories match v1's relative layout.
+// Default data directories match v1's names. v1 resolves them relative to the
+// script directory; v2 resolves them relative to the process working directory,
+// so deployments should set ACCOUNTS_DIR/USAGE_DIR explicitly when the working
+// directory is not the install root.
 const (
 	DefaultAccountsDir = "accounts"
 	DefaultUsageDir    = "usage"
 )
 
-// Paths is the command's persistent data layout.
+// Paths is the command's persistent data layout. UsageDir is retained for the
+// usage/pricing plan; it is deliberately not created or validated until a
+// component consumes it, so an unused invalid path cannot block startup.
 type Paths struct {
 	AccountsDir string
 	UsageDir    string
 }
 
 // PathsFromEnv resolves ACCOUNTS_DIR and USAGE_DIR. Blank values fall back to
-// the v1 defaults so the command starts without configuration.
+// the defaults above so the command starts without configuration.
 func PathsFromEnv() Paths {
 	return Paths{
 		AccountsDir: envDir("ACCOUNTS_DIR", DefaultAccountsDir),
@@ -54,14 +59,13 @@ type Setup struct {
 
 // Build prepares the persistent settings store, registers every provider
 // available in this build, and returns the provider list for
-// api.ServerOptions.Providers. Startup errors never include credential values.
+// api.ServerOptions.Providers. Only the accounts directory is created now;
+// UsageDir remains a deferred path until usage storage is implemented. Startup
+// errors never include credential values.
 func Build(paths Paths) (*Setup, error) {
 	paths = normalizePaths(paths)
 	if err := os.MkdirAll(paths.AccountsDir, 0o700); err != nil {
 		return nil, fmt.Errorf("app: create accounts directory: %w", err)
-	}
-	if err := os.MkdirAll(paths.UsageDir, 0o700); err != nil {
-		return nil, fmt.Errorf("app: create usage directory: %w", err)
 	}
 
 	store := config.New(filepath.Join(paths.AccountsDir, "settings.json"))

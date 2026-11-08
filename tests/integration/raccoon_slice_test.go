@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,9 +46,11 @@ func TestCommandPathsFromEnv(t *testing.T) {
 	}
 }
 
-// TestRaccoonSliceOverHTTP drives the exact command composition: env paths and
-// URL, settings store, Raccoon registration, generic API server, and admin
-// routes. The fake upstream is local; no test reaches the real network.
+// TestRaccoonSliceOverHTTP drives the real command composition through a real
+// TCP listener: env paths and URL, settings store, Raccoon registration, the
+// generic API server, and admin routes. The API client and fake upstream are
+// both httptest servers, so HTTP framing and chunked SSE reads are exercised;
+// no test reaches the real network.
 func TestRaccoonSliceOverHTTP(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	const uid = "pu-slice"
@@ -83,91 +86,109 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	if _, ok := setup.Registry.Get("raccoon"); !ok {
 		t.Fatal("registry has no raccoon realm")
 	}
-	for _, dir := range []string{setup.Paths.AccountsDir, setup.Paths.UsageDir} {
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			t.Fatalf("runtime directory %q was not created: %v", dir, err)
-		}
+	if info, err := os.Stat(setup.Paths.AccountsDir); err != nil || !info.IsDir() {
+		t.Fatalf("accounts directory %q was not created: %v", setup.Paths.AccountsDir, err)
+	}
+	if _, err := os.Stat(setup.Paths.UsageDir); !os.IsNotExist(err) {
+		t.Fatalf("unused usage directory was created: %v", err)
 	}
 
 	server := api.NewServer(api.ServerOptions{
 		Version:   sliceVersion,
 		Providers: setup.Providers,
 	})
-	handler := server.Handler
+	live := httptest.NewServer(server.Handler)
+	t.Cleanup(live.Close)
+	client := &http.Client{Timeout: 10 * time.Second}
 
 	// 1. Flat auth import must enable the realm and persist it in the store
 	// that the provider reads on every request.
-	rec := sliceRequest(t, handler, http.MethodPost, "/raccoon/accounts/import", map[string]any{
+	rec := sliceHTTP(t, client, http.MethodPost, live.URL+"/raccoon/accounts/import", map[string]any{
 		"access_token":    accessToken,
 		"refresh_token":   refreshToken,
 		"office_identity": "personal",
 		"office_org_name": "Slice Org",
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("import status = %d, body = %s", rec.Code, rec.Body)
-	}
-	imported := sliceJSON(t, rec.Body.Bytes())
+	sliceRequireStatus(t, "import", rec, http.StatusOK)
+	imported := sliceJSON(t, "import", rec)
 	if imported["ok"] != true || imported["enabled"] != true {
-		t.Fatalf("import envelope = %#v", imported)
+		t.Fatalf("import envelope: ok=%v enabled=%v", imported["ok"], imported["enabled"])
 	}
 	if imported["uid"] != uid {
-		t.Fatalf("import uid = %#v, want %q", imported["uid"], uid)
+		t.Fatalf("import uid = %v, want %q", imported["uid"], uid)
 	}
 	account, ok := imported["account"].(map[string]any)
-	if !ok || account["uid"] != uid {
-		t.Fatalf("import account = %#v", imported["account"])
+	if !ok {
+		t.Fatal("import account is not an object")
 	}
-	sliceNoSecrets(t, "import", rec.Body.Bytes(), accessToken, refreshToken)
+	if account["uid"] != uid {
+		t.Fatalf("import account uid = %v, want %q", account["uid"], uid)
+	}
+	sliceNoSecrets(t, "import", rec.Body, accessToken, refreshToken)
 
 	settings, err := setup.Store.Load()
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
 	raccoonSettings, ok := settings["raccoon"].(map[string]any)
-	if !ok || raccoonSettings["enabled"] != true {
-		t.Fatalf("raccoon settings were not auto-enabled: %#v", settings["raccoon"])
+	if !ok {
+		t.Fatal("raccoon settings is not an object")
+	}
+	if raccoonSettings["enabled"] != true {
+		t.Fatalf("raccoon settings enabled = %v, want true", raccoonSettings["enabled"])
 	}
 
 	// 2. Overview must see the imported account, enabled health, and no
 	// credentials.
-	rec = sliceRequest(t, handler, http.MethodGet, "/raccoon/overview", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("overview status = %d, body = %s", rec.Code, rec.Body)
-	}
-	overview := sliceJSON(t, rec.Body.Bytes())
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/raccoon/overview", nil)
+	sliceRequireStatus(t, "overview", rec, http.StatusOK)
+	overview := sliceJSON(t, "overview", rec)
 	if overview["provider"] != "raccoon" || overview["online"] != true {
-		t.Fatalf("overview = %#v", overview)
+		t.Fatalf("overview provider/online = %v/%v", overview["provider"], overview["online"])
 	}
 	accounts, ok := overview["accounts"].([]any)
-	if !ok || len(accounts) != 1 {
-		t.Fatalf("overview accounts = %#v", overview["accounts"])
+	if !ok {
+		t.Fatal("overview accounts is not an array")
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("overview accounts = %d, want 1", len(accounts))
 	}
 	row, ok := accounts[0].(map[string]any)
-	if !ok || row["uid"] != uid {
-		t.Fatalf("overview account row = %#v", accounts[0])
+	if !ok {
+		t.Fatal("overview account row is not an object")
+	}
+	if row["uid"] != uid {
+		t.Fatalf("overview account uid = %v, want %q", row["uid"], uid)
 	}
 	health, ok := overview["health"].(map[string]any)
-	if !ok || health["ok"] != true || health["accounts"] != float64(1) {
-		t.Fatalf("overview health = %#v", overview["health"])
+	if !ok {
+		t.Fatal("overview health is not an object")
+	}
+	if health["ok"] != true || health["accounts"] != float64(1) {
+		t.Fatalf("overview health ok/accounts = %v/%v", health["ok"], health["accounts"])
 	}
 	stats, ok := overview["stats"].(map[string]any)
-	if !ok || stats["total"] != float64(1) {
-		t.Fatalf("overview stats = %#v", overview["stats"])
+	if !ok {
+		t.Fatal("overview stats is not an object")
 	}
-	sliceNoSecrets(t, "overview", rec.Body.Bytes(), accessToken, refreshToken)
+	if stats["total"] != float64(1) {
+		t.Fatalf("overview stats total = %v, want 1", stats["total"])
+	}
+	sliceNoSecrets(t, "overview", rec.Body, accessToken, refreshToken)
 
 	// 3. The generic model catalog resolves the imported account's realm.
-	rec = sliceRequest(t, handler, http.MethodGet, "/v1/models?realm=raccoon", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("models status = %d, body = %s", rec.Code, rec.Body)
-	}
-	models := sliceJSON(t, rec.Body.Bytes())
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/v1/models?realm=raccoon", nil)
+	sliceRequireStatus(t, "models", rec, http.StatusOK)
+	models := sliceJSON(t, "models", rec)
 	if models["object"] != "list" || models["realm"] != "raccoon" {
-		t.Fatalf("models envelope = %#v", models)
+		t.Fatalf("models object/realm = %v/%v", models["object"], models["realm"])
 	}
 	data, ok := models["data"].([]any)
-	if !ok || len(data) != 2 {
-		t.Fatalf("models data = %#v", models["data"])
+	if !ok {
+		t.Fatal("models data is not an array")
+	}
+	if len(data) != 2 {
+		t.Fatalf("models data = %d, want 2", len(data))
 	}
 	modelIDs := make(map[string]bool, len(data))
 	for _, item := range data {
@@ -177,79 +198,90 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	}
 	for _, id := range []string{"raccoon-090dd3", "sn-glm-5-3"} {
 		if !modelIDs[id] {
-			t.Fatalf("models missing %q: %#v", id, modelIDs)
+			t.Fatalf("models missing %q", id)
 		}
 	}
-	sliceNoSecrets(t, "models", rec.Body.Bytes(), accessToken, refreshToken)
+	sliceNoSecrets(t, "models", rec.Body, accessToken, refreshToken)
 
 	// 4. Non-stream chat must aggregate the upstream SSE stream.
-	rec = sliceRequest(t, handler, http.MethodPost, "/v1/chat/completions?realm=raccoon", map[string]any{
+	rec = sliceHTTP(t, client, http.MethodPost, live.URL+"/v1/chat/completions?realm=raccoon", map[string]any{
 		"model":    "raccoon-090dd3",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 		"stream":   false,
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("chat nonstream status = %d, body = %s", rec.Code, rec.Body)
-	}
-	completion := sliceJSON(t, rec.Body.Bytes())
+	sliceRequireStatus(t, "chat nonstream", rec, http.StatusOK)
+	completion := sliceJSON(t, "chat nonstream", rec)
 	if completion["object"] != "chat.completion" {
-		t.Fatalf("completion = %#v", completion)
+		t.Fatalf("completion object = %v", completion["object"])
 	}
 	choices, ok := completion["choices"].([]any)
-	if !ok || len(choices) != 1 {
-		t.Fatalf("completion choices = %#v", completion["choices"])
+	if !ok {
+		t.Fatal("completion choices is not an array")
+	}
+	if len(choices) != 1 {
+		t.Fatalf("completion choices = %d, want 1", len(choices))
 	}
 	choice, _ := choices[0].(map[string]any)
 	message, _ := choice["message"].(map[string]any)
-	if message["role"] != "assistant" || message["content"] != "你好" {
-		t.Fatalf("completion message = %#v", message)
+	if message["role"] != "assistant" {
+		t.Fatalf("completion role = %v", message["role"])
+	}
+	if message["content"] != "你好" {
+		t.Fatalf("completion content = %v", message["content"])
 	}
 	if choice["finish_reason"] != "stop" {
-		t.Fatalf("completion finish_reason = %#v", choice["finish_reason"])
+		t.Fatalf("completion finish_reason = %v", choice["finish_reason"])
 	}
 	usage, ok := completion["usage"].(map[string]any)
-	if !ok || usage["total_tokens"] != float64(5) {
-		t.Fatalf("completion usage = %#v", completion["usage"])
+	if !ok {
+		t.Fatal("completion usage is not an object")
 	}
-	sliceNoSecrets(t, "chat nonstream", rec.Body.Bytes(), accessToken, refreshToken)
+	if usage["total_tokens"] != float64(5) {
+		t.Fatalf("completion usage total = %v, want 5", usage["total_tokens"])
+	}
+	sliceNoSecrets(t, "chat nonstream", rec.Body, accessToken, refreshToken)
 
-	// 5. Stream chat must pass SSE frames through and terminate with [DONE].
-	rec = sliceRequest(t, handler, http.MethodPost, "/v1/chat/completions?realm=raccoon", map[string]any{
+	// 5. Stream chat must pass SSE frames through a real chunked response and
+	// terminate with [DONE].
+	rec = sliceHTTP(t, client, http.MethodPost, live.URL+"/v1/chat/completions?realm=raccoon", map[string]any{
 		"model":    "raccoon-090dd3",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 		"stream":   true,
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("chat stream status = %d, body = %s", rec.Code, rec.Body)
-	}
-	if got := rec.Header().Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
+	sliceRequireStatus(t, "chat stream", rec, http.StatusOK)
+	if got := rec.Header.Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
 		t.Fatalf("chat stream content type = %q", got)
 	}
-	streamText := rec.Body.String()
-	if !strings.Contains(streamText, `"content":"你"`) ||
-		!strings.HasSuffix(streamText, "data: [DONE]\n\n") {
-		t.Fatalf("chat stream body = %q", streamText)
+	if !sliceChunked(rec.TransferEncoding) {
+		t.Fatalf("chat stream transfer encoding = %v, want chunked", rec.TransferEncoding)
 	}
-	sliceNoSecrets(t, "chat stream", rec.Body.Bytes(), accessToken, refreshToken)
+	streamText := string(rec.Body)
+	hasDelta := strings.Contains(streamText, `"content":"你"`)
+	hasDone := strings.HasSuffix(streamText, "data: [DONE]\n\n")
+	if !hasDelta || !hasDone {
+		t.Fatalf("chat stream framing: delta=%v done=%v (%s)", hasDelta, hasDone, rec.summary())
+	}
+	sliceNoSecrets(t, "chat stream", rec.Body, accessToken, refreshToken)
 
 	// 6. Generic health must include the Raccoon realm.
-	rec = sliceRequest(t, handler, http.MethodGet, "/health", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("health status = %d, body = %s", rec.Code, rec.Body)
-	}
-	healthRoot := sliceJSON(t, rec.Body.Bytes())
+	rec = sliceHTTP(t, client, http.MethodGet, live.URL+"/health", nil)
+	sliceRequireStatus(t, "health", rec, http.StatusOK)
+	healthRoot := sliceJSON(t, "health", rec)
 	if healthRoot["ok"] != true || healthRoot["version"] != sliceVersion {
-		t.Fatalf("health envelope = %#v", healthRoot)
+		t.Fatalf("health ok/version = %v/%v", healthRoot["ok"], healthRoot["version"])
 	}
 	providerHealths, ok := healthRoot["providers"].(map[string]any)
 	if !ok {
-		t.Fatalf("health providers = %#v", healthRoot["providers"])
+		t.Fatal("health providers is not an object")
 	}
 	raccoonHealth, ok := providerHealths["raccoon"].(map[string]any)
-	if !ok || raccoonHealth["ok"] != true || raccoonHealth["accounts"] != float64(1) {
-		t.Fatalf("raccoon health = %#v", providerHealths["raccoon"])
+	if !ok {
+		t.Fatal("health providers.raccoon is not an object")
 	}
-	sliceNoSecrets(t, "health", rec.Body.Bytes(), accessToken, refreshToken)
+	if raccoonHealth["ok"] != true || raccoonHealth["accounts"] != float64(1) {
+		t.Fatalf("raccoon health ok/accounts = %v/%v", raccoonHealth["ok"], raccoonHealth["accounts"])
+	}
+	sliceNoSecrets(t, "health", rec.Body, accessToken, refreshToken)
 
 	// The fake upstream proves the generic server used the imported account
 	// and always forced the provider stream.
@@ -273,10 +305,10 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	}
 	for _, body := range chatBodies {
 		if body["stream"] != true {
-			t.Fatalf("upstream body did not force stream=true: %#v", body)
+			t.Fatalf("upstream body stream = %v, want true", body["stream"])
 		}
 		if _, leaked := body["realm"]; leaked {
-			t.Fatalf("gateway realm leaked upstream: %#v", body)
+			t.Fatal("gateway realm leaked upstream")
 		}
 	}
 }
@@ -326,43 +358,90 @@ func (u *sliceUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sliceRequest(t *testing.T, handler http.Handler, method, path string, payload any) *httptest.ResponseRecorder {
+// sliceResponse captures only what the no-secrets diagnostics need; raw bodies
+// are never printed on failure.
+type sliceResponse struct {
+	Status           int
+	Header           http.Header
+	Body             []byte
+	TransferEncoding []string
+}
+
+func (r *sliceResponse) summary() string {
+	if r == nil {
+		return "<nil response>"
+	}
+	return fmt.Sprintf(
+		"status=%d content-type=%q transfer-encoding=%v body-bytes=%d",
+		r.Status, r.Header.Get("Content-Type"), r.TransferEncoding, len(r.Body),
+	)
+}
+
+func sliceHTTP(t *testing.T, client *http.Client, method, url string, payload any) *sliceResponse {
 	t.Helper()
-	var reader *strings.Reader
+	var reader io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
-			t.Fatalf("marshal request: %v", err)
+			t.Fatalf("marshal %s request: %v", method, err)
 		}
-		reader = strings.NewReader(string(encoded))
+		reader = bytes.NewReader(encoded)
 	}
-	var request *http.Request
-	if reader == nil {
-		request = httptest.NewRequest(method, path, nil)
-	} else {
-		request = httptest.NewRequest(method, path, reader)
+	request, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatalf("new %s request: %v", method, err)
+	}
+	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, request)
-	return rec
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s request failed: %v", method, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("%s response body read failed: %v", method, err)
+	}
+	return &sliceResponse{
+		Status:           response.StatusCode,
+		Header:           response.Header.Clone(),
+		Body:             body,
+		TransferEncoding: append([]string(nil), response.TransferEncoding...),
+	}
 }
 
-func sliceJSON(t *testing.T, body []byte) map[string]any {
+func sliceRequireStatus(t *testing.T, where string, response *sliceResponse, want int) {
 	t.Helper()
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	if response.Status != want {
+		t.Fatalf("%s: want HTTP %d, got %s", where, want, response.summary())
+	}
+}
+
+func sliceJSON(t *testing.T, where string, response *sliceResponse) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(response.Body))
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		t.Fatalf("decode JSON %s: %v", body, err)
+		t.Fatalf("%s: decode JSON failed: %v (%s)", where, err, response.summary())
 	}
 	root, ok := value.(map[string]any)
 	if !ok {
-		t.Fatalf("JSON root = %T, want object", value)
+		t.Fatalf("%s: JSON root = %T, want object (%s)", where, value, response.summary())
 	}
 	return root
 }
 
-// sliceNoSecrets fails without printing either secret.
+func sliceChunked(encodings []string) bool {
+	for _, encoding := range encodings {
+		if strings.EqualFold(encoding, "chunked") {
+			return true
+		}
+	}
+	return false
+}
+
+// sliceNoSecrets fails without printing either secret or the response body.
 func sliceNoSecrets(t *testing.T, where string, body []byte, secrets ...string) {
 	t.Helper()
 	text := string(body)
