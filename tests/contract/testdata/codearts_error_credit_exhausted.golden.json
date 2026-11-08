@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 400,
+    "message": "所有可用的 CodeArts 账号积分已耗尽，请领取积分或升级套餐。",
+    "type": "invalid_request_error"
+  }
+}

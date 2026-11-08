@@ -1,0 +1,21 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "你好",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": "<timestamp>",
+  "id": "<dynamic>",
+  "model": "deepseek-v4.1-flash-1017",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 2,
+    "prompt_tokens": 3,
+    "total_tokens": 5
+  }
+}

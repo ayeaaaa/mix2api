@@ -3,6 +3,7 @@ package codearts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -296,6 +297,11 @@ func newCatalogProvider(t *testing.T, upstream *catalogUpstream) (*Provider, *Ac
 
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": true},
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
 	provider, err := New(store)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -312,7 +318,13 @@ func newCatalogProvider(t *testing.T, upstream *catalogUpstream) (*Provider, *Ac
 func newEmptyCatalogProvider(t *testing.T) *Provider {
 	t.Helper()
 	dir := t.TempDir()
-	provider, err := New(config.New(filepath.Join(dir, "settings.json")))
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": true},
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	provider, err := New(store)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1429,5 +1441,31 @@ func TestCatalogReimportInvalidatesInFlightDiscovery(t *testing.T) {
 	account.modelsMu.Unlock()
 	if flight != nil {
 		t.Fatal("reimport did not clear the in-flight discovery")
+	}
+}
+
+func TestModelsDisabledRealmReturnsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{
+		"codearts": map[string]any{"enabled": false},
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	provider, err := New(store)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = provider.Models(context.Background(), false)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Models error = %v, want *APIError", err)
+	}
+	if apiErr.Kind != KindUnavailable || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("disabled Models error = %#v, want unavailable/503", apiErr)
+	}
+	if apiErr.SafeMessage() != disabledAdminMessage {
+		t.Fatalf("disabled Models message = %q", apiErr.SafeMessage())
 	}
 }

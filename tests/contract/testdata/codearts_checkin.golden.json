@@ -1,0 +1,15 @@
+{
+  "campaigns": [
+    {
+      "campaign_id": 1,
+      "credits": 1000,
+      "message": "领取成功（1000 积分）",
+      "ok": true,
+      "status": "CONFIRMED",
+      "title": "每日签到"
+    }
+  ],
+  "credits": 1000,
+  "message": "每日签到: 领取成功（1000 积分）",
+  "ok": true
+}

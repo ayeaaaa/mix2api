@@ -1,0 +1,10 @@
+{
+  "catalog": {
+    "accounts": 2,
+    "fetched_at": "<timestamp>",
+    "source": "codearts",
+    "stale": false
+  },
+  "models": 14,
+  "ok": true
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -34,6 +35,21 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 	}
 	if ctx == nil {
 		return nil, errors.New("codearts: model catalog requires a context")
+	}
+	if p.pool != nil {
+		p.pool.mu.RLock()
+		enabled := p.pool.cfg.Enabled
+		p.pool.mu.RUnlock()
+		if !enabled {
+			// v1 gates the realm's /v1/models route before reading a catalogue.
+			// Returning the seed set while disabled would advertise a realm
+			// that cannot serve chat.
+			return nil, &APIError{
+				Kind:    KindUnavailable,
+				Status:  http.StatusServiceUnavailable,
+				Message: disabledAdminMessage,
+			}
+		}
 	}
 
 	sets := make([][]Model, 0)

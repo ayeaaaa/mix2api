@@ -1,0 +1,26 @@
+[
+  {
+    "type": "chat.completion.chunk",
+    "objects": [
+      "chat.completion.chunk"
+    ],
+    "role": "assistant",
+    "finish_reason": "tool_calls",
+    "content": "checking",
+    "tool_calls": [
+      {
+        "index": 0,
+        "id": "<dynamic>",
+        "type": "function",
+        "name": "lookup",
+        "arguments": "{\"q\":\"go\"}"
+      }
+    ],
+    "usage": {
+      "completion_tokens": 4,
+      "prompt_tokens": 8,
+      "total_tokens": 12
+    },
+    "done": true
+  }
+]

@@ -241,3 +241,10 @@ ignored and no original file changed:
 git -C /root/opencode/mix2api status --short
 git status --short
 ```
+## CodeArts
+
+CodeArts has its own procedure in `tests/oracle/codearts.md`. It copies the same
+v1.6.5 tree read-only, points the copied gateway at `_fake_codearts.py` through
+`WB_CODEARTS_*` environment variables, seeds the fake credential document, and
+records health/models/chat/overview/check-in/credits endpoints. Its current
+fixtures are v2 regression goldens until real oracle output is reviewed.

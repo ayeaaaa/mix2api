@@ -1,0 +1,783 @@
+{
+  "data": [
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 131072,
+      "context_window": 131072,
+      "created": "<timestamp>",
+      "credits": "x0.7",
+      "credits_offpeak": "x0.7",
+      "credits_peak": "x0.7",
+      "id": "GLM-5.2",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 8192,
+      "max_input_tokens": 131072,
+      "max_output": 8192,
+      "max_output_tokens": 8192,
+      "max_tokens": 8192,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-5.2",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "credits": "x0.18",
+      "id": "GLM-4.7",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-4.7",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": true
+      },
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "modality": "text+image->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": true
+      },
+      "category": "图片理解",
+      "context_length": 131072,
+      "context_window": 131072,
+      "created": "<timestamp>",
+      "id": "Qwen3-VL-235B",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "max_completion_tokens": 8192,
+      "max_input_tokens": 131072,
+      "max_output": 8192,
+      "max_output_tokens": 8192,
+      "max_tokens": 8192,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": true,
+      "name": "Qwen3-VL-235B",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": true,
+      "supports_tool_calls": true,
+      "supports_vision": true,
+      "vision": true
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "benefit": true,
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 65536,
+      "context_window": 65536,
+      "created": "<timestamp>",
+      "id": "deepseek-v4-pro-0813",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 4096,
+      "max_input_tokens": 65536,
+      "max_output": 4096,
+      "max_output_tokens": 4096,
+      "max_tokens": 4096,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "deepseek-v4-pro-0813",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "<timestamp>",
+      "credits": "x1.63",
+      "credits_offpeak": "x1.63",
+      "credits_peak": "x1.63",
+      "id": "Kimi-K3.1-Pro",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 32000,
+      "max_input_tokens": 1000000,
+      "max_output": 32000,
+      "max_output_tokens": 32000,
+      "max_tokens": 32000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "Kimi-K3.1-Pro",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "always_reasoning": true,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "benefit": true,
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "<timestamp>",
+      "credits": "x0.08",
+      "credits_offpeak": "x0.08",
+      "credits_peak": "x0.08",
+      "id": "GLM-5.3-Flash",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 32000,
+      "max_input_tokens": 1000000,
+      "max_output": 32000,
+      "max_output_tokens": 32000,
+      "max_tokens": 32000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-5.3-Flash",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "reasoning_can_disable": false,
+      "reasoning_efforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "<timestamp>",
+      "credits": "x2.38",
+      "credits_offpeak": "x2.38",
+      "credits_peak": "x2.38",
+      "id": "Kimi-K3",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 32000,
+      "max_input_tokens": 1000000,
+      "max_output": 32000,
+      "max_output_tokens": 32000,
+      "max_tokens": 32000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "Kimi-K3",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "<timestamp>",
+      "credits": "x0.09",
+      "credits_note": "peak 0.18x / off-peak 0.09x",
+      "credits_offpeak": "x0.09",
+      "credits_peak": "x0.18",
+      "id": "DeepSeek-V4.1-Flash",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 128000,
+      "max_input_tokens": 1000000,
+      "max_output": 128000,
+      "max_output_tokens": 128000,
+      "max_tokens": 128000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "DeepSeek-V4.1-Flash",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "credits": "<time_of_day_credits>",
+      "credits_note": "peak 0.18x / off-peak 0.12x",
+      "credits_offpeak": "x0.12",
+      "credits_peak": "x0.18",
+      "id": "DeepSeek-V4.1-Flash-1017",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "DeepSeek-V4.1-Flash-1017",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "<timestamp>",
+      "credits": "x0.79",
+      "credits_offpeak": "x0.79",
+      "credits_peak": "x0.79",
+      "id": "GLM-5.3",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 48000,
+      "max_input_tokens": 1000000,
+      "max_output": 48000,
+      "max_output_tokens": 48000,
+      "max_tokens": 48000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-5.3",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "credits": "x0.32",
+      "credits_offpeak": "x0.32",
+      "credits_peak": "x0.32",
+      "id": "OpenPangu-2.0-Flash",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "OpenPangu-2.0-Flash",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "credits": "x0.7",
+      "credits_offpeak": "x0.7",
+      "credits_peak": "x0.7",
+      "id": "GLM-5.2-ArkTS-SPARK",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-5.2-ArkTS-SPARK",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "credits": "x0.7",
+      "credits_offpeak": "x0.7",
+      "credits_peak": "x0.7",
+      "id": "OpenPangu-2.0-Pro",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "OpenPangu-2.0-Pro",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    },
+    {
+      "abilities": {
+        "functionCall": true,
+        "function_call": true,
+        "vision": false
+      },
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text->text",
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "benefit": true,
+      "capabilities": {
+        "tool_calls": true,
+        "vision": false
+      },
+      "created": "<timestamp>",
+      "id": "deepseek-v4-flash-0731",
+      "input_modalities": [
+        "text"
+      ],
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "deepseek-v4-flash-0731",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "codearts",
+      "provider": "codearts",
+      "supports_images": false,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "vision": false
+    }
+  ],
+  "object": "list",
+  "realm": "codearts"
+}

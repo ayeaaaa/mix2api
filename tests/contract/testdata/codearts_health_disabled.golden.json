@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "providers": {
+    "codearts": {
+      "accounts": 1,
+      "base_url": "<upstream>",
+      "configured": false,
+      "healthy": 1,
+      "ok": false
+    }
+  },
+  "version": "v2-codearts-contract"
+}

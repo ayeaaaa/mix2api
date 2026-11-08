@@ -273,7 +273,7 @@ func isTimestampKey(key string) bool {
 		"requesttime", "updated", "updatedat", "modified", "started",
 		"startedat", "finished", "finishedat", "deletedat", "requestedat",
 		"completedat", "expires", "expiresat", "fetchedat", "retryafter",
-		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil":
+		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil", "until":
 		return true
 	}
 	for _, suffix := range []string{
@@ -314,6 +314,8 @@ func looksLikeTimestamp(value string) bool {
 		time.RFC3339,
 		"2006-01-02T15:04:05-0700",
 		"2006-01-02T15:04:05Z0700",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05.999999999",
 		time.RFC1123Z,
 		time.RFC1123,
 		time.RFC850,
