@@ -116,9 +116,12 @@ type Account struct {
 	// Deleted is the Remove tombstone. It is read and written under
 	// credentialMu; Acquire and credential writers reject the account.
 	Deleted bool
-	// authGeneration increases on refresh success, re-import, proxy binding,
-	// and removal. It is guarded by credentialMu.
+	// authGeneration increases on refresh success, re-import, and removal. A
+	// proxy-only change deliberately does not bump it. Guarded by credentialMu.
 	authGeneration uint64
+	// flightEpoch changes on re-import and removal so a fresh request cannot
+	// join a tombstoned refresh flight owned by the same *Account.
+	flightEpoch uint64
 
 	mu               sync.Mutex
 	activeConcurrent int
@@ -458,12 +461,14 @@ type refreshCredentialSnapshot struct {
 	Auth       Auth
 	Path       string
 	Generation uint64
+	Epoch      uint64
 	Deleted    bool
 }
 
-// refreshCredentials atomically snapshots the credentials, auth path, and
-// generation used by one refresh. Callers keep credentialMu only for this
-// snapshot and the final verify/save, never across the network request.
+// refreshCredentials atomically snapshots the credentials, auth path,
+// generation, and flight epoch used by one refresh. Callers keep credentialMu
+// only for this snapshot and the final verify/save, never across the network
+// request.
 func (a *Account) refreshCredentials() refreshCredentialSnapshot {
 	if a == nil {
 		return refreshCredentialSnapshot{Deleted: true}
@@ -474,6 +479,7 @@ func (a *Account) refreshCredentials() refreshCredentialSnapshot {
 	snapshot := refreshCredentialSnapshot{
 		Auth:       a.Auth,
 		Generation: a.authGeneration,
+		Epoch:      a.flightEpoch,
 		Deleted:    a.Deleted,
 	}
 	a.mu.Unlock()
@@ -481,21 +487,26 @@ func (a *Account) refreshCredentials() refreshCredentialSnapshot {
 	return snapshot
 }
 
-// authPathAndUID returns the refresh path and embedded UID snapshot.
-func (a *Account) authPathAndUID() (string, string) {
+// flightEpochValue returns the current refresh-flight epoch.
+func (a *Account) flightEpochValue() uint64 {
 	if a == nil {
-		return "", ""
+		return 0
 	}
 	a.credentialMu.Lock()
 	defer a.credentialMu.Unlock()
-	path := strings.TrimSpace(a.Path)
+	return a.flightEpoch
+}
+
+// latestProxySlot returns the current persisted proxy binding for merging into
+// a refresh result. credentialMu must be held by the caller.
+func (a *Account) latestProxySlot() string {
 	a.mu.Lock()
-	uid := strings.TrimSpace(a.Auth.UID)
-	if uid == "" {
-		uid = strings.TrimSpace(a.State.UID)
+	defer a.mu.Unlock()
+	slot := strings.TrimSpace(a.proxySlot)
+	if slot == "" {
+		slot = strings.TrimSpace(a.Auth.ProxySlot)
 	}
-	a.mu.Unlock()
-	return path, uid
+	return slot
 }
 
 // credentialGeneration returns the current auth generation.
@@ -573,6 +584,7 @@ func (a *Account) publishRefreshedAuthLocked(updated Auth) (oldUID, newUID strin
 		newUID = oldUID
 	}
 	a.State.UID = newUID
+	a.proxySlot = strings.TrimSpace(updated.ProxySlot)
 	uidChanged := oldUID != "" && newUID != "" && oldUID != newUID
 
 	stateChanged = uidChanged

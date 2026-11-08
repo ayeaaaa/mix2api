@@ -47,13 +47,13 @@ type TokenManager struct {
 }
 
 type accountRefreshKey struct {
-	path    string
-	uid     string
 	account *Account
+	epoch   uint64
 }
 
 type accountRefreshState struct {
 	mu       sync.Mutex
+	epoch    uint64
 	inflight *refreshCall
 }
 
@@ -94,18 +94,45 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	}
 
 	now := m.now()
-	state := m.stateFor(a)
+	for {
+		state := m.stateFor(a)
+		state.mu.Lock()
+		if state.epoch != a.flightEpochValue() {
+			state.mu.Unlock()
+			continue
+		}
+		if !a.refreshDue(now) {
+			state.mu.Unlock()
+			return nil
+		}
+		if state.inflight != nil {
+			call := state.inflight
+			state.mu.Unlock()
 
-	state.mu.Lock()
-	if !a.refreshDue(now) {
-		state.mu.Unlock()
-		return nil
-	}
-	if state.inflight != nil {
-		call := state.inflight
+			err := waitRefresh(ctx, call)
+			if err == nil {
+				return nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return m.ensureFailure(a, state, err)
+		}
+
+		snapshot := a.refreshCredentials()
+		if snapshot.Epoch != state.epoch {
+			state.mu.Unlock()
+			continue
+		}
+		if snapshot.Deleted {
+			state.mu.Unlock()
+			return ErrAccountDeleted
+		}
+		call := &refreshCall{done: make(chan struct{})}
+		state.inflight = call
 		state.mu.Unlock()
 
-		err := waitRefresh(ctx, call)
+		err := m.performRefresh(ctx, a, state, call, snapshot)
 		if err == nil {
 			return nil
 		}
@@ -114,24 +141,6 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		}
 		return m.ensureFailure(a, state, err)
 	}
-
-	oldAuth := a.refreshCredentials()
-	if oldAuth.Deleted {
-		state.mu.Unlock()
-		return ErrAccountDeleted
-	}
-	call := &refreshCall{done: make(chan struct{})}
-	state.inflight = call
-	state.mu.Unlock()
-
-	err := m.performRefresh(ctx, a, state, call, oldAuth)
-	if err == nil {
-		return nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	return m.ensureFailure(a, state, err)
 }
 
 // ensureFailure applies v1's swallow rule only to transient upstream failures:
@@ -181,32 +190,42 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account, expected *uint64
 		return err
 	}
 
-	state := m.stateFor(a)
-	state.mu.Lock()
-	if expected != nil && a.credentialGeneration() != *expected {
-		state.mu.Unlock()
-		return nil
-	}
-	if state.inflight != nil {
-		call := state.inflight
-		state.mu.Unlock()
-		return waitRefresh(ctx, call)
-	}
+	for {
+		state := m.stateFor(a)
+		state.mu.Lock()
+		if state.epoch != a.flightEpochValue() {
+			state.mu.Unlock()
+			continue
+		}
+		if expected != nil && a.credentialGeneration() != *expected {
+			state.mu.Unlock()
+			return nil
+		}
+		if state.inflight != nil {
+			call := state.inflight
+			state.mu.Unlock()
+			return waitRefresh(ctx, call)
+		}
 
-	snapshot := a.refreshCredentials()
-	if snapshot.Deleted {
+		snapshot := a.refreshCredentials()
+		if snapshot.Epoch != state.epoch {
+			state.mu.Unlock()
+			continue
+		}
+		if snapshot.Deleted {
+			state.mu.Unlock()
+			return ErrAccountDeleted
+		}
+		if expected != nil && snapshot.Generation != *expected {
+			state.mu.Unlock()
+			return nil
+		}
+		call := &refreshCall{done: make(chan struct{})}
+		state.inflight = call
 		state.mu.Unlock()
-		return ErrAccountDeleted
-	}
-	if expected != nil && snapshot.Generation != *expected {
-		state.mu.Unlock()
-		return nil
-	}
-	call := &refreshCall{done: make(chan struct{})}
-	state.inflight = call
-	state.mu.Unlock()
 
-	return m.performRefresh(ctx, a, state, call, snapshot)
+		return m.performRefresh(ctx, a, state, call, snapshot)
+	}
 }
 
 func (m *TokenManager) validateCall(ctx context.Context, a *Account) error {
@@ -226,23 +245,25 @@ func (m *TokenManager) validateCall(ctx context.Context, a *Account) error {
 }
 
 func (m *TokenManager) stateFor(a *Account) *accountRefreshState {
-	path, uid := a.authPathAndUID()
-	key := accountRefreshKey{path: path}
-	if key.path == "" {
-		key.uid = uid
-	}
-	if key.path == "" && key.uid == "" {
-		key.account = a
-	}
+	epoch := a.flightEpochValue()
+	key := accountRefreshKey{account: a, epoch: epoch}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.states == nil {
 		m.states = make(map[accountRefreshKey]*accountRefreshState)
 	}
+	// A Remove/Add or re-import starts a new flight epoch. Forget the previous
+	// state so a fresh request cannot join a tombstoned flight; an old flight
+	// keeps its pointer and still completes safely.
+	for existing := range m.states {
+		if existing.account == a && existing.epoch != epoch {
+			delete(m.states, existing)
+		}
+	}
 	state := m.states[key]
 	if state == nil {
-		state = &accountRefreshState{}
+		state = &accountRefreshState{epoch: epoch}
 		m.states[key] = state
 	}
 	return state
@@ -297,6 +318,10 @@ func (m *TokenManager) performRefresh(
 		}
 		call.err = err
 	} else if err == nil {
+		// A proxy-only change is serialized by credentialMu but must not
+		// invalidate the rotated credentials. Merge the latest binding so the
+		// new tokens and the new proxy slot both survive.
+		updated.ProxySlot = a.latestProxySlot()
 		if saveErr := SaveAuth(captured.Path, updated); saveErr != nil {
 			call.err = fmt.Errorf("raccoon: persist refreshed auth: %w", saveErr)
 			err = call.err

@@ -808,7 +808,6 @@ func (p *Pool) SetProxySlot(uid, slotID string) error {
 		account.credentialMu.Unlock()
 		return fmt.Errorf("raccoon: save proxy slot: %w", err)
 	}
-	account.authGeneration++
 	saved, err := LoadAuth(path)
 	if err != nil {
 		account.credentialMu.Unlock()
@@ -1212,6 +1211,7 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 		return nil, err
 	}
 	account.authGeneration++
+	account.flightEpoch++
 
 	account.mu.Lock()
 	account.Auth = saved
@@ -1270,6 +1270,7 @@ func (p *Pool) Remove(uid string) error {
 	}
 	account.Deleted = true
 	account.authGeneration++
+	account.flightEpoch++
 
 	account.mu.Lock()
 	accountUID := strings.TrimSpace(account.Auth.UID)

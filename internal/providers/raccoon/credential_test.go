@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,10 @@ func waitError(t *testing.T, ch <-chan error, what string) error {
 
 // blockingRefreshServer holds one refresh request on the wire until release.
 func blockingRefreshServer(t *testing.T, token string) (url string, started <-chan struct{}, release func()) {
+	return blockingRefreshServerTokens(t, token, "")
+}
+
+func blockingRefreshServerTokens(t *testing.T, token, refreshToken string) (url string, started <-chan struct{}, release func()) {
 	t.Helper()
 	startedCh := make(chan struct{})
 	releaseCh := make(chan struct{})
@@ -46,9 +51,11 @@ func blockingRefreshServer(t *testing.T, token string) (url string, started <-ch
 		startOnce.Do(func() { close(startedCh) })
 		<-releaseCh
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": map[string]any{"access_token": token},
-		})
+		data := map[string]any{"access_token": token}
+		if refreshToken != "" {
+			data["refresh_token"] = refreshToken
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))
 	t.Cleanup(server.Close)
 
@@ -61,6 +68,39 @@ func accountAuthSnapshot(a *Account) Auth {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.Auth
+}
+
+// twoFlightRefreshServer blocks every request on release and signals the first
+// and second calls, so a test can prove a fresh account did not join an old
+// flight.
+func twoFlightRefreshServer(t *testing.T, token, refreshToken string) (url string, firstStarted, secondStarted <-chan struct{}, release func(), calls *atomic.Int32) {
+	t.Helper()
+	first := make(chan struct{})
+	second := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var firstOnce, secondOnce, releaseOnce sync.Once
+	count := &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := count.Add(1)
+		if n == 1 {
+			firstOnce.Do(func() { close(first) })
+		}
+		if n == 2 {
+			secondOnce.Do(func() { close(second) })
+		}
+		<-releaseCh
+		w.Header().Set("Content-Type", "application/json")
+		data := map[string]any{"access_token": token}
+		if refreshToken != "" {
+			data["refresh_token"] = refreshToken
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(server.Close)
+
+	release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	t.Cleanup(release)
+	return server.URL, first, second, release, count
 }
 
 func TestRefreshVsReimportAbortsStaleWrite(t *testing.T) {
@@ -192,7 +232,7 @@ func TestSetProxySlotAfterRemoveDoesNotRecreateAuth(t *testing.T) {
 	}
 }
 
-func TestRefreshVsProxySlotAbortsStaleWrite(t *testing.T) {
+func TestRefreshVsProxySlotMergesLatestBinding(t *testing.T) {
 	now := time.Unix(1800000000, 0).UTC()
 	dir := t.TempDir()
 	writePoolAuth(t, dir, "u-proxy-race", "", now.Add(time.Minute), nil)
@@ -204,12 +244,13 @@ func TestRefreshVsProxySlotAbortsStaleWrite(t *testing.T) {
 		"sub": "u-proxy-race",
 		"exp": now.Add(time.Hour).Unix(),
 	})
-	url, started, release := blockingRefreshServer(t, refreshedToken)
+	url, started, release := blockingRefreshServerTokens(t, refreshedToken, "rotated-refresh-token")
 	tm := p.NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
 		BaseURL: url,
 		Now:     func() time.Time { return now },
 		Timeout: 2 * time.Second,
 	})
+	generationBefore := tm.Generation(account)
 
 	refreshErr := make(chan error, 1)
 	go func() { refreshErr <- tm.Refresh(context.Background(), account) }()
@@ -219,20 +260,156 @@ func TestRefreshVsProxySlotAbortsStaleWrite(t *testing.T) {
 		release()
 		t.Fatalf("SetProxySlot during refresh: %v", err)
 	}
+	// A proxy-only write must not invalidate the in-flight credential refresh.
+	if got := tm.Generation(account); got != generationBefore {
+		t.Fatalf("SetProxySlot bumped credential generation: %d -> %d", generationBefore, got)
+	}
 	release()
-	if err := waitError(t, refreshErr, "refresh after proxy change"); !errors.Is(err, ErrCredentialsChanged) {
-		t.Fatalf("refresh after proxy change error = %v, want ErrCredentialsChanged", err)
+	if err := waitError(t, refreshErr, "refresh after proxy change"); err != nil {
+		t.Fatalf("refresh after proxy change: %v", err)
 	}
 
+	auth := accountAuthSnapshot(account)
+	if auth.AccessToken != refreshedToken || auth.RefreshToken != "rotated-refresh-token" {
+		t.Fatalf("rotated credentials were discarded: %+v", auth)
+	}
+	if auth.ProxySlot != "slot-1" {
+		t.Fatalf("in-memory auth lost proxySlot: %+v", auth)
+	}
 	saved, err := LoadAuth(account.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.ProxySlot != "slot-1" {
-		t.Fatalf("stale refresh overwrote proxySlot: %+v", saved)
+	if saved.AccessToken != refreshedToken || saved.RefreshToken != "rotated-refresh-token" || saved.ProxySlot != "slot-1" {
+		t.Fatalf("saved auth did not merge tokens and proxy slot: %+v", saved)
 	}
-	if auth := accountAuthSnapshot(account); auth.ProxySlot != "slot-1" {
-		t.Fatalf("in-memory auth lost proxySlot: %+v", auth)
+	if got := tm.Generation(account); got != generationBefore+1 {
+		t.Fatalf("generation = %d, want %d after one credential refresh", got, generationBefore+1)
+	}
+	if view := account.View(); view.ProxySlot != "slot-1" || view.Proxy != "http://proxy.example:8080" {
+		t.Fatalf("view did not merge proxy binding: %+v", view)
+	}
+}
+
+func TestRemoveAddDoesNotJoinOldFlight(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-flight", "", now.Add(time.Minute), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+	oldAccount := p.Get("u-flight")
+
+	rotatedToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-flight",
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	url, firstStarted, secondStarted, release, calls := twoFlightRefreshServer(t, rotatedToken, "rotated-refresh")
+	tm := p.NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
+		BaseURL: url,
+		Now:     func() time.Time { return now },
+		Timeout: 2 * time.Second,
+	})
+
+	oldErr := make(chan error, 1)
+	go func() { oldErr <- tm.Refresh(context.Background(), oldAccount) }()
+	waitChannel(t, firstStarted, "old refresh flight")
+
+	if err := p.Remove("u-flight"); err != nil {
+		release()
+		t.Fatalf("Remove: %v", err)
+	}
+	importedToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-flight",
+		"exp": now.Add(2 * time.Hour).Unix(),
+	})
+	newAccount, err := p.Add(Auth{
+		UID:          "u-flight",
+		AccessToken:  importedToken,
+		RefreshToken: "imported-refresh",
+	})
+	if err != nil {
+		release()
+		t.Fatalf("Add after remove: %v", err)
+	}
+	if newAccount == oldAccount {
+		t.Fatal("Remove/Add reused the tombstoned account pointer")
+	}
+
+	newErr := make(chan error, 1)
+	go func() { newErr <- tm.Refresh(context.Background(), newAccount) }()
+	waitChannel(t, secondStarted, "fresh refresh flight")
+	release()
+
+	if err := waitError(t, oldErr, "old refresh"); !errors.Is(err, ErrAccountDeleted) {
+		t.Fatalf("old refresh error = %v, want ErrAccountDeleted", err)
+	}
+	if err := waitError(t, newErr, "fresh refresh"); err != nil {
+		t.Fatalf("fresh refresh joined/observed the old tombstoned flight: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("refresh calls = %d, want 2 (fresh flight must start its own request)", got)
+	}
+	if auth := accountAuthSnapshot(newAccount); auth.AccessToken != rotatedToken || auth.RefreshToken != "rotated-refresh" {
+		t.Fatalf("fresh refresh did not persist rotated credentials: %+v", auth)
+	}
+	if got := tm.Generation(newAccount); got != 1 {
+		t.Fatalf("fresh account generation = %d, want 1", got)
+	}
+}
+
+func TestReimportDoesNotJoinOldFlight(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-flight-reimport", "", now.Add(time.Minute), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u-flight-reimport")
+
+	rotatedToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-flight-reimport",
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	url, firstStarted, secondStarted, release, calls := twoFlightRefreshServer(t, rotatedToken, "rotated-refresh")
+	tm := p.NewTokenManager(transport.NewClient(transport.ClientOptions{}), TokenManagerOptions{
+		BaseURL: url,
+		Now:     func() time.Time { return now },
+		Timeout: 2 * time.Second,
+	})
+
+	oldErr := make(chan error, 1)
+	go func() { oldErr <- tm.Refresh(context.Background(), account) }()
+	waitChannel(t, firstStarted, "old refresh flight")
+
+	importedToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-flight-reimport",
+		"exp": now.Add(2 * time.Hour).Unix(),
+	})
+	if _, err := p.Add(Auth{
+		UID:          "u-flight-reimport",
+		AccessToken:  importedToken,
+		RefreshToken: "imported-refresh",
+	}); err != nil {
+		release()
+		t.Fatalf("re-import: %v", err)
+	}
+
+	newErr := make(chan error, 1)
+	go func() { newErr <- tm.Refresh(context.Background(), account) }()
+	waitChannel(t, secondStarted, "post-import refresh flight")
+	release()
+
+	if err := waitError(t, oldErr, "old refresh"); !errors.Is(err, ErrCredentialsChanged) {
+		t.Fatalf("old refresh error = %v, want ErrCredentialsChanged", err)
+	}
+	if err := waitError(t, newErr, "post-import refresh"); err != nil {
+		t.Fatalf("post-import refresh joined the stale flight: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("refresh calls = %d, want 2 (re-import must start a fresh flight)", got)
+	}
+	if auth := accountAuthSnapshot(account); auth.AccessToken != rotatedToken || auth.RefreshToken != "rotated-refresh" {
+		t.Fatalf("post-import refresh did not persist rotated credentials: %+v", auth)
+	}
+	if got := tm.Generation(account); got != 2 {
+		t.Fatalf("generation = %d, want 2 (re-import + refresh)", got)
 	}
 }
 
