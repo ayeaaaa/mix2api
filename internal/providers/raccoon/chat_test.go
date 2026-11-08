@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -696,19 +697,40 @@ func TestStreamCloseReleasesOnce(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	configureChatPool(t, p, server.URL)
-
-	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
-		"model":    "raccoon-090dd3",
-		"messages": []map[string]any{{"role": "user", "content": "hi"}},
-	}), ""))
-	if err != nil {
-		t.Fatalf("OpenChat: %v", err)
-	}
 	account := p.Get("u-close")
-	if got := activeConcurrent(account); got != 1 {
-		t.Fatalf("active concurrent = %d, want 1", got)
+
+	open := func() providers.ChatStream {
+		t.Helper()
+		stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+			"model":    "raccoon-090dd3",
+			"messages": []map[string]any{{"role": "user", "content": "hi"}},
+		}), ""))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		if got := activeConcurrent(account); got != 1 {
+			t.Fatalf("active concurrent after open = %d, want 1", got)
+		}
+		return stream
 	}
 
+	// [DONE] itself must release the slot, before the next Next call and
+	// before a deferred Close.
+	stream := open()
+	sawDone := false
+	for !sawDone {
+		frame, err := stream.Next()
+		if err != nil {
+			t.Fatalf("Next before DONE: %v", err)
+		}
+		sawDone = bytes.Contains(frame, []byte("[DONE]"))
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("active concurrent after DONE = %d, want 0", got)
+	}
+	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next after DONE = %v, want io.EOF", err)
+	}
 	var wg sync.WaitGroup
 	for index := 0; index < 8; index++ {
 		wg.Add(1)
@@ -719,18 +741,215 @@ func TestStreamCloseReleasesOnce(t *testing.T) {
 	}
 	wg.Wait()
 	if got := activeConcurrent(account); got != 0 {
-		t.Fatalf("active concurrent after concurrent close = %d, want 0", got)
-	}
-	if err := stream.Close(); err != nil {
-		t.Fatalf("third Close: %v", err)
-	}
-	if got := activeConcurrent(account); got != 0 {
-		t.Fatalf("active concurrent after third close = %d, want 0", got)
+		t.Fatalf("active concurrent after deferred close = %d, want 0", got)
 	}
 	if !p.Acquire(account) {
-		t.Fatal("slot was not actually returned")
+		t.Fatal("slot was not returned after DONE")
 	}
 	p.Release(account)
+
+	// Explicit Close before DONE is also idempotent and releases exactly once.
+	stream = open()
+	for index := 0; index < 8; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = stream.Close()
+		}()
+	}
+	wg.Wait()
+	if err := stream.Close(); err != nil {
+		t.Fatalf("repeat Close: %v", err)
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("active concurrent after explicit close = %d, want 0", got)
+	}
+	if !p.Acquire(account) {
+		t.Fatal("slot was not returned after Close")
+	}
+	p.Release(account)
+}
+
+func TestChatDoneFirstFrameReleasesSlot(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-done-first")
+	fake := &chatFake{sseBody: "data: [DONE]\n\n"}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	account := p.Get("u-done-first")
+	if got := activeConcurrent(account); got != 1 {
+		t.Fatalf("active concurrent before first DONE frame = %d, want 1", got)
+	}
+	frame, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if string(bytes.TrimSpace(frame)) != "data: [DONE]" {
+		t.Fatalf("frame = %q", frame)
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("pending [DONE] did not release the slot: %d", got)
+	}
+	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next after DONE = %v, want io.EOF", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("deferred Close: %v", err)
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("deferred Close double-released or left the slot: %d", got)
+	}
+}
+
+func TestChatCredentialsChangedRetriesOnSameSlot(t *testing.T) {
+	now := time.Now()
+	p, tokens := newChatPool(t, Config{Enabled: true, MaxConcurrent: 2}, "u-cred")
+	oldToken := tokens["u-cred"]
+	newToken := makeUnsignedJWT(t, map[string]any{
+		"sub": "u-cred",
+		"exp": now.Add(2 * time.Hour).Unix(),
+		"jti": "credential-race-retry",
+	})
+	fake := &chatFake{statusByToken: map[string]int{oldToken: http.StatusUnauthorized}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	refreshCalls := 0
+	p.chatRefreshHook = func(_ context.Context, account *Account, _ uint64) error {
+		refreshCalls++
+		if refreshCalls != 1 {
+			return nil
+		}
+		// Simulate a concurrent re-import landing while the refresh flight was
+		// in progress: credentials change and the captured generation is stale.
+		account.credentialMu.Lock()
+		account.mu.Lock()
+		account.Auth.AccessToken = newToken
+		account.Auth.RefreshToken = "refresh-new"
+		account.mu.Unlock()
+		account.authGeneration++
+		account.credentialMu.Unlock()
+		return ErrCredentialsChanged
+	}
+
+	stream, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err != nil {
+		t.Fatalf("OpenChat after credential change: %v", err)
+	}
+	account := p.Get("u-cred")
+	// max_concurrent=2: a duplicate Acquire would be visible as 2 here.
+	if got := activeConcurrent(account); got != 1 {
+		t.Fatalf("active concurrent after retry = %d, want 1 (no duplicate slot)", got)
+	}
+	frames := drainChat(t, stream)
+	_ = stream.Close()
+	if len(frames) == 0 || !bytes.Contains(frames[len(frames)-1], []byte("[DONE]")) {
+		t.Fatalf("retried stream frames = %q", frames)
+	}
+
+	chatCalls, refreshEndpointCalls, _, _, auths := fake.snapshot()
+	if chatCalls != 2 || len(auths) != 2 || auths[0] != oldToken || auths[1] != newToken {
+		t.Fatalf("chat calls = %d, bearers = %q, want old then new", chatCalls, auths)
+	}
+	if refreshCalls != 1 || refreshEndpointCalls != 0 {
+		t.Fatalf("refresh hook calls = %d, endpoint calls = %d, want 1/0", refreshCalls, refreshEndpointCalls)
+	}
+	account.mu.Lock()
+	gotToken := account.Auth.AccessToken
+	account.mu.Unlock()
+	if gotToken != newToken {
+		t.Fatal("retry did not use the current credentials")
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("active concurrent after DONE = %d, want 0", got)
+	}
+}
+
+func TestChatCredentialsChangedExhaustionIsAPIError(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-cred-exhaust")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	ensureCalls := 0
+	p.chatEnsureHook = func(_ context.Context, _ *Account) error {
+		ensureCalls++
+		if ensureCalls <= 2 {
+			return ErrCredentialsChanged
+		}
+		return nil
+	}
+
+	_, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	if err == nil {
+		t.Fatal("exhausted credential retry unexpectedly succeeded")
+	}
+	if errors.Is(err, ErrCredentialsChanged) {
+		t.Fatalf("raw ErrCredentialsChanged reached the caller: %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindTransient {
+		t.Fatalf("exhaustion error = %v, want transient APIError", err)
+	}
+	if !strings.Contains(err.Error(), "credentials changed") {
+		t.Fatalf("exhaustion message is not readable: %v", err)
+	}
+	if ensureCalls != 2 {
+		t.Fatalf("Ensure calls = %d, want exactly 2 (initial + one retry)", ensureCalls)
+	}
+	if chatCalls, _, _, _, _ := fake.snapshot(); chatCalls != 0 {
+		t.Fatalf("exhausted retry reached upstream %d times", chatCalls)
+	}
+	if got := activeConcurrent(p.Get("u-cred-exhaust")); got != 0 {
+		t.Fatalf("exhausted retry slot = %d, want 0", got)
+	}
+}
+
+func TestChatAccountDeletedIsTerminal(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-deleted")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	p.chatEnsureHook = func(_ context.Context, _ *Account) error {
+		return ErrAccountDeleted
+	}
+
+	_, err := p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindAuth {
+		t.Fatalf("deleted account error = %v, want auth APIError", err)
+	}
+	account := p.Get("u-deleted")
+	if !accountDisabled(account) {
+		t.Fatal("deleted account was not marked terminal")
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("deleted account slot = %d, want 0", got)
+	}
+	if chatCalls, _, _, _, _ := fake.snapshot(); chatCalls != 0 {
+		t.Fatalf("deleted account reached upstream %d times", chatCalls)
+	}
 }
 
 func TestChat401RefreshRetriesSameAccount(t *testing.T) {
@@ -1067,6 +1286,42 @@ func TestChatEmbeddedUpstreamFailsOver(t *testing.T) {
 	}
 }
 
+func TestChatNetworkErrorIsTransient(t *testing.T) {
+	p, tokens := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-network")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	configureChatPool(t, p, "http://"+address)
+
+	_, err = p.OpenChat(context.Background(), chatRequest(chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "hi"}},
+	}), ""))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindTransient || apiErr.Status != 0 {
+		t.Fatalf("network error = %v, want transient APIError", err)
+	}
+	if !strings.Contains(err.Error(), "cannot reach upstream") {
+		t.Fatalf("network message = %v", err)
+	}
+	if strings.Contains(err.Error(), tokens["u-network"]) {
+		t.Fatalf("network error leaked the access token: %v", err)
+	}
+	account := p.Get("u-network")
+	account.mu.Lock()
+	cooling := account.State.CoolUntil.After(time.Now())
+	account.mu.Unlock()
+	if !cooling {
+		t.Fatal("network failure did not cool the account")
+	}
+	if got := activeConcurrent(account); got != 0 {
+		t.Fatalf("network failure slot = %d, want 0", got)
+	}
+}
+
 func TestChatBadRequestDoesNotFailOver(t *testing.T) {
 	p, tokens := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-bad-a", "u-bad-b")
 	fake := &chatFake{
@@ -1102,6 +1357,90 @@ func TestChatBadRequestDoesNotFailOver(t *testing.T) {
 	}
 	if activeConcurrent(first) != 0 || activeConcurrent(second) != 0 {
 		t.Fatal("400 did not release the slot")
+	}
+}
+
+func TestEmbeddedStreamErrorMessagePreservesCodeOnly(t *testing.T) {
+	for frame, want := range map[string]string{
+		`{"error_code":500}`:     "error_code=500",
+		`{"code":500}`:           "error_code=500",
+		`{"error_code":"500"}`:   "error_code=500",
+		`{"code":"bad_request"}`: "error_code=bad_request",
+	} {
+		t.Run(want, func(t *testing.T) {
+			err := embeddedStreamError([]byte(frame), nil)
+			if err == nil {
+				t.Fatalf("%s produced no error", frame)
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s message = %v, want %q", frame, err, want)
+			}
+			if strings.Contains(err.Error(), "<redacted>") {
+				t.Fatalf("code-only message was redacted into useless text: %v", err)
+			}
+		})
+	}
+
+	secret := "opaque-secret-code-value"
+	err := embeddedStreamError([]byte(`{"code":"`+secret+`"}`), []string{secret})
+	if err == nil {
+		t.Fatal("secret code produced no error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("code-only error leaked the secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "<redacted>") {
+		t.Fatalf("secret code was not redacted: %v", err)
+	}
+
+	err = embeddedStreamError([]byte(`{"error_code":500,"error_msg":"leak `+secret+`"}`), []string{secret})
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("message redaction = %v", err)
+	}
+}
+
+func TestChatClassifiesHTTPStatusWhenErrorBodyReadFails(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-short-body")
+	account := p.Get("u-short-body")
+
+	for status, wantKind := range map[int]ErrorKind{
+		http.StatusBadRequest:          KindBadRequest,
+		http.StatusUnauthorized:        KindAuth,
+		http.StatusForbidden:           KindAuth,
+		http.StatusTooManyRequests:     KindRateLimited,
+		http.StatusInternalServerError: KindUpstream,
+		http.StatusServiceUnavailable:  KindUpstream,
+	} {
+		t.Run(fmt.Sprintf("status-%d", status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// Promise more bytes than are written, then close. The client
+				// receives the status/headers but io.ReadAll fails with an
+				// unexpected EOF, exercising the status-first classification.
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"truncated`))
+			}))
+			defer server.Close()
+			configureChatPool(t, p, server.URL)
+
+			stream, err := p.sendChatRequest(
+				context.Background(), account, p.HTTPClient(), http.Header{},
+				[]byte(`{"model":"raccoon-090dd3"}`), nil,
+				Config{StreamTimeoutSeconds: 5},
+			)
+			if stream != nil {
+				_ = stream.Close()
+				t.Fatal("HTTP error status returned a stream")
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("error = %v, want APIError", err)
+			}
+			if apiErr.Kind != wantKind || apiErr.Status != status {
+				t.Fatalf("error = kind %v status %d, want kind %v status %d",
+					apiErr.Kind, apiErr.Status, wantKind, status)
+			}
+		})
 	}
 }
 

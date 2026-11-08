@@ -190,9 +190,13 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	return nil, p.noAccountError(model)
 }
 
-// openChatAccount performs one selected account's request, including the
-// exactly-one forced refresh/retry after a 401/403. The caller owns the
+// openChatAccount performs one selected account's request. The caller owns the
 // acquired slot; on error no bookkeeping is released here.
+//
+// A concurrent re-import (or any credential rewrite) can land while the token
+// manager is refreshing; Task 9 surfaces that race as ErrCredentialsChanged.
+// The slot is still ours, so retry this account once with the freshly published
+// generation/credentials instead of leaking a client-visible local error.
 func (p *Pool) openChatAccount(
 	ctx context.Context,
 	account *Account,
@@ -218,10 +222,40 @@ func (p *Pool) openChatAccount(
 		}
 	}
 
-	if tokens != nil {
-		if ensureErr := tokens.Ensure(ctx, account); ensureErr != nil {
-			return nil, normalizeChatTokenError(ensureErr)
+	stream, attemptErr := p.runChatAccountAttempt(ctx, account, encoded, client, tokens, cfg)
+	if errors.Is(attemptErr, ErrCredentialsChanged) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
+		// Retry once from the top so Ensure and the generation snapshot use the
+		// current credentials. This is the same acquired slot, never a second
+		// Acquire.
+		stream, attemptErr = p.runChatAccountAttempt(ctx, account, encoded, client, tokens, cfg)
+	}
+	if errors.Is(attemptErr, ErrCredentialsChanged) {
+		// Do not expose a Task 9 internal credential race to the client. A
+		// second consecutive rewrite becomes a transient failure so the pool
+		// can fail over or cooldown normally.
+		return nil, normalizeChatTokenError(attemptErr)
+	}
+	return stream, attemptErr
+}
+
+// runChatAccountAttempt ensures the token then sends at most two requests
+// (initial + one forced-refresh retry for 401/403).
+func (p *Pool) runChatAccountAttempt(
+	ctx context.Context,
+	account *Account,
+	encoded []byte,
+	client *HTTPClient,
+	tokens *TokenManager,
+	cfg Config,
+) (providers.ChatStream, error) {
+	if ensureErr := p.ensureChatToken(ctx, tokens, account); ensureErr != nil {
+		if errors.Is(ensureErr, ErrCredentialsChanged) {
+			return nil, ensureErr
+		}
+		return nil, normalizeChatTokenError(ensureErr)
 	}
 
 	var lastErr error
@@ -254,7 +288,10 @@ func (p *Pool) openChatAccount(
 			if !IsAuthError(sendErr) || attempt != 0 || tokens == nil {
 				return nil, sendErr
 			}
-			if refreshErr := tokens.RefreshIfGeneration(ctx, account, generation); refreshErr != nil {
+			if refreshErr := p.refreshChatToken(ctx, tokens, account, generation); refreshErr != nil {
+				if errors.Is(refreshErr, ErrCredentialsChanged) {
+					return nil, refreshErr
+				}
 				return nil, normalizeChatTokenError(refreshErr)
 			}
 			continue
@@ -263,7 +300,10 @@ func (p *Pool) openChatAccount(
 		if preflightErr := stream.preflight(); preflightErr != nil {
 			stream.abort()
 			if IsAuthError(preflightErr) && attempt == 0 && tokens != nil {
-				if refreshErr := tokens.RefreshIfGeneration(ctx, account, generation); refreshErr != nil {
+				if refreshErr := p.refreshChatToken(ctx, tokens, account, generation); refreshErr != nil {
+					if errors.Is(refreshErr, ErrCredentialsChanged) {
+						return nil, refreshErr
+					}
 					return nil, normalizeChatTokenError(refreshErr)
 				}
 				continue
@@ -280,6 +320,31 @@ func (p *Pool) openChatAccount(
 		Status:  http.StatusUnauthorized,
 		Message: "raccoon: rejected after token refresh",
 	}
+}
+
+func (p *Pool) ensureChatToken(ctx context.Context, tokens *TokenManager, account *Account) error {
+	if p.chatEnsureHook != nil {
+		return p.chatEnsureHook(ctx, account)
+	}
+	if tokens == nil {
+		return nil
+	}
+	return tokens.Ensure(ctx, account)
+}
+
+func (p *Pool) refreshChatToken(
+	ctx context.Context,
+	tokens *TokenManager,
+	account *Account,
+	generation uint64,
+) error {
+	if p.chatRefreshHook != nil {
+		return p.chatRefreshHook(ctx, account, generation)
+	}
+	if tokens == nil {
+		return nil
+	}
+	return tokens.RefreshIfGeneration(ctx, account, generation)
 }
 
 // sendChatRequest sends one streaming POST through the account's proxy. The
@@ -307,15 +372,23 @@ func (p *Pool) sendChatRequest(
 
 	response, err := client.client.Do(streamCtx, request, p.ProxyURL(account))
 	if err != nil {
+		// Snapshot both contexts before cancel(): cancel() itself makes
+		// streamCtx.Err() non-nil and would misclassify every network failure
+		// as a timeout.
+		ctxErr := ctx.Err()
+		streamErr := streamCtx.Err()
 		cancel()
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr != nil {
 			return nil, ctxErr
 		}
-		if streamCtx.Err() != nil {
-			return nil, &APIError{
-				Kind:    KindTransient,
-				Message: "raccoon: chat stream timed out",
+		if streamErr != nil {
+			if errors.Is(streamErr, context.DeadlineExceeded) {
+				return nil, &APIError{
+					Kind:    KindTransient,
+					Message: "raccoon: chat stream timed out",
+				}
 			}
+			return nil, streamErr
 		}
 		return nil, &APIError{
 			Kind:    KindTransient,
@@ -324,18 +397,15 @@ func (p *Pool) sendChatRequest(
 	}
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxHTTPBodyBytes))
+		// A body-read failure must not erase the status classification: a 401
+		// with a truncated body is still an auth failure, a 400 is still a bad
+		// request, and so on. newAPIError handles an empty/partial body by
+		// producing a status-labelled, redacted message.
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, maxHTTPBodyBytes))
 		_ = response.Body.Close()
 		cancel()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
-		}
-		if readErr != nil && len(raw) == 0 {
-			return nil, &APIError{
-				Kind:    KindTransient,
-				Status:  response.StatusCode,
-				Message: fmt.Sprintf("raccoon: HTTP %d", response.StatusCode),
-			}
 		}
 		return nil, newAPIError(response.StatusCode, raw, secrets...)
 	}
@@ -702,7 +772,9 @@ func (p *Pool) modelOutputLimit(account *Account, model string) int64 {
 	}
 	if account != nil {
 		account.mu.Lock()
-		models := account.Models
+		// Deep-copy the published slice under Account.mu so the scan below
+		// cannot race a concurrent adopt/re-import of the field.
+		models := cloneModels(account.Models)
 		account.mu.Unlock()
 		if limit := catalogOutputLimit(models, key); limit > 0 {
 			return limit
@@ -766,6 +838,11 @@ func normalizeChatTokenError(err error) error {
 			Kind:    KindAuth,
 			Status:  http.StatusUnauthorized,
 			Message: "raccoon: account was deleted",
+		}
+	case errors.Is(err, ErrCredentialsChanged):
+		return &APIError{
+			Kind:    KindTransient,
+			Message: "raccoon: account credentials changed during token refresh",
 		}
 	case err == nil:
 		return nil

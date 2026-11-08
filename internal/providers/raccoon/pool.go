@@ -2,6 +2,7 @@ package raccoon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,12 @@ type Pool struct {
 	// now is the catalog TTL clock. It is a test seam and is set before use;
 	// production always keeps the NewPool default.
 	now func() time.Time
+
+	// chatEnsureHook and chatRefreshHook are test seams for deterministic
+	// token-manager races in chat transport tests. They are set before use and
+	// are nil in production, where the injected TokenManager is called.
+	chatEnsureHook  func(context.Context, *Account) error
+	chatRefreshHook func(context.Context, *Account, uint64) error
 
 	// tokenManagers are managers created through NewTokenManager. Remove/Add
 	// use them to forget stale flight bookkeeping for this pool.

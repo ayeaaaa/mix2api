@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -104,6 +103,10 @@ func (s *chatStream) Next() ([]byte, error) {
 		s.pendingData = nil
 		if isDoneEvent(data) {
 			s.sawDone = true
+			// [DONE] closes the stream: release the account before the terminal
+			// frame reaches the client. Close is idempotent, so a deferred
+			// caller Close cannot double-release.
+			_ = s.Close()
 		}
 		return frame, nil
 	}
@@ -126,6 +129,7 @@ func (s *chatStream) Next() ([]byte, error) {
 
 	if isDoneEvent(data) {
 		s.sawDone = true
+		_ = s.Close()
 		return frame, nil
 	}
 	if err := embeddedStreamError(data, s.secrets); err != nil {
@@ -323,9 +327,15 @@ func embeddedStreamError(data []byte, secrets []string) error {
 		if embeddedZeroCode(code) {
 			return nil
 		}
-		message = fmt.Sprintf("error_code=%s", catalogText(code))
+		// Redact only the code value, then build the synthetic label. Passing
+		// the whole label through the redactor would match the `error_code=`
+		// named-secret pattern and turn a useful numeric code into
+		// "error_code=<redacted>".
+		message = "error_code=" + redactText(catalogText(code), secrets...)
+	} else {
+		message = redactText(message, secrets...)
 	}
-	message = truncateUTF8(redactText(message, secrets...), maxErrorMessageBytes)
+	message = truncateUTF8(message, maxErrorMessageBytes)
 
 	status := 0
 	for _, key := range []string{"status", "status_code", "http_status"} {
