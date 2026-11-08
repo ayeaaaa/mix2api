@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,17 @@ var catalogSeedIDs = []string{
 	"sn-deepseek-v4-1-flash-1017",
 }
 
+const catalogUnionAccountA = `{"code":0,"data":{"categories":[{"type":"chat","models":[
+  {"name":"raccoon-090dd3","display_name":"Raccoon A","tags":["vision"]},
+  {"name":"shared-model","display_name":"Shared A","tags":["code"]}
+]}]}}`
+
+const catalogUnionAccountB = `{"code":0,"data":{"categories":[{"type":"chat","models":[
+  {"name":"sn-glm-5-3","display_name":"GLM B","tags":["reasoning"]},
+  {"name":"Shared-Model","display_name":"Shared B",
+   "params":{"context_window":128000,"max_tokens":4096},"tags":["vision"]}
+]}]}}`
+
 // fakeCatalogUpstream is the deterministic Go translation of v1's
 // _fake_raccoon.py catalog/refresh subset. No test reaches the real gateway.
 type fakeCatalogUpstream struct {
@@ -63,25 +75,43 @@ type fakeCatalogUpstream struct {
 	catalogBody      string
 	catalogErrorBody string
 	allowedToken     string
+	authStatus       int
 
-	refreshStatus  int
-	refreshedToken string
-	refreshedRT    string
+	// Per-token overrides keyed by the bearer token without the "Bearer "
+	// prefix let one fake model several accounts with distinct catalogs.
+	catalogByToken       map[string]string
+	catalogStatusByToken map[string]int
+
+	refreshStatus        int
+	refreshedToken       string
+	refreshedRT          string
+	expectedRefreshToken string
 }
 
 func (f *fakeCatalogUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == CatalogPath:
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		f.mu.Lock()
 		f.catalogCalls++
 		status := f.catalogStatus
 		body := f.catalogBody
 		errorBody := f.catalogErrorBody
 		allowed := f.allowedToken
+		authStatus := f.authStatus
+		if perToken, ok := f.catalogStatusByToken[token]; ok {
+			status = perToken
+		}
+		if perToken, ok := f.catalogByToken[token]; ok {
+			body = perToken
+		}
 		f.mu.Unlock()
 
 		if allowed != "" && r.Header.Get("Authorization") != "Bearer "+allowed {
-			writeCatalogJSON(w, http.StatusUnauthorized, map[string]any{
+			if authStatus == 0 {
+				authStatus = http.StatusUnauthorized
+			}
+			writeCatalogJSON(w, authStatus, map[string]any{
 				"message": "invalid access token",
 			})
 			return
@@ -113,8 +143,18 @@ func (f *fakeCatalogUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		status := f.refreshStatus
 		token := f.refreshedToken
 		refreshToken := f.refreshedRT
+		expectedRefreshToken := f.expectedRefreshToken
 		f.mu.Unlock()
 
+		if expectedRefreshToken != "" {
+			supplied, _ := requestBody["refresh_token"].(string)
+			if supplied != expectedRefreshToken {
+				writeCatalogJSON(w, http.StatusUnauthorized, map[string]any{
+					"message": "invalid refresh token",
+				})
+				return
+			}
+		}
 		if status == 0 {
 			status = http.StatusOK
 		}
@@ -185,6 +225,17 @@ func catalogByID(models []map[string]any, id string) map[string]any {
 		}
 	}
 	return nil
+}
+
+func catalogAccountToken(t *testing.T, p *Pool, uid string) string {
+	t.Helper()
+	account := p.Get(uid)
+	if account == nil {
+		t.Fatalf("account %q not found", uid)
+	}
+	account.mu.Lock()
+	defer account.mu.Unlock()
+	return account.Auth.AccessToken
 }
 
 func TestCatalogBareIDs(t *testing.T) {
@@ -399,7 +450,261 @@ func TestCatalogFailureKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestCatalogUnionAcrossAccounts(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-a", "", now.Add(time.Hour), nil)
+	writePoolAuth(t, dir, "u-b", "", now.Add(time.Hour), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1, ModelsTTLSeconds: 600})
+	p.now = func() time.Time { return now }
+
+	fake := &fakeCatalogUpstream{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureCatalogPool(t, p, server.URL, func() time.Time { return now })
+
+	tokenA := catalogAccountToken(t, p, "u-a")
+	tokenB := catalogAccountToken(t, p, "u-b")
+	fake.mu.Lock()
+	fake.catalogByToken = map[string]string{
+		tokenA: catalogUnionAccountA,
+		tokenB: catalogUnionAccountB,
+	}
+	fake.mu.Unlock()
+
+	models, err := p.FetchCatalog(context.Background(), true)
+	if err != nil {
+		t.Fatalf("FetchCatalog union: %v", err)
+	}
+	ids := catalogIDs(models)
+	if len(ids) != 3 || ids[0] != "raccoon-090dd3" || ids[1] != "shared-model" || ids[2] != "sn-glm-5-3" {
+		t.Fatalf("union ids = %v, want [raccoon-090dd3 shared-model sn-glm-5-3]", ids)
+	}
+	if catalog, _ := fake.counts(); catalog != 2 {
+		t.Fatalf("catalog calls = %d, want one per account (2)", catalog)
+	}
+
+	shared := catalogByID(models, "shared-model")
+	if shared["name"] != "Shared A" {
+		t.Fatalf("merged display name = %v, want first account name", shared["name"])
+	}
+	if shared["context_window"] != int64(128000) || shared["max_tokens"] != int64(4096) {
+		t.Fatalf("merged limits = %#v", shared)
+	}
+	if shared["vision"] != true || shared["reasoning"] != false {
+		t.Fatalf("merged capabilities = %#v", shared)
+	}
+	tags, _ := shared["tags"].([]string)
+	if len(tags) != 2 || tags[0] != "code" || tags[1] != "vision" {
+		t.Fatalf("merged tags = %#v", shared["tags"])
+	}
+
+	// The shared cache is now the union too, so a normal Models read uses it.
+	wire, err := p.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models after union fetch: %v", err)
+	}
+	if got := catalogIDs(wire); len(got) != 3 || got[1] != "shared-model" {
+		t.Fatalf("cached union ids = %v", got)
+	}
+}
+
+func TestCatalogPartialFailureKeepsHealthyAccount(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-a", "", now.Add(time.Hour), nil)
+	writePoolAuth(t, dir, "u-b", "", now.Add(time.Hour), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1, ModelsTTLSeconds: 600})
+	p.now = func() time.Time { return now }
+
+	fake := &fakeCatalogUpstream{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureCatalogPool(t, p, server.URL, func() time.Time { return now })
+
+	tokenA := catalogAccountToken(t, p, "u-a")
+	tokenB := catalogAccountToken(t, p, "u-b")
+	fake.mu.Lock()
+	fake.catalogByToken = map[string]string{tokenA: catalogUnionAccountA}
+	fake.catalogStatusByToken = map[string]int{tokenB: http.StatusBadGateway}
+	fake.mu.Unlock()
+
+	models, err := p.FetchCatalog(context.Background(), true)
+	if err != nil {
+		t.Fatalf("one failed account blocked the healthy one: %v", err)
+	}
+	ids := catalogIDs(models)
+	if len(ids) != 2 || ids[0] != "raccoon-090dd3" || ids[1] != "shared-model" {
+		t.Fatalf("partial-failure union ids = %v", ids)
+	}
+	if catalog, _ := fake.counts(); catalog != 2 {
+		t.Fatalf("catalog calls = %d, want one per usable account (2)", catalog)
+	}
+}
+
+func TestCatalogFailurePreservesSharedCache(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-cache", "", now.Add(time.Hour), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1, ModelsTTLSeconds: 600})
+	p.now = func() time.Time { return now }
+
+	fake := &fakeCatalogUpstream{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureCatalogPool(t, p, server.URL, func() time.Time { return now })
+
+	if _, err := p.Models(context.Background(), false); err != nil {
+		t.Fatalf("first Models: %v", err)
+	}
+	p.catalogMu.Lock()
+	beforeFetchedAt := p.catalog.fetchedAt
+	beforeModels := cloneModels(p.catalog.models)
+	p.catalogMu.Unlock()
+
+	// Empty the account snapshot so failure must adopt the shared cache rather
+	// than its own last-good catalog.
+	account := p.Get("u-cache")
+	account.mu.Lock()
+	account.Models = nil
+	account.mu.Unlock()
+
+	fake.mu.Lock()
+	fake.catalogStatus = http.StatusBadGateway
+	fake.mu.Unlock()
+
+	models, err := p.Models(context.Background(), true)
+	if err != nil {
+		t.Fatalf("failure fallback returned an error: %v", err)
+	}
+	if got, want := catalogIDs(models), []string{"raccoon-090dd3", "sn-glm-5-3"}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("failure fallback ids = %v, want %v", got, want)
+	}
+
+	p.catalogMu.Lock()
+	afterFetchedAt := p.catalog.fetchedAt
+	afterModels := cloneModels(p.catalog.models)
+	p.catalogMu.Unlock()
+	if !afterFetchedAt.Equal(beforeFetchedAt) || len(afterModels) != len(beforeModels) {
+		t.Fatalf("failed refresh mutated the shared cache: before=%v after=%v", beforeModels, afterModels)
+	}
+	if got, want := catalogIDs(afterModels), catalogIDs(beforeModels); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("shared cache ids changed: %v -> %v", want, got)
+	}
+
+	account.mu.Lock()
+	adopted := cloneModels(account.Models)
+	account.mu.Unlock()
+	if got := catalogIDs(adopted); len(got) != 2 || got[0] != "raccoon-090dd3" {
+		t.Fatalf("failed account did not adopt the shared cache: %v", got)
+	}
+}
+
+func TestCatalogNoAccountsReturnsSeeds(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	p := mustPool(t, t.TempDir(), Config{MaxConcurrent: 1, ModelsTTLSeconds: 600})
+	p.now = func() time.Time { return now }
+
+	p.catalogMu.Lock()
+	p.catalog = catalogCache{
+		models: []map[string]any{{
+			"id":             "cached-only",
+			"name":           "cached-only",
+			"context_window": int64(1),
+			"max_tokens":     int64(1),
+			"tags":           []string{},
+			"vision":         false,
+			"reasoning":      false,
+		}},
+		fetchedAt: now.Add(-24 * time.Hour),
+		source:    "raccoon",
+	}
+	p.catalogMu.Unlock()
+
+	models, err := p.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models with no accounts: %v", err)
+	}
+	ids := catalogIDs(models)
+	if len(ids) != len(catalogSeedIDs) || ids[0] != catalogSeedIDs[0] || ids[8] != catalogSeedIDs[8] {
+		t.Fatalf("no-account ids = %v, want nine seeds", ids)
+	}
+	if catalogByID(models, "cached-only") != nil {
+		t.Fatal("no-account Models returned the stale shared cache")
+	}
+}
+
+func TestCatalogNilContext(t *testing.T) {
+	p := mustPool(t, t.TempDir(), Config{MaxConcurrent: 1})
+	if _, err := p.Models(nil, false); err == nil {
+		t.Fatal("Models with a nil context unexpectedly succeeded")
+	}
+	if _, err := p.FetchCatalog(nil, true); err == nil {
+		t.Fatal("FetchCatalog with a nil context unexpectedly succeeded")
+	}
+}
+
+func TestCatalogUsesAccountProxy(t *testing.T) {
+	now := time.Unix(1800000000, 0).UTC()
+	dir := t.TempDir()
+	writePoolAuth(t, dir, "u-proxy", "", now.Add(time.Hour), nil)
+	p := mustPool(t, dir, Config{MaxConcurrent: 1, ModelsTTLSeconds: 600})
+	p.now = func() time.Time { return now }
+
+	target := &fakeCatalogUpstream{}
+	targetServer := httptest.NewServer(target)
+	defer targetServer.Close()
+	configureCatalogPool(t, p, targetServer.URL, func() time.Time { return now })
+
+	var proxyHits int32
+	var proxyMu sync.Mutex
+	proxyPath := ""
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&proxyHits, 1)
+		proxyMu.Lock()
+		proxyPath = r.URL.Path
+		proxyMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(catalogFixture))
+	}))
+	defer proxy.Close()
+
+	p.SetProxySlots([]transport.Slot{{ID: "slot-1", URL: proxy.URL, Enabled: true}})
+	if err := p.SetProxySlot("u-proxy", "slot-1"); err != nil {
+		t.Fatalf("SetProxySlot: %v", err)
+	}
+
+	models, err := p.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models through proxy: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("proxied catalog size = %d, want 2", len(models))
+	}
+	if hits := atomic.LoadInt32(&proxyHits); hits != 1 {
+		t.Fatalf("proxy hits = %d, want 1", hits)
+	}
+	proxyMu.Lock()
+	gotProxyPath := proxyPath
+	proxyMu.Unlock()
+	if gotProxyPath != CatalogPath {
+		t.Fatalf("proxy path = %q, want %q", gotProxyPath, CatalogPath)
+	}
+	if catalog, _ := target.counts(); catalog != 0 {
+		t.Fatalf("direct target was hit %d times despite an account proxy", catalog)
+	}
+}
+
 func TestCatalog401RefreshesOnceAndRetries(t *testing.T) {
+	testCatalogAuthRefresh(t, http.StatusUnauthorized)
+}
+
+func TestCatalog403RefreshesOnceAndRetries(t *testing.T) {
+	testCatalogAuthRefresh(t, http.StatusForbidden)
+}
+
+func testCatalogAuthRefresh(t *testing.T, rejectedStatus int) {
+	t.Helper()
 	now := time.Now()
 	dir := t.TempDir()
 	writePoolAuth(t, dir, "u-catalog", "", now.Add(time.Hour), nil)
@@ -412,9 +717,11 @@ func TestCatalog401RefreshesOnceAndRetries(t *testing.T) {
 		"jti": "catalog-refreshed-token",
 	})
 	fake := &fakeCatalogUpstream{
-		allowedToken:   newToken,
-		refreshedToken: newToken,
-		refreshedRT:    "refresh-u-catalog",
+		allowedToken:         newToken,
+		authStatus:           rejectedStatus,
+		refreshedToken:       newToken,
+		refreshedRT:          "refresh-u-catalog",
+		expectedRefreshToken: "refresh-u-catalog",
 	}
 	server := httptest.NewServer(fake)
 	defer server.Close()
@@ -429,14 +736,14 @@ func TestCatalog401RefreshesOnceAndRetries(t *testing.T) {
 
 	models, err := p.Models(context.Background(), true)
 	if err != nil {
-		t.Fatalf("Models after 401: %v", err)
+		t.Fatalf("Models after %d: %v", rejectedStatus, err)
 	}
 	if len(models) != 2 {
-		t.Fatalf("catalog after 401 has %d models, want 2", len(models))
+		t.Fatalf("catalog after %d has %d models, want 2", rejectedStatus, len(models))
 	}
 	catalogCalls, refreshCalls := fake.counts()
 	if catalogCalls != 2 {
-		t.Fatalf("catalog calls = %d, want 2 (one 401 + one retry)", catalogCalls)
+		t.Fatalf("catalog calls = %d, want 2 (one %d + one retry)", catalogCalls, rejectedStatus)
 	}
 	if refreshCalls != 1 {
 		t.Fatalf("refresh calls = %d, want exactly 1", refreshCalls)

@@ -130,13 +130,16 @@ var seedModelsByID = func() map[string]seedModelDefinition {
 	return byID
 }()
 
-// FetchCatalog fetches and normalizes the live catalog for one usable account.
-// It always contacts upstream; force is accepted for interface symmetry with
-// Models, whose force flag bypasses its TTL check. A failed fetch never
-// replaces the last good catalog.
+// FetchCatalog fetches the live catalog for every enabled, non-deleted account
+// and returns their union by bare ID. It always contacts upstream; force is
+// accepted for interface symmetry with Models, whose force flag bypasses its
+// TTL check. A failed fetch never replaces the last good catalog.
 func (p *Pool) FetchCatalog(ctx context.Context, force bool) ([]providers.Model, error) {
 	if p == nil {
 		return nil, errors.New("raccoon: pool is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("raccoon: nil context")
 	}
 	_ = force
 
@@ -145,13 +148,21 @@ func (p *Pool) FetchCatalog(ctx context.Context, force bool) ([]providers.Model,
 	return p.fetchCatalog(ctx)
 }
 
-// Models returns the pool catalog, honoring the configured TTL. force bypasses
-// both the shared cache and the account's last-good stamp. A failed refresh
-// keeps the account's last good catalog, then the shared cache, then the nine
-// verified seed models; it therefore never blanks model discovery.
+// Models returns the union of every account's catalog, honoring the configured
+// TTL. force bypasses both the shared cache and each account's last-good stamp.
+// A failed refresh keeps the account's last good catalog, then the shared
+// cache, then the nine verified seed models; it therefore never blanks model
+// discovery. With no accounts at all, Models always returns seeds, even when a
+// stale shared cache exists.
 func (p *Pool) Models(ctx context.Context, force bool) ([]providers.Model, error) {
 	if p == nil {
 		return nil, errors.New("raccoon: pool is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("raccoon: nil context")
+	}
+	if len(p.Accounts()) == 0 {
+		return wireCatalogModels(seedCatalogModels(), p.timeNow().Unix()), nil
 	}
 
 	if !force {
@@ -176,7 +187,10 @@ func (p *Pool) Models(ctx context.Context, force bool) ([]providers.Model, error
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		if lastGood := p.lastGoodCatalog(); lastGood != nil {
+		if len(p.Accounts()) == 0 {
+			return wireCatalogModels(seedCatalogModels(), p.timeNow().Unix()), nil
+		}
+		if lastGood := p.accountCatalogUnion(); len(lastGood) > 0 {
 			return wireCatalogModels(lastGood, p.timeNow().Unix()), nil
 		}
 		if cached := p.cachedCatalog(); cached != nil {
@@ -187,17 +201,86 @@ func (p *Pool) Models(ctx context.Context, force bool) ([]providers.Model, error
 	return wireCatalogModels(models, p.timeNow().Unix()), nil
 }
 
-// fetchCatalog performs one upstream fetch. The caller holds catalogFetchMu.
+// fetchCatalog fetches every usable account independently. One rejected,
+// unreachable, or empty account must not prevent another account's fresh
+// catalog from being adopted. Success means at least one fresh catalog was
+// adopted; the returned value is the union of every account's catalog.
+// The caller holds catalogFetchMu.
 func (p *Pool) fetchCatalog(ctx context.Context) ([]providers.Model, error) {
+	accounts := p.Accounts()
+	if len(accounts) == 0 {
+		return nil, ErrNoAccount
+	}
 	client := p.HTTPClient()
 	if client == nil {
 		return nil, errors.New("raccoon: catalog http client is not configured")
 	}
-	account, err := p.catalogAccount()
-	if err != nil {
-		return nil, err
+	usable := usableCatalogAccounts(accounts)
+	if len(usable) == 0 {
+		return nil, ErrNoAccount
 	}
+
 	tokens := p.TokenManager()
+	sharedBefore := p.cachedCatalog()
+	freshCatalogs := 0
+	failed := make([]*Account, 0)
+	var firstErr error
+	for _, account := range usable {
+		if _, err := p.fetchAccountCatalog(ctx, account, client, tokens); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			failed = append(failed, account)
+			continue
+		}
+		freshCatalogs++
+	}
+
+	if freshCatalogs == 0 {
+		// v1's ensure_catalog adopts the shared cache into an account that has
+		// no own last-good snapshot before falling back to seeds.
+		for _, account := range failed {
+			p.adoptCatalogIfEmpty(account, sharedBefore)
+		}
+		if firstErr == nil {
+			firstErr = ErrNoAccount
+		}
+		return nil, firstErr
+	}
+
+	// A successful refresh can still leave another account on its last-good
+	// snapshot. The union matches v1's _catalog_union: fresh and retained
+	// per-account catalogs both contribute.
+	union := p.accountCatalogUnion()
+	for _, account := range failed {
+		p.adoptCatalogIfEmpty(account, union)
+	}
+	fetchedAt := p.timeNow()
+	defaultModel := ""
+	if len(union) > 0 {
+		defaultModel, _ = union[0]["id"].(string)
+	}
+	p.catalogMu.Lock()
+	p.catalog = catalogCache{
+		models:       cloneModels(union),
+		defaultModel: defaultModel,
+		fetchedAt:    fetchedAt,
+		source:       "raccoon",
+	}
+	p.catalogMu.Unlock()
+	return cloneModels(union), nil
+}
+
+// fetchAccountCatalog refreshes one account and adopts its normalized catalog.
+func (p *Pool) fetchAccountCatalog(
+	ctx context.Context,
+	account *Account,
+	client *HTTPClient,
+	tokens *TokenManager,
+) ([]providers.Model, error) {
 	if tokens != nil {
 		// v1 ensures the token before the request; a transient failure while
 		// the current token is still valid is already swallowed by Ensure.
@@ -226,23 +309,7 @@ func (p *Pool) fetchCatalog(ctx context.Context) ([]providers.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	fetchedAt := p.timeNow()
-
-	p.catalogMu.Lock()
-	p.catalog = catalogCache{
-		models:       cloneModels(catalog.models),
-		defaultModel: catalog.defaultModel,
-		fetchedAt:    fetchedAt,
-		source:       "raccoon",
-	}
-	p.catalogMu.Unlock()
-
-	// The account snapshot is the pool's last-good fallback when a later forced
-	// refresh fails. Mutating it follows Task 9's lock contract.
-	account.mu.Lock()
-	account.Models = cloneModels(catalog.models)
-	account.mu.Unlock()
-
+	p.adoptCatalog(account, catalog.models)
 	return cloneModels(catalog.models), nil
 }
 
@@ -280,20 +347,136 @@ func (p *Pool) requestCatalog(
 	return payload, generation, nil
 }
 
-// catalogAccount picks the first non-disabled, non-deleted account. Cooling and
+// usableCatalogAccounts returns enabled, non-deleted accounts. Cooling and
 // budget guards do not prevent a read-only catalog refresh, matching v1's
 // model discovery behavior.
-func (p *Pool) catalogAccount() (*Account, error) {
-	for _, account := range p.Accounts() {
+func usableCatalogAccounts(accounts []*Account) []*Account {
+	usable := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
 		account.mu.Lock()
 		disabled := account.State.Disabled || account.State.ManualDisabled
 		account.mu.Unlock()
 		if disabled || account.isDeleted() {
 			continue
 		}
-		return account, nil
+		usable = append(usable, account)
 	}
-	return nil, ErrNoAccount
+	return usable
+}
+
+// accountCatalogUnion merges every account's adopted catalog in UID order,
+// including disabled accounts, matching v1's no-network _catalog_union.
+func (p *Pool) accountCatalogUnion() []providers.Model {
+	union := newCatalogUnion()
+	for _, account := range p.Accounts() {
+		account.mu.Lock()
+		models := cloneModels(account.Models)
+		account.mu.Unlock()
+		union.add(models)
+	}
+	return union.modelsList()
+}
+
+// adoptCatalog stores a live/shared catalog in the account snapshot.
+func (p *Pool) adoptCatalog(account *Account, models []providers.Model) {
+	if account == nil || len(models) == 0 {
+		return
+	}
+	copied := cloneModels(models)
+	account.mu.Lock()
+	account.Models = copied
+	account.mu.Unlock()
+}
+
+// adoptCatalogIfEmpty fills a failed account from the shared catalog without
+// overwriting its own last-good snapshot.
+func (p *Pool) adoptCatalogIfEmpty(account *Account, models []providers.Model) {
+	if account == nil || len(models) == 0 {
+		return
+	}
+	copied := cloneModels(models)
+	account.mu.Lock()
+	if len(account.Models) == 0 {
+		account.Models = copied
+	}
+	account.mu.Unlock()
+}
+
+// catalogUnion merges normalized catalogs by bare, case-insensitive ID using
+// v1's _merge_catalog_item precedence: existing context/max win, a missing
+// display name is filled, and capabilities/tags combine.
+type catalogUnion struct {
+	models map[string]providers.Model
+	order  []string
+}
+
+func newCatalogUnion() *catalogUnion {
+	return &catalogUnion{models: make(map[string]providers.Model)}
+}
+
+func (u *catalogUnion) add(models []providers.Model) {
+	for _, item := range models {
+		u.merge(item)
+	}
+}
+
+func (u *catalogUnion) merge(item providers.Model) {
+	id := strings.TrimSpace(catalogText(item["id"]))
+	if id == "" {
+		return
+	}
+	key := strings.ToLower(id)
+	current, exists := u.models[key]
+	if !exists {
+		u.models[key] = cloneModel(item)
+		u.order = append(u.order, key)
+		return
+	}
+
+	if catalogInt(current["context_window"]) == 0 {
+		if value := catalogInt(item["context_window"]); value > 0 {
+			current["context_window"] = value
+		}
+	}
+	if catalogInt(current["max_tokens"]) == 0 {
+		if value := catalogInt(item["max_tokens"]); value > 0 {
+			current["max_tokens"] = value
+		}
+	}
+	name := strings.TrimSpace(catalogText(current["name"]))
+	if name == "" || name == strings.TrimSpace(catalogText(current["id"])) {
+		if incoming := strings.TrimSpace(catalogText(item["name"])); incoming != "" {
+			current["name"] = incoming
+		}
+	}
+	current["vision"] = catalogBool(current["vision"]) || catalogBool(item["vision"])
+	current["reasoning"] = catalogBool(current["reasoning"]) || catalogBool(item["reasoning"])
+
+	tags := catalogTagList(current["tags"])
+	seen := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		seen[tag] = true
+	}
+	for _, tag := range catalogTagList(item["tags"]) {
+		if !seen[tag] {
+			seen[tag] = true
+			tags = append(tags, tag)
+		}
+	}
+	current["tags"] = tags
+}
+
+func (u *catalogUnion) modelsList() []providers.Model {
+	out := make([]providers.Model, 0, len(u.order))
+	for _, key := range u.order {
+		out = append(out, cloneModel(u.models[key]))
+	}
+	return out
+}
+
+func catalogBool(value any) bool {
+	enabled, _ := value.(bool)
+	return enabled
 }
 
 // freshCatalog returns a cached live catalog while its TTL is valid.
@@ -317,20 +500,6 @@ func (p *Pool) cachedCatalog() []providers.Model {
 		return nil
 	}
 	return cloneModels(p.catalog.models)
-}
-
-// lastGoodCatalog returns the first account's last successful catalog. The
-// slice copy is made under Account.mu.
-func (p *Pool) lastGoodCatalog() []providers.Model {
-	for _, account := range p.Accounts() {
-		account.mu.Lock()
-		models := cloneModels(account.Models)
-		account.mu.Unlock()
-		if len(models) > 0 {
-			return models
-		}
-	}
-	return nil
 }
 
 // modelsTTL reads the configured cache lifetime. Tests and partially built
@@ -794,13 +963,17 @@ func cloneModels(models []providers.Model) []providers.Model {
 	}
 	cloned := make([]providers.Model, len(models))
 	for index, model := range models {
-		entry := make(providers.Model, len(model))
-		for key, value := range model {
-			entry[key] = cloneCatalogValue(value)
-		}
-		cloned[index] = entry
+		cloned[index] = cloneModel(model)
 	}
 	return cloned
+}
+
+func cloneModel(model providers.Model) providers.Model {
+	entry := make(providers.Model, len(model))
+	for key, value := range model {
+		entry[key] = cloneCatalogValue(value)
+	}
+	return entry
 }
 
 func cloneCatalogValue(value any) any {

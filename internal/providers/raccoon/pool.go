@@ -49,9 +49,9 @@ var (
 // stateMu -> pool.mu (snapshot copy) and mu (field copy). credentialMu and
 // stateMu are never held together. pool.mu is never held across credential or
 // auth-file I/O. TokenManager adds state.mu -> credentialMu -> mu for one
-// account's refresh flight. Catalog adds catalogFetchMu -> catalogMu; account
-// locks are never held with either, and apiMu is a leaf around the injected
-// client/manager pointers.
+// account's refresh flight. Catalog adds catalogFetchMu -> catalogMu and
+// catalogFetchMu -> Account.mu; catalogMu and Account.mu are never held
+// together, and apiMu is a leaf around the injected client/manager pointers.
 type Pool struct {
 	dir       string
 	folder    string
@@ -73,7 +73,8 @@ type Pool struct {
 
 	// catalogFetchMu serializes upstream catalog fetches. catalogMu guards the
 	// shared last-good catalog and its TTL stamp. Lock order:
-	// catalogFetchMu -> catalogMu; Account.mu is never held with either.
+	// catalogFetchMu -> catalogMu and catalogFetchMu -> Account.mu; catalogMu
+	// and Account.mu are never held together.
 	catalogFetchMu sync.Mutex
 	catalogMu      sync.Mutex
 	catalog        catalogCache
