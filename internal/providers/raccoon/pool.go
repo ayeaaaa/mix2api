@@ -49,7 +49,9 @@ var (
 // stateMu -> pool.mu (snapshot copy) and mu (field copy). credentialMu and
 // stateMu are never held together. pool.mu is never held across credential or
 // auth-file I/O. TokenManager adds state.mu -> credentialMu -> mu for one
-// account's refresh flight.
+// account's refresh flight. Catalog adds catalogFetchMu -> catalogMu; account
+// locks are never held with either, and apiMu is a leaf around the injected
+// client/manager pointers.
 type Pool struct {
 	dir       string
 	folder    string
@@ -61,6 +63,24 @@ type Pool struct {
 	slots    transport.Slots
 	affinity map[string]string
 	order    []string
+
+	// apiMu guards the provider-owned upstream client and token manager. The
+	// provider wiring injects them after NewPool; catalog (and later chat and
+	// points) share the same transport and refresh manager.
+	apiMu        sync.RWMutex
+	httpClient   *HTTPClient
+	tokenManager *TokenManager
+
+	// catalogFetchMu serializes upstream catalog fetches. catalogMu guards the
+	// shared last-good catalog and its TTL stamp. Lock order:
+	// catalogFetchMu -> catalogMu; Account.mu is never held with either.
+	catalogFetchMu sync.Mutex
+	catalogMu      sync.Mutex
+	catalog        catalogCache
+
+	// now is the catalog TTL clock. It is a test seam and is set before use;
+	// production always keeps the NewPool default.
+	now func() time.Time
 
 	// tokenManagers are managers created through NewTokenManager. Remove/Add
 	// use them to forget stale flight bookkeeping for this pool.
@@ -116,6 +136,7 @@ func NewPool(dir string, cfg Config) (*Pool, error) {
 		cfg:       cfg,
 		affinity:  make(map[string]string),
 		preserved: make(map[string]accountstate.State),
+		now:       time.Now,
 	}
 
 	rawState, hasState, err := readStateDocument(p.statePath)
@@ -854,6 +875,50 @@ func (p *Pool) ProxyURL(a *Account) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.proxy
+}
+
+// SetHTTPClient configures the shared Raccoon JSON client used by provider
+// API calls. The provider wiring injects it after NewPool; when unset, catalog
+// reads fall back to the seed models rather than creating a second transport.
+func (p *Pool) SetHTTPClient(client *HTTPClient) {
+	if p == nil {
+		return
+	}
+	p.apiMu.Lock()
+	p.httpClient = client
+	p.apiMu.Unlock()
+}
+
+// HTTPClient returns the injected shared client, or nil before wiring.
+func (p *Pool) HTTPClient() *HTTPClient {
+	if p == nil {
+		return nil
+	}
+	p.apiMu.RLock()
+	defer p.apiMu.RUnlock()
+	return p.httpClient
+}
+
+// SetTokenManager configures the shared refresh manager used before catalog
+// requests and after a 401/403. Use NewTokenManager so proxy and timeout
+// behavior stays attached to the pool.
+func (p *Pool) SetTokenManager(manager *TokenManager) {
+	if p == nil {
+		return
+	}
+	p.apiMu.Lock()
+	p.tokenManager = manager
+	p.apiMu.Unlock()
+}
+
+// TokenManager returns the injected refresh manager, or nil before wiring.
+func (p *Pool) TokenManager() *TokenManager {
+	if p == nil {
+		return nil
+	}
+	p.apiMu.RLock()
+	defer p.apiMu.RUnlock()
+	return p.tokenManager
 }
 
 // NewTokenManager builds a refresh manager wired to this pool. When opts does
