@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 
@@ -22,6 +23,10 @@ type commandConfig struct {
 	Port          string
 	PanelPassword string
 	APIKey        string
+	// APIKeyRealm binds the configured API key to one provider realm. When
+	// set, generic chat treats the key as an explicit exit choice and
+	// suppresses WorkBuddy's intl→cn fallback.
+	APIKeyRealm string
 }
 
 func configFromEnv() commandConfig {
@@ -38,11 +43,22 @@ func configFromEnv() commandConfig {
 		Port:          port,
 		PanelPassword: strings.TrimSpace(os.Getenv("PANEL_PASSWORD")),
 		APIKey:        strings.TrimSpace(os.Getenv("MIX2API_API_KEY")),
+		APIKeyRealm:   strings.ToLower(strings.TrimSpace(os.Getenv("MIX2API_API_KEY_REALM"))),
 	}
 }
 
 func (c commandConfig) Addr() string {
 	return net.JoinHostPort(c.Host, c.Port)
+}
+
+// apiKeyRealmResolver returns the ServerOptions callback for the configured
+// key/realm binding. A blank realm leaves keys unbound.
+func apiKeyRealmResolver(realm string) func(*http.Request) string {
+	realm = strings.ToLower(strings.TrimSpace(realm))
+	if realm == "" {
+		return nil
+	}
+	return func(*http.Request) string { return realm }
 }
 
 // Validate refuses a non-loopback bind without both auth surfaces. A loopback
@@ -105,6 +121,7 @@ func main() {
 		Providers:    setup.Providers,
 		PanelAuth:    api.RequirePanelAuth(cfg.PanelPassword),
 		APIKeyAuth:   api.RequireAPIKeyAuth(cfg.APIKey),
+		APIKeyRealm:  apiKeyRealmResolver(cfg.APIKeyRealm),
 	})
 	log.Printf("listening on %s with %d provider(s)", listener.Addr(), len(setup.Providers))
 	if err := srv.Serve(listener); err != nil {

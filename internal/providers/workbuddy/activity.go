@@ -23,6 +23,11 @@ const (
 	activityCompactBytes = 2_000_000
 )
 
+// ActivityHistoryFile is the shared WorkBuddy activity-log filename. App
+// composition points both realm providers at one file under the accounts
+// directory so the intl and cn scheduler histories stay unified.
+const ActivityHistoryFile = activityHistoryFile
+
 var (
 	activityLogMu   sync.Mutex
 	errActivityRead = errors.New("activity history is unreadable")

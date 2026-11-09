@@ -31,12 +31,12 @@ const (
 	defaultSDK                = "6.25.0"
 	defaultNode               = "v22.21.1"
 
-	cnChatBaseDefault = "https://copilot.tencent.com"
-	intlChatBase      = "https://www.workbuddy.ai"
-	cnVSCodeBase      = "https://www.workbuddy.cn"
-	intlDomain        = "www.workbuddy.ai"
-	cnDesktopDomain   = "copilot.tencent.com"
-	cnVSCodeDomain    = "www.workbuddy.cn"
+	cnChatBaseDefault   = "https://copilot.tencent.com"
+	intlChatBaseDefault = "https://www.workbuddy.ai"
+	cnVSCodeBase        = "https://www.workbuddy.cn"
+	intlDomain          = "www.workbuddy.ai"
+	cnDesktopDomain     = "copilot.tencent.com"
+	cnVSCodeDomain      = "www.workbuddy.cn"
 
 	productDesktop = "workbuddy"
 	productVSCode  = "vscode"
@@ -259,18 +259,30 @@ func normalizeProduct(value string) string {
 	}
 }
 
-func cnChatBase() string {
-	raw := strings.TrimSpace(os.Getenv("WB_CN_CHAT_UPSTREAM"))
+// upstreamBaseOverride accepts only an absolute http(s) URL so a malformed
+// environment value cannot redirect credentials to an unsupported scheme.
+// tests and single-origin deployments use these overrides; the shipped
+// defaults remain the real upstreams.
+func upstreamBaseOverride(name, fallback string) string {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return cnChatBaseDefault
+		return fallback
 	}
 	base := strings.TrimRight(raw, "/")
 	parsed, err := url.Parse(base)
 	if err != nil || parsed.Host == "" ||
 		(parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return cnChatBaseDefault
+		return fallback
 	}
 	return base
+}
+
+func cnChatBase() string {
+	return upstreamBaseOverride("WB_CN_CHAT_UPSTREAM", cnChatBaseDefault)
+}
+
+func intlChatBase() string {
+	return upstreamBaseOverride("WB_INTL_CHAT_UPSTREAM", intlChatBaseDefault)
 }
 
 // endpointFor returns the exact v1 chat base URL for a realm and product.
@@ -281,12 +293,12 @@ func endpointFor(realm, product string) string {
 		if realm == realmCN {
 			return cnVSCodeBase
 		}
-		return intlChatBase
+		return intlChatBase()
 	default:
 		if realm == realmCN {
 			return cnChatBase()
 		}
-		return intlChatBase
+		return intlChatBase()
 	}
 }
 

@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/codearts"
 )
 
 func TestBuildProviderInitFailureIsGeneric(t *testing.T) {
@@ -65,23 +68,26 @@ func TestBuildRegistersOneProviderPerRealm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(setup.Providers) != 2 {
-		t.Fatalf("providers = %d, want raccoon and codearts", len(setup.Providers))
+	if len(setup.Providers) != 4 {
+		t.Fatalf("providers = %d, want raccoon, codearts, and workbuddy intl/cn", len(setup.Providers))
 	}
 	counts := make(map[string]int, len(setup.Providers))
 	for _, provider := range setup.Providers {
 		counts[provider.ID()]++
-		if provider.ID() != provider.Realm() {
-			t.Fatalf("provider %q realm = %q", provider.ID(), provider.Realm())
-		}
 	}
-	for _, id := range []string{"raccoon", "codearts"} {
+	wanted := map[string]string{
+		"raccoon":        "raccoon",
+		"codearts":       "codearts",
+		"workbuddy-intl": "intl",
+		"workbuddy-cn":   "cn",
+	}
+	for id, realm := range wanted {
 		if counts[id] != 1 {
 			t.Fatalf("provider ID %q count = %d, want exactly one Provider/Pool", id, counts[id])
 		}
-		provider, ok := setup.Registry.Get(id)
-		if !ok || provider == nil || provider.ID() != id {
-			t.Fatalf("registry realm %q missing or wrong: %v", id, provider)
+		provider, ok := setup.Registry.Get(realm)
+		if !ok || provider == nil || provider.ID() != id || provider.Realm() != realm {
+			t.Fatalf("registry realm %q missing or wrong: %v", realm, provider)
 		}
 	}
 }
@@ -131,6 +137,35 @@ func TestBuildCodeArtsInitFailureIsGeneric(t *testing.T) {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatal("codearts provider-init error leaked a credential")
 		}
+	}
+}
+
+func TestCodeArtsProxySlotsSnapshot(t *testing.T) {
+	root := t.TempDir()
+	accountsDir := filepath.Join(root, "accounts")
+	if err := os.MkdirAll(accountsDir, 0o700); err != nil {
+		t.Fatalf("create accounts dir: %v", err)
+	}
+	store := config.New(filepath.Join(accountsDir, "settings.json"))
+	provider, err := codearts.New(store)
+	if err != nil {
+		t.Fatalf("codearts.New: %v", err)
+	}
+	if _, err := provider.Pool().Add(codearts.Auth{
+		UserID:           "slot-user",
+		UserName:         "Slot User",
+		CloudDragonToken: "slot-token-never-log",
+		ProxySlot:        "slot-codearts",
+	}); err != nil {
+		t.Fatalf("add codearts account: %v", err)
+	}
+	taken := codeartsProxySlots(provider)
+	slots := taken()
+	if len(slots) != 1 || slots[0] != "slot-codearts" {
+		t.Fatalf("taken slots = %#v, want [slot-codearts]", slots)
+	}
+	if nilSlots := codeartsProxySlots(nil)(); nilSlots != nil {
+		t.Fatalf("nil provider slots = %#v", nilSlots)
 	}
 }
 

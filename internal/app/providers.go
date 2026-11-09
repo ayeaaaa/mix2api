@@ -13,6 +13,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/codearts"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/workbuddy"
 )
 
 // Default data directories match v1's names. v1 resolves them relative to the
@@ -91,12 +92,70 @@ func Build(paths Paths) (*Setup, error) {
 		return nil, fmt.Errorf("app: register codearts provider: %w", err)
 	}
 
+	// WorkBuddy registers one instance per realm. Both share the same code and
+	// settings file but own separate account pools filtered by realm.
+	intlProvider, err := workbuddy.New(workbuddy.ProviderRealmIntl, store)
+	if err != nil {
+		return nil, fmt.Errorf("app: initialize workbuddy intl provider: %w", err)
+	}
+	cnProvider, err := workbuddy.New(workbuddy.ProviderRealmCN, store)
+	if err != nil {
+		return nil, fmt.Errorf("app: initialize workbuddy cn provider: %w", err)
+	}
+	intlProvider.SetTwin(cnProvider)
+	cnProvider.SetTwin(intlProvider)
+
+	// One shared activity history keeps the intl daily-activity and cn
+	// report/growth histories in the same panel timeline.
+	activityPath := filepath.Join(paths.AccountsDir, workbuddy.ActivityHistoryFile)
+	intlProvider.SetActivityPath(activityPath)
+	cnProvider.SetActivityPath(activityPath)
+
+	// WorkBuddy browser-login auto slot selection must not reuse a proxy slot
+	// already bound to a CodeArts account. The callback is evaluated lazily
+	// because CodeArts was constructed above but accounts can change later.
+	takenSlots := codeartsProxySlots(codeartsProvider)
+	intlProvider.SetLoginTakenSlots(takenSlots)
+	cnProvider.SetLoginTakenSlots(takenSlots)
+
+	if err := registry.Register(intlProvider); err != nil {
+		return nil, fmt.Errorf("app: register workbuddy intl provider: %w", err)
+	}
+	if err := registry.Register(cnProvider); err != nil {
+		return nil, fmt.Errorf("app: register workbuddy cn provider: %w", err)
+	}
+
 	return &Setup{
 		Paths:     paths,
 		Store:     store,
 		Registry:  registry,
 		Providers: registry.All(),
 	}, nil
+}
+
+// codeartsProxySlots returns a lazy snapshot of proxy slot ids bound to
+// CodeArts accounts. WorkBuddy uses it only to exclude those slots from browser
+// login auto-selection; an empty or nil result means no exclusions.
+func codeartsProxySlots(provider *codearts.Provider) func() []string {
+	return func() []string {
+		if provider == nil {
+			return nil
+		}
+		pool := provider.Pool()
+		if pool == nil {
+			return nil
+		}
+		slots := make([]string, 0)
+		for _, account := range pool.Accounts() {
+			if account == nil {
+				continue
+			}
+			if slot := account.ProxySlot(); slot != "" {
+				slots = append(slots, slot)
+			}
+		}
+		return slots
+	}
 }
 
 func normalizePaths(paths Paths) Paths {

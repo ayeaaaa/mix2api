@@ -408,7 +408,11 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			provider.recordActivity(report.Activity)
+			// The CN activity report shares the daily_chat history row with
+			// the intl daily-activity job. A later success replaces the same
+			// day's failed attempt so the panel never shows two rows for one
+			// account/day.
+			provider.recordDailyActivity(report.Activity)
 			if report.Busy {
 				result.Skipped++
 			} else if report.Error != "" && !report.OK {

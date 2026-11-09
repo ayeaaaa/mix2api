@@ -381,6 +381,78 @@ func TestJobsReportActivityCN(t *testing.T) {
 	}
 }
 
+func TestJobsReportActivityCNReplacesFailedDailyRow(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-report-daily", true, true, false)
+	activityPath := filepath.Join(f.dir, "shared-activity.jsonl")
+	f.intl.SetActivityPath(activityPath)
+	f.cn.SetActivityPath(activityPath)
+
+	reportPosts := 0
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case "/v2/report":
+			reportPosts++
+			if reportPosts == 1 {
+				return http.StatusInternalServerError, map[string]any{"code": 500, "msg": "report down"}
+			}
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok"}
+		case tasksGrowthStreakPath, tasksGrowthV2StreakPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"streak": map[string]any{"days": 3},
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+
+	job := jobsByName(t, f.intl)["workbuddy-report-activity"]
+	first, err := job.RunForce(context.Background())
+	if err == nil {
+		t.Fatal("failed report run returned no per-account error")
+	}
+	if first.Failed != 1 {
+		t.Fatalf("first report result = %+v, want one failure", first)
+	}
+	rows := readActivityRowsForTest(t, activityPath)
+	if len(rows) != 1 || rows[0].OK || rows[0].Task != taskDailyChatTask {
+		t.Fatalf("failed-day activity rows = %+v, want one failed daily_chat row", rows)
+	}
+
+	second, err := job.RunForce(context.Background())
+	if err != nil {
+		t.Fatalf("retry report job: %v", err)
+	}
+	if second.Succeeded != 1 {
+		t.Fatalf("second report result = %+v, want one success", second)
+	}
+	rows = readActivityRowsForTest(t, activityPath)
+	if len(rows) != 1 || !rows[0].OK || rows[0].Task != taskDailyChatTask {
+		t.Fatalf("activity rows after failure then success = %+v, want one successful daily_chat row", rows)
+	}
+}
+
+func readActivityRowsForTest(t *testing.T, path string) []ActivityEvent {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read activity history: %v", err)
+	}
+	rows := make([]ActivityEvent, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row ActivityEvent
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("decode activity row %q: %v", line, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 func TestJobsDailyBusyAndRestrictedSkip(t *testing.T) {
 	f := newJobsFixture(t)
 	busyAccount := f.addIntlTaskAccount(t, "intl-daily-busy", true, true)

@@ -30,6 +30,21 @@ func TestNonLoopbackRequiresBothAuths(t *testing.T) {
 	}
 }
 
+func TestAPIKeyRealmFromEnv(t *testing.T) {
+	t.Setenv("MIX2API_API_KEY_REALM", " INTL ")
+	cfg := configFromEnv()
+	if cfg.APIKeyRealm != "intl" {
+		t.Fatalf("APIKeyRealm = %q, want intl", cfg.APIKeyRealm)
+	}
+	resolver := apiKeyRealmResolver(cfg.APIKeyRealm)
+	if resolver == nil || resolver(nil) != "intl" {
+		t.Fatal("resolver is nil or returned the wrong realm")
+	}
+	if nilResolver := apiKeyRealmResolver(" "); nilResolver != nil {
+		t.Fatal("blank realm produced a non-nil resolver")
+	}
+}
+
 func TestIsLoopbackHost(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "::1", "localhost", ""} {
 		if !isLoopbackHost(host) {

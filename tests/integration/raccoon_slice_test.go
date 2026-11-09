@@ -89,8 +89,8 @@ func TestRaccoonSliceOverHTTP(t *testing.T) {
 	if setup.Store.Path != wantStorePath {
 		t.Fatalf("store path = %q, want %q", setup.Store.Path, wantStorePath)
 	}
-	if len(setup.Providers) != 2 {
-		t.Fatalf("providers = %d, want raccoon and codearts", len(setup.Providers))
+	if len(setup.Providers) != 4 {
+		t.Fatalf("providers = %d, want raccoon, codearts, and workbuddy intl/cn", len(setup.Providers))
 	}
 	raccoonRegistered := false
 	for _, provider := range setup.Providers {

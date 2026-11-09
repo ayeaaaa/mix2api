@@ -60,9 +60,10 @@ type Config struct {
 	TimeoutSeconds       float64 `json:"timeout_seconds"`
 	StreamTimeoutSeconds float64 `json:"stream_timeout_seconds"`
 	ModelsTTLSeconds     float64 `json:"models_ttl_seconds"`
-	// MaxConcurrent is the provider-wide chat ceiling. The generic API/app
-	// composition applies it (Task 11); WorkBuddy's pool enforces the
-	// per-account cap independently.
+	// MaxConcurrent is the provider-wide chat ceiling from v1. The v2
+	// composition keeps this value as documented config and enforces the
+	// per-account admission cap in the pool; a process-wide semaphore remains a
+	// follow-up and must not change provider semantics in the meantime.
 	MaxConcurrent        int  `json:"max_concurrent"`
 	AccountMaxConcurrent int  `json:"account_max_concurrent"`
 	AutoSwitchProduct    bool `json:"auto_switch_product"`

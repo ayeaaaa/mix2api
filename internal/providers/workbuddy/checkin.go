@@ -735,9 +735,9 @@ func (p *Provider) taskWebBase() string {
 		return base
 	}
 	if p.realm == realmCN {
-		return "https://www.workbuddy.cn"
+		return upstreamBaseOverride("WB_TASK_WEB_UPSTREAM", "https://www.workbuddy.cn")
 	}
-	return "https://www.workbuddy.ai"
+	return upstreamBaseOverride("WB_TASK_WEB_UPSTREAM", "https://www.workbuddy.ai")
 }
 
 type taskHTTPResponse struct {

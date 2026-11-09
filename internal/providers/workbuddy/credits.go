@@ -1110,9 +1110,9 @@ func (p *Provider) creditsNowTime() time.Time {
 
 func creditBillingBaseForRealm(realm string) string {
 	if realmOrDefault(realm) == realmCN {
-		return "https://www.codebuddy.cn"
+		return upstreamBaseOverride("WB_BILLING_UPSTREAM", "https://www.codebuddy.cn")
 	}
-	return "https://www.workbuddy.ai"
+	return upstreamBaseOverride("WB_BILLING_UPSTREAM", "https://www.workbuddy.ai")
 }
 
 func creditBillingOriginForRealm(realm string) string {
