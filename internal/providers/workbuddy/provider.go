@@ -63,6 +63,16 @@ type Provider struct {
 	poolOnce sync.Once
 	pool     *Pool
 	poolErr  error
+
+	// tokenMu guards tokenFlights, this provider's per-account single-flight
+	// refresh table. tokenBaseURL, tokenTimeout, and tokenNow are test seams;
+	// their zero values use the realm's desktop endpoint, 30 seconds, and
+	// time.Now respectively.
+	tokenMu      sync.Mutex
+	tokenFlights map[*Account]*tokenRefreshFlight
+	tokenBaseURL string
+	tokenTimeout time.Duration
+	tokenNow     func() time.Time
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
