@@ -501,14 +501,23 @@ func (j *scheduledJob) runProviderWide(ctx context.Context, provider *Provider, 
 		catalog, done, err := safeJobCall3(func() (CatalogResult, bool, error) {
 			return provider.CatalogDailyRefresh(ctx)
 		})
-		_ = catalog
 		if err != nil {
 			result.Failed++
 			result.Errors = append(result.Errors, safeJobError(err))
-		} else if done {
+		} else if !done {
+			result.Skipped++
+		} else if catalog.Cooldown {
+			// A cooldown is not a completed refresh: the job ran but the
+			// provider refused to contact upstream. Counting it as success hid
+			// skipped daily catalogue passes.
+			result.Skipped++
+		} else if catalog.OK {
 			result.Succeeded++
 		} else {
-			result.Skipped++
+			result.Failed++
+			if message := strings.TrimSpace(catalog.Msg); message != "" {
+				result.Errors = append(result.Errors, message)
+			}
 		}
 	}
 }

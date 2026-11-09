@@ -1360,12 +1360,7 @@ func (p *Pool) AdmissionWait(model string, exclude map[string]bool) (time.Durati
 	}
 	model = strings.TrimSpace(model)
 	lower := strings.ToLower(model)
-	p.mu.RLock()
-	proOnly := make(map[string]bool, len(p.proOnly))
-	for key, value := range p.proOnly {
-		proOnly[key] = value
-	}
-	p.mu.RUnlock()
+	proOnly, guard := p.schedulingHooks()
 
 	now := p.nowTime()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
@@ -1436,8 +1431,12 @@ func (p *Pool) AdmissionWait(model string, exclude map[string]bool) (time.Durati
 			consider(time.Second, "every usable WorkBuddy account is already serving its concurrency cap")
 			continue
 		}
-		if guard := account.GuardBlocked(model); guard != "" {
-			consider(guardAdmissionWait(guard, now, midnight), guardAdmissionReason(guard))
+		if guard != nil && guard(account, model) {
+			name := account.GuardBlocked(model)
+			if name == "" {
+				name = "custom"
+			}
+			consider(guardAdmissionWait(name, now, midnight), guardAdmissionReason(name))
 			continue
 		}
 		usable = true
@@ -1750,13 +1749,16 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		}
 		maxConcurrent := p.accountMaxConcurrentLocked(p.Config())
 		expiringWindow := p.expiringWindow()
+		// Resolve the slot before taking Account.mu: resolveProxySlot snapshots
+		// Pool.mu, and the documented lock order is Pool.mu before Account.mu.
+		runtimeProxy := p.resolveProxySlot(saved.ProxySlot, saved.Extra)
 		existing.mu.Lock()
 		if existing.removed {
 			existing.mu.Unlock()
 			return nil, ErrAccountNotFound
 		}
 		existing.Auth = saved
-		existing.Auth.ProxyURL = p.resolveProxySlot(saved.ProxySlot, saved.Extra)
+		existing.Auth.ProxyURL = runtimeProxy
 		existing.Path = saved.Path
 		existing.Credits = credits
 		existing.DisabledModels = disabledModelSet(saved.DisabledModels)
@@ -1794,7 +1796,7 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	p.mu.Lock()
 	p.accounts = append(p.accounts, account)
 	sort.Slice(p.accounts, func(i, j int) bool {
-		return strings.TrimSpace(p.accounts[i].Auth.UID) < strings.TrimSpace(p.accounts[j].Auth.UID)
+		return accountUID(p.accounts[i]) < accountUID(p.accounts[j])
 	})
 	p.mu.Unlock()
 	return account, nil
@@ -2011,14 +2013,29 @@ func (s *sessionAffinity) liveLocked(key string, now time.Time) []affinityEntry 
 	}
 	if len(live) == 0 {
 		delete(s.bindings, key)
+		s.removeOrderLocked(key)
 		return nil
 	}
 	s.bindings[key] = live
 	return live
 }
 
+// removeOrderLocked keeps the insertion order in step with bindings. Without
+// this, unbind/demote/expiry churn leaves dead keys in order until the next
+// full gc and the slice can grow past maxEntries.
+func (s *sessionAffinity) removeOrderLocked(key string) {
+	for index, existing := range s.order {
+		if existing != key {
+			continue
+		}
+		copy(s.order[index:], s.order[index+1:])
+		s.order = s.order[:len(s.order)-1]
+		return
+	}
+}
+
 func (s *sessionAffinity) recent(key string) []string {
-	key = strings.TrimSpace(key)
+	key = providers.NormalizeSessionKey(key)
 	if s == nil || key == "" {
 		return nil
 	}
@@ -2033,7 +2050,7 @@ func (s *sessionAffinity) recent(key string) []string {
 }
 
 func (s *sessionAffinity) bind(key, uid string) {
-	key = strings.TrimSpace(key)
+	key = providers.NormalizeSessionKey(key)
 	uid = strings.TrimSpace(uid)
 	if s == nil || key == "" || uid == "" {
 		return
@@ -2077,7 +2094,7 @@ func (s *sessionAffinity) gcLocked(now time.Time) {
 }
 
 func (s *sessionAffinity) demote(key, uid string) {
-	key = strings.TrimSpace(key)
+	key = providers.NormalizeSessionKey(key)
 	if s == nil || key == "" {
 		return
 	}
@@ -2099,18 +2116,20 @@ func (s *sessionAffinity) demote(key, uid string) {
 	}
 	if len(kept) == 0 {
 		delete(s.bindings, key)
+		s.removeOrderLocked(key)
 		return
 	}
 	s.bindings[key] = kept
 }
 
 func (s *sessionAffinity) unbind(key string) {
-	key = strings.TrimSpace(key)
+	key = providers.NormalizeSessionKey(key)
 	if s == nil || key == "" {
 		return
 	}
 	s.mu.Lock()
 	delete(s.bindings, key)
+	s.removeOrderLocked(key)
 	s.mu.Unlock()
 }
 
@@ -2130,6 +2149,7 @@ func (s *sessionAffinity) dropUID(uid string) {
 		}
 		if len(kept) == 0 {
 			delete(s.bindings, key)
+			s.removeOrderLocked(key)
 			continue
 		}
 		s.bindings[key] = kept

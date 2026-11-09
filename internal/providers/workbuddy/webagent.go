@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,73 @@ const (
 	acpRequestTimeout  = 30 * time.Second
 	acpMaxBodyBytes    = 1 << 20
 )
+
+// acpAllowedHostSuffixes are the WorkBuddy/CodeBuddy sandbox origins. A link
+// under one of these suffixes is trusted without a DNS lookup; any other host
+// must resolve only to public addresses.
+var acpAllowedHostSuffixes = []string{
+	".workbuddy.ai", ".workbuddy.cn",
+	".codebuddy.ai", ".codebuddy.cn",
+	".tencent.com", ".tencentcloud.com", ".qcloud.com",
+}
+
+// validateACPLink prevents the upstream session descriptor from turning the
+// gateway into an SSRF proxy and keeps the sandbox bearer token off plaintext
+// or private endpoints. It runs before any request object or Authorization
+// header is built.
+func validateACPLink(link string) error {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || parsed == nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("ACP sandbox link must use https")
+	}
+	if parsed.User != nil {
+		return errors.New("ACP sandbox link must not contain userinfo")
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		return errors.New("ACP sandbox link has no host")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") ||
+		strings.HasSuffix(host, ".home.arpa") {
+		return errors.New("ACP sandbox host is not public")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !acpPublicIP(ip) {
+			return errors.New("ACP sandbox host is not public")
+		}
+		return nil
+	}
+	for _, suffix := range acpAllowedHostSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addresses) == 0 {
+		return errors.New("ACP sandbox host does not resolve to a public address")
+	}
+	for _, address := range addresses {
+		if !acpPublicIP(address.IP) {
+			return errors.New("ACP sandbox host is not public")
+		}
+	}
+	return nil
+}
+
+func acpPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsUnspecified() &&
+		!ip.IsMulticast()
+}
 
 // acpTurnResult is the minimal v1 wb_webagent.run_turn result.
 type acpTurnResult struct {
@@ -195,9 +263,21 @@ func runACPTurn(
 	link, token, sessionID, cwd, prompt, ua, model, proxy string,
 	wait, pollInterval time.Duration,
 	pollStatus func() string,
+	validators ...func(string) error,
 ) acpTurnResult {
 	started := time.Now()
 	result := acpTurnResult{}
+	validate := validateACPLink
+	if len(validators) > 0 && validators[0] != nil {
+		validate = validators[0]
+	}
+	if err := validate(link); err != nil {
+		// A rejected descriptor is terminal: retrying the same link would only
+		// resend the sandbox token to the same endpoint.
+		result.Error = err.Error()
+		result.Terminal = true
+		return result
+	}
 	if client == nil {
 		result.Error = "ACP transport is unavailable"
 		return result

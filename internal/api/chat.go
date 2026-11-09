@@ -213,20 +213,20 @@ func chatSessionKey(r *http.Request, payload map[string]json.RawMessage) string 
 			"X-Conversation-Id", "Conversation-Id", "X-Session-Id", "Session-Id",
 		} {
 			if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
-				return value
+				return providers.NormalizeSessionKey(value)
 			}
 		}
 	}
 	for _, key := range []string{"conversation_id", "session_id"} {
 		if value, ok := decodeJSONString(payload[key]); ok && value != "" {
-			return value
+			return providers.NormalizeSessionKey(value)
 		}
 	}
 	if raw, ok := payload["metadata"]; ok {
 		var metadata map[string]json.RawMessage
 		if json.Unmarshal(raw, &metadata) == nil {
 			if value, ok := decodeJSONString(metadata["conversation_id"]); ok && value != "" {
-				return value
+				return providers.NormalizeSessionKey(value)
 			}
 		}
 	}

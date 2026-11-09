@@ -1560,3 +1560,31 @@ func TestChatRateLimitRetryMetadataHeaders(t *testing.T) {
 		t.Fatalf("body reset_at = %#v", failure["reset_at"])
 	}
 }
+
+func TestChatSessionKeyHashesOverlongValues(t *testing.T) {
+	longKey := strings.Repeat("session-key-", 4096)
+	provider := &stubProvider{
+		id:         "raccoon",
+		realm:      "raccoon",
+		models:     []providers.Model{{"id": "m1"}},
+		openStream: newStubStream("data: [DONE]\n\n"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		map[string]string{"X-Conversation-Id": longKey})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := provider.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	want := providers.NormalizeSessionKey(longKey)
+	if requests[0].SessionKey != want {
+		t.Fatalf("SessionKey = %q, want %q", requests[0].SessionKey, want)
+	}
+	if len(requests[0].SessionKey) > providers.MaxSessionKeyBytes {
+		t.Fatalf("SessionKey length = %d", len(requests[0].SessionKey))
+	}
+}

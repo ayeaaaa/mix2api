@@ -53,6 +53,17 @@ These are v2 composition/testing seams, not v1 wire fields:
   parity difference.
 - Session/machine view IDs are deterministic per account; `sessionId` is dropped
   by the normalizer and `machineId` is stable for a given UID.
+- **Concurrency (oracle note):** v2 enforces a process-wide chat admission
+  ceiling in addition to the per-account cap. Record v1 oracle payloads
+  serially (one chat/SSE request at a time) and do not run the v2 suite against
+  the same fake upstream concurrently: concurrent turns can rotate session
+  affinity, consume 429 windows, and reorder refresh-before-retry, which is
+  expected behavior rather than a parity difference.
+- **Export secrets default:** `GET /accounts/export` follows v1 and includes
+  `accessToken`/`refreshToken` unless `?secrets=0` is supplied. The route is
+  panel-authenticated and must not be logged or shared; use `secrets=0` for
+  diagnostics, tickets, and any document that leaves the host. This default is
+  intentional v1 parity, not a v2 hardening claim.
 
 Do not fabricate v1-only fields into the v2 goldens. If full parity for them
 becomes a requirement, implement them first and then add oracle comparisons.

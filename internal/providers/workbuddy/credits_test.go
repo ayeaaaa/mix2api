@@ -1878,3 +1878,50 @@ func (d *creditsFailDoer) Do(context.Context, *http.Request, string) (*http.Resp
 	d.calls++
 	return nil, fmt.Errorf("unexpected upstream request")
 }
+
+func TestCreditsRefreshPacesMultipleAccounts(t *testing.T) {
+	summary := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"IsPaidUser": false,
+			"Packages":   []any{},
+		},
+	})
+	emptyAccounts := creditTestJSON(t, map[string]any{"code": 0, "data": map[string]any{"Accounts": []any{}}})
+	server, _ := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		switch r.URL.Path {
+		case creditsSummaryPath:
+			return http.StatusOK, summary
+		case creditsFreePackagesPath, creditsPaidPackagesPath:
+			return http.StatusOK, emptyAccounts
+		case creditsCheckinPath:
+			return http.StatusOK, `{"code":0,"data":{}}`
+		default:
+			return http.StatusNotFound, `{"code":404}`
+		}
+	})
+	provider, _, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
+		"a": nil, "b": nil, "c": nil,
+	})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsCheckinBaseURL = server.URL
+	provider.tasksGap = 10 * time.Millisecond
+	var sleeps []time.Duration
+	provider.tasksSleep = func(delay time.Duration) { sleeps = append(sleeps, delay) }
+
+	result, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("refresh rows = %+v", result.Results)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("inter-account pacing sleeps = %v, want 2", sleeps)
+	}
+	for _, delay := range sleeps {
+		if delay != 10*time.Millisecond {
+			t.Fatalf("pacing delay = %v", delay)
+		}
+	}
+}

@@ -145,9 +145,20 @@ func (p *Provider) runDailyChat(ctx context.Context, account *Account, trigger s
 		result.Msg = "今日活跃已完成，跳过本轮"
 		return result, nil
 	}
-	// An explicit uid is the manual panel action: it deliberately forces past
-	// the persisted restriction window. Batch callers use DailyChatAll, which
-	// filters restricted accounts before reaching this method.
+	// Manual and scheduled daily activity both honour the persisted 403/11140
+	// window. Check-in deliberately remains operator-forceable, but probing a
+	// restricted account from the manual daily button only extends the penalty.
+	if p.taskRestricted(auth, now) {
+		result.Skipped = true
+		result.Restricted = true
+		result.Msg = "账号处于上游限制窗口，跳过活跃对话"
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Msg, now)
+		return result, nil
+	}
+	// An explicit uid is the manual panel action, but it still respects the
+	// persisted restriction window checked above. Batch callers use
+	// DailyChatAll, which filters restricted accounts before reaching this
+	// method.
 	model := p.canonicalModelID(p.dailyChatModel(auth))
 	if model == "" {
 		model = p.dailyChatModel(auth)
@@ -255,7 +266,7 @@ func (p *Provider) DailyChatWeb(ctx context.Context, uid string) (DailyResult, e
 	if err != nil {
 		return DailyResult{}, err
 	}
-	return p.runDailyChatWeb(ctx, account, taskTriggerManual)
+	return p.runDailyChatWebManual(ctx, account, taskTriggerManual)
 }
 
 // DailyChatWebAll runs the web activity for every enabled, task-participating,
@@ -287,6 +298,17 @@ func (p *Provider) DailyChatWebAll(ctx context.Context) ([]DailyResult, error) {
 }
 
 func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigger string) (DailyResult, error) {
+	return p.runDailyChatWebAttempt(ctx, account, trigger, true)
+}
+
+// runDailyChatWebManual is the panel's standalone web-channel action. v1
+// deliberately does not stamp lastDailyChat for this button: the manual retry
+// must not make the scheduled desktop+web activity believe the day is done.
+func (p *Provider) runDailyChatWebManual(ctx context.Context, account *Account, trigger string) (DailyResult, error) {
+	return p.runDailyChatWebAttempt(ctx, account, trigger, false)
+}
+
+func (p *Provider) runDailyChatWebAttempt(ctx context.Context, account *Account, trigger string, stampDaily bool) (DailyResult, error) {
 	auth := taskAuthSnapshot(account)
 	result := DailyResult{
 		UID: strings.TrimSpace(auth.UID), Nickname: strings.TrimSpace(auth.Nickname),
@@ -322,6 +344,13 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		result.Msg = "今日网页活跃已完成，跳过本轮"
 		return result, nil
 	}
+	if p.taskRestricted(auth, now) {
+		result.Skipped = true
+		result.Restricted = true
+		result.Msg = "账号处于上游限制窗口，跳过网页活跃"
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Msg, now)
+		return result, nil
+	}
 	web := p.runDailyWebRounds(ctx, account, auth)
 	result.OK = web.OK
 	result.Skipped = web.Skipped
@@ -344,9 +373,12 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		_ = p.persistDailyWebDay(account, now)
 		// The web leg is the officially counted daily activity in v1; also
 		// stamp the shared field so a later DailyChat/other scheduler slot on
-		// the same day cannot double-run the activity.
+		// the same day cannot double-run the activity. The manual web-only
+		// route intentionally leaves the shared stamp alone (M1).
 		p.clearTaskRestriction(account)
-		_ = p.persistLastDailyChat(account, now)
+		if stampDaily {
+			_ = p.persistLastDailyChat(account, now)
+		}
 		result.Activity = p.dailyActivityEvent(account, trigger, true, web.Msg, now)
 	} else {
 		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
@@ -512,7 +544,7 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 	}
 	turn := runACPTurn(ctx, p.taskClient(), link, token, sessionID, cwd,
 		dailyChatPrompt, taskWebUserAgent, model, taskProxyURL(account),
-		wait, pollInterval, pollStatus)
+		wait, pollInterval, pollStatus, p.acpLinkValidator)
 	statusResult := DailyWebResult{
 		OK: turn.OK, Status: turn.Status, Events: turn.Events, Chunks: turn.Chunks,
 		ElapsedMS: turn.ElapsedMS, Error: turn.Error,

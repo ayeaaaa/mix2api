@@ -403,7 +403,7 @@ func (p *Provider) refreshSettings() Config {
 	if p == nil {
 		return Config{}
 	}
-	cfg := LoadConfig(p.store, p.realm)
+	cfg := p.configForRealm()
 	p.mu.Lock()
 	p.cfg = cfg
 	p.mu.Unlock()
@@ -608,14 +608,15 @@ func (p *Provider) providerForRealm(realm string) *Provider {
 }
 
 // routeProviders resolves a panel realm selector. "all" is the WorkBuddy union;
-// an empty value uses fallback. Invalid or unavailable realms are explicit
-// errors rather than silently widening a mutation to every account.
+// an empty value uses fallback, and an empty fallback means the union. Invalid
+// or unavailable realms are explicit errors rather than silently widening a
+// mutation to every account.
 func (p *Provider) routeProviders(realm, fallback string) ([]*Provider, *wbAdminError) {
 	realm = strings.ToLower(strings.TrimSpace(realm))
 	if realm == "" {
-		realm = fallback
+		realm = strings.ToLower(strings.TrimSpace(fallback))
 	}
-	if realm == "all" {
+	if realm == "" || realm == "all" {
 		return p.allProviders(), nil
 	}
 	normalized, ok := normalizeRealm(realm)
@@ -667,12 +668,36 @@ func (p *Provider) providerForUID(uid, realm string) (*Provider, *Account) {
 	return nil, nil
 }
 
+// resolveAccountUID keeps an explicit realm selector when possible, then falls
+// back to the other realm. v1's single pool never rejected a uid merely because
+// the dashboard happened to be showing the other exit.
+func (p *Provider) resolveAccountUID(uid, realm string) (*Provider, *Account) {
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return nil, nil
+	}
+	realm = strings.ToLower(strings.TrimSpace(realm))
+	if _, ok := normalizeRealm(realm); ok {
+		if provider := p.providerForRealm(realm); provider != nil {
+			if account := provider.Pool().Get(uid); account != nil {
+				return provider, account
+			}
+		}
+	}
+	return p.providerForUID(uid, "")
+}
+
 func (p *Provider) safeAdminRealmError(realm string) *wbAdminError {
 	return wbUnavailable(fmt.Sprintf("workbuddy: %s realm is not available", strings.ToLower(strings.TrimSpace(realm))))
 }
 
 func (p *Provider) handleAccounts(w http.ResponseWriter, r *http.Request) {
-	realm := wbRequestRealm(r, nil, realmIntl)
+	realm := wbRequestRealm(r, nil, "")
+	if realm == "" {
+		// v1's GET /accounts uses the persisted active exit when the caller did
+		// not name one. Only an explicit "all" is the cross-realm union.
+		realm = p.activeRealm()
+	}
 	providersList := []*Provider{}
 	if realm == "all" || realm == "" {
 		providersList = p.allProviders()
@@ -752,6 +777,8 @@ func (p *Provider) handleAccountsExport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	includeSecrets := true
+	// v1 parity: export carries credentials by default. The route is
+	// panel-authenticated; callers sharing a document must pass secrets=0.
 	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("secrets"))) {
 	case "0", "false", "no":
 		includeSecrets = false
@@ -814,16 +841,62 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 		}
 		payload = value
 	}
-	realm := wbRequestRealm(r, payload, realmIntl)
-	if realm == "all" {
-		// The generic panel refresh is per realm; an explicit all request still
-		// refreshes each realm with its own pool.
+	targets := CreditsRefreshTargets{
+		UID:   wbAdminText(payload["uid"]),
+		Group: wbAdminText(payload["group"]),
+	}
+	if raw, present := payload["uids"]; present {
+		values, ok := wbAdminStringList(raw)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("uids must be a list"))
+			return
+		}
+		targets.UIDs = values
+	}
+	selector := wbRequestRealm(r, payload, "")
+	if targets.UID != "" {
+		if selector != "" && selector != "all" {
+			if _, ok := normalizeRealm(selector); !ok {
+				writeWBAdminError(w, wbBadRequest("realm must be intl, cn or all"))
+				return
+			}
+		}
+		if provider, account := p.resolveAccountUID(targets.UID, selector); account != nil {
+			provider.refreshSettings()
+			local := targets
+			local.Realm = provider.realm
+			result, err := provider.refreshCreditsRoute(r.Context(), local)
+			if err != nil {
+				writeWBAdminError(w, wbAdminErrorFrom(err))
+				return
+			}
+			provider.invalidateHealth()
+			writeWBAdminJSON(w, http.StatusOK, map[string]any{
+				"results": result.Results, "accounts": result.Accounts, "busy": result.Busy,
+			})
+			return
+		}
+	}
+	realm := selector
+	if realm == "" || realm == "all" {
+		// v1's unqualified sweep covered the whole pool. The two realms are
+		// separate provider instances here, so an omitted realm means both;
+		// each provider still resolves uid/uids/group against its own accounts.
 		results := make([]CreditRefreshRow, 0)
 		accounts := make([]AccountView, 0)
 		busy := false
+		paced := false
 		for _, provider := range p.allProviders() {
 			provider.refreshSettings()
-			value, err := provider.refreshCreditsRoute(r.Context(), CreditsRefreshTargets{})
+			local := targets
+			local.Realm = provider.realm
+			if len(provider.creditTargetAccounts(provider.Pool(), local)) > 0 {
+				if paced {
+					provider.taskSleepFor(provider.taskGapDelay())
+				}
+				paced = true
+			}
+			value, err := provider.refreshCreditsRoute(r.Context(), local)
 			if err != nil {
 				writeWBAdminError(w, wbAdminErrorFrom(err))
 				return
@@ -841,19 +914,7 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	provider.refreshSettings()
-	targets := CreditsRefreshTargets{
-		UID:   wbAdminText(payload["uid"]),
-		Realm: provider.realm,
-		Group: wbAdminText(payload["group"]),
-	}
-	if raw, present := payload["uids"]; present {
-		values, ok := wbAdminStringList(raw)
-		if !ok {
-			writeWBAdminError(w, wbBadRequest("uids must be a list"))
-			return
-		}
-		targets.UIDs = values
-	}
+	targets.Realm = provider.realm
 	result, err := provider.refreshCreditsRoute(r.Context(), targets)
 	if err != nil {
 		writeWBAdminError(w, wbAdminErrorFrom(err))
@@ -896,22 +957,43 @@ func (p *Provider) handleAccountsCreditsDetail(w http.ResponseWriter, r *http.Re
 	if uid == "" {
 		uid = wbAdminText(payload["uid"])
 	}
-	realm := wbRequestRealm(r, payload, realmIntl)
-	provider := p.providerForRealm(realm)
-	if provider == nil {
-		writeWBAdminError(w, p.safeAdminRealmError(realm))
-		return
+	realm := wbRequestRealm(r, payload, "")
+	var provider *Provider
+	var account *Account
+	if realm == "" || realm == "all" {
+		if uid != "" {
+			// v1 looked a uid up in the single pool; v2 resolves it across both
+			// realm providers so an unqualified detail request cannot miss a
+			// CN account just because the legacy route is owned by intl.
+			provider, account = p.providerForUID(uid, "")
+		} else {
+			for _, candidate := range p.allProviders() {
+				if pool := candidate.Pool(); pool != nil && len(pool.Accounts()) > 0 {
+					provider = candidate
+					account = pool.Accounts()[0]
+					break
+				}
+			}
+		}
+	} else {
+		provider = p.providerForRealm(realm)
+		if provider == nil {
+			writeWBAdminError(w, p.safeAdminRealmError(realm))
+			return
+		}
+		account = provider.Pool().Get(uid)
+		if account == nil && uid != "" {
+			provider, account = p.resolveAccountUID(uid, realm)
+		}
+		if account == nil && uid == "" && len(provider.Pool().Accounts()) > 0 {
+			account = provider.Pool().Accounts()[0]
+		}
 	}
-	provider.refreshSettings()
-	pool := provider.Pool()
-	account := pool.Get(uid)
-	if account == nil && uid == "" && len(pool.Accounts()) > 0 {
-		account = pool.Accounts()[0]
-	}
-	if account == nil {
+	if provider == nil || account == nil {
 		writeWBAdminJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "未找到指定账号"})
 		return
 	}
+	provider.refreshSettings()
 	refresh := false
 	if r.Method == http.MethodPost {
 		refresh = true
@@ -941,7 +1023,7 @@ func (p *Provider) handleAccountsCreditsDetail(w http.ResponseWriter, r *http.Re
 }
 
 func (p *Provider) handleAccountsGrants(w http.ResponseWriter, r *http.Request) {
-	providersList, failure := p.routeProviders(wbRequestRealm(r, nil, realmIntl), realmIntl)
+	providersList, failure := p.routeProviders(wbRequestRealm(r, nil, ""), "")
 	if failure != nil {
 		writeWBAdminError(w, failure)
 		return
@@ -1060,6 +1142,7 @@ func (p *Provider) handleAccountsImport(w http.ResponseWriter, r *http.Request) 
 		provider.refreshSettings()
 		for _, uid := range append(append([]string(nil), result.Added...), result.Updated...) {
 			provider.syncAccountFromDisk(uid)
+			provider.bestEffortInitialCheckin(r.Context(), uid, taskTriggerAccountImport)
 		}
 		provider.invalidateHealth()
 	}
@@ -1161,6 +1244,36 @@ func (p *Provider) syncAccountFromDisk(uid string) {
 	}
 }
 
+// bestEffortInitialCheckin mirrors v1's account_add/account_import hook for a
+// newly saved CN personal account. Enterprise and static API-key accounts have
+// no check-in programme, and a failed sign-in must never fail the add/import
+// request that already succeeded.
+func (p *Provider) bestEffortInitialCheckin(ctx context.Context, uid, trigger string) {
+	if p == nil {
+		return
+	}
+	account := p.Pool().Get(uid)
+	if account == nil {
+		return
+	}
+	auth := taskAuthSnapshot(account)
+	if auth.Realm != realmCN || taskIsAPIKey(auth) || taskEnterpriseID(auth) != "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The add/import response must not hang on a slow billing endpoint, and a
+	// client disconnect must not cancel the initial sign-in halfway through.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tasksDefaultTimeout+5*time.Second)
+	defer cancel()
+	result, err := p.runCheckin(ctx, account, trigger)
+	if err != nil {
+		return
+	}
+	p.recordActivity(result.Activity)
+}
+
 func (p *Provider) handleAccountsAddAPIKey(w http.ResponseWriter, r *http.Request) {
 	payload, failure := readWBAdminPayload(w, r)
 	if failure != nil {
@@ -1216,6 +1329,7 @@ func (p *Provider) handleAccountsAddAPIKey(w http.ResponseWriter, r *http.Reques
 	if snapshot != nil {
 		_ = provider.Pool().SetCredits(normalized.UID, snapshot)
 	}
+	provider.bestEffortInitialCheckin(r.Context(), normalized.UID, taskTriggerAccountAdd)
 	provider.invalidateHealth()
 	view := account.View()
 	probe := map[string]any{"ok": true}
@@ -1289,6 +1403,7 @@ func (p *Provider) handleAccountsImportDesktop(w http.ResponseWriter, r *http.Re
 		for _, provider := range p.allProviders() {
 			provider.refreshSettings()
 			provider.syncAccountFromDisk(auth.UID)
+			provider.bestEffortInitialCheckin(r.Context(), auth.UID, taskTriggerAccountImport)
 			provider.invalidateHealth()
 		}
 		writeWBAdminJSON(w, http.StatusOK, map[string]any{
@@ -1301,16 +1416,24 @@ func (p *Provider) handleAccountsImportDesktop(w http.ResponseWriter, r *http.Re
 	if all, _ := wbAdminBool(payload["all"]); all {
 		realm := strings.ToLower(strings.TrimSpace(wbAdminText(payload["realm"])))
 		for _, candidate := range candidates {
-			auth, err := ImportDesktopCredential(p.AccountsDir(), candidate.path, candidate.hint)
-			if err != nil {
+			// Filter the detected realm before ImportDesktopCredential writes
+			// anything: v1's bulk import never persisted a credential just to
+			// discard it because the caller selected the other realm.
+			inspected, entry := inspectDesktopFile(candidate, "")
+			if !entry.Valid || strings.TrimSpace(inspected.AccessToken) == "" {
 				continue
 			}
-			if (realm == realmIntl || realm == realmCN) && auth.Realm != realm {
+			if (realm == realmIntl || realm == realmCN) && entry.Realm != realm {
+				continue
+			}
+			auth, err := ImportDesktopCredential(p.AccountsDir(), candidate.path, candidate.hint)
+			if err != nil {
 				continue
 			}
 			for _, provider := range p.allProviders() {
 				provider.refreshSettings()
 				provider.syncAccountFromDisk(auth.UID)
+				provider.bestEffortInitialCheckin(r.Context(), auth.UID, taskTriggerAccountImport)
 				provider.invalidateHealth()
 			}
 			imported = append(imported, p.accountViewsForUID(auth.UID)...)
@@ -1353,7 +1476,10 @@ func (p *Provider) handleAccountsLoginStart(w http.ResponseWriter, r *http.Reque
 		writeWBAdminError(w, failure)
 		return
 	}
-	realm := wbRequestRealm(r, payload, realmIntl)
+	realm := wbRequestRealm(r, payload, "")
+	if realm == "" {
+		realm = p.activeRealm()
+	}
 	provider := p.providerForRealm(realm)
 	if provider == nil {
 		writeWBAdminError(w, p.safeAdminRealmError(realm))
@@ -1423,6 +1549,7 @@ func (p *Provider) handleAccountsLoginPoll(w http.ResponseWriter, r *http.Reques
 	if result.Status == "ok" && result.Account != nil {
 		selected.syncAccountFromDisk(result.Account.UID)
 		selected.refreshSettings()
+		selected.bestEffortInitialCheckin(r.Context(), result.Account.UID, taskTriggerAccountAdd)
 		selected.invalidateHealth()
 	}
 	writeWBAdminJSON(w, http.StatusOK, result)
@@ -1672,7 +1799,7 @@ func (p *Provider) handleAccountsDailyChatWeb(w http.ResponseWriter, r *http.Req
 		if index > 0 {
 			provider.taskSleepFor(provider.taskGapDelay())
 		}
-		result, err := provider.runDailyChatWeb(r.Context(), account, taskTriggerManual)
+		result, err := provider.runDailyChatWebManual(r.Context(), account, taskTriggerManual)
 		if err != nil {
 			writeWBAdminError(w, wbAdminErrorFrom(err))
 			return
@@ -2255,8 +2382,8 @@ func (p *Provider) handleAccountsSetAll(w http.ResponseWriter, r *http.Request) 
 		writeWBAdminError(w, wbBadRequest("enabled must be true or false"))
 		return
 	}
-	realm := wbRequestRealm(r, payload, realmIntl)
-	providersList, failure := p.routeProviders(realm, realmIntl)
+	realm := wbRequestRealm(r, payload, "")
+	providersList, failure := p.routeProviders(realm, "")
 	if failure != nil {
 		writeWBAdminError(w, failure)
 		return
@@ -2385,13 +2512,13 @@ func (p *Provider) handleAccountsRefresh(w http.ResponseWriter, r *http.Request)
 	}
 	uid := wbAdminText(payload["uid"])
 	realmSelector := wbRequestRealm(r, payload, "")
-	providersList, failure := p.routeProviders(realmSelector, realmIntl)
+	providersList, failure := p.routeProviders(realmSelector, "")
 	if failure != nil {
 		writeWBAdminError(w, failure)
 		return
 	}
 	if uid != "" {
-		provider, account := p.providerForUID(uid, realmSelector)
+		provider, account := p.resolveAccountUID(uid, realmSelector)
 		if account == nil {
 			writeWBAdminJSON(w, http.StatusOK, map[string]any{"results": []map[string]any{}})
 			return
@@ -2442,13 +2569,13 @@ func (p *Provider) handleAccountsSyncProfile(w http.ResponseWriter, r *http.Requ
 	}
 	uid := wbAdminText(payload["uid"])
 	realmSelector := wbRequestRealm(r, payload, "")
-	providersList, failure := p.routeProviders(realmSelector, realmIntl)
+	providersList, failure := p.routeProviders(realmSelector, "")
 	if failure != nil {
 		writeWBAdminError(w, failure)
 		return
 	}
 	if uid != "" {
-		provider, account := p.providerForUID(uid, realmSelector)
+		provider, account := p.resolveAccountUID(uid, realmSelector)
 		if account == nil {
 			writeWBAdminJSON(w, http.StatusOK, map[string]any{
 				"updated": []map[string]any{}, "failed": []map[string]any{},
@@ -2517,7 +2644,10 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 		writeWBAdminJSON(w, http.StatusOK, wire)
 		return
 	}
-	realm := wbRequestRealm(r, payload, realmIntl)
+	realm := wbRequestRealm(r, payload, "")
+	if realm == "" {
+		realm = p.activeRealm()
+	}
 	provider := p.providerForRealm(realm)
 	if provider == nil {
 		writeWBAdminError(w, p.safeAdminRealmError(realm))

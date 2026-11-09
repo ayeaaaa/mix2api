@@ -5,12 +5,31 @@ package providers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
+
+// MaxSessionKeyBytes bounds the provider affinity map key derived from client
+// headers/body fields. Longer values are hashed so a hostile caller cannot
+// force unbounded memory retention while still getting stable affinity.
+const MaxSessionKeyBytes = 256
+
+// NormalizeSessionKey trims a session key and hashes values over the cap. The
+// hash keeps affinity stable for repeat callers without storing their payload.
+func NormalizeSessionKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) <= MaxSessionKeyBytes {
+		return value
+	}
+	digest := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
 
 // Health is a provider health payload. Field names and shapes must stay
 // compatible with the v1 wire format.

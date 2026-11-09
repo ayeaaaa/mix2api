@@ -54,8 +54,10 @@ const (
 	tasksTurnWait       = 120 * time.Second
 	tasksPollDefault    = 3 * time.Second
 
-	taskTriggerManual    = "manual"
-	taskTriggerScheduler = "scheduler"
+	taskTriggerManual        = "manual"
+	taskTriggerScheduler     = "scheduler"
+	taskTriggerAccountAdd    = "account_add"
+	taskTriggerAccountImport = "account_import"
 
 	taskCheckinTask       = "checkin"
 	taskDailyChatTask     = "daily_chat"

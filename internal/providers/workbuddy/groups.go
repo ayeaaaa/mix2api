@@ -121,6 +121,9 @@ func (p *Pool) SetGroupEnabled(group string, enabled bool) ([]string, error) {
 				account.State.LastError = ""
 				account.State.ErrCount = 0
 				account.State.CoolUntil = time.Time{}
+				// A persisted 403/11140 window survives a group enable; seed
+				// the runtime cooldown so the operator cannot bypass it.
+				seedRuntimeRestrictionLocked(account)
 			} else {
 				account.State.DisabledBy = "manual"
 			}

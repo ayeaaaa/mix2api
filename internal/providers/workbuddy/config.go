@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 )
@@ -152,6 +154,63 @@ func LoadConfig(store *config.Store, realm string) Config {
 		return defaultConfig(realm)
 	}
 	return normalizeConfig(rawRealmSettings(settings, realm), realm)
+}
+
+// configForRealm is the provider-owned cached loader. The panel reads and
+// writes the same settings file that chat requests consult every turn, so the
+// cache key is the file identity (path, mtime, size), not a timer. A missing
+// file and a changed file both force a reload; unchanged turns reuse cfg.
+func (p *Provider) configForRealm() Config {
+	if p == nil {
+		return Config{}
+	}
+	realm := realmOrDefault(p.realm)
+	if p.store == nil || strings.TrimSpace(p.store.Path) == "" {
+		return defaultConfig(realm)
+	}
+	path := p.store.Path
+	info, statErr := os.Stat(path)
+	exists := statErr == nil
+	var modTime time.Time
+	var size int64
+	if exists {
+		modTime = info.ModTime()
+		size = info.Size()
+	}
+
+	p.configMu.Lock()
+	if p.configCached && p.configPath == path && p.configExists == exists &&
+		(!exists || (p.configModTime.Equal(modTime) && p.configSize == size)) {
+		cfg := p.configCacheCfg
+		p.configMu.Unlock()
+		return cfg
+	}
+	p.configMu.Unlock()
+
+	if p.configLoadHook != nil {
+		p.configLoadHook()
+	}
+	cfg := LoadConfig(p.store, realm)
+
+	// Stat again after parsing: if the file changed during the read, recording
+	// the newer identity is safe (the next call may reload once), while
+	// recording the older one could serve stale settings indefinitely.
+	if info, err := os.Stat(path); err == nil {
+		modTime = info.ModTime()
+		size = info.Size()
+		exists = true
+	} else {
+		exists = false
+	}
+	p.configMu.Lock()
+	p.configPath = path
+	p.configModTime = modTime
+	p.configSize = size
+	p.configExists = exists
+	p.configCached = true
+	p.configCacheCfg = cfg
+	p.configMu.Unlock()
+	return cfg
 }
 
 // rawRealmSettings returns the nested per-realm object, with v1 top-level keys

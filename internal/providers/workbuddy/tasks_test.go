@@ -143,6 +143,7 @@ func setupTaskProvider(t *testing.T, realm, dir, serverURL string) (*Provider, *
 	provider.tasksBudget = 5 * time.Second
 	provider.tasksTimeout = 2 * time.Second
 	provider.tasksSleep = func(time.Duration) {}
+	provider.acpLinkValidator = func(string) error { return nil }
 	return provider, pool
 }
 
@@ -1639,12 +1640,35 @@ func TestTasksRestrictedAllSelectorsAndDailyPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manual restricted DailyChat: %v", err)
 	}
-	if !manualDaily.OK {
-		t.Fatalf("manual restricted DailyChat = %+v, want forced run", manualDaily)
+	if manualDaily.OK || !manualDaily.Skipped || !manualDaily.Restricted {
+		t.Fatalf("manual restricted DailyChat = %+v, want restricted skip", manualDaily)
 	}
 	account := accountByUID(t, intlPool, "intl-restricted")
 	account.mu.RLock()
 	until := taskRestrictedUntil(account.Auth)
+	account.mu.RUnlock()
+	if until <= float64(time.Now().Unix()) {
+		t.Fatalf("manual restricted DailyChat cleared restrictedUntil: %v", until)
+	}
+	manualWeb, err := intl.DailyChatWeb(context.Background(), "intl-restricted")
+	if err != nil {
+		t.Fatalf("manual restricted DailyChatWeb: %v", err)
+	}
+	if manualWeb.OK || !manualWeb.Skipped || !manualWeb.Restricted {
+		t.Fatalf("manual restricted DailyChatWeb = %+v, want restricted skip", manualWeb)
+	}
+	// Once the window has passed, the manual action runs normally and clears
+	// the now-stale restriction state.
+	account.mu.Lock()
+	account.Auth.Extra["restrictedUntil"] = json.RawMessage(`1`)
+	account.State.CoolUntil = time.Time{}
+	account.mu.Unlock()
+	manualDaily, err = intl.DailyChat(context.Background(), "intl-restricted")
+	if err != nil || !manualDaily.OK {
+		t.Fatalf("expired manual DailyChat = %+v, %v", manualDaily, err)
+	}
+	account.mu.RLock()
+	until = taskRestrictedUntil(account.Auth)
 	account.mu.RUnlock()
 	if until != 0 {
 		t.Fatalf("successful manual DailyChat did not clear restrictedUntil: %v", until)
@@ -1692,8 +1716,20 @@ func TestTasksDailyChatPersists403Restriction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manual restricted DailyChat: %v", err)
 	}
+	if manual.OK || !manual.Skipped || !manual.Restricted {
+		t.Fatalf("manual restricted DailyChat = %+v, want restricted skip", manual)
+	}
+	account = accountByUID(t, restartedPool, "intl-403")
+	account.mu.Lock()
+	account.Auth.Extra["restrictedUntil"] = json.RawMessage(`1`)
+	account.State.CoolUntil = time.Time{}
+	account.mu.Unlock()
+	manual, err = restarted.DailyChat(context.Background(), "intl-403")
+	if err != nil {
+		t.Fatalf("expired manual DailyChat: %v", err)
+	}
 	if !manual.OK {
-		t.Fatalf("manual restricted DailyChat = %+v, want forced run", manual)
+		t.Fatalf("expired manual DailyChat = %+v, want success", manual)
 	}
 	account = accountByUID(t, restartedPool, "intl-403")
 	account.mu.RLock()
@@ -2390,7 +2426,7 @@ func TestTasksACPStatusTerminal(t *testing.T) {
 			}),
 			server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
 			"", 50*time.Millisecond, time.Millisecond,
-			func() string { return status })
+			func() string { return status }, func(string) error { return nil })
 		server.Close()
 		if result.OK || !result.Terminal || !strings.Contains(result.Error, status) {
 			t.Fatalf("%s ACP turn = %+v, want terminal failure", status, result)
@@ -2498,7 +2534,7 @@ func TestTasksACPStatusFailedErrorRetryable(t *testing.T) {
 			}),
 			server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
 			"", 50*time.Millisecond, time.Millisecond,
-			func() string { return status })
+			func() string { return status }, func(string) error { return nil })
 		server.Close()
 		if result.OK || result.Terminal || !strings.Contains(result.Error, status) {
 			t.Fatalf("%s ACP turn = %+v, want retryable non-terminal failure", status, result)

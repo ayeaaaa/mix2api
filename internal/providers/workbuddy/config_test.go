@@ -522,3 +522,58 @@ func TestConfigRealmFallbackAndRestrictedRotation(t *testing.T) {
 		t.Fatal("fallback disable did not round-trip")
 	}
 }
+
+func TestConfigCacheReloadsOnlyWhenSettingsFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	stamp := time.Unix(1_700_000_000, 0)
+	writeSettings := func(timeout float64, mod time.Time) {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{
+			"workbuddy": map[string]any{
+				"intl": map[string]any{"timeout_seconds": timeout},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSettings(42, stamp)
+	store := config.New(path)
+	provider, err := New(realmIntl, store)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var loads atomic.Int32
+	provider.configLoadHook = func() { loads.Add(1) }
+
+	if cfg := provider.refreshChatConfig(); cfg.TimeoutSeconds != 42 {
+		t.Fatalf("initial timeout = %v", cfg.TimeoutSeconds)
+	}
+	if cfg := provider.refreshChatConfig(); cfg.TimeoutSeconds != 42 {
+		t.Fatalf("cached timeout = %v", cfg.TimeoutSeconds)
+	}
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("unchanged requests parsed settings %d times, want 1", got)
+	}
+
+	writeSettings(43, stamp.Add(2*time.Second))
+	if cfg := provider.refreshChatConfig(); cfg.TimeoutSeconds != 43 {
+		t.Fatalf("reloaded timeout = %v", cfg.TimeoutSeconds)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("changed file parsed %d times, want 2", got)
+	}
+	if cfg := provider.refreshChatConfig(); cfg.TimeoutSeconds != 43 {
+		t.Fatalf("second cached timeout = %v", cfg.TimeoutSeconds)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("post-reload requests parsed %d times, want 2", got)
+	}
+}

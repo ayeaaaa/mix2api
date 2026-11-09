@@ -1,9 +1,12 @@
 package workbuddy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +19,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/accountstate"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
 func writePoolSettings(t *testing.T, dir string, settings map[string]any) {
@@ -1483,5 +1487,131 @@ func TestPoolHealthStatsIgnoreTokenExpired(t *testing.T) {
 	pool.Get("a").SetTokenExpired(true)
 	if got := pool.Stats().Healthy; got != 1 {
 		t.Fatalf("healthy = %d, want 1", got)
+	}
+}
+
+func TestPoolConcurrentAddAndTokenRefresh(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "existing", realmIntl, map[string]any{
+		"expiresAt": time.Now().Add(time.Minute).Unix(),
+	})
+	provider, pool := newPoolProvider(t, realmIntl, dir)
+	existing := pool.Get("existing")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"accessToken":"rotated-access","refreshToken":"rotated-refresh","expiresAt":4102444800000}}`))
+	}))
+	defer server.Close()
+	provider.tokenBaseURL = server.URL
+	provider.tokenTimeout = 2 * time.Second
+
+	const workers = 24
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = provider.ForceRefresh(context.Background(), existing)
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			auth := Auth{
+				UID:          fmt.Sprintf("new-%02d", index),
+				AccessToken:  "access",
+				RefreshToken: "refresh",
+				Realm:        realmIntl,
+			}
+			auth.SetEnabled(true)
+			if _, err := pool.Add(auth); err != nil {
+				t.Errorf("Add new-%02d: %v", index, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if got := len(pool.Accounts()); got != workers+1 {
+		t.Fatalf("accounts = %d, want %d", got, workers+1)
+	}
+}
+
+func TestSessionAffinityChurnKeepsOrderBounded(t *testing.T) {
+	affinity := newSessionAffinity(time.Hour, 8, 3)
+	for i := 0; i < 500; i++ {
+		key := fmt.Sprintf("churn-%03d", i)
+		affinity.bind(key, "u-a")
+		affinity.unbind(key)
+		if i%2 == 0 {
+			affinity.bind(key, "u-a")
+			affinity.demote(key, "u-a")
+		}
+	}
+	if len(affinity.bindings) != 0 || len(affinity.order) != 0 {
+		t.Fatalf("churn retained bindings=%d order=%d", len(affinity.bindings), len(affinity.order))
+	}
+
+	long := strings.Repeat("s", 32*1024)
+	affinity.bind(long, "u-long")
+	if len(affinity.bindings) != 1 || len(affinity.order) != 1 {
+		t.Fatalf("long key bindings=%d order=%d", len(affinity.bindings), len(affinity.order))
+	}
+	if key := affinity.order[0]; len(key) > providers.MaxSessionKeyBytes || key == long {
+		t.Fatalf("long session key was not capped/hashed: len=%d", len(key))
+	}
+	if got := affinity.recent(long); len(got) != 1 || got[0] != "u-long" {
+		t.Fatalf("long key recent = %v", got)
+	}
+
+	now := time.Unix(1_700_000_000, 0)
+	affinity.now = func() time.Time { return now }
+	affinity.bind("expires", "u-exp")
+	now = now.Add(2 * time.Hour)
+	if got := affinity.recent("expires"); len(got) != 0 {
+		t.Fatalf("expired affinity = %v", got)
+	}
+	if len(affinity.order) != 1 || affinity.order[0] == "expires" {
+		t.Fatalf("expired key left in order: %v", affinity.order)
+	}
+}
+
+func TestSetGroupEnabledSeedsRestrictionWindow(t *testing.T) {
+	dir := t.TempDir()
+	until := float64(time.Now().Add(time.Hour).Unix())
+	writePoolAccount(t, dir, "restricted", realmIntl, map[string]any{
+		"group": "team", "enabled": false, "restrictedUntil": until,
+	})
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	account := pool.Get("restricted")
+	account.mu.Lock()
+	account.State.CoolUntil = time.Time{}
+	account.mu.Unlock()
+	if _, err := pool.SetGroupEnabled("team", true); err != nil {
+		t.Fatalf("SetGroupEnabled: %v", err)
+	}
+	account.mu.RLock()
+	coolUntil := account.State.CoolUntil
+	enabled := account.Auth.Enabled
+	account.mu.RUnlock()
+	if !enabled {
+		t.Fatal("group enable did not persist enabled state")
+	}
+	if !coolUntil.After(time.Now()) {
+		t.Fatalf("group enable cleared persisted restriction window: coolUntil=%v", coolUntil)
+	}
+}
+
+func TestAdmissionWaitUsesSchedulingGuardHook(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "guarded", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	pool.SetGuardCheck(func(*Account, string) bool { return true })
+	wait, reason := pool.AdmissionWait("m", nil)
+	if wait <= 0 || reason == "" {
+		t.Fatalf("guard hook admission wait = %v/%q, want a wait", wait, reason)
 	}
 }

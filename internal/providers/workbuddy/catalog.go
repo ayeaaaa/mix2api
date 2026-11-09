@@ -29,6 +29,10 @@ const (
 	catalogMaxTTL          = 300 * time.Second
 	catalogDailyInterval   = 24 * time.Hour
 	defaultCatalogContext  = int64(1_000_000)
+
+	// maxCatalogRepresentativeAccounts bounds the fallback across credentials
+	// when the first representative cannot answer /v3/config.
+	maxCatalogRepresentativeAccounts = 3
 )
 
 // Model is one WorkBuddy /v1/models entry. It is the shared provider model
@@ -655,8 +659,8 @@ func (p *Provider) loadCatalog(ctx context.Context, previous catalogSnapshot) ([
 }
 
 func (p *Provider) fetchRemoteCatalog(ctx context.Context) ([]catalogEntry, bool) {
-	account, ok := p.representativeCatalogAccount()
-	if !ok || account.AccessToken == "" {
+	accounts := p.representativeCatalogAccounts()
+	if len(accounts) == 0 {
 		return nil, false
 	}
 	url := p.catalogURL()
@@ -672,47 +676,52 @@ func (p *Provider) fetchRemoteCatalog(ctx context.Context) ([]catalogEntry, bool
 		timeout = catalogHTTPTimeout
 	}
 
-	for _, ua := range p.catalogUAs() {
-		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
-		if err != nil {
+	for _, account := range accounts {
+		if strings.TrimSpace(account.AccessToken) == "" {
+			continue
+		}
+		for _, ua := range p.catalogUAs() {
+			attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+			req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
+			if err != nil {
+				cancel()
+				continue
+			}
+			req.Header = p.catalogHeaders(account, ua)
+			resp, err := doer.Do(attemptCtx, req, account.ProxyURL)
+			if err != nil {
+				cancel()
+				continue
+			}
+			payload, readErr := readCatalogPayload(resp)
 			cancel()
-			continue
+			if readErr != nil {
+				continue
+			}
+			ids, meta, ok := parseRemoteCatalog(payload)
+			if !ok {
+				continue
+			}
+			if ingestModelTiers(p.realm, payload) {
+				p.applyProOnlyModels()
+			}
+			live := make([]catalogEntry, 0, len(ids))
+			for _, id := range curateRemoteCatalog(p.realm, ids, meta) {
+				live = append(live, catalogEntry{ID: id, Meta: meta[id]})
+			}
+			entries := mergeCatalog(live, p.realm, true)
+			if len(entries) == 0 {
+				continue
+			}
+			p.markRemoteCatalog(p.catalogNowTime())
+			if account.Account != nil {
+				// Keep the representative account's per-account catalogue fresh
+				// for diagnostics and later per-account model selection. The
+				// provider cache remains the source shared by /v1/models.
+				account.Account.SetModels(p.modelEntries(entries))
+			}
+			return entries, true
 		}
-		req.Header = p.catalogHeaders(account, ua)
-		resp, err := doer.Do(attemptCtx, req, account.ProxyURL)
-		if err != nil {
-			cancel()
-			continue
-		}
-		payload, readErr := readCatalogPayload(resp)
-		cancel()
-		if readErr != nil {
-			continue
-		}
-		ids, meta, ok := parseRemoteCatalog(payload)
-		if !ok {
-			continue
-		}
-		if ingestModelTiers(p.realm, payload) {
-			p.applyProOnlyModels()
-		}
-		live := make([]catalogEntry, 0, len(ids))
-		for _, id := range curateRemoteCatalog(p.realm, ids, meta) {
-			live = append(live, catalogEntry{ID: id, Meta: meta[id]})
-		}
-		entries := mergeCatalog(live, p.realm, true)
-		if len(entries) == 0 {
-			continue
-		}
-		p.markRemoteCatalog(p.catalogNowTime())
-		if account.Account != nil {
-			// Keep the representative account's per-account catalogue fresh for
-			// diagnostics and later per-account model selection. The provider
-			// cache remains the source shared by /v1/models.
-			account.Account.SetModels(p.modelEntries(entries))
-		}
-		return entries, true
 	}
 	return nil, false
 }
@@ -868,53 +877,47 @@ type catalogAccountSnapshot struct {
 	Account     *Account
 }
 
-func (p *Provider) representativeCatalogAccount() (catalogAccountSnapshot, bool) {
+// representativeCatalogAccounts returns usable accounts in pool order. v1
+// tried one representative per realm; v2 falls back to the next credential when
+// the first one is dead so a stale account cannot freeze /v1/models for the
+// whole realm. The list is capped to avoid turning an outage into a credential
+// sweep.
+func (p *Provider) representativeCatalogAccounts() []catalogAccountSnapshot {
 	if p == nil || p.pool == nil {
-		return catalogAccountSnapshot{}, false
+		return nil
 	}
-	var first *Account
+	snapshots := make([]catalogAccountSnapshot, 0, maxCatalogRepresentativeAccounts)
 	for _, account := range p.pool.Accounts() {
 		if account == nil {
 			continue
 		}
 		account.mu.RLock()
 		removed := account.removed
-		valid := !removed &&
-			account.Auth.Realm == p.realm &&
-			strings.TrimSpace(account.Auth.AccessToken) != ""
-		snapshot := catalogAccountSnapshot{
-			UID:         strings.TrimSpace(account.Auth.UID),
-			AccessToken: strings.TrimSpace(account.Auth.AccessToken),
-			APIKey:      account.Auth.APIKey || IsAPIKeyToken(account.Auth.AccessToken),
-			ProxyURL:    strings.TrimSpace(account.Auth.ProxyURL),
-			Account:     account,
-		}
+		auth := cloneAuth(account.Auth)
 		account.mu.RUnlock()
-		if removed {
+		if removed || auth.Realm != p.realm || strings.TrimSpace(auth.AccessToken) == "" {
 			continue
 		}
-		if first == nil {
-			first = account
-		}
-		if valid {
-			return snapshot, true
+		snapshots = append(snapshots, catalogAccountSnapshot{
+			UID:         strings.TrimSpace(auth.UID),
+			AccessToken: strings.TrimSpace(auth.AccessToken),
+			APIKey:      auth.APIKey || IsAPIKeyToken(auth.AccessToken),
+			ProxyURL:    strings.TrimSpace(auth.ProxyURL),
+			Account:     account,
+		})
+		if len(snapshots) >= maxCatalogRepresentativeAccounts {
+			break
 		}
 	}
-	// v1 representative() falls back to the first realm candidate even when
-	// it has no token; the fetch then fails softly and the caller falls back.
-	if first != nil {
-		first.mu.RLock()
-		snapshot := catalogAccountSnapshot{
-			UID:         strings.TrimSpace(first.Auth.UID),
-			AccessToken: strings.TrimSpace(first.Auth.AccessToken),
-			APIKey:      first.Auth.APIKey || IsAPIKeyToken(first.Auth.AccessToken),
-			ProxyURL:    strings.TrimSpace(first.Auth.ProxyURL),
-			Account:     first,
-		}
-		first.mu.RUnlock()
-		return snapshot, true
+	return snapshots
+}
+
+func (p *Provider) representativeCatalogAccount() (catalogAccountSnapshot, bool) {
+	accounts := p.representativeCatalogAccounts()
+	if len(accounts) == 0 {
+		return catalogAccountSnapshot{}, false
 	}
-	return catalogAccountSnapshot{}, false
+	return accounts[0], true
 }
 
 func (p *Provider) hasUsableCatalogAccount() bool {

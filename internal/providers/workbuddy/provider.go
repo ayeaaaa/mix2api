@@ -39,6 +39,18 @@ type Provider struct {
 	mu  sync.RWMutex
 	cfg Config
 
+	// configMu caches the parsed shared settings until the file's mtime/size
+	// changes. Chat requests call refreshChatConfig on every turn; reparsing
+	// the whole settings document there is unnecessary when nothing changed.
+	configMu       sync.Mutex
+	configPath     string
+	configModTime  time.Time
+	configSize     int64
+	configExists   bool
+	configCached   bool
+	configCacheCfg Config
+	configLoadHook func()
+
 	// peer is the sibling WorkBuddy realm provider used only for the opt-in
 	// intl→cn fallback. SetPeer wires it from app composition (Task 11).
 	peer *Provider
@@ -141,6 +153,10 @@ type Provider struct {
 	// dailyWebRun is a same-package test seam for the daily web leg. Its zero
 	// value calls runDailyChatWeb.
 	dailyWebRun func(context.Context, *Account, string) (DailyResult, error)
+
+	// acpLinkValidator overrides the sandbox-link SSRF check in tests. Nil uses
+	// validateACPLink.
+	acpLinkValidator func(string) error
 
 	// Network diagnostics seams for /accounts/test. Zero values use the chat
 	// upstream URL, the system resolver, and a direct TCP dialer respectively.

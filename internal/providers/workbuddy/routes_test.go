@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +82,7 @@ func newWBRoutesFixture(t *testing.T) *wbRoutesFixture {
 		provider.tasksTurnWait = 25 * time.Millisecond
 		provider.tasksPollInterval = time.Millisecond
 		provider.tasksSleep = func(time.Duration) {}
+		provider.acpLinkValidator = func(string) error { return nil }
 	}
 	fixture := &wbRoutesFixture{
 		intl: intl, cn: cn, store: store, dir: dir, fake: fake, server: server,
@@ -486,6 +488,36 @@ func TestRoutesWorkBuddyImportDryRunOverwriteAndGroup(t *testing.T) {
 	}
 }
 
+func TestRoutesImportCNChecksInAfterAdd(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	token := wbRouteToken(t, "uid-import-cn", realmCN)
+	rec := f.do(http.MethodPost, "/accounts/import", map[string]any{
+		"data": map[string]any{"accounts": []any{map[string]any{
+			"uid": "uid-import-cn", "accessToken": token, "refreshToken": "refresh-import-cn",
+			"realm": realmCN, "nickname": "Imported CN",
+		}}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cn import status=%d body=%s", rec.Code, rec.Body)
+	}
+	if f.cn.Pool().Get("uid-import-cn") == nil {
+		t.Fatal("cn import did not reach the cn pool")
+	}
+	if got := f.fake.count(http.MethodPost, tasksCheckinPath); got != 1 {
+		t.Fatalf("cn import initial check-in calls = %d, want 1", got)
+	}
+	rows := readActivityLines(t, f.cn.activityHistoryPath())
+	found := false
+	for _, row := range rows {
+		if row.Trigger == taskTriggerAccountImport && row.UID == "uid-import-cn" && row.Task == taskCheckinTask {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cn import activity rows = %+v, want account_import check-in", rows)
+	}
+}
+
 func TestRoutesWorkBuddyLoginStartPollCancelDelegatesRealm(t *testing.T) {
 	f := newWBRoutesFixture(t)
 	token := wbRouteToken(t, "uid-login", realmCN)
@@ -542,6 +574,26 @@ func TestRoutesWorkBuddyLoginStartPollCancelDelegatesRealm(t *testing.T) {
 	assertWBNoSecret(t, "login poll", rec.Body.String(), token, "refresh-login")
 	if f.cn.Pool().Get("uid-login") == nil {
 		t.Fatal("OAuth success did not sync the cn pool")
+	}
+	if got := f.fake.count(http.MethodPost, tasksCheckinPath); got != 1 {
+		t.Fatalf("OAuth success initial check-in calls = %d, want 1", got)
+	}
+	loginAccount := f.cn.Pool().Get("uid-login")
+	loginAccount.mu.RLock()
+	lastCheckin := loginAccount.Auth.LastCheckin
+	loginAccount.mu.RUnlock()
+	if !strings.HasPrefix(lastCheckin, time.Now().Format("2006-01-02")) {
+		t.Fatalf("OAuth success lastCheckin = %q", lastCheckin)
+	}
+	rows := readActivityLines(t, f.cn.activityHistoryPath())
+	foundAdd := false
+	for _, row := range rows {
+		if row.Trigger == taskTriggerAccountAdd && row.Task == taskCheckinTask && row.UID == "uid-login" {
+			foundAdd = true
+		}
+	}
+	if !foundAdd {
+		t.Fatalf("OAuth success activity rows = %+v, want account_add check-in", rows)
 	}
 
 	rec = f.do(http.MethodPost, "/accounts/login/cancel", map[string]any{"state": "unknown"})
@@ -1024,6 +1076,40 @@ func TestRoutesDailyChatWebBusyPropagates(t *testing.T) {
 	}
 }
 
+func TestRoutesManualWebDailyDoesNotStampScheduledDaily(t *testing.T) {
+	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, nil)
+	account := accountByUID(t, pool, "web-daily")
+	account.mu.RLock()
+	before := account.Auth.LastDailyChat
+	account.mu.RUnlock()
+	if before != "" {
+		t.Fatalf("initial lastDailyChat = %q", before)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/accounts/daily-chat-web",
+		strings.NewReader(`{"uid":"web-daily"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	provider.handleAccountsDailyChatWeb(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("manual web daily status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	body := decodeWBRoutesJSON(t, recorder)
+	rows := wbRouteObjects(t, body["results"])
+	if len(rows) != 1 || rows[0]["ok"] != true {
+		t.Fatalf("manual web daily results = %#v", rows)
+	}
+	account.mu.RLock()
+	lastDaily := account.Auth.LastDailyChat
+	lastWeb := authExtraString(account.Auth, "lastDailyChatWeb")
+	account.mu.RUnlock()
+	if lastDaily != "" {
+		t.Fatalf("manual web daily stamped lastDailyChat = %q", lastDaily)
+	}
+	if !strings.HasPrefix(lastWeb, time.Now().Format("2006-01-02")) {
+		t.Fatalf("manual web daily lastDailyChatWeb = %q", lastWeb)
+	}
+}
+
 func TestRoutesDailyChatWebFailureRetriesAndKeepsOneRow(t *testing.T) {
 	webFail := true
 	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, _ int) (int, any) {
@@ -1458,6 +1544,157 @@ func TestRoutesProbeNetworkGuardsAndAllAddresses(t *testing.T) {
 	}
 }
 
+func TestRoutesLegacyUnqualifiedAdminActionsSpanRealms(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "uid-intl", realmIntl, nil)
+	wbRouteAddAccount(t, f.cn, "uid-cn", realmCN, nil)
+	tokens := map[string]string{
+		"uid-intl": wbRouteToken(t, "uid-intl", realmIntl),
+		"uid-cn":   wbRouteToken(t, "uid-cn", realmCN),
+	}
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		uid := r.Header.Get("X-User-Id")
+		switch r.URL.Path {
+		case creditsSummaryPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"IsPaidUser": true,
+				"Packages": []any{map[string]any{
+					"PackageCode": "pkg", "ProductName": "Plan",
+					"CycleTotalCapacity": 10, "CycleRemainCapacity": 7,
+					"CycleUsedCapacity": 3,
+				}},
+			}}
+		case tokenRefreshPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"accessToken": tokens[uid], "refreshToken": "rotated-" + uid,
+				"expiresAt": 4102444800000,
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+
+	assertUIDs := func(label string, value any, want ...string) {
+		t.Helper()
+		rows := wbRouteObjects(t, value)
+		got := make([]string, 0, len(rows))
+		for _, row := range rows {
+			got = append(got, wbRouteText(row["uid"]))
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s uids = %v, want %v", label, got, want)
+		}
+	}
+
+	// v1 dashboard payloads: credit fill and the full sweep carry no realm.
+	rec := f.do(http.MethodGet, "/accounts/credits", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credits status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeWBRoutesJSON(t, rec)
+	assertUIDs("unqualified credits", body["results"], "uid-intl", "uid-cn")
+	if accounts := wbRouteObjects(t, body["accounts"]); len(accounts) != 2 {
+		t.Fatalf("unqualified credits accounts = %#v, want both realms", accounts)
+	}
+	rec = f.do(http.MethodPost, "/accounts/credits", map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credits post status=%d body=%s", rec.Code, rec.Body)
+	}
+	assertUIDs("unqualified credit sweep", decodeWBRoutesJSON(t, rec)["results"], "uid-intl", "uid-cn")
+
+	// The fake upstream returns no package rows; seed a snapshot on each realm
+	// so grants/detail exercise the cross-realm lookup rather than upstream
+	// package parsing.
+	for _, item := range []struct {
+		provider *Provider
+		uid      string
+	}{{f.intl, "uid-intl"}, {f.cn, "uid-cn"}} {
+		if err := item.provider.Pool().SetCredits(item.uid, &CreditSnapshot{
+			Remain: 7, Used: 3, Size: 10,
+			Packages: []CreditPackage{{
+				Name: "Plan", PackageCode: "pkg", ProductName: "Plan",
+				Remain: 7, Used: 3, Size: 10, Unit: "credit", Status: 3,
+			}},
+		}); err != nil {
+			t.Fatalf("seed credits %s: %v", item.uid, err)
+		}
+	}
+
+	// Grants are snapshot-only and must include both realms without ?realm.
+	rec = f.do(http.MethodGet, "/accounts/credits/grants", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grants status=%d body=%s", rec.Code, rec.Body)
+	}
+	grants := decodeWBRoutesJSON(t, rec)
+	assertUIDs("unqualified grants", grants["rows"], "uid-intl", "uid-cn")
+
+	// Detail resolves a CN uid even though the legacy route belongs to intl.
+	rec = f.do(http.MethodGet, "/accounts/credits/detail?uid=uid-cn", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", rec.Code, rec.Body)
+	}
+	detail := decodeWBRoutesJSON(t, rec)
+	if detail["ok"] != true || wbRouteText(detail["uid"]) != "uid-cn" || wbRouteText(detail["realm"]) != realmCN {
+		t.Fatalf("unqualified detail = %#v", detail)
+	}
+	rec = f.do(http.MethodGet, "/accounts/credits/detail?realm=intl&uid=uid-cn", nil)
+	detail = decodeWBRoutesJSON(t, rec)
+	if detail["ok"] != true || wbRouteText(detail["realm"]) != realmCN {
+		t.Fatalf("cross-realm explicit detail = %#v", detail)
+	}
+	rec = f.do(http.MethodPost, "/accounts/credits", map[string]any{"realm": "intl", "uid": "uid-cn"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-realm credit uid status=%d body=%s", rec.Code, rec.Body)
+	}
+	assertUIDs("cross-realm credit uid", decodeWBRoutesJSON(t, rec)["results"], "uid-cn")
+
+	// Refresh without a uid refreshes both realms' accounts.
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.tokenBaseURL = f.server.URL
+	}
+	rec = f.do(http.MethodPost, "/accounts/refresh", map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", rec.Code, rec.Body)
+	}
+	results := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["results"])
+	if len(results) != 2 {
+		t.Fatalf("unqualified refresh results = %#v, want both realms", results)
+	}
+	for _, row := range results {
+		if row["ok"] != true {
+			t.Fatalf("unqualified refresh row = %#v", row)
+		}
+	}
+
+	// set-all without realm (and without group) is whole-pool in v1.
+	rec = f.do(http.MethodPost, "/accounts/set-all", map[string]any{"enabled": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set-all status=%d body=%s", rec.Code, rec.Body)
+	}
+	if accounts := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"]); len(accounts) != 2 {
+		t.Fatalf("set-all accounts = %#v, want both realms", accounts)
+	}
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		for _, account := range provider.Pool().Accounts() {
+			if account.View().Enabled {
+				t.Fatalf("set-all left %s enabled", account.UID())
+			}
+		}
+	}
+
+	// GET /accounts follows the persisted active exit when no realm is named.
+	if rec := f.do(http.MethodPost, "/realm", map[string]any{"realm": realmCN}); rec.Code != http.StatusOK {
+		t.Fatalf("realm switch = %s", rec.Body)
+	}
+	rec = f.do(http.MethodGet, "/accounts", nil)
+	rows := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	if len(rows) != 1 || wbRouteText(rows[0]["uid"]) != "uid-cn" {
+		t.Fatalf("active-realm accounts = %#v, want cn only", rows)
+	}
+}
+
 func TestRoutesWorkBuddyCreditsGrantsCatalogSchedulerSettings(t *testing.T) {
 	f := newWBRoutesFixture(t)
 	wbRouteAddAccount(t, f.intl, "uid-intl", realmIntl, nil)
@@ -1641,6 +1878,9 @@ func TestRoutesWorkBuddyAddAPIKey(t *testing.T) {
 	view := account.View()
 	if view.APIKey != true || view.TasksEnabled != false || view.Enabled != true {
 		t.Fatalf("API key account view = %#v", view)
+	}
+	if got := f.fake.count(http.MethodPost, tasksCheckinPath); got != 0 {
+		t.Fatalf("API-key add ran %d check-in calls, want 0", got)
 	}
 	rec = f.do(http.MethodPost, "/accounts/add-api-key", map[string]any{"key": "not-a-key"})
 	if rec.Code != http.StatusBadRequest {
@@ -1838,6 +2078,62 @@ func TestRoutesWorkBuddyDesktopImportScanAndValidation(t *testing.T) {
 	}
 	if f.intl.Pool().Get("uid-symlink") != nil || f.intl.Pool().Get("uid-encrypted") != nil {
 		t.Fatal("desktop import accepted a symlink/encrypted credential")
+	}
+}
+
+func TestRoutesDesktopBulkImportFiltersRealmBeforeWriteAndChecksIn(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	intlDir := filepath.Join(f.dir, "desktop-intl")
+	cnDir := filepath.Join(f.dir, "desktop-cn")
+	for _, dir := range []string{intlDir, cnDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(t, filepath.Join(intlDir, "workbuddy-desktop-ai.info"), map[string]any{
+		"auth":    map[string]any{"accessToken": wbRouteToken(t, "uid-desk-intl", realmIntl)},
+		"account": map[string]any{"uid": "uid-desk-intl", "nickname": "Intl Desk"},
+	})
+	writeJSON(t, filepath.Join(cnDir, "workbuddy-desktop.info"), map[string]any{
+		"auth":    map[string]any{"accessToken": wbRouteToken(t, "uid-desk-cn", realmCN)},
+		"account": map[string]any{"uid": "uid-desk-cn", "nickname": "CN Desk"},
+	})
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.desktopDirs = []string{intlDir, cnDir}
+	}
+
+	rec := f.do(http.MethodPost, "/accounts/import/desktop", map[string]any{
+		"all": true, "realm": realmCN,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desktop import status=%d body=%s", rec.Code, rec.Body)
+	}
+	imported := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["imported"])
+	if len(imported) != 1 || wbRouteText(imported[0]["uid"]) != "uid-desk-cn" {
+		t.Fatalf("realm-filtered desktop import = %#v, want cn only", imported)
+	}
+	intlPath, err := AccountPath(f.dir, "uid-desk-intl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(intlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("intl candidate was written before the realm filter: %v", err)
+	}
+	if f.intl.Pool().Get("uid-desk-intl") != nil {
+		t.Fatal("intl candidate entered the pool")
+	}
+	if f.cn.Pool().Get("uid-desk-cn") == nil {
+		t.Fatal("cn candidate was not imported")
+	}
+	if got := f.fake.count(http.MethodPost, tasksCheckinPath); got != 1 {
+		t.Fatalf("desktop import initial check-in calls = %d, want 1", got)
+	}
+	cnAccount := f.cn.Pool().Get("uid-desk-cn")
+	cnAccount.mu.RLock()
+	lastCheckin := cnAccount.Auth.LastCheckin
+	cnAccount.mu.RUnlock()
+	if !strings.HasPrefix(lastCheckin, time.Now().Format("2006-01-02")) {
+		t.Fatalf("desktop import lastCheckin = %q", lastCheckin)
 	}
 }
 

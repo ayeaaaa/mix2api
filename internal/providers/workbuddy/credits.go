@@ -800,7 +800,13 @@ func (p *Provider) creditTargetAccounts(pool *Pool, targets CreditsRefreshTarget
 
 func (p *Provider) refreshCreditAccounts(ctx context.Context, pool *Pool, accounts []*Account) (CreditsRefreshResult, error) {
 	result := CreditsRefreshResult{Results: make([]CreditRefreshRow, 0, len(accounts))}
-	for _, account := range accounts {
+	// v1 spaced multi-account sweeps by roughly a second so a panel refresh does
+	// not look like a burst from one client. A single-account refresh stays
+	// immediate; the first account never waits.
+	for index, account := range accounts {
+		if index > 0 {
+			p.taskSleepFor(p.taskGapDelay())
+		}
 		result.Results = append(result.Results, p.refreshCreditAccount(ctx, account))
 	}
 	result.Accounts = pool.List()

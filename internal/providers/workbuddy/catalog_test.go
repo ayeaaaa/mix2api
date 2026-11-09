@@ -1636,3 +1636,31 @@ func TestTiersPoolGateWire(t *testing.T) {
 		t.Fatal("requiresPro lost the realm map")
 	}
 }
+
+func TestCatalogRefreshFallsBackToNextRepresentativeAccount(t *testing.T) {
+	provider, pool := providerWithAccount(t, realmIntl)
+	second := Auth{
+		UID: "uid-zzz", AccessToken: "token-second", RefreshToken: "refresh-second",
+		Realm: realmIntl, Platform: "CLI", Source: sourceOAuth,
+	}
+	second.SetEnabled(true)
+	if _, err := pool.Add(second); err != nil {
+		t.Fatalf("add second account: %v", err)
+	}
+	var seen []string
+	provider.catalogDoer = catalogDoerFunc(func(_ context.Context, req *http.Request, _ string) (*http.Response, error) {
+		uid := req.Header.Get("X-User-Id")
+		seen = append(seen, uid)
+		if uid == "uid-intl" {
+			return catalogHTTPResponse(http.StatusInternalServerError, map[string]any{"code": 500}), nil
+		}
+		return catalogHTTPResponse(http.StatusOK, catalogPayload([]string{"hy3"}, nil, nil)), nil
+	})
+	entries, ok := provider.fetchRemoteCatalog(context.Background())
+	if !ok || len(entries) == 0 {
+		t.Fatalf("catalog fallback failed: ok=%v entries=%d seen=%v", ok, len(entries), seen)
+	}
+	if len(seen) < 2 || seen[0] != "uid-intl" || seen[len(seen)-1] != "uid-zzz" {
+		t.Fatalf("representative order = %v, want first failure then uid-zzz", seen)
+	}
+}

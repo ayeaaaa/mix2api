@@ -624,3 +624,16 @@ func TestJobsStatusAndToggle(t *testing.T) {
 		t.Fatalf("scheduler did not toggle off: %#v", status)
 	}
 }
+
+func TestJobsCatalogCooldownCountsSkippedNotSuccess(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addIntlTaskAccount(t, "uid-catalog", true, true)
+	f.intl.catalogLastRefresh = time.Now()
+	report, err := jobsByName(t, f.intl)["workbuddy-catalog-refresh"].RunForce(context.Background())
+	if err != nil {
+		t.Fatalf("catalog job: %v", err)
+	}
+	if report.Skipped != 2 || report.Succeeded != 0 || report.Failed != 0 {
+		t.Fatalf("catalog cooldown accounting = %+v, want skipped", report)
+	}
+}

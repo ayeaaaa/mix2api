@@ -174,13 +174,14 @@ func (p *Provider) openChatAdmitted(
 	return newAdmittedChatStream(stream, admission.Release), nil
 }
 
-// refreshChatConfig reloads this realm's shared settings on every request so
-// panel edits (timeouts, auto-switch, concurrency) apply without a restart.
+// refreshChatConfig reloads this realm's shared settings when the file changed
+// so panel edits (timeouts, auto-switch, concurrency) apply without a restart,
+// while unchanged turns reuse the parsed cache.
 func (p *Provider) refreshChatConfig() Config {
 	if p == nil {
 		return Config{}
 	}
-	cfg := LoadConfig(p.store, p.realm)
+	cfg := p.configForRealm()
 	p.mu.Lock()
 	p.cfg = cfg
 	p.mu.Unlock()
