@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
@@ -39,6 +40,22 @@ type Provider struct {
 	// transport is the shared core HTTP client wired in by the auth/chat
 	// slices. New creates it but performs no network I/O.
 	transport *transport.Client
+
+	// oauthMu guards this provider's browser-login session table. Sessions
+	// store the upstream state, realm, platform, and selected proxy slot; they
+	// never store tokens beyond what the completed Auth is about to save.
+	oauthMu       sync.Mutex
+	oauthSessions map[string]*oauthSession
+	oauthReserved map[string]bool
+	oauthNow      func() time.Time
+	oauthClient   oauthDoer
+	oauthBaseURL  string
+
+	// OAuth request budgets. Zero uses the v1-compatible defaults (30s start
+	// and token polls, 15s profile lookup); tests can shorten them.
+	oauthStartTimeout   time.Duration
+	oauthTokenTimeout   time.Duration
+	oauthProfileTimeout time.Duration
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
