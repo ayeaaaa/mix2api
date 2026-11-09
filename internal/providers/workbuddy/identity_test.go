@@ -544,27 +544,43 @@ func TestIdentityDeviceTokenRealmRules(t *testing.T) {
 	}
 }
 
-func TestIdentityHeadersKeepTokenOutOfNonAuthHeaders(t *testing.T) {
+func TestIdentityHeadersKeepCredentialsScopedToCredentialHeaders(t *testing.T) {
 	token := "sk-test-SECRET-123"
+	deviceToken := "device-SECRET-456"
 	for _, product := range []string{"workbuddy", "vscode", "cli"} {
 		t.Run(product, func(t *testing.T) {
 			h := buildIdentityHeaders(IdentityOptions{
-				Realm: "intl", Product: product, UID: "uid-1", Token: token,
+				Realm: "cn", Product: product, UID: "uid-1", Token: token,
 				Model: "model-1", SessionKey: "session-1",
-				TurnRequestID: "turn-1",
+				TurnRequestID: "turn-1", DeviceToken: deviceToken,
 			})
 			if got := h.Get("Authorization"); got != "Bearer "+token {
 				t.Fatalf("Authorization = %q", got)
 			}
 			for name, values := range h {
-				if name == "Authorization" || name == "X-Api-Key" {
-					continue
-				}
+				lower := strings.ToLower(name)
 				for _, value := range values {
+					switch {
+					case lower == "authorization" && value == "Bearer "+token:
+						continue
+					case lower == "x-api-key" && value == token:
+						continue
+					case lower == "x-device-token" && value == deviceToken:
+						continue
+					}
 					if strings.Contains(value, token) {
-						t.Fatalf("%s leaked the token: %q", name, value)
+						t.Fatalf("%s leaked the access token: %q", name, value)
+					}
+					if strings.Contains(value, deviceToken) {
+						t.Fatalf("%s leaked the device token: %q", name, value)
 					}
 				}
+			}
+			if product != "cli" && h.Get("X-Device-Token") != deviceToken {
+				t.Fatalf("X-Device-Token = %q, want the device credential", h.Get("X-Device-Token"))
+			}
+			if product == "cli" && h.Get("X-Device-Token") != "" {
+				t.Fatal("CLI unexpectedly sent a device token")
 			}
 		})
 	}

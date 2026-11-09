@@ -242,10 +242,10 @@ func normalizeConfig(raw map[string]any, realm string) Config {
 		return cfg
 	}
 	cfg.Enabled = boolOrDefault(raw["enabled"], true)
-	cfg.TimeoutSeconds = boundedFloat(
+	cfg.TimeoutSeconds = timeoutSecondsValue(
 		raw["timeout_seconds"], defaultTimeoutSeconds, minTimeoutSeconds, maxTimeoutSeconds,
 	)
-	cfg.StreamTimeoutSeconds = boundedFloat(
+	cfg.StreamTimeoutSeconds = timeoutSecondsValue(
 		raw["stream_timeout_seconds"], defaultStreamTimeoutSeconds,
 		minStreamTimeoutSeconds, maxStreamTimeoutSeconds,
 	)
@@ -280,10 +280,12 @@ func isTrue(value any) bool {
 
 func privateDataValue(value any) string {
 	if boolean, ok := value.(bool); ok {
+		// v1 uses `raw.get("private_data") or "auto"`: True becomes "true",
+		// while False is falsy and falls back to "auto".
 		if boolean {
 			return "true"
 		}
-		return "false"
+		return "auto"
 	}
 	text := strings.ToLower(strings.TrimSpace(stringValue(value)))
 	switch text {
@@ -364,6 +366,36 @@ func stringValue(value any) string {
 		return strconv.FormatUint(v, 10)
 	default:
 		return ""
+	}
+}
+
+// timeoutSecondsValue applies v1 upstream_config's type guard before clamping.
+// Booleans, strings, and other non-numeric values use the default instead of
+// being coerced (v1 Python bool is a subclass of int, but upstream_config
+// explicitly rejects it). Unlike v1's integer-only reader, v2 accepts finite
+// numeric values including fractional floats because the Config fields are
+// float64; numeric strings are deliberately rejected rather than silently
+// parsed.
+func timeoutSecondsValue(value any, def, low, high float64) float64 {
+	number, ok := timeoutNumericValue(value)
+	if !ok {
+		return def
+	}
+	if number < low {
+		return low
+	}
+	if number > high {
+		return high
+	}
+	return number
+}
+
+func timeoutNumericValue(value any) (float64, bool) {
+	switch value.(type) {
+	case bool, string, nil:
+		return 0, false
+	default:
+		return numericValue(value)
 	}
 }
 

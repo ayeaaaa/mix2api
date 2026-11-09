@@ -3,9 +3,11 @@ package workbuddy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,6 +103,113 @@ func TestConfigLoadDefaultsInvalidValues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadConfig() = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigTimeoutRejectsBooleansAndNonNumericValues(t *testing.T) {
+	values := []any{
+		true,
+		false,
+		"120",
+		"45.5",
+		"",
+		"not-a-number",
+		map[string]any{"seconds": 30},
+		[]any{30},
+		nil,
+	}
+	for i, value := range values {
+		t.Run(fmt.Sprintf("%d-%T", i, value), func(t *testing.T) {
+			store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+			got, err := SaveConfig(store, "intl", map[string]any{
+				"timeout_seconds":        value,
+				"stream_timeout_seconds": value,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.TimeoutSeconds != defaultTimeoutSeconds {
+				t.Fatalf("timeout_seconds from %#v = %v, want %v",
+					value, got.TimeoutSeconds, defaultTimeoutSeconds)
+			}
+			if got.StreamTimeoutSeconds != defaultStreamTimeoutSeconds {
+				t.Fatalf("stream_timeout_seconds from %#v = %v, want %v",
+					value, got.StreamTimeoutSeconds, defaultStreamTimeoutSeconds)
+			}
+		})
+	}
+}
+
+func TestConfigTimeoutAcceptsFiniteNumbersAndClamps(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  float64
+	}{
+		{"float", 45.5, 45.5},
+		{"json number float", json.Number("90.25"), 90.25},
+		{"int64", int64(30), 30},
+		{"low clamp", 0.5, 1},
+		{"high clamp", 999999.5, 600},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+			got, err := SaveConfig(store, "intl", map[string]any{
+				"timeout_seconds": tc.value,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.TimeoutSeconds != tc.want {
+				t.Fatalf("TimeoutSeconds = %v, want %v", got.TimeoutSeconds, tc.want)
+			}
+			if got.StreamTimeoutSeconds != defaultStreamTimeoutSeconds {
+				t.Fatalf("StreamTimeoutSeconds = %v, want default %v",
+					got.StreamTimeoutSeconds, defaultStreamTimeoutSeconds)
+			}
+		})
+	}
+}
+
+func TestConfigPrivateDataBooleanSemantics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	body := `{"workbuddy":{"intl":{"private_data":false},"cn":{"private_data":true}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := config.New(path)
+	if got := LoadConfig(store, "intl").PrivateData; got != "auto" {
+		t.Fatalf("private_data:false = %q, want auto (v1 false is falsy)", got)
+	}
+	if got := LoadConfig(store, "cn").PrivateData; got != "true" {
+		t.Fatalf("private_data:true = %q, want true", got)
+	}
+	if got, err := SaveConfig(store, "intl", map[string]any{"private_data": false}); err != nil {
+		t.Fatal(err)
+	} else if got.PrivateData != "auto" {
+		t.Fatalf("saved private_data:false = %q, want auto", got.PrivateData)
+	}
+}
+
+func TestConfigErrorsDoNotLeakStoredSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	secret := "sk-test-SECRET-sentinel"
+	body := `{"workbuddy":{"intl":{"future_secret":"` + secret + `"}},"future_top":"` + secret + `"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := config.New(path)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	_, err := SaveConfig(store, "intl", map[string]any{"enabled": true})
+	if err == nil {
+		t.Fatal("SaveConfig succeeded with an unusable store")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("config error leaked a stored credential: %v", err)
 	}
 }
 
