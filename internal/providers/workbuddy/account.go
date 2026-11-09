@@ -700,7 +700,11 @@ func accountSecretValuesLocked(a *Account) []string {
 	if password := proxyPassword(a.Auth.ProxyURL); password != "" {
 		values = append(values, password)
 	}
-	if raw, ok := a.Auth.Extra["deviceToken"]; ok {
+	for _, key := range []string{"deviceToken", "device_token", "device-token"} {
+		raw, ok := a.Auth.Extra[key]
+		if !ok {
+			continue
+		}
 		var token string
 		if json.Unmarshal(raw, &token) == nil && token != "" {
 			values = append(values, token)

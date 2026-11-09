@@ -161,7 +161,8 @@ func (p *Provider) GrowthTasks(ctx context.Context, uid string, autoClaim bool) 
 	return p.runGrowth(ctx, account, autoClaim, taskTriggerManual)
 }
 
-// GrowthTasksAll runs the scheduler's growth selection for this provider realm.
+// GrowthTasksAll runs the scheduler's growth selection for this provider realm,
+// skipping disabled, task-opted-out, and restrictedUntil accounts.
 func (p *Provider) GrowthTasksAll(ctx context.Context, autoClaim bool) ([]GrowthResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -225,7 +226,52 @@ func growthTaskEligible(auth Auth) bool {
 	return auth.Realm == realmCN && !taskIsAPIKey(auth) && taskEnterpriseID(auth) == ""
 }
 
-func (p *Provider) runGrowth(ctx context.Context, account *Account, autoClaim bool, _ string) (GrowthResult, error) {
+func (p *Provider) runGrowth(ctx context.Context, account *Account, autoClaim bool, trigger string) (GrowthResult, error) {
+	result, err := p.runGrowthLocked(ctx, account, autoClaim, trigger)
+	if err != nil || !result.OK {
+		return result, err
+	}
+	// v1's full growth run ends with the daily cat/Buddy chain. The growth lock
+	// has been released by runGrowthLocked, so these public task methods can
+	// acquire their own per-account lock without deadlocking.
+	p.runGrowthRewardChain(ctx, account, &result)
+	return result, nil
+}
+
+func (p *Provider) runGrowthRewardChain(ctx context.Context, account *Account, result *GrowthResult) {
+	if p == nil || account == nil || result == nil {
+		return
+	}
+	cat, catErr := p.runCatTravel(ctx, account)
+	if catErr != nil {
+		result.Logs = append(result.Logs, "! 猫猫日常异常: "+p.taskRedactError(account, catErr))
+	} else {
+		if cat.Msg != "" {
+			result.Logs = append(result.Logs, "猫猫日常: "+cat.Msg)
+		}
+		if cat.OK && cat.Action == "claim" {
+			result.EarnedCredit += cat.Credit
+		}
+	}
+	buddy, buddyErr := p.runBuddyCheckin(ctx, account)
+	if buddyErr != nil {
+		result.Logs = append(result.Logs, "! Buddy 盲盒异常: "+p.taskRedactError(account, buddyErr))
+	} else if buddy.Action == "open" {
+		result.Logs = append(result.Logs, "Buddy 盲盒: "+buddy.Msg)
+	}
+	if cat.Action == "claim" {
+		if second, secondErr := p.runCatTravel(ctx, account); secondErr != nil {
+			result.Logs = append(result.Logs, "! 猫猫日常异常: "+p.taskRedactError(account, secondErr))
+		} else if second.Msg != "" && second.Action == "depart" {
+			result.Logs = append(result.Logs, "猫猫日常: "+second.Msg)
+		}
+	}
+	result.Credits = creditSnapshotOf(account)
+	result.Logs = p.scrubTaskLogs(account, result.Logs)
+	result.Logs = append(result.Logs, fmt.Sprintf("🎉 全部完成！本次累计新增到账: +%g 积分", result.EarnedCredit))
+}
+
+func (p *Provider) runGrowthLocked(ctx context.Context, account *Account, autoClaim bool, _ string) (GrowthResult, error) {
 	auth := taskAuthSnapshot(account)
 	result := GrowthResult{
 		UID: strings.TrimSpace(auth.UID), Nickname: strings.TrimSpace(auth.Nickname),
@@ -269,18 +315,25 @@ func (p *Provider) runGrowth(ctx context.Context, account *Account, autoClaim bo
 
 	tasks, err := p.fetchGrowthTasks(ctx, account, false)
 	if err != nil {
+		cached := cachedGrowthSummary(auth)
 		result.Error = p.taskRedactError(account, err)
 		result.Logs = run.logs
+		result.Summary = cached
+		result.StreakDays = cached.StreakDays
 		return result, nil
 	}
 	if len(tasks) == 0 {
+		cached := cachedGrowthSummary(auth)
 		result.Error = "未能获取到任务清单，请检查网络或账号状态"
 		result.Logs = run.logs
 		result.Tasks = []GrowthTask{}
+		result.Summary = cached
+		result.StreakDays = cached.StreakDays
 		return result, nil
 	}
 	run.tasks = tasks
-	run.summary, _ = p.fetchGrowthSummary(ctx, account)
+	baseline := cachedGrowthSummary(auth)
+	run.summary, _ = p.fetchGrowthSummary(ctx, account, baseline)
 
 	// 0. Auto tasks (first_buddy) must be completed and claimed first: the
 	// upstream gates single-task acceptance and cat travel on the Buddy
@@ -368,8 +421,6 @@ func (p *Provider) runGrowth(ctx context.Context, account *Account, autoClaim bo
 	if err := p.persistGrowthState(account, run); err != nil {
 		run.logs = append(run.logs, "! 任务状态持久化失败: "+p.taskRedactError(account, err))
 	}
-	run.logs = append(run.logs, fmt.Sprintf("🎉 全部完成！本次累计新增到账: +%g 积分", run.earned))
-
 	result.OK = true
 	result.Tasks = append([]GrowthTask(nil), run.tasks...)
 	result.Summary = run.summary
@@ -536,8 +587,9 @@ func (p *Provider) progressGrowthTask(ctx context.Context, run *growthRun, task 
 			p.taskSleepFor(p.taskGapDelay())
 		}
 	}
-	run.reported = append(run.reported, code)
-	if !reportOK {
+	if reportOK {
+		run.reported = appendUnique(run.reported, code)
+	} else {
 		run.log("! 任务 [%s] 部分事件上报失败 (上游拒绝), 继续尝试领奖", name)
 	}
 	p.taskSleepFor(1500 * time.Millisecond)
@@ -581,8 +633,12 @@ settled:
 		return 0
 	}
 	if !run.autoClaim {
-		run.log("⏸ 任务 [%s] 已点亮，等待手动领取", name)
-		run.claimable = appendUnique(run.claimable, code)
+		if reportOK {
+			run.log("⏸ 任务 [%s] 已点亮，等待手动领取", name)
+			run.claimable = appendUnique(run.claimable, code)
+		} else {
+			run.log("! 任务 [%s] 上报未成功，未标记可领取", name)
+		}
 		p.taskSleepFor(p.taskGapDelay())
 		return 0
 	}
@@ -739,35 +795,81 @@ func (p *Provider) fetchGrowthTasks(ctx context.Context, account *Account, mp bo
 
 func growthMPSpecForCode(code string, mp bool) (growthTaskSpec, bool) {
 	if mp {
-		if spec, ok := growthMPSpecs[code]; ok {
-			return spec, true
-		}
-		if strings.HasPrefix(code, "Sequential_Tasks_") {
-			return growthTaskSpec{Kind: "mp-chat", Target: 1, Reward: 100}, true
-		}
-		return growthTaskSpec{}, false
+		spec, ok := growthMPSpecs[code]
+		return spec, ok
 	}
 	spec, ok := growthTaskSpecs[code]
 	return spec, ok
 }
 
-func (p *Provider) fetchGrowthSummary(ctx context.Context, account *Account) (GrowthSummary, error) {
-	summary := GrowthSummary{
+func cloneGrowthSummary(summary GrowthSummary) GrowthSummary {
+	out := summary
+	if summary.Tiers != nil {
+		out.Tiers = append([]any(nil), summary.Tiers...)
+	}
+	if summary.TierStatuses != nil {
+		out.TierStatuses = make(map[string]string, len(summary.TierStatuses))
+		for key, value := range summary.TierStatuses {
+			out.TierStatuses[key] = value
+		}
+	}
+	if summary.Travel != nil {
+		out.Travel = cloneAnyMap(summary.Travel)
+	}
+	return out
+}
+
+func cachedGrowthSummary(auth Auth) GrowthSummary {
+	if raw, exists := authExtraJSON(auth, "growthTasks"); exists {
+		var snapshot growthSnapshot
+		if err := json.Unmarshal(raw, &snapshot); err == nil {
+			summary := snapshot.Summary
+			if summary.StreakDays == 0 && snapshot.StreakDays != 0 {
+				summary.StreakDays = snapshot.StreakDays
+			}
+			return cloneGrowthSummary(summary)
+		}
+	}
+	return GrowthSummary{
 		Tiers:        []any{},
 		TierStatuses: map[string]string{"7d": "locked", "14d": "locked", "28d": "locked"},
 		Travel:       map[string]any{"state": "unknown"},
+	}
+}
+
+func (p *Provider) fetchGrowthSummary(ctx context.Context, account *Account, baseline GrowthSummary) (GrowthSummary, error) {
+	summary := cloneGrowthSummary(baseline)
+	if summary.Tiers == nil {
+		summary.Tiers = []any{}
+	}
+	if summary.TierStatuses == nil {
+		summary.TierStatuses = map[string]string{"7d": "locked", "14d": "locked", "28d": "locked"}
+	}
+	if summary.Travel == nil {
+		summary.Travel = map[string]any{"state": "unknown"}
 	}
 	headers := p.taskChatHeaders(account, false)
 	base := p.taskChatBase()
 
 	if response, err := p.taskDo(ctx, account, http.MethodGet, base+tasksGrowthEnergyPath, headers, nil, tasksSummaryTimeout); err == nil && response.Status >= 200 && response.Status < 300 {
-		summary.Energy = creditNumber(creditObject(response.Payload["data"])["balance"])
+		data := creditObject(response.Payload["data"])
+		if value, exists := data["balance"]; exists {
+			summary.Energy = creditNumber(value)
+		}
 	}
 	if response, err := p.taskDo(ctx, account, http.MethodGet, base+tasksGrowthStreakPath, headers, nil, tasksSummaryTimeout); err == nil && response.Status >= 200 && response.Status < 300 {
 		if err := taskPayloadError(response.Payload); err == nil {
 			data := creditObject(response.Payload["data"])
-			summary.StreakDays = int(creditNumber(creditObject(data["streak"])["days"]))
-			summary.MakeupCards = creditNumber(creditObject(data["makeup_cards"])["balance"])
+			if streak := creditObject(data["streak"]); streak != nil {
+				if value, exists := streak["days"]; exists {
+					summary.StreakDays = int(creditNumber(value))
+				}
+			}
+			if cards := creditObject(data["makeup_cards"]); cards != nil {
+				if value, exists := cards["balance"]; exists {
+					summary.MakeupCards = creditNumber(value)
+				}
+			}
 			redemption := creditObject(data["redemption_status"])
 			if tiers, ok := anyList(redemption["tiers"]); ok {
 				summary.Tiers = p.taskRedactValue(account, tiers).([]any)
@@ -780,10 +882,13 @@ func (p *Provider) fetchGrowthSummary(ctx context.Context, account *Account) (Gr
 		}
 	}
 	if response, err := p.taskDo(ctx, account, http.MethodGet, base+tasksGrowthLotteryPath, headers, nil, tasksSummaryTimeout); err == nil && response.Status >= 200 && response.Status < 300 {
-		summary.LotteryChances = creditNumber(creditObject(response.Payload["data"])["chances"])
+		data := creditObject(response.Payload["data"])
+		if value, exists := data["chances"]; exists {
+			summary.LotteryChances = creditNumber(value)
+		}
 	}
 	if response, err := p.taskDo(ctx, account, http.MethodGet, base+tasksTravelStatusPath, headers, nil, tasksSummaryTimeout); err == nil && response.Status >= 200 && response.Status < 300 {
-		if travel := creditObject(response.Payload["data"]); travel != nil {
+		if travel := creditObject(response.Payload["data"]); len(travel) > 0 {
 			summary.Travel = p.taskRedactValue(account, travel).(map[string]any)
 		}
 	}
@@ -862,7 +967,7 @@ func (p *Provider) claimGrowthTaskUpstream(ctx context.Context, account *Account
 	if response.Status == http.StatusBadRequest {
 		// v1 falls back to the web origin when the chat-side claim is rejected
 		// with a business 400 (typically eventual-consistency "not completed").
-		webHeaders := p.taskWebHeaders(account)
+		webHeaders := p.taskWebClaimHeaders(account)
 		webResponse, webErr := p.taskDo(ctx, account, http.MethodPost,
 			p.taskWebBase()+path, webHeaders, []byte("{}"), tasksDefaultTimeout)
 		if webErr == nil {
@@ -923,17 +1028,7 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 	if err != nil || len(mpTasks) == 0 {
 		return nil, 0
 	}
-	supported := make([]GrowthTask, 0)
-	for _, task := range mpTasks {
-		if _, ok := growthMPSpecs[task.TaskCode]; ok || strings.HasPrefix(task.TaskCode, "Sequential_Tasks_") {
-			// The CN growth endpoint returns the desktop list for an MP header
-			// on some deployments; keep only the MP chain codes.
-			if task.TaskCode == "Sequential_Tasks_7" {
-				continue
-			}
-			supported = append(supported, task)
-		}
-	}
+	supported := filterMPGrowthTasks(mpTasks)
 	if len(supported) == 0 {
 		return nil, 0
 	}
@@ -953,7 +1048,7 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 		run.accepted = append(run.accepted, accepted...)
 		p.taskSleepFor(p.taskGapDelay())
 		if refreshed, fetchErr := p.fetchGrowthTasks(ctx, run.account, true); fetchErr == nil {
-			supported = mergeGrowthTasks(supported, refreshed)
+			supported = mergeGrowthTasks(supported, filterMPGrowthTasks(refreshed))
 		}
 	}
 	total := 0.0
@@ -992,10 +1087,15 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 		events := buildMPEvents(run.auth, task.TaskCode, need, now)
 		if len(events) > 0 {
 			run.log("正在点亮小程序任务 [%s] (需上报 %d 次)...", task.Name, need)
-			if _, err := p.reportGrowthEvents(ctx, run.account, events, true); err != nil {
-				run.log("! 小程序任务 [%s] 上报失败: %s", task.Name, p.taskRedactError(run.account, err))
+			reported, reportErr := p.reportGrowthEvents(ctx, run.account, events, true)
+			if reportErr != nil {
+				run.log("! 小程序任务 [%s] 上报失败: %s", task.Name, p.taskRedactError(run.account, reportErr))
+			} else if !reported {
+				run.log("! 小程序任务 [%s] 上报被上游拒绝", task.Name)
 			}
-			run.reported = append(run.reported, task.TaskCode)
+			if reported {
+				run.reported = appendUnique(run.reported, task.TaskCode)
+			}
 			p.taskSleepFor(1500 * time.Millisecond)
 			if run.autoClaim {
 				if growthClaimedToday(run.claims, task.TaskCode, run.now) {
@@ -1011,9 +1111,11 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 					run.log("✓ 小程序任务 [%s] 点亮并领奖成功: +%g 积分", task.Name, credit)
 					total += credit
 				}
-			} else {
+			} else if reported {
 				run.setTaskStatus(task.TaskCode, "completed", maxInt(task.Target, task.Current))
 				run.claimable = appendUnique(run.claimable, task.TaskCode)
+			} else {
+				run.log("! 小程序任务 [%s] 上报未成功，未标记完成", task.Name)
 			}
 			p.taskSleepFor(p.taskGapDelay())
 		}
@@ -1021,68 +1123,77 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 	return supported, total
 }
 
+func filterMPGrowthTasks(tasks []GrowthTask) []GrowthTask {
+	out := make([]GrowthTask, 0, len(tasks))
+	for _, task := range tasks {
+		if _, ok := growthMPSpecs[task.TaskCode]; ok {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
 func buildMPEvents(auth Auth, code string, need int, now time.Time) []map[string]any {
 	stamp := now.UnixMilli()
-	events := make([]map[string]any, 0, need)
 	uid := strings.TrimSpace(auth.UID)
 	nickname := strings.TrimSpace(auth.Nickname)
+	events := make([]map[string]any, 0, need)
 	for index := 0; index < need; index++ {
 		conversation := fmt.Sprintf("wb-mp-%d-%s-%d", stamp, code, index)
 		requestID := fmt.Sprintf("req-%d-%s-%d", stamp, code, index)
+		// v1 merges mp_base first and the event body second, so explicit event
+		// fields (source/platform/userId) always win over the base envelope.
+		base := map[string]any{
+			"timestamp": stamp + int64(index), "ideType": "WorkBuddy_MP",
+			"ideVersion": "2.4.0", "extName": "workbuddy-mp", "extVersion": "2.4.0",
+			"product": "SaaS", "ideName": "wx_app_cloud", "platform": "mini_program",
+			"source": "mini_program", "os": "android", "osVersion": "14", "arch": "arm64",
+			"machineId": "mp-" + truncateTaskText(uid, 16), "timezone": "Asia/Shanghai",
+			"userId": uid, "userNickname": nickname,
+		}
 		var event map[string]any
 		switch {
 		case code == "Sequential_Tasks_2":
 			event = map[string]any{
-				"eventCode": "expert_actual_use", "timestamp": stamp + int64(index),
-				"reportDelay": 0, "id": "WorkspaceBuilder", "name": "WorkspaceBuilder",
+				"eventCode": "expert_actual_use", "reportDelay": 0,
+				"id": "WorkspaceBuilder", "name": "WorkspaceBuilder",
 				"expertTitle": "工作台搭建师", "type": "send_message", "characterCount": 12,
 				"expertType": "agent", "extVersion": "2.2.8", "userId": uid,
 			}
 		case code == "Sequential_Tasks_4":
 			event = map[string]any{
-				"eventCode": "automated_task_create_suc", "timestamp": stamp + int64(index),
-				"reportDelay": 0, "mode": "CLOUD", "name": "每日任务提醒", "source": "manually",
+				"eventCode": "automated_task_create_suc", "reportDelay": 0,
+				"mode": "CLOUD", "name": "每日任务提醒", "source": "manually",
 				"skills": "", "skillCount": 0, "scheduleType": "daily", "userId": uid,
 			}
 		default:
 			event = map[string]any{
-				"eventCode": "chat_request_send", "timestamp": stamp + int64(index),
-				"reportDelay": 0, "mode": "chat", "inputLength": 12, "isPlan": false,
-				"isAutoExecuteTerminal": false, "isAutoModify": false,
-				"codebaseEnable": false, "maxToken": 0, "maxSteps": 500,
-				"temperature": 0, "maxRetries": 0, "mentionContexts": []any{},
-				"knowledgeId": []any{}, "knowledgeName": []any{}, "codebaseId": "",
-				"mentionContextCount": 0, "command": "", "requestId": requestID,
-				"traceId": requestID, "rootRequestId": requestID,
+				"eventCode": "chat_request_send", "reportDelay": 0, "mode": "chat",
+				"inputLength": 12, "isPlan": false, "isAutoExecuteTerminal": false,
+				"isAutoModify": false, "codebaseEnable": false, "maxToken": 0,
+				"maxSteps": 500, "temperature": 0, "maxRetries": 0,
+				"mentionContexts": []any{}, "knowledgeId": []any{}, "knowledgeName": []any{},
+				"codebaseId": "", "mentionContextCount": 0, "command": "",
+				"requestId": requestID, "traceId": requestID, "rootRequestId": requestID,
 				"parentConversationId": conversation, "conversationId": conversation,
 				"messageId": fmt.Sprintf("msg-%d-%d", stamp, index),
 				"agentName": "mp", "agentType": "main",
 				"codebuddy.session_id":              conversation,
-				"codebuddy.conversation_request_id": requestID,
-				"userId":                            uid,
+				"codebuddy.conversation_request_id": requestID, "userId": uid,
 			}
 			if code == "Sequential_Tasks_5" {
 				event["requestModelId"] = "glm-5.2"
 				event["requestModelName"] = "GLM-5.2"
 			}
 		}
-		if nickname != "" {
-			event["userNickname"] = nickname
+		merged := map[string]any{}
+		for key, value := range base {
+			merged[key] = value
 		}
-		event["ideType"] = "WorkBuddy_MP"
-		event["ideVersion"] = "2.4.0"
-		event["extName"] = "workbuddy-mp"
-		event["extVersion"] = "2.4.0"
-		event["product"] = "SaaS"
-		event["ideName"] = "wx_app_cloud"
-		event["platform"] = "mini_program"
-		event["source"] = "mini_program"
-		event["os"] = "android"
-		event["osVersion"] = "14"
-		event["arch"] = "arm64"
-		event["machineId"] = "mp-" + truncateTaskText(uid, 16)
-		event["timezone"] = "Asia/Shanghai"
-		events = append(events, event)
+		for key, value := range event {
+			merged[key] = value
+		}
+		events = append(events, merged)
 	}
 	return events
 }

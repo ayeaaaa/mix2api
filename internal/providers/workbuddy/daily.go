@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type DailyWebResult struct {
 	Conversation    string   `json:"conversation,omitempty"`
 	Status          string   `json:"status,omitempty"`
 	Model           string   `json:"model,omitempty"`
+	Events          int      `json:"events,omitempty"`
 	Chunks          int      `json:"chunks,omitempty"`
 	ElapsedMS       int64    `json:"elapsed_ms,omitempty"`
 	Attempts        int      `json:"attempts,omitempty"`
@@ -54,6 +56,7 @@ type DailyResult struct {
 	Conversation    string          `json:"conversation,omitempty"`
 	Status          string          `json:"status,omitempty"`
 	Model           string          `json:"model,omitempty"`
+	Events          int             `json:"events,omitempty"`
 	Chunks          int             `json:"chunks,omitempty"`
 	ElapsedMS       int64           `json:"elapsed_ms,omitempty"`
 	Attempts        int             `json:"attempts,omitempty"`
@@ -78,8 +81,8 @@ func (p *Provider) DailyChat(ctx context.Context, uid string) (DailyResult, erro
 	return p.runDailyChat(ctx, account, taskTriggerManual)
 }
 
-// DailyChatAll runs DailyChat for every enabled, task-participating
-// international account.
+// DailyChatAll runs DailyChat for every enabled, task-participating,
+// non-restricted international account.
 func (p *Provider) DailyChatAll(ctx context.Context) ([]DailyResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -141,56 +144,109 @@ func (p *Provider) runDailyChat(ctx context.Context, account *Account, trigger s
 		result.Msg = "今日活跃已完成，跳过本轮"
 		return result, nil
 	}
-	if restricted := authExtraFloat(auth, "restrictedUntil"); restricted > 0 && restricted > float64(now.Unix()) {
-		result.Skipped = true
-		result.Restricted = true
-		result.Error = "账号处于上游风控限制窗口，跳过每日活跃"
-		return result, nil
+	// An explicit uid is the manual panel action: it deliberately forces past
+	// the persisted restriction window. Batch callers use DailyChatAll, which
+	// filters restricted accounts before reaching this method.
+	model := p.canonicalModelID(p.dailyChatModel(auth))
+	if model == "" {
+		model = p.dailyChatModel(auth)
 	}
-
-	model := p.dailyChatModel(auth)
-	if err := p.runDailyChatDesktop(ctx, account, auth, model); err != nil {
+	restricted, err := p.runDailyChatDesktop(ctx, account, auth, model)
+	if err != nil {
 		result.Error = p.taskRedactError(account, err)
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		if restricted {
+			p.persistTaskRestriction(account, now, result.Error)
+			result.Skipped = true
+			result.Restricted = true
+		}
+		if !taskDayDone(auth.LastActivityReport, now) {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		}
 		return result, nil
 	}
+	p.clearTaskRestriction(account)
 	if err := p.persistLastDailyChat(account, now); err != nil {
 		result.Error = p.taskRedactError(account, err)
 	}
 	_ = p.refreshCreditAccount(ctx, account)
 	result.OK = true
 	result.Msg = "每日活跃对话成功完成"
-	result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
+	if !taskDayDone(auth.LastActivityReport, now) {
+		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
+	}
 	return result, nil
 }
 
-func (p *Provider) runDailyChatDesktop(ctx context.Context, account *Account, auth Auth, model string) error {
-	body, err := json.Marshal(map[string]any{
-		"model":            model,
-		"messages":         []any{map[string]any{"role": "user", "content": dailyChatPrompt}},
+func (p *Provider) runDailyChatDesktop(ctx context.Context, account *Account, auth Auth, model string) (bool, error) {
+	body := map[string]any{
+		"model": model,
+		"messages": []any{
+			map[string]any{"role": "system", "content": defaultChatSystemPrompt},
+			map[string]any{"role": "user", "content": dailyChatPrompt},
+		},
 		"stream":           true,
 		"max_tokens":       10,
 		"reasoning_effort": "none",
-	})
-	if err != nil {
-		return err
 	}
-	headers := p.taskChatHeaders(account, false)
-	status, responseBody, err := p.taskDoRaw(ctx, account, http.MethodPost,
-		p.taskChatBase()+chatPath, headers, body, tasksDefaultTimeout)
+	if err := p.normalizeChatBody(body, model); err != nil {
+		return false, err
+	}
+	product := normalizeProduct(auth.Product)
+	body, err := chatBodyForProduct(body, product)
 	if err != nil {
-		return err
+		return false, err
+	}
+	data, err := marshalCompactJSON(body)
+	if err != nil {
+		return false, err
+	}
+	// v1's daily desktop leg mirrors the chat client: CLI drops client-only
+	// fields, adds cache_retention, and gzips; desktop/VSCode stay uncompressed.
+	compressed := product == productCLI
+	if compressed {
+		data, err = gzipBody(data)
+		if err != nil {
+			return false, err
+		}
+	}
+	deviceToken, deviceTokenError := p.chatDeviceToken(auth, product)
+	headers := p.chatHeaders(auth, product, model, "", "", deviceToken, deviceTokenError, p.Config())
+	if compressed {
+		headers.Set("Content-Encoding", "gzip")
+	}
+	status, responseBody, err := p.taskDoRaw(ctx, account, http.MethodPost,
+		p.taskChatBase()+chatPath, headers, data, tasksDefaultTimeout)
+	if err != nil {
+		return false, err
 	}
 	if status < 200 || status >= 300 {
 		message := strings.TrimSpace(responseBody)
+		if messages := taskPayloadMessage(decodeTaskJSON(responseBody)); messages != "" {
+			message = messages
+		}
 		if message == "" {
 			message = fmt.Sprintf("HTTP %d", status)
 		}
-		return fmt.Errorf("workbuddy: daily chat HTTP %d: %s", status, truncateTaskText(message, 160))
+		restricted := status == http.StatusForbidden && chatRestrictionIsAccountLevel(responseBody)
+		return restricted, fmt.Errorf("workbuddy: daily chat HTTP %d: %s", status, truncateTaskText(message, 160))
 	}
 	// The upstream is always SSE here; a 2xx response is the v1 success signal
 	// and the body is intentionally not parsed.
-	return nil
+	return false, nil
+}
+
+func decodeTaskJSON(text string) map[string]any {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil
+	}
+	return payload
 }
 
 // DailyChatWeb runs one web-conversation daily activity attempt. It works for
@@ -205,8 +261,8 @@ func (p *Provider) DailyChatWeb(ctx context.Context, uid string) (DailyResult, e
 	return p.runDailyChatWeb(ctx, account, taskTriggerManual)
 }
 
-// DailyChatWebAll runs the web activity for every enabled, task-participating
-// account in this provider realm.
+// DailyChatWebAll runs the web activity for every enabled, task-participating,
+// non-restricted CN/Intl account in this provider realm.
 func (p *Provider) DailyChatWebAll(ctx context.Context) ([]DailyResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -269,6 +325,11 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		result.Msg = "今日网页活跃已完成，跳过本轮"
 		return result, nil
 	}
+	// A separate DailyChat call may already have emitted the day's history
+	// row. The web leg still runs for the official web credit, but it must not
+	// append a second activity event for the same daily activity.
+	firstDailyActivity := !taskDayDone(auth.LastDailyChat, now) &&
+		!taskDayDone(auth.LastActivityReport, now)
 
 	web := p.runDailyWebRounds(ctx, account, auth)
 	result.OK = web.OK
@@ -278,6 +339,7 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 	result.Conversation = web.Conversation
 	result.Status = web.Status
 	result.Model = web.Model
+	result.Events = web.Events
 	result.Chunks = web.Chunks
 	result.ElapsedMS = web.ElapsedMS
 	result.Attempts = web.Attempts
@@ -292,9 +354,12 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		// The web leg is the officially counted daily activity in v1; also
 		// stamp the shared field so a later DailyChat/other scheduler slot on
 		// the same day cannot double-run the activity.
+		p.clearTaskRestriction(account)
 		_ = p.persistLastDailyChat(account, now)
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, web.Msg)
-	} else {
+		if firstDailyActivity {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, web.Msg)
+		}
+	} else if firstDailyActivity {
 		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
 	}
 	return result, nil
@@ -319,7 +384,7 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 	}
 	var deadline time.Time
 	if budget > 0 {
-		deadline = p.taskNowTime().Add(budget)
+		deadline = time.Now().Add(budget)
 	}
 	tried := make([]string, 0, rounds)
 	var last DailyWebResult
@@ -331,7 +396,7 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 		}
 		wait := turnWait
 		if !deadline.IsZero() {
-			remaining := deadline.Sub(p.taskNowTime())
+			remaining := deadline.Sub(time.Now())
 			if remaining <= 0 {
 				last.BudgetExhausted = true
 				if last.Error == "" {
@@ -357,7 +422,11 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 		if index+1 >= rounds {
 			break
 		}
-		p.taskSleepFor(p.taskBackoffDelay(index))
+		// Turn failures already paid with the per-round wait budget; v1 only
+		// backs off when the round never reached the sandbox/turn.
+		if round.Phase == "create" || round.Phase == "session" {
+			p.taskSleepFor(p.taskBackoffDelay(index))
+		}
 	}
 	if last.Attempts == 0 {
 		last.Phase = "budget"
@@ -410,11 +479,12 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 	}
 	result.Conversation = conversation
 
-	// Fetching the sandbox proves the conversation has a running agent. v1
-	// drives the ACP turn here; v2 polls the conversation status because the ACP
-	// client belongs to a later slice.
+	// GET the sandbox descriptor, then drive the ACP turn over the returned
+	// streamable-HTTP link. Creating/polling the console conversation alone
+	// leaves it stuck in CREATING (#90).
+	conversationPath := url.PathEscape(conversation)
 	session, err := p.taskDo(ctx, account, http.MethodGet,
-		p.taskWebBase()+tasksWebConversationsPath+conversation+"/session", headers, nil, 30*time.Second)
+		p.taskWebBase()+tasksWebConversationsPath+conversationPath+"/session", headers, nil, 30*time.Second)
 	if err != nil {
 		result.Phase = "session"
 		result.Retryable = true
@@ -423,22 +493,33 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 		return result
 	}
 	sessionData := creditObject(session.Payload["data"])
-	if session.Status < 200 || session.Status >= 300 ||
-		strings.TrimSpace(creditText(sessionData["link"])) == "" ||
-		strings.TrimSpace(creditText(sessionData["token"])) == "" {
+	link := strings.TrimSpace(creditText(sessionData["link"]))
+	token := strings.TrimSpace(creditText(sessionData["token"]))
+	if session.Status < 200 || session.Status >= 300 || link == "" || token == "" {
 		result.Phase = "session"
 		result.Retryable = true
 		result.Error = "sandbox is not ready (missing link/token)"
 		p.releaseWebConversation(ctx, account, conversation, true)
 		return result
 	}
-
-	statusResult := p.pollWebConversation(ctx, account, headers, conversation, wait)
-	statusResult.Model = model
-	statusResult.Attempts = result.Attempts
-	statusResult.ModelsTried = result.ModelsTried
-	statusResult.Conversation = conversation
-	statusResult.Phase = "turn"
+	sessionID := firstNonEmptyText(creditText(sessionData["sessionId"]), creditText(sessionData["session_id"]), conversation)
+	cwd := firstNonEmpty(creditText(sessionData["cwd"]), "/workspace")
+	pollInterval := tasksPollDefault
+	if p.tasksPollInterval > 0 {
+		pollInterval = p.tasksPollInterval
+	}
+	pollStatus := func() string {
+		return p.webConversationStatus(ctx, account, headers, conversation)
+	}
+	turn := runACPTurn(ctx, p.taskClient(), link, token, sessionID, cwd,
+		dailyChatPrompt, taskWebUserAgent, model, taskProxyURL(account),
+		wait, pollInterval, pollStatus)
+	statusResult := DailyWebResult{
+		OK: turn.OK, Status: turn.Status, Events: turn.Events, Chunks: turn.Chunks,
+		ElapsedMS: turn.ElapsedMS, Error: turn.Error,
+		Conversation: conversation, Phase: "turn", Model: model,
+		Retryable: !turn.OK,
+	}
 	if statusResult.OK {
 		p.releaseWebConversation(ctx, account, conversation, false)
 		return statusResult
@@ -447,58 +528,15 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 	return statusResult
 }
 
-func (p *Provider) pollWebConversation(ctx context.Context, account *Account, headers http.Header, conversation string, wait time.Duration) DailyWebResult {
-	result := DailyWebResult{Conversation: conversation}
-	started := time.Now()
-	interval := tasksPollDefault
-	if p != nil && p.tasksPollInterval > 0 {
-		interval = p.tasksPollInterval
+func (p *Provider) webConversationStatus(ctx context.Context, account *Account, headers http.Header, conversation string) string {
+	conversationPath := url.PathEscape(conversation)
+	response, err := p.taskDo(ctx, account, http.MethodGet,
+		p.taskWebBase()+tasksWebConversationsPath+conversationPath, headers, nil, 15*time.Second)
+	if err != nil || response.Status < 200 || response.Status >= 300 {
+		return ""
 	}
-	maxPolls := int(wait/interval) + 2
-	if maxPolls < 2 {
-		maxPolls = 2
-	}
-	lastStatus := ""
-	for index := 0; index < maxPolls; index++ {
-		if err := ctx.Err(); err != nil {
-			result.Error = err.Error()
-			result.Retryable = false
-			return result
-		}
-		response, err := p.taskDo(ctx, account, http.MethodGet,
-			p.taskWebBase()+tasksWebConversationsPath+conversation, headers, nil, 15*time.Second)
-		if err != nil {
-			result.Error = p.taskRedactError(account, err)
-			result.Retryable = true
-		} else if response.Status >= 200 && response.Status < 300 {
-			data := creditObject(response.Payload["data"])
-			lastStatus = strings.ToLower(strings.TrimSpace(creditText(data["status"])))
-			switch lastStatus {
-			case "completed":
-				result.OK = true
-				result.Status = lastStatus
-				result.Chunks = int(creditNumber(data["chunks"]))
-				result.ElapsedMS = time.Since(started).Milliseconds()
-				result.Msg = "网页通道会话跑完"
-				return result
-			case "failed", "error", "cancelled", "canceled", "deleted":
-				result.Status = lastStatus
-				result.Error = "web conversation ended with status " + lastStatus
-				result.Retryable = true
-				return result
-			}
-		} else {
-			result.Error = fmt.Sprintf("HTTP %d", response.Status)
-			result.Retryable = true
-		}
-		if index+1 < maxPolls {
-			p.taskSleepFor(interval)
-		}
-	}
-	result.Status = lastStatus
-	result.Error = fmt.Sprintf("会话在 %s 内没有跑完（状态=%s）", wait, firstNonEmpty(lastStatus, "unknown"))
-	result.Retryable = true
-	return result
+	data := creditObject(response.Payload["data"])
+	return strings.TrimSpace(creditText(data["status"]))
 }
 
 func (p *Provider) releaseWebConversation(ctx context.Context, account *Account, conversation string, deleteConversation bool) {
@@ -506,7 +544,7 @@ func (p *Provider) releaseWebConversation(ctx context.Context, account *Account,
 		return
 	}
 	headers := p.taskWebHeaders(account)
-	base := p.taskWebBase() + tasksWebConversationsPath + conversation
+	base := p.taskWebBase() + tasksWebConversationsPath + url.PathEscape(conversation)
 	// Cleanup must outlive a canceled round: an orphaned web conversation eats
 	// the account's active-session quota until it is stopped.
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -528,7 +566,7 @@ func (p *Provider) ReportActivity(ctx context.Context, uid string) (DailyResult,
 }
 
 // ReportActivityAll runs the once-a-day activity report for every enabled,
-// task-participating CN/Intl account in this provider.
+// task-participating, non-restricted CN/Intl account in this provider.
 func (p *Provider) ReportActivityAll(ctx context.Context) ([]DailyResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -592,6 +630,11 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 		return result, nil
 	}
 
+	// DailyChat/DailyChatWeb and the streak report all describe the same daily
+	// activity in v1's history. Emit at most one daily_chat row per day.
+	firstDailyActivity := !taskDayDone(auth.LastDailyChat, now) &&
+		!taskDayDone(authExtraString(auth, "lastDailyChatWeb"), now)
+
 	event := buildTaskEvent(auth, "chat", 0, nil, now)
 	body, err := json.Marshal([]any{event})
 	if err != nil {
@@ -603,22 +646,30 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 		p.taskChatBase()+tasksReportPath, headers, body, tasksDefaultTimeout)
 	if err != nil {
 		result.Error = p.taskRedactError(account, err)
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		if firstDailyActivity {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		}
 		return result, nil
 	}
 	if response.Status < 200 || response.Status >= 300 {
 		result.Error = fmt.Sprintf("活跃上报失败 HTTP %d", response.Status)
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		if firstDailyActivity {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		}
 		return result, nil
 	}
 	if err := taskPayloadError(response.Payload); err != nil {
 		result.Error = "活跃上报被上游拒绝（未返回 code=0）: " + p.taskRedactError(account, err)
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		if firstDailyActivity {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		}
 		return result, nil
 	}
 	if !taskCodeIsZero(response.Payload) {
 		result.Error = "活跃上报被上游拒绝（未返回 code=0）"
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		if firstDailyActivity {
+			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		}
 		return result, nil
 	}
 
@@ -638,7 +689,9 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 	default:
 		result.Msg = fmt.Sprintf("对话活跃上报成功（连续打卡 %d 天）", *days)
 	}
-	result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
+	if firstDailyActivity {
+		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
+	}
 	return result, nil
 }
 

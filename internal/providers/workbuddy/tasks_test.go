@@ -29,6 +29,14 @@ type taskTestUpstream struct {
 	handler func(*taskTestUpstream, *http.Request, []byte) (int, any)
 }
 
+// taskSSEResponse lets a fake return a real event stream: the handler result is
+// written verbatim and the connection stays open until the client disconnects.
+type taskSSEResponse struct {
+	Status int
+	Header http.Header
+	Body   string
+}
+
 func (f *taskTestUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	raw := make([]byte, 0)
 	if r.Body != nil {
@@ -53,6 +61,26 @@ func (f *taskTestUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status, payload := http.StatusOK, any(map[string]any{"code": 0, "msg": "ok"})
 	if handler != nil {
 		status, payload = handler(f, r, raw)
+	}
+	if stream, ok := payload.(taskSSEResponse); ok {
+		for name, values := range stream.Header {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		streamStatus := stream.Status
+		if streamStatus == 0 {
+			streamStatus = http.StatusOK
+		}
+		w.WriteHeader(streamStatus)
+		if flusher, ok := w.(http.Flusher); ok {
+			_, _ = io.WriteString(w, stream.Body)
+			flusher.Flush()
+		} else {
+			_, _ = io.WriteString(w, stream.Body)
+		}
+		<-r.Context().Done()
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -426,13 +454,51 @@ func TestTasksDailyChatRejectsCN(t *testing.T) {
 	}
 }
 
-func setupDailyWebFake(t *testing.T, realm string, create func(*taskTestUpstream, int) (int, any)) (*taskTestUpstream, *Provider, *Pool) {
+type dailyWebFakeState struct {
+	mu          sync.Mutex
+	acpMethods  []string
+	acpPrompted bool
+}
+
+func (s *dailyWebFakeState) methods() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.acpMethods...)
+}
+
+func setupDailyWebFake(t *testing.T, realm string, create func(*taskTestUpstream, int) (int, any)) (*taskTestUpstream, *Provider, *Pool, *dailyWebFakeState) {
 	t.Helper()
 	dir := t.TempDir()
 	writeTaskAccount(t, dir, "web-daily", realm, nil)
+	state := &dailyWebFakeState{}
 	var createCount int
-	fake, server := newTaskTestUpstream(t, func(fake *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+	var serverURL string
+	fake, server := newTaskTestUpstream(t, func(fake *taskTestUpstream, r *http.Request, raw []byte) (int, any) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/acp":
+			return http.StatusOK, taskSSEResponse{
+				Header: http.Header{
+					"Content-Type":      []string{"text/event-stream"},
+					"Acp-Connection-Id": []string{"acp-conn-1"},
+					"Cache-Control":     []string{"no-cache"},
+				},
+				Body: "data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\"}}}\n\n",
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/acp":
+			var request map[string]any
+			_ = json.Unmarshal(raw, &request)
+			method, _ := request["method"].(string)
+			state.mu.Lock()
+			state.acpMethods = append(state.acpMethods, method)
+			if method == "session/prompt" {
+				state.acpPrompted = true
+			}
+			state.mu.Unlock()
+			if r.Header.Get("Acp-Connection-Id") != "acp-conn-1" ||
+				!strings.HasPrefix(r.Header.Get("Authorization"), "Bearer sandbox-token") {
+				return http.StatusBadRequest, map[string]any{"error": "bad ACP headers"}
+			}
+			return http.StatusAccepted, map[string]any{"jsonrpc": "2.0"}
 		case r.Method == http.MethodPost && r.URL.Path == "/console/as/conversations/":
 			createCount++
 			if create != nil {
@@ -441,11 +507,18 @@ func setupDailyWebFake(t *testing.T, realm string, create func(*taskTestUpstream
 			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"id": "conv-1"}}
 		case r.Method == http.MethodGet && r.URL.Path == "/console/as/conversations/conv-1/session":
 			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
-				"link": "https://sandbox.example/acp", "token": "sandbox-token",
+				"link": serverURL + "/acp", "token": "sandbox-token",
 				"sessionId": "conv-1", "cwd": "/workspace",
 			}}
 		case r.Method == http.MethodGet && r.URL.Path == "/console/as/conversations/conv-1":
-			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"status": "completed"}}
+			state.mu.Lock()
+			prompted := state.acpPrompted
+			state.mu.Unlock()
+			status := "creating"
+			if prompted {
+				status = "completed"
+			}
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"status": status}}
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/stop"):
 			return http.StatusOK, map[string]any{"code": 0}
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/delete"):
@@ -454,12 +527,13 @@ func setupDailyWebFake(t *testing.T, realm string, create func(*taskTestUpstream
 			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
 		}
 	})
+	serverURL = server.URL
 	provider, pool := setupTaskProvider(t, realm, dir, server.URL)
-	return fake, provider, pool
+	return fake, provider, pool, state
 }
 
 func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
-	fake, provider, pool := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, attempt int) (int, any) {
+	fake, provider, pool, acp := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, attempt int) (int, any) {
 		if attempt == 1 {
 			return http.StatusServiceUnavailable, map[string]any{"code": 14220, "msg": "try later"}
 		}
@@ -475,6 +549,9 @@ func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
 	}
 	if fake.count(http.MethodPost, "/console/as/conversations/") != 2 {
 		t.Fatalf("create calls = %d, want 2", fake.count(http.MethodPost, "/console/as/conversations/"))
+	}
+	if methods := acp.methods(); strings.Join(methods, ",") != "initialize,session/load,session/set_model,session/prompt" {
+		t.Fatalf("ACP methods = %v", methods)
 	}
 	account := accountByUID(t, pool, "web-daily")
 	account.mu.RLock()
@@ -497,7 +574,7 @@ func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
 }
 
 func TestTasksDailyChatWebBusinessRejectNotRetried(t *testing.T) {
-	fake, provider, _ := setupDailyWebFake(t, realmCN, func(_ *taskTestUpstream, _ int) (int, any) {
+	fake, provider, _, _ := setupDailyWebFake(t, realmCN, func(_ *taskTestUpstream, _ int) (int, any) {
 		return http.StatusOK, map[string]any{"code": 12302, "msg": "activity is offline"}
 	})
 	result, err := provider.DailyChatWeb(context.Background(), "web-daily")
@@ -1291,7 +1368,17 @@ func TestTasksCatTravelEnsuresFirstBuddy(t *testing.T) {
 			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
 		}
 	})
-	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	seed, _ := json.Marshal(growthSnapshot{
+		Summary: GrowthSummary{Energy: 4, StreakDays: 9,
+			TierStatuses: map[string]string{"7d": "available"},
+			Travel:       map[string]any{"state": "idle"}},
+		StreakDays: 9,
+	})
+	account := accountByUID(t, pool, "cn-cat-buddy")
+	account.mu.Lock()
+	account.Auth.Extra = map[string]json.RawMessage{"growthTasks": seed}
+	account.mu.Unlock()
 	result, err := provider.CatTravel(context.Background(), "cn-cat-buddy")
 	if err != nil {
 		t.Fatalf("CatTravel: %v", err)
@@ -1304,6 +1391,16 @@ func TestTasksCatTravelEnsuresFirstBuddy(t *testing.T) {
 	}
 	if departs != 2 {
 		t.Fatalf("depart calls = %d, want 2 (retry after ensuring Buddy)", departs)
+	}
+	account.mu.RLock()
+	persisted, _ := authExtraJSON(account.Auth, "growthTasks")
+	account.mu.RUnlock()
+	var snapshot growthSnapshot
+	if err := json.Unmarshal(persisted, &snapshot); err != nil {
+		t.Fatalf("decode ensureBuddy snapshot: %v", err)
+	}
+	if snapshot.Summary.StreakDays != 9 || snapshot.Summary.Energy != 4 {
+		t.Fatalf("ensureBuddy clobbered cached summary: %+v", snapshot.Summary)
 	}
 }
 
@@ -1332,12 +1429,18 @@ func TestTasksGrowthMiniProgramChain(t *testing.T) {
 			if mpDone {
 				status, current = "completed", 1
 			}
-			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
-				"tasks": []any{map[string]any{
-					"task_code": "Sequential_Tasks_1", "title": "小程序对话",
-					"accept_status": status, "progress": map[string]any{"current": current, "target": 1},
-				}},
+			tasks := []any{map[string]any{
+				"task_code": "Sequential_Tasks_1", "title": "小程序对话",
+				"accept_status": status, "progress": map[string]any{"current": current, "target": 1},
 			}}
+			if mpAccepted {
+				// A refresh after accept must not re-admit a non-MP code.
+				tasks = append(tasks, map[string]any{
+					"task_code": "Sequential_Tasks_99", "accept_status": "accepted",
+					"progress": map[string]any{"current": 0, "target": 1},
+				})
+			}
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"tasks": tasks}}
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/activity/growth/tasks/accept":
 			if !mp {
 				return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"results": []any{}}}
@@ -1374,8 +1477,659 @@ func TestTasksGrowthMiniProgramChain(t *testing.T) {
 		if task.TaskCode == "Sequential_Tasks_1" {
 			foundMP = true
 		}
+		if task.TaskCode == "Sequential_Tasks_99" {
+			t.Fatalf("unknown MP task re-entered after accept: %+v", result.Tasks)
+		}
 	}
 	if !foundMP {
 		t.Fatalf("MP task missing from result: %+v", result.Tasks)
+	}
+}
+
+func TestTasksCheckinHTTPErrorWithCodeZeroFails(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-http-zero", realmCN, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case creditsCheckinPath, creditsSummaryPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		case "/v2/billing/meter/daily-checkin":
+			return http.StatusInternalServerError, map[string]any{"code": 0, "msg": "ok"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.Checkin(context.Background(), "cn-http-zero")
+	if err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	if result.OK || result.Error == "" {
+		t.Fatalf("HTTP 500/code 0 result = %+v, want failure", result)
+	}
+	account := accountByUID(t, pool, "cn-http-zero")
+	account.mu.RLock()
+	last := account.Auth.LastCheckin
+	account.mu.RUnlock()
+	if last != "" {
+		t.Fatalf("failed HTTP/code0 checkin wrote lastCheckin = %q", last)
+	}
+}
+
+func TestTasksCheckinNetworkFailureActivity(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-net", realmCN, nil)
+	_, server := newTaskTestUpstream(t, nil)
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	provider.tasksDoer = chatDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return nil, fmt.Errorf("network down")
+	})
+	result, err := provider.Checkin(context.Background(), "cn-net")
+	if err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	if result.OK || result.Error == "" {
+		t.Fatalf("result = %+v, want failure", result)
+	}
+	if result.Activity == nil || result.Activity.OK || result.Activity.Task != "checkin" {
+		t.Fatalf("activity = %+v, want failed checkin event", result.Activity)
+	}
+}
+
+func TestTasksCheckinStatusMergePreservesPartialFields(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-merge", realmCN, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case creditsCheckinPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		case "/v2/billing/meter/daily-checkin":
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok", "data": map[string]any{
+				"today_checked_in": true,
+			}}
+		case creditsSummaryPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"IsPaidUser": false, "Packages": []any{},
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	account := accountByUID(t, pool, "cn-merge")
+	account.SetCredits(&CreditSnapshot{
+		Checkin:  &CheckinStatus{StreakDays: 5, DailyCredit: 3, TodayCredit: 3, Active: true},
+		Packages: []CreditPackage{},
+	})
+	result, err := provider.Checkin(context.Background(), "cn-merge")
+	if err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	if result.Checkin == nil || result.Checkin.StreakDays != 5 || result.Checkin.DailyCredit != 3 {
+		t.Fatalf("merged checkin = %+v, want cached streak/credit preserved", result.Checkin)
+	}
+	account.mu.RLock()
+	cached := cloneCheckin(account.Credits.Checkin)
+	account.mu.RUnlock()
+	if cached == nil || cached.StreakDays != 5 || !cached.TodayCheckedIn {
+		t.Fatalf("persisted merged checkin = %+v", cached)
+	}
+}
+
+func TestTasksRestrictedAllSelectorsAndDailyPersistence(t *testing.T) {
+	dir := t.TempDir()
+	future := float64(time.Now().Add(time.Hour).Unix())
+	writeTaskAccount(t, dir, "cn-restricted", realmCN, map[string]any{"restrictedUntil": future})
+	writeTaskAccount(t, dir, "intl-restricted", realmIntl, map[string]any{"restrictedUntil": future})
+	var checkinCalls int
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case creditsCheckinPath, creditsSummaryPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		case "/v2/billing/meter/daily-checkin":
+			checkinCalls++
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	cn, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	if rows, err := cn.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("CheckinAll restricted = %+v, %v", rows, err)
+	}
+	if rows, err := cn.GrowthTasksAll(context.Background(), true); err != nil || len(rows) != 0 {
+		t.Fatalf("GrowthTasksAll restricted = %+v, %v", rows, err)
+	}
+	if rows, err := cn.BuddyCheckinAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("BuddyCheckinAll restricted = %+v, %v", rows, err)
+	}
+	if rows, err := cn.CatTravelAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("CatTravelAll restricted = %+v, %v", rows, err)
+	}
+	if rows, err := cn.StreakBonusAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("StreakBonusAll restricted = %+v, %v", rows, err)
+	}
+	if checkinCalls != 0 {
+		t.Fatalf("restricted batch made %d upstream calls", checkinCalls)
+	}
+	if accounts := cn.Pool().TaskAccounts(); len(accounts) != 0 {
+		t.Fatalf("Pool.TaskAccounts returned restricted account(s): %+v", accounts)
+	}
+	manual, err := cn.Checkin(context.Background(), "cn-restricted")
+	if err != nil || !manual.OK {
+		t.Fatalf("manual restricted checkin = %+v, %v", manual, err)
+	}
+	if checkinCalls != 1 {
+		t.Fatalf("manual checkin calls = %d, want 1", checkinCalls)
+	}
+
+	intl, intlPool := setupTaskProvider(t, realmIntl, dir, server.URL)
+	if rows, err := intl.DailyChatAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("DailyChatAll restricted = %+v, %v", rows, err)
+	}
+	manualDaily, err := intl.DailyChat(context.Background(), "intl-restricted")
+	if err != nil {
+		t.Fatalf("manual restricted DailyChat: %v", err)
+	}
+	if !manualDaily.OK {
+		t.Fatalf("manual restricted DailyChat = %+v, want forced run", manualDaily)
+	}
+	account := accountByUID(t, intlPool, "intl-restricted")
+	account.mu.RLock()
+	until := taskRestrictedUntil(account.Auth)
+	account.mu.RUnlock()
+	if until != 0 {
+		t.Fatalf("successful manual DailyChat did not clear restrictedUntil: %v", until)
+	}
+}
+
+func TestTasksDailyChatPersists403Restriction(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-403", realmIntl, nil)
+	blocked := true
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == chatPath && blocked {
+			return http.StatusForbidden, map[string]any{"code": 11140, "msg": "request illegal"}
+		}
+		if r.URL.Path == chatPath {
+			return http.StatusOK, map[string]any{"choices": []any{}}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	})
+	provider, pool := setupTaskProvider(t, realmIntl, dir, server.URL)
+	result, err := provider.DailyChat(context.Background(), "intl-403")
+	if err != nil {
+		t.Fatalf("DailyChat: %v", err)
+	}
+	if result.OK || !result.Restricted {
+		t.Fatalf("403 daily result = %+v", result)
+	}
+	account := accountByUID(t, pool, "intl-403")
+	account.mu.RLock()
+	until := taskRestrictedUntil(account.Auth)
+	account.mu.RUnlock()
+	if until <= float64(time.Now().Unix()) {
+		t.Fatalf("restrictedUntil = %v, want future", until)
+	}
+	restarted, restartedPool := setupTaskProvider(t, realmIntl, dir, server.URL)
+	if rows, err := restarted.DailyChatAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("DailyChatAll after 403 = %+v, %v", rows, err)
+	}
+	blocked = false
+	manual, err := restarted.DailyChat(context.Background(), "intl-403")
+	if err != nil {
+		t.Fatalf("manual restricted DailyChat: %v", err)
+	}
+	if !manual.OK {
+		t.Fatalf("manual restricted DailyChat = %+v, want forced run", manual)
+	}
+	account = accountByUID(t, restartedPool, "intl-403")
+	account.mu.RLock()
+	until = taskRestrictedUntil(account.Auth)
+	account.mu.RUnlock()
+	if until != 0 {
+		t.Fatalf("successful forced DailyChat did not clear restriction: %v", until)
+	}
+}
+
+func TestTasksACPChannelCountsEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/acp" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Acp-Connection-Id", "conn-events")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\"}}}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	channel := newACPTurnChannel(chatDoerFunc(func(ctx context.Context, req *http.Request, _ string) (*http.Response, error) {
+		return http.DefaultClient.Do(req.WithContext(ctx))
+	}), server.URL+"/acp", "sandbox-token", "test-agent", "")
+	if err := channel.open(context.Background()); err != nil {
+		t.Fatalf("open ACP channel: %v", err)
+	}
+	defer channel.close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		updates, chunks := channel.counts()
+		if updates >= 1 && chunks >= 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	updates, chunks := channel.counts()
+	t.Fatalf("ACP event counts = %d/%d, want >=1/1", updates, chunks)
+}
+
+func TestTasksDailyChatBodyNormalizationAndGzip(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-cli", realmIntl, map[string]any{"product": productCLI})
+	fake := &chatTestFake{body: "data: {\"choices\":[]}\n\n"}
+	server := newChatTestServer(t, fake)
+	provider, _ := setupTaskProvider(t, realmIntl, dir, server.URL)
+	result, err := provider.DailyChat(context.Background(), "intl-cli")
+	if err != nil || !result.OK {
+		t.Fatalf("DailyChat = %+v, %v", result, err)
+	}
+	var chatCall *chatTestCall
+	for _, call := range fake.snapshot() {
+		if call.Method == http.MethodPost && call.Path == chatPath {
+			copy := call
+			chatCall = &copy
+			break
+		}
+	}
+	if chatCall == nil {
+		t.Fatal("no daily chat call")
+	}
+	if !strings.EqualFold(chatCall.Header.Get("Content-Encoding"), "gzip") {
+		t.Fatalf("CLI daily chat Content-Encoding = %q, want gzip", chatCall.Header.Get("Content-Encoding"))
+	}
+	var body map[string]any
+	if err := json.Unmarshal(chatCall.Body, &body); err != nil {
+		t.Fatalf("decode daily body: %v", err)
+	}
+	if body["cache_retention"] != "long" {
+		t.Fatalf("cache_retention = %v", body["cache_retention"])
+	}
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatalf("messages = %v", messages)
+	}
+	first, _ := messages[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != defaultChatSystemPrompt {
+		t.Fatalf("first daily message = %+v", first)
+	}
+	options, _ := body["stream_options"].(map[string]any)
+	if options["include_usage"] != true {
+		t.Fatalf("stream_options = %+v", options)
+	}
+}
+
+func TestTasksGrowthSummaryPreservedOnPartialFetch(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-cache", realmCN, nil)
+	fake, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" {
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto",
+					"accept_status": "claimed", "progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		}
+		return http.StatusInternalServerError, map[string]any{"code": 1, "msg": "summary offline"}
+	})
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	account := accountByUID(t, pool, "cn-cache")
+	cached := GrowthSummary{
+		Energy: 5, StreakDays: 7, MakeupCards: 2,
+		Tiers:          []any{map[string]any{"tier": "7d"}},
+		TierStatuses:   map[string]string{"7d": "available", "14d": "locked", "28d": "locked"},
+		LotteryChances: 3,
+		Travel:         map[string]any{"state": "idle"},
+	}
+	raw, _ := json.Marshal(growthSnapshot{Summary: cached, StreakDays: 7})
+	account.mu.Lock()
+	if account.Auth.Extra == nil {
+		account.Auth.Extra = map[string]json.RawMessage{}
+	}
+	account.Auth.Extra["growthTasks"] = raw
+	account.mu.Unlock()
+
+	result, err := provider.GrowthTasks(context.Background(), "cn-cache", true)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.StreakDays != 7 || result.Summary.Energy != 5 ||
+		result.Summary.LotteryChances != 3 || result.Summary.TierStatuses["7d"] != "available" ||
+		result.Summary.Travel["state"] != "idle" {
+		t.Fatalf("partial summary clobbered cache: %+v", result.Summary)
+	}
+	account.mu.RLock()
+	persisted, _ := authExtraJSON(account.Auth, "growthTasks")
+	account.mu.RUnlock()
+	var snapshot growthSnapshot
+	if err := json.Unmarshal(persisted, &snapshot); err != nil {
+		t.Fatalf("decode persisted snapshot: %v", err)
+	}
+	if snapshot.Summary.StreakDays != 7 || snapshot.Summary.Energy != 5 {
+		t.Fatalf("persisted summary = %+v", snapshot.Summary)
+	}
+	_ = fake
+}
+
+func TestTasksReportedAndClaimableOnlyOnReportSuccess(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-reportfail", realmCN, nil)
+	fake, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "create_canvas", "task_type": "single",
+					"accept_status": "accepted", "progress": map[string]any{"current": 0, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/report":
+			return http.StatusOK, map[string]any{"code": 1, "msg": "rejected"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-reportfail", false)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	if len(result.Reported) != 0 {
+		t.Fatalf("failed reports marked reported: %v", result.Reported)
+	}
+	if len(result.Claimable) != 0 {
+		t.Fatalf("failed report marked claimable: %v", result.Claimable)
+	}
+	if fake.count(http.MethodPost, "/v2/report") == 0 {
+		t.Fatal("no report attempted")
+	}
+}
+
+func TestTasksMPFailedReportNotCompleted(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-mpfail", realmCN, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		mp := strings.EqualFold(r.Header.Get("X-Client-Platform"), "miniprogram") ||
+			strings.EqualFold(r.Header.Get("X-Client-Platform"), "mp-weixin")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && !mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto", "accept_status": "claimed",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "Sequential_Tasks_1", "accept_status": "accepted",
+					"progress": map[string]any{"current": 0, "target": 1},
+				}, map[string]any{
+					"task_code": "Sequential_Tasks_99", "accept_status": "accepted",
+					"progress": map[string]any{"current": 0, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/report":
+			return http.StatusOK, map[string]any{"code": 1, "msg": "rejected"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-mpfail", false)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	if len(result.Reported) != 0 || len(result.Claimable) != 0 {
+		t.Fatalf("MP failed report marked reported/claimable: %+v", result)
+	}
+	for _, task := range result.Tasks {
+		if task.TaskCode == "Sequential_Tasks_1" && task.Status == "completed" {
+			t.Fatalf("MP failed report marked task completed: %+v", task)
+		}
+		if task.TaskCode == "Sequential_Tasks_99" {
+			t.Fatalf("unknown Sequential task was processed: %+v", task)
+		}
+	}
+}
+
+func TestTasksWebClaimHeaders(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-webclaim", realmCN, nil)
+	var serverURL string
+	webCalls := 0
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "create_canvas", "task_type": "single",
+					"accept_status": "completed", "progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/activity/growth/tasks/create_canvas/claim":
+			if !strings.EqualFold(r.Header.Get("x-client-platform"), "web") {
+				return http.StatusBadRequest, map[string]any{"code": 400, "msg": "chat claim rejected"}
+			}
+			webCalls++
+			if r.Header.Get("X-Domain") != serverURL ||
+				r.Header.Get("Referer") != serverURL+"/profile/growth-center" {
+				return http.StatusBadRequest, map[string]any{"code": 1, "msg": "missing web claim headers"}
+			}
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"credit": 100}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	serverURL = server.URL
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-webclaim", true)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	if !result.OK || result.EarnedCredit != 100 || webCalls != 1 {
+		t.Fatalf("web claim result = %+v, webCalls=%d", result, webCalls)
+	}
+}
+
+func TestTasksGrowthRewardChain(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-chain", realmCN, nil)
+	catState := "arrived"
+	claimCalls, departCalls, openCalls := 0, 0, 0
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case "/v2/activity/growth/tasks":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto", "accept_status": "claimed",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case "/activity/growth/buddy/travel/status":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"state": catState}}
+		case "/activity/growth/buddy/travel/claim":
+			claimCalls++
+			catState = "idle"
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"reward_credit": 50}}
+		case "/activity/growth/buddy/travel/config":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"locations": []any{map[string]any{"id": 1, "name": "咖啡馆"}},
+			}}
+		case "/activity/growth/buddy/travel/depart":
+			departCalls++
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"location": map[string]any{"name": "咖啡馆"},
+			}}
+		case "/v2/activity/growth/buddy/quota":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"affordable": 1, "max_open_count": 1,
+			}}
+		case "/v2/activity/growth/buddy/open":
+			openCalls++
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"buddy": "猫咪学霸"}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-chain", true)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	text := strings.Join(result.Logs, "\n")
+	if !result.OK || result.EarnedCredit != 50 ||
+		!strings.Contains(text, "猫猫日常") || !strings.Contains(text, "Buddy 盲盒") {
+		t.Fatalf("chain result = %+v logs=%s", result, text)
+	}
+	if claimCalls != 1 || departCalls != 1 || openCalls != 1 {
+		t.Fatalf("chain calls claim=%d depart=%d open=%d", claimCalls, departCalls, openCalls)
+	}
+}
+
+func TestTasksMPEventBaseThenEventAndUnknownSequential(t *testing.T) {
+	auth := Auth{UID: "mp-user", Nickname: "MP Tester", Realm: realmCN}
+	events := buildMPEvents(auth, "Sequential_Tasks_4", 1, time.Now())
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	event := events[0]
+	if event["eventCode"] != "automated_task_create_suc" || event["source"] != "manually" {
+		t.Fatalf("event source lost to base: %+v", event)
+	}
+	if event["platform"] != "mini_program" || event["userId"] != "mp-user" {
+		t.Fatalf("event base fields = %+v", event)
+	}
+	tasks := filterMPGrowthTasks([]GrowthTask{
+		{TaskCode: "Sequential_Tasks_99"}, {TaskCode: "Sequential_Tasks_1"},
+	})
+	if len(tasks) != 1 || tasks[0].TaskCode != "Sequential_Tasks_1" {
+		t.Fatalf("unknown sequential kept: %+v", tasks)
+	}
+}
+
+func TestTasksWebBackoffSchedule(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-backoff", realmIntl, nil)
+	_, server := newTaskTestUpstream(t, nil)
+	provider, _ := setupTaskProvider(t, realmIntl, dir, server.URL)
+	provider.tasksBackoff = 5 * time.Millisecond
+	provider.tasksBackoffMax = 12 * time.Millisecond
+	if got := provider.taskBackoffDelay(0); got != 5*time.Millisecond {
+		t.Fatalf("backoff(0) = %v", got)
+	}
+	if got := provider.taskBackoffDelay(1); got != 10*time.Millisecond {
+		t.Fatalf("backoff(1) = %v", got)
+	}
+	if got := provider.taskBackoffDelay(2); got != 12*time.Millisecond {
+		t.Fatalf("backoff(2) = %v", got)
+	}
+	if got := provider.taskBackoffDelay(9); got != 12*time.Millisecond {
+		t.Fatalf("backoff cap = %v", got)
+	}
+}
+
+func TestTasksDailyActivityEventNotDuplicated(t *testing.T) {
+	_, provider, _, _ := setupDailyWebFake(t, realmIntl, nil)
+	daily, err := provider.DailyChat(context.Background(), "web-daily")
+	if err != nil || !daily.OK {
+		t.Fatalf("DailyChat = %+v, %v", daily, err)
+	}
+	if daily.Activity == nil {
+		t.Fatal("first daily activity emitted no event")
+	}
+	web, err := provider.DailyChatWeb(context.Background(), "web-daily")
+	if err != nil || !web.OK {
+		t.Fatalf("DailyChatWeb = %+v, %v", web, err)
+	}
+	if web.Activity != nil {
+		t.Fatalf("second daily activity emitted a duplicate event: %+v", web.Activity)
+	}
+	report, err := provider.ReportActivity(context.Background(), "web-daily")
+	if err != nil || !report.OK {
+		t.Fatalf("ReportActivity = %+v, %v", report, err)
+	}
+	if report.Activity != nil {
+		t.Fatalf("activity report duplicated the day's event: %+v", report.Activity)
+	}
+}
+
+func TestTasksRedactValueSecretSpellings(t *testing.T) {
+	value := map[string]any{
+		"access_token": "secret-value",
+		"deviceToken":  "device-secret",
+		"nested": map[string]any{
+			"Authorization": "Bearer secret-value",
+			"safe":          "visible",
+		},
+	}
+	out := redactTaskValue(value, []string{"secret-value"})
+	text := taskJSON(t, out)
+	if strings.Contains(text, "secret-value") || strings.Contains(text, "device-secret") {
+		t.Fatalf("redaction leaked: %s", text)
+	}
+	if !strings.Contains(text, "visible") {
+		t.Fatalf("redaction removed safe data: %s", text)
+	}
+}
+
+func TestTasksBuddyQuotaBusinessIdle(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-buddy-idle", realmCN, nil)
+	var openCalls int
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == "/v2/activity/growth/buddy/quota" {
+			return http.StatusOK, map[string]any{"code": 123, "msg": "quota unavailable"}
+		}
+		if r.URL.Path == "/v2/activity/growth/buddy/open" {
+			openCalls++
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.BuddyCheckin(context.Background(), "cn-buddy-idle")
+	if err != nil {
+		t.Fatalf("BuddyCheckin: %v", err)
+	}
+	if !result.OK || result.Action != "idle" || result.Opened != 0 || openCalls != 0 {
+		t.Fatalf("quota business idle = %+v, openCalls=%d", result, openCalls)
+	}
+}
+
+func TestTasksDesktopEventShapes(t *testing.T) {
+	auth := Auth{UID: "event-user", Nickname: "Event Tester", Realm: realmCN}
+	now := time.Now()
+	expert := buildTaskEvent(auth, "expert", 0, &growthExpert{ID: "ex_xQHHD1u5Jkua", Name: "无畏契约拼豆专家"}, now)
+	if expert["eventCode"] != "expert_actual_use" || expert["id"] != "ex_xQHHD1u5Jkua" ||
+		expert["userId"] != "event-user" || expert["expertType"] != "agent" {
+		t.Fatalf("expert event = %+v", expert)
+	}
+	canvas := buildTaskEvent(auth, "canvas", 1, nil, now)
+	if canvas["eventCode"] != "wbx_design_canvas_task_create" || canvas["userId"] != "event-user" {
+		t.Fatalf("canvas event = %+v", canvas)
+	}
+	rich := buildDesktopChatEvents(auth, 0, now)
+	if len(rich) != 6 || rich[0]["eventCode"] != "agent_task_created" ||
+		rich[5]["eventCode"] != "agent_task_completed" {
+		t.Fatalf("rich meow events = %+v", rich)
+	}
+	playbook := buildPlaybookEvents(auth, 0, now)
+	if len(playbook) != 2 || playbook[1]["eventCode"] != "playbook_prompt_send" {
+		t.Fatalf("playbook events = %+v", playbook)
 	}
 }

@@ -414,16 +414,22 @@ func (p *Pool) Stats() PoolStats {
 }
 
 // TaskAccounts returns accounts that participate in scheduled/manual tasks.
-// It is independent of API enabled state, matching v1's task_active().
+// It is independent of API enabled state, matching v1's task_active(), and
+// excludes accounts carrying a persisted 403/11140 restrictionUntil window.
 func (p *Pool) TaskAccounts() []*Account {
 	if p == nil {
 		return nil
 	}
+	now := p.nowTime()
 	out := make([]*Account, 0)
 	for _, account := range p.Accounts() {
 		account.mu.RLock()
 		active := !account.removed && account.Auth.TasksEnabled
+		auth := cloneAuth(account.Auth)
 		account.mu.RUnlock()
+		if active && taskRestrictedUntil(auth) > float64(now.Unix()) {
+			active = false
+		}
 		if active {
 			out = append(out, account)
 		}

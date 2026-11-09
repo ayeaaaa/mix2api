@@ -52,7 +52,7 @@ const (
 	tasksBackoffMax     = 30 * time.Second
 	tasksBudgetDefault  = 600 * time.Second
 	tasksTurnWait       = 120 * time.Second
-	tasksPollDefault    = 2 * time.Second
+	tasksPollDefault    = 3 * time.Second
 
 	taskTriggerManual    = "manual"
 	taskTriggerScheduler = "scheduler"
@@ -61,6 +61,9 @@ const (
 	taskDailyChatTask     = "daily_chat"
 	taskBusyMessage       = "任务正在执行，请稍后"
 	taskDailyDefaultModel = "deepseek-v4.1-flash"
+
+	// taskRestrictedCooldown mirrors v1's fixed 2-hour account restriction.
+	taskRestrictedCooldown = 2 * time.Hour
 )
 
 // ActivityEvent is one v1-compatible activity-history row attached to a task
@@ -112,10 +115,10 @@ type CheckinStatusResult struct {
 }
 
 // Checkin runs one manual CN personal-account sign-in. An explicit uid is the
-// v1 manual action: it may target an operator-disabled account, but the hard
-// per-account task-participation toggle still wins. The daily timestamp and a
-// best-effort checkin-activity-status probe prevent a duplicate sign-in across
-// scheduler restarts.
+// v1 manual action and deliberately forces operator-disabled and task-opted-out
+// accounts. The daily timestamp and a best-effort checkin-activity-status probe
+// prevent a duplicate sign-in across scheduler restarts. Scheduled callers use
+// CheckinAll, which applies enabled/task/restriction filters.
 func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, error) {
 	account, err := p.taskAccount(ctx, uid)
 	if err != nil {
@@ -125,8 +128,9 @@ func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, erro
 }
 
 // CheckinAll runs the scheduled/batch sign-in selection: enabled accounts that
-// participate in tasks. Disabled and task-opted-out accounts are skipped. Manual
-// calls use Checkin with an explicit uid instead.
+// participate in tasks and are not inside a persisted restrictedUntil window.
+// Disabled, task-opted-out, and restricted accounts are skipped; manual calls
+// use Checkin with an explicit uid instead.
 func (p *Provider) CheckinAll(ctx context.Context) ([]CheckinResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -209,6 +213,7 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 	response, err := p.taskDo(ctx, account, http.MethodPost, p.taskBillingBase()+tasksCheckinPath, headers, []byte("{}"), tasksDefaultTimeout)
 	if err != nil {
 		result.Error = p.taskRedactError(account, err)
+		result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
 		return result, nil
 	}
 	code := taskNumberOrText(response.Payload["code"])
@@ -216,7 +221,9 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 	state := checkinStateValue(code, msg)
 	success := state == "checked" || state == "already"
 	if response.Status < 200 || response.Status >= 300 {
-		if !success {
+		// v1 only treats an HTTP error as success when its body says "already";
+		// a transport/HTTP failure carrying code 0 is still a failed attempt.
+		if state != "already" {
 			if msg == "" {
 				msg = fmt.Sprintf("HTTP %d", response.Status)
 			}
@@ -247,13 +254,11 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 		result.Error = p.taskRedactError(account, err)
 	}
 	data := p.taskRedactValue(account, response.Payload["data"])
-	checkin := checkinStatusFromData(data)
-	if checkin == nil {
-		checkin = &CheckinStatus{TodayCheckedIn: true, Active: true}
-	}
+	previous := previousCheckinStatus(account)
 	// Refresh the full balance so the panel sees the new credits immediately.
 	// Failure is soft: the sign-in itself already succeeded.
 	_ = p.refreshCreditAccount(ctx, account)
+	checkin := mergeCheckinStatusValue(previous, data, true)
 	p.mergeCheckinStatus(account, checkin)
 
 	result.OK = true
@@ -337,14 +342,111 @@ func checkinStatusFromData(data any) *CheckinStatus {
 	if !ok || len(object) == 0 {
 		return nil
 	}
-	status := &CheckinStatus{
-		TodayCheckedIn: creditTruthy(object["today_checked_in"]),
-		StreakDays:     int(creditNumber(object["streak_days"])),
-		DailyCredit:    creditNumber(object["daily_credit"]),
-		TodayCredit:    creditNumber(object["today_credit"]),
-		Active:         creditTruthyDefault(object["active"], true),
+	return mergeCheckinStatusValue(nil, object, false)
+}
+
+// mergeCheckinStatusValue overlays only fields the upstream actually returned.
+// A partial status response must not zero the cached streak/credits (e.g. a
+// checkin-activity-status timeout followed by a successful checkin).
+func mergeCheckinStatusValue(previous *CheckinStatus, data any, checked bool) *CheckinStatus {
+	out := cloneCheckin(previous)
+	if out == nil {
+		out = &CheckinStatus{Active: true}
 	}
-	return status
+	object, _ := data.(map[string]any)
+	if value, exists := object["today_checked_in"]; exists {
+		out.TodayCheckedIn = creditTruthy(value)
+	} else if checked {
+		out.TodayCheckedIn = true
+	}
+	if value, exists := object["streak_days"]; exists {
+		out.StreakDays = int(creditNumber(value))
+	}
+	if value, exists := object["daily_credit"]; exists {
+		out.DailyCredit = creditNumber(value)
+	}
+	if value, exists := object["today_credit"]; exists {
+		out.TodayCredit = creditNumber(value)
+	}
+	if value, exists := object["active"]; exists {
+		out.Active = creditTruthy(value)
+	}
+	return out
+}
+
+func previousCheckinStatus(account *Account) *CheckinStatus {
+	if account == nil {
+		return nil
+	}
+	account.mu.RLock()
+	defer account.mu.RUnlock()
+	if account.Credits == nil {
+		return nil
+	}
+	return cloneCheckin(account.Credits.Checkin)
+}
+
+// ---------------------------------------------------------------------------
+// Persisted 403/11140 restriction
+// ---------------------------------------------------------------------------
+
+func taskRestrictedUntil(auth Auth) float64 {
+	return authExtraFloat(auth, "restrictedUntil")
+}
+
+func (p *Provider) taskRestricted(auth Auth, now time.Time) bool {
+	return taskRestrictedUntil(auth) > float64(now.Unix())
+}
+
+func (p *Provider) persistTaskRestriction(account *Account, now time.Time, detail string) {
+	if p == nil || account == nil {
+		return
+	}
+	auth := taskAuthSnapshot(account)
+	// v1 starts the two-hour clock on the first hit only; repeated probes do not
+	// extend the ban.
+	if taskRestrictedUntil(auth) > float64(now.Unix()) {
+		return
+	}
+	until := float64(now.Add(taskRestrictedCooldown).Unix())
+	raw, _ := json.Marshal(until)
+	uid := accountUID(account)
+	if p.Pool() == nil || uid == "" {
+		account.mu.Lock()
+		if account.Auth.Extra == nil {
+			account.Auth.Extra = make(map[string]json.RawMessage)
+		}
+		account.Auth.Extra["restrictedUntil"] = raw
+		account.mu.Unlock()
+		return
+	}
+	_ = p.Pool().mutateAccount(uid, func(account *Account) {
+		if account.Auth.Extra == nil {
+			account.Auth.Extra = make(map[string]json.RawMessage)
+		}
+		account.Auth.Extra["restrictedUntil"] = raw
+	})
+	_ = p.Pool().NoteRestricted(account, firstNonEmpty(detail, "HTTP 403 account restricted"))
+}
+
+func (p *Provider) clearTaskRestriction(account *Account) {
+	if p == nil || account == nil {
+		return
+	}
+	auth := taskAuthSnapshot(account)
+	if _, exists := auth.Extra["restrictedUntil"]; !exists {
+		return
+	}
+	uid := accountUID(account)
+	if p.Pool() == nil || uid == "" {
+		account.mu.Lock()
+		delete(account.Auth.Extra, "restrictedUntil")
+		account.mu.Unlock()
+		return
+	}
+	_ = p.Pool().mutateAccount(uid, func(account *Account) {
+		delete(account.Auth.Extra, "restrictedUntil")
+	})
 }
 
 func (p *Provider) persistLastCheckin(account *Account, now time.Time) error {
@@ -445,12 +547,25 @@ func (p *Provider) allTaskAccounts() []*Account {
 	for _, account := range pool.Accounts() {
 		account.mu.RLock()
 		active := !account.removed && account.Auth.Enabled && !account.State.Disabled && account.Auth.TasksEnabled
+		auth := cloneAuth(account.Auth)
 		account.mu.RUnlock()
+		if active && p.taskRestricted(auth, p.taskNowTime()) {
+			active = false
+		}
 		if active {
 			out = append(out, account)
 		}
 	}
 	return out
+}
+
+func taskProxyURL(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	account.mu.RLock()
+	defer account.mu.RUnlock()
+	return strings.TrimSpace(account.Auth.ProxyURL)
 }
 
 func taskAuthSnapshot(account *Account) Auth {
@@ -790,6 +905,25 @@ func (p *Provider) taskWebHeaders(account *Account) http.Header {
 
 const taskWebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
 
+// taskWebClaimHeaders is v1's explicit web-domain growth-centre claim request:
+// unlike the generic web session headers it carries X-Domain, the web client
+// platform, and the growth-centre referer.
+func (p *Provider) taskWebClaimHeaders(account *Account) http.Header {
+	auth := taskAuthSnapshot(account)
+	origin := p.taskWebBase()
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+auth.AccessToken)
+	headers.Set("Accept", "application/json, text/plain, */*")
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Origin", origin)
+	headers.Set("Referer", origin+"/profile/growth-center")
+	headers.Set("x-client-platform", "web")
+	headers.Set("User-Agent", taskWebUserAgent)
+	headers.Set("X-User-Id", strings.TrimSpace(auth.UID))
+	headers.Set("X-Domain", origin)
+	return headers
+}
+
 // taskRedactError removes this account's known credentials and proxy userinfo
 // from an upstream-derived error string.
 func (p *Provider) taskRedactError(account *Account, err error) string {
@@ -835,9 +969,13 @@ func (p *Provider) taskRedactValue(account *Account, value any) any {
 }
 
 var taskSecretKeys = map[string]bool{
-	"accesstoken": true, "refreshtoken": true, "authorization": true,
-	"cookie": true, "set-cookie": true, "password": true, "secret": true,
-	"apikey": true, "api_key": true, "token": true, "x-api-key": true,
+	"accesstoken": true, "access_token": true,
+	"refreshtoken": true, "refresh_token": true,
+	"authorization": true, "cookie": true, "set-cookie": true,
+	"password": true, "secret": true,
+	"apikey": true, "api_key": true, "api-key": true,
+	"token": true, "x-api-key": true,
+	"devicetoken": true, "device_token": true, "x-device-token": true,
 }
 
 func redactTaskValue(value any, secrets []string) any {

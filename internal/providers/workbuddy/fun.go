@@ -68,6 +68,8 @@ func (p *Provider) BuddyCheckin(ctx context.Context, uid string) (BuddyResult, e
 	return p.runBuddyCheckin(ctx, account)
 }
 
+// BuddyCheckinAll runs the blind-box check for every enabled, task-participating,
+// non-restricted CN account in this provider realm.
 func (p *Provider) BuddyCheckinAll(ctx context.Context) ([]BuddyResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -133,8 +135,13 @@ func (p *Provider) runBuddyCheckin(ctx context.Context, account *Account) (Buddy
 		result.Error = fmt.Sprintf("Buddy 盲盒额度查询失败: HTTP %d", quotaResponse.Status)
 		return result, nil
 	}
-	if err := taskPayloadError(quotaResponse.Payload); err != nil {
-		result.Error = p.taskRedactError(account, err)
+	if taskPayloadError(quotaResponse.Payload) != nil {
+		// v1 treats a business-level quota rejection as "nothing affordable"
+		// and reports idle rather than a hard error; HTTP/transport failures
+		// above remain errors.
+		result.OK = true
+		result.Action = "idle"
+		result.Msg = "成长能量不足以开启 Buddy 盲盒"
 		return result, nil
 	}
 	quota := creditObject(quotaResponse.Payload["data"])
@@ -204,6 +211,8 @@ func (p *Provider) CatTravel(ctx context.Context, uid string) (CatResult, error)
 	return p.runCatTravel(ctx, account)
 }
 
+// CatTravelAll runs the cat lifecycle for every enabled, task-participating,
+// non-restricted CN account in this provider realm.
 func (p *Provider) CatTravelAll(ctx context.Context) ([]CatResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
@@ -390,6 +399,7 @@ func (p *Provider) ensureGrowthBuddy(ctx context.Context, account *Account) bool
 	run := &growthRun{
 		provider: p, account: account, auth: auth, now: now, autoClaim: true,
 		claims: loadGrowthClaims(auth), tasks: []GrowthTask{},
+		summary: cachedGrowthSummary(auth),
 	}
 	tasks, err := p.fetchGrowthTasks(ctx, account, false)
 	if err != nil {
@@ -416,11 +426,16 @@ func (p *Provider) ensureGrowthBuddy(ctx context.Context, account *Account) bool
 		return false
 	}
 	run.tasks = mergeGrowthTasks(run.tasks, refreshed)
+	claimed := growthClaimedToday(run.claims, "first_buddy", now)
 	for _, task := range refreshed {
 		if task.TaskCode == "first_buddy" && task.Status == "claimed" {
-			_ = p.persistGrowthState(account, run)
-			return true
+			claimed = true
+			break
 		}
+	}
+	if claimed {
+		_ = p.persistGrowthState(account, run)
+		return true
 	}
 	return false
 }
@@ -435,6 +450,8 @@ func (p *Provider) StreakBonus(ctx context.Context, uid string) (StreakResult, e
 	return p.runStreakBonus(ctx, account)
 }
 
+// StreakBonusAll runs the streak loop for every enabled, task-participating,
+// non-restricted CN account in this provider realm.
 func (p *Provider) StreakBonusAll(ctx context.Context) ([]StreakResult, error) {
 	if p == nil {
 		return nil, errors.New("workbuddy: provider is nil")
