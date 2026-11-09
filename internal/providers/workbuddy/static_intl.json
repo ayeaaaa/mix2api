@@ -1,0 +1,702 @@
+[
+  {
+    "id": "default-model",
+    "name": "Auto",
+    "descriptionEn": "Excellent coding model, great for daily use",
+    "descriptionZh": "优秀的编码模型，适合日常使用",
+    "credits": "",
+    "maxInputTokens": 176000,
+    "maxOutputTokens": 24000,
+    "maxAllowedSize": 200000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "relatedModels": {
+      "lite": "default-model-lite",
+      "reasoning": "default-model"
+    },
+    "temperature": 1,
+    "vendor": "e",
+    "isDefault": true
+  },
+  {
+    "id": "fast-model",
+    "name": "Fast",
+    "descriptionEn": "Fast responses for simple tasks",
+    "descriptionZh": "响应快，适合简单任务",
+    "credits": "x0.34 credits",
+    "maxInputTokens": 200000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 200000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "effort": "medium",
+      "summary": "auto"
+    },
+    "temperature": 1,
+    "vendor": "i"
+  },
+  {
+    "id": "balanced-model",
+    "name": "Balanced",
+    "descriptionEn": "Balanced speed and quality for daily working",
+    "descriptionZh": "速度与质量兼顾，日常工作首选",
+    "credits": "x0.59 credits",
+    "maxInputTokens": 256000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 256000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "effort": "medium",
+      "summary": "auto"
+    },
+    "temperature": 1,
+    "vendor": "f",
+    "tags": [
+      "craft"
+    ]
+  },
+  {
+    "id": "primary-model",
+    "name": "Primary",
+    "descriptionEn": "High-quality output for complex challenges",
+    "descriptionZh": "高质量输出，胜任复杂任务",
+    "credits": "x3.31 credits",
+    "maxInputTokens": 272000,
+    "maxOutputTokens": 72000,
+    "maxAllowedSize": 272000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "effort": "high",
+      "summary": "auto"
+    },
+    "vendor": "e"
+  },
+  {
+    "id": "deepseek-v4.1-flash",
+    "name": "Deepseek-V4.1-Flash",
+    "descriptionEn": "DeepSeek flagship model, supporting 1M context window, native multimodal model",
+    "descriptionZh": "DeepSeek 旗舰模型，支持 1M 上下文窗口，原生多模态",
+    "credits": "x0.11",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "deepseek-v4.1-flash",
+      "reasoning": "deepseek-v4.1-flash"
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "deepseek-v4.1-flash-sg",
+    "name": "Deepseek-V4.1-Flash",
+    "descriptionEn": "DeepSeek flagship model, supporting 1M context window, native multimodal model",
+    "descriptionZh": "DeepSeek 旗舰模型，支持 1M 上下文窗口，原生多模态",
+    "credits": "x0.11",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "deepseek-v4.1-flash-sg",
+      "reasoning": "deepseek-v4.1-flash-sg"
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "glm-5.3-flash",
+    "name": "GLM-5.3-Flash",
+    "descriptionEn": "Native multimodal model, excelling at visual understanding and professional tasks",
+    "descriptionZh": "原生多模态模型，擅长视觉理解与专业任务",
+    "credits": "x0.08",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "builtin-lite": "wb-lite",
+      "lite": "glm-5.3-flash",
+      "reasoning": "glm-5.3-flash"
+    },
+    "temperature": 1,
+    "vendor": "f",
+    "tags": [
+      "craft"
+    ]
+  },
+  {
+    "id": "gpt-6-astra",
+    "name": "GPT-6-Astra",
+    "descriptionEn": "OpenAI's flagship model for complex reasoning and long-horizon task",
+    "descriptionZh": "OpenAI 旗舰模型，擅长复杂推理与长程任务",
+    "credits": "x6.67",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 400000,
+      "supportedLengths": [
+        400000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "vendor": "e"
+  },
+  {
+    "id": "hy4-preview",
+    "name": "Hy4 Preview",
+    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
+    "descriptionZh": "混元思考模型，具有增强的推理能力",
+    "credits": "x0.29",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 64000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 200000,
+      "supportedLengths": [
+        200000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": false,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "high"
+      ]
+    },
+    "temperature": 0.9,
+    "top_p": 1,
+    "vendor": "j",
+    "disabledMultimodal": false
+  },
+  {
+    "id": "hy3",
+    "name": "Hy3",
+    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
+    "descriptionZh": "混元思考模型，具有增强的推理能力",
+    "credits": "x0.00",
+    "maxInputTokens": 192000,
+    "maxOutputTokens": 64000,
+    "maxAllowedSize": 192000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": false,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high"
+      ]
+    },
+    "relatedModels": {
+      "lite": "hy3",
+      "reasoning": "hy3"
+    },
+    "temperature": 0.9,
+    "top_p": 1,
+    "vendor": "j",
+    "tags": [
+      "craft"
+    ],
+    "disabledMultimodal": false
+  },
+  {
+    "id": "gpt-5.6-sol",
+    "name": "GPT-5.6-Sol",
+    "descriptionEn": "OpenAI's flagship model for complex reasoning and long-horizon task",
+    "descriptionZh": "OpenAI 旗舰模型，擅长复杂推理与长程任务",
+    "credits": "x3.47",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": false,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "gpt-5.6-sol",
+      "reasoning": "gpt-5.6-sol"
+    },
+    "vendor": "e",
+    "tags": []
+  },
+  {
+    "id": "gpt-5.6-terra",
+    "name": "GPT-5.6-Terra",
+    "descriptionEn": "OpenAI's balanced model for capability, speed, and cost",
+    "descriptionZh": "OpenAI 均衡模型，兼顾能力、速度与成本",
+    "credits": "x1.39",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": false,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "gpt-5.6-terra",
+      "reasoning": "gpt-5.6-terra"
+    },
+    "vendor": "e",
+    "tags": []
+  },
+  {
+    "id": "gpt-5.6-luna",
+    "name": "GPT-5.6-Luna",
+    "descriptionEn": "OpenAI's lightweight model for fast responses and everyday tasks",
+    "descriptionZh": "OpenAI 轻量模型，响应快速，适合日常任务",
+    "credits": "x0.14",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": false,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "gpt-5.6-luna",
+      "reasoning": "gpt-5.6-luna"
+    },
+    "vendor": "e",
+    "tags": []
+  },
+  {
+    "id": "glm-5.3",
+    "name": "GLM-5.3",
+    "descriptionEn": "Great for daily use",
+    "descriptionZh": "能力均衡，适合日常使用",
+    "credits": "x0.69",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 48000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": true,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "relatedModels": {
+      "lite": "glm-5.3",
+      "reasoning": "glm-5.3"
+    },
+    "temperature": 1,
+    "vendor": "e",
+    "tags": [
+      "craft"
+    ]
+  },
+  {
+    "id": "minimax-m3.1-flash",
+    "name": "MiniMax-M3.1-Flash",
+    "descriptionEn": "Natively multimodal, strong at Office, agentic, and coding tasks, with excellent inference speed.",
+    "descriptionZh": "原生多模态，擅长office、agentic、编程任务，推理速度优异",
+    "credits": "x0.08",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        600000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": false,
+      "defaultEffort": "max",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "kimi-k3.1-pro",
+    "name": "Kimi-K3.1-Pro",
+    "descriptionEn": "Kimi's new flagship model. Office work, coding, 3D creation, and long-horizon agent capabilities, all fully upgraded.",
+    "descriptionZh": "Kimi 全新旗舰模型，3万亿级参数。办公、代码、3D 创作与长程 Agent 能力全面升级。",
+    "credits": "x0.97",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        600000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": false,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "kimi-k3.1-pro-highspeed",
+    "name": "Kimi-K3.1-Pro-Highspeed",
+    "descriptionEn": "Delivering 2–3× the speed of K3.1 Pro for smoother interactions.",
+    "descriptionZh": "K3.1 Pro 高速版本，响应速度提升至 K3.1 Pro 的 2–3 倍，交互更流畅。",
+    "credits": "x1.56",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        600000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "canDisableThinking": false,
+      "defaultEffort": "high",
+      "summary": "auto",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "kimi-k3",
+    "name": "Kimi-K3",
+    "descriptionEn": "Excels at complex, long-horizon autonomous tasks, with standout front-end skills and strong knowledge work and scientific reasoning",
+    "descriptionZh": "擅长处理复杂的长程自主任务，前端开发能力突出，同时在知识工作与科研推理上表现出色。",
+    "credits": "x1.62",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 32000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "effort": "medium",
+      "summary": "auto"
+    },
+    "relatedModels": {
+      "lite": "kimi-k3-1",
+      "reasoning": "kimi-k3-1"
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "grok-4.7",
+    "name": "Grok-4.7",
+    "descriptionEn": "SpaceXAI's frontier model built for coding, agentic tasks, and knowledge work.",
+    "descriptionZh": "SpaceXAI 打造的前沿模型，专为编程、智能体任务及知识型工作而设计。",
+    "credits": "x1.90",
+    "maxInputTokens": 500000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 500000,
+    "contextWindow": {
+      "defaultLength": 200000,
+      "supportedLengths": [
+        200000,
+        500000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "relatedModels": {
+      "lite": "grok-4.7",
+      "reasoning": "grok-4.7"
+    },
+    "temperature": 1,
+    "vendor": "f"
+  },
+  {
+    "id": "gemini-3.8-flash",
+    "name": "Gemini-3.8-Flash",
+    "descriptionEn": "Built for long-horizon coding and autonomous agents.",
+    "descriptionZh": "能力均衡，适合日常使用",
+    "credits": "x0.95",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 65536,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 300000,
+      "supportedLengths": [
+        300000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "medium",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "temperature": 1,
+    "vendor": "e"
+  },
+  {
+    "id": "gpt-6-sol",
+    "name": "GPT-6-Sol",
+    "descriptionEn": "Built for complex coding and agentic workflows.",
+    "descriptionZh": "专为复杂编码和智能体工作流构建的模型",
+    "credits": "x1.33",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "vendor": "e"
+  },
+  {
+    "id": "gpt-6-luna",
+    "name": "GPT-6-Luna",
+    "descriptionEn": "Most efficient model for focused, high-volume tasks.",
+    "descriptionZh": "专为单一聚焦、高吞吐量任务打造的高效模型",
+    "credits": "x0.07",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "vendor": "e"
+  },
+  {
+    "id": "gpt-6.1-sol",
+    "name": "GPT-6.1-Sol",
+    "descriptionEn": "Built for complex coding and agentic workflows.",
+    "descriptionZh": "专为复杂编码和智能体工作流构建的模型",
+    "credits": "x1.33",
+    "maxInputTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "maxAllowedSize": 1000000,
+    "contextWindow": {
+      "defaultLength": 272000,
+      "supportedLengths": [
+        272000,
+        600000,
+        1000000
+      ]
+    },
+    "supportsImages": true,
+    "supportsToolCall": true,
+    "supportsReasoning": true,
+    "onlyReasoning": true,
+    "reasoning": {
+      "defaultEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "vendor": "e"
+  }
+]

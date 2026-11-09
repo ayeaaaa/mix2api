@@ -74,6 +74,24 @@ type Provider struct {
 	tokenTimeout  time.Duration
 	tokenNow      func() time.Time
 	tokenJoinHook func()
+
+	// catalogMu serializes catalog refreshes for this provider. The state and
+	// manual-refresh cooldown are guarded separately so read paths never wait
+	// behind an upstream request. catalogDoer, catalogBaseURL,
+	// catalogDesktopPath, catalogNow, catalogTimeout, and catalogCooldown are
+	// same-package test seams; their zero values use the provider transport,
+	// the realm desktop endpoint, the desktop cache path, time.Now, 10s, and
+	// the v1 30s manual-refresh cooldown respectively.
+	catalogMu          sync.Mutex
+	catalogStateMu     sync.RWMutex
+	catalogState       catalogSnapshot
+	catalogLastRefresh time.Time
+	catalogDoer        ContextHTTPDoer
+	catalogBaseURL     string
+	catalogDesktopPath func(realm string) string
+	catalogNow         func() time.Time
+	catalogTimeout     time.Duration
+	catalogCooldown    time.Duration
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
