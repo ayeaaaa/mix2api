@@ -1083,6 +1083,11 @@ func (p *Provider) creditHTTPClient() ContextHTTPDoer {
 	if p.creditsDoer != nil {
 		return p.creditsDoer
 	}
+	// Task 8's tests point one fake at the task seams; share that client so the
+	// post-check-in balance refresh never reaches the real billing host.
+	if p.tasksDoer != nil {
+		return p.tasksDoer
+	}
 	if p.transport != nil {
 		return p.transport
 	}
@@ -1119,6 +1124,12 @@ func (p *Provider) creditsBillingBase() string {
 		if base := strings.TrimRight(strings.TrimSpace(p.creditsBillingBaseURL), "/"); base != "" {
 			return base
 		}
+		if base := strings.TrimRight(strings.TrimSpace(p.tasksBillingBaseURL), "/"); base != "" {
+			return base
+		}
+		if base := strings.TrimRight(strings.TrimSpace(p.tasksChatBaseURL), "/"); base != "" {
+			return base
+		}
 	}
 	return creditBillingBaseForRealm(p.realm)
 }
@@ -1126,6 +1137,9 @@ func (p *Provider) creditsBillingBase() string {
 func (p *Provider) creditsCheckinBase() string {
 	if p != nil {
 		if base := strings.TrimRight(strings.TrimSpace(p.creditsCheckinBaseURL), "/"); base != "" {
+			return base
+		}
+		if base := strings.TrimRight(strings.TrimSpace(p.tasksChatBaseURL), "/"); base != "" {
 			return base
 		}
 	}

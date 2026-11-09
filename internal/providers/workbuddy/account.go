@@ -219,6 +219,12 @@ type Account struct {
 	// while manual account disable remains the only persisted control state.
 	modelCoolUntil   map[string]time.Time
 	modelCoolStarted map[string]time.Time
+
+	// taskMu serializes one account's scheduled/manual task operations
+	// (check-in, daily activity, growth, Buddy/cat/streak). It is acquired
+	// non-blockingly so a duplicate trigger reports "busy" instead of issuing a
+	// second claim or sign-in.
+	taskMu sync.Mutex
 }
 
 // UID returns the normalized account identifier.

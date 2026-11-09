@@ -120,6 +120,25 @@ type Provider struct {
 	creditsMu      sync.Mutex
 	creditFlights  map[*Account]*creditRefreshFlight
 	creditJoinHook func()
+
+	// Task 8 seams. tasksDoer/tasks*BaseURL/tasksTimeout/tasksNow/tasksSleep
+	// isolate the checkin, daily, growth, and fun paths from the shared chat and
+	// billing clients; tests point them at one httptest server. tasksGap,
+	// tasksBackoff, tasksBackoffMax, tasksBudget, tasksTurnWait, and
+	// tasksPollInterval default to v1's anti-risk pacing and web retry budgets.
+	tasksDoer           ContextHTTPDoer
+	tasksChatBaseURL    string
+	tasksBillingBaseURL string
+	tasksWebBaseURL     string
+	tasksTimeout        time.Duration
+	tasksNow            func() time.Time
+	tasksSleep          func(time.Duration)
+	tasksGap            time.Duration
+	tasksBackoff        time.Duration
+	tasksBackoffMax     time.Duration
+	tasksBudget         time.Duration
+	tasksTurnWait       time.Duration
+	tasksPollInterval   time.Duration
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
@@ -139,11 +158,17 @@ func New(realm string, store *config.Store) (*Provider, error) {
 	}
 
 	provider := &Provider{
-		realm:       normalized,
-		store:       store,
-		accountsDir: accountsDir,
-		cfg:         LoadConfig(store, normalized),
-		transport:   transport.NewClient(transport.ClientOptions{RefuseRedirects: true}),
+		realm:             normalized,
+		store:             store,
+		accountsDir:       accountsDir,
+		cfg:               LoadConfig(store, normalized),
+		transport:         transport.NewClient(transport.ClientOptions{RefuseRedirects: true}),
+		tasksGap:          tasksGapDefault,
+		tasksBackoff:      tasksBackoffDefault,
+		tasksBackoffMax:   tasksBackoffMax,
+		tasksBudget:       tasksBudgetDefault,
+		tasksTurnWait:     tasksTurnWait,
+		tasksPollInterval: tasksPollDefault,
 	}
 	provider.NewPool()
 	if provider.poolErr != nil {
