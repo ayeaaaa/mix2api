@@ -254,11 +254,13 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 		result.Error = p.taskRedactError(account, err)
 	}
 	data := p.taskRedactValue(account, response.Payload["data"])
-	previous := previousCheckinStatus(account)
+	beforeRefresh := previousCheckinStatus(account)
 	// Refresh the full balance so the panel sees the new credits immediately.
 	// Failure is soft: the sign-in itself already succeeded.
 	_ = p.refreshCreditAccount(ctx, account)
-	checkin := mergeCheckinStatusValue(previous, data, true)
+	// The refreshed snapshot may carry a newer streak/credit status; use it as
+	// the merge baseline while retaining fields the refresh dropped.
+	checkin := mergeCheckinStatusValue(mergeCheckinStatuses(beforeRefresh, previousCheckinStatus(account)), data, true)
 	p.mergeCheckinStatus(account, checkin)
 
 	result.OK = true
@@ -374,6 +376,31 @@ func mergeCheckinStatusValue(previous *CheckinStatus, data any, checked bool) *C
 	return out
 }
 
+func mergeCheckinStatuses(previous, current *CheckinStatus) *CheckinStatus {
+	if current == nil {
+		return cloneCheckin(previous)
+	}
+	out := cloneCheckin(current)
+	if previous == nil {
+		return out
+	}
+	// Presence is not carried by the struct; zeros are the only safe signal
+	// that the refreshed snapshot omitted a numeric field.
+	if out.StreakDays == 0 {
+		out.StreakDays = previous.StreakDays
+	}
+	if out.DailyCredit == 0 {
+		out.DailyCredit = previous.DailyCredit
+	}
+	if out.TodayCredit == 0 {
+		out.TodayCredit = previous.TodayCredit
+	}
+	if !out.Active && previous.Active {
+		out.Active = true
+	}
+	return out
+}
+
 func previousCheckinStatus(account *Account) *CheckinStatus {
 	if account == nil {
 		return nil
@@ -402,51 +429,42 @@ func (p *Provider) persistTaskRestriction(account *Account, now time.Time, detai
 	if p == nil || account == nil {
 		return
 	}
+	if pool := p.Pool(); pool != nil && account.pool != nil {
+		// Pool owns the unified runtime + persisted restriction state.
+		_ = pool.NoteRestricted(account, detail)
+		return
+	}
 	auth := taskAuthSnapshot(account)
-	// v1 starts the two-hour clock on the first hit only; repeated probes do not
-	// extend the ban.
 	if taskRestrictedUntil(auth) > float64(now.Unix()) {
 		return
 	}
-	until := float64(now.Add(taskRestrictedCooldown).Unix())
-	raw, _ := json.Marshal(until)
-	uid := accountUID(account)
-	if p.Pool() == nil || uid == "" {
-		account.mu.Lock()
-		if account.Auth.Extra == nil {
-			account.Auth.Extra = make(map[string]json.RawMessage)
-		}
-		account.Auth.Extra["restrictedUntil"] = raw
-		account.mu.Unlock()
-		return
+	until := now.Add(taskRestrictedCooldown)
+	raw, _ := json.Marshal(float64(until.Unix()))
+	account.mu.Lock()
+	if account.Auth.Extra == nil {
+		account.Auth.Extra = make(map[string]json.RawMessage)
 	}
-	_ = p.Pool().mutateAccount(uid, func(account *Account) {
-		if account.Auth.Extra == nil {
-			account.Auth.Extra = make(map[string]json.RawMessage)
-		}
-		account.Auth.Extra["restrictedUntil"] = raw
-	})
-	_ = p.Pool().NoteRestricted(account, firstNonEmpty(detail, "HTTP 403 account restricted"))
+	account.Auth.Extra["restrictedUntil"] = raw
+	if until.After(account.State.CoolUntil) {
+		account.State.CoolUntil = until
+	}
+	account.mu.Unlock()
 }
 
 func (p *Provider) clearTaskRestriction(account *Account) {
 	if p == nil || account == nil {
 		return
 	}
-	auth := taskAuthSnapshot(account)
-	if _, exists := auth.Extra["restrictedUntil"]; !exists {
+	if pool := p.Pool(); pool != nil && account.pool != nil {
+		// A successful request proves the vendor lifted the restriction; clear
+		// runtime cooldown and persisted restrictedUntil together.
+		_ = pool.NoteSuccess(account)
 		return
 	}
-	uid := accountUID(account)
-	if p.Pool() == nil || uid == "" {
-		account.mu.Lock()
-		delete(account.Auth.Extra, "restrictedUntil")
-		account.mu.Unlock()
-		return
-	}
-	_ = p.Pool().mutateAccount(uid, func(account *Account) {
-		delete(account.Auth.Extra, "restrictedUntil")
-	})
+	account.mu.Lock()
+	delete(account.Auth.Extra, "restrictedUntil")
+	account.State.CoolUntil = time.Time{}
+	account.mu.Unlock()
 }
 
 func (p *Provider) persistLastCheckin(account *Account, now time.Time) error {
@@ -544,12 +562,14 @@ func (p *Provider) allTaskAccounts() []*Account {
 		return nil
 	}
 	out := make([]*Account, 0)
+	now := pool.nowTime()
 	for _, account := range pool.Accounts() {
 		account.mu.RLock()
-		active := !account.removed && account.Auth.Enabled && !account.State.Disabled && account.Auth.TasksEnabled
+		active := !account.removed && account.Auth.Enabled && !account.State.Disabled &&
+			account.Auth.TasksEnabled && !account.State.CoolUntil.After(now)
 		auth := cloneAuth(account.Auth)
 		account.mu.RUnlock()
-		if active && p.taskRestricted(auth, p.taskNowTime()) {
+		if active && taskRestrictedUntil(auth) > float64(now.Unix()) {
 			active = false
 		}
 		if active {
@@ -969,13 +989,14 @@ func (p *Provider) taskRedactValue(account *Account, value any) any {
 }
 
 var taskSecretKeys = map[string]bool{
-	"accesstoken": true, "access_token": true,
-	"refreshtoken": true, "refresh_token": true,
+	"accesstoken": true, "access_token": true, "access-token": true,
+	"refreshtoken": true, "refresh_token": true, "refresh-token": true,
 	"authorization": true, "cookie": true, "set-cookie": true,
 	"password": true, "secret": true,
 	"apikey": true, "api_key": true, "api-key": true,
 	"token": true, "x-api-key": true,
-	"devicetoken": true, "device_token": true, "x-device-token": true,
+	"devicetoken": true, "device_token": true, "device-token": true,
+	"x-device-token": true,
 }
 
 func redactTaskValue(value any, secrets []string) any {

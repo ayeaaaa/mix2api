@@ -426,8 +426,9 @@ func (p *Pool) TaskAccounts() []*Account {
 		account.mu.RLock()
 		active := !account.removed && account.Auth.TasksEnabled
 		auth := cloneAuth(account.Auth)
+		cooling := account.State.CoolUntil.After(now)
 		account.mu.RUnlock()
-		if active && taskRestrictedUntil(auth) > float64(now.Unix()) {
+		if active && (cooling || taskRestrictedUntil(auth) > float64(now.Unix())) {
 			active = false
 		}
 		if active {
@@ -1196,10 +1197,53 @@ func (p *Pool) NoteModelError(a *Account, model, message string, wait time.Durat
 }
 
 // NoteRestricted records v1's account-level 403/11140 restriction. The
-// cooldown is runtime-only in this slice; the account stays out of rotation
-// until it expires or a later successful request proves the vendor lifted it.
+// two-hour window is kept in both stores: runtime State.CoolUntil (chat
+// rotation) and persisted Auth extra restrictedUntil (task selectors survive a
+// restart). The first hit starts the clock; repeated probes do not extend it.
 func (p *Pool) NoteRestricted(a *Account, message string) error {
-	return p.NoteCooldown(a, message, restrictedCooldown)
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	now := p.nowTime()
+	a.mu.Lock()
+	if taskRestrictedUntil(a.Auth) > float64(now.Unix()) {
+		a.mu.Unlock()
+		return nil
+	}
+	until := now.Add(restrictedCooldown)
+	a.State.LastError = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	if until.After(a.State.CoolUntil) {
+		a.State.CoolUntil = until
+	}
+	raw, err := json.Marshal(float64(until.Unix()))
+	if err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	if a.Auth.Extra == nil {
+		a.Auth.Extra = make(map[string]json.RawMessage)
+	}
+	a.Auth.Extra["restrictedUntil"] = raw
+	uid := strings.TrimSpace(a.Auth.UID)
+	if uid == "" {
+		uid = strings.TrimSpace(a.State.UID)
+	}
+	if uid == "" || a.pool == nil {
+		// Standalone test/runtime account: still expose the unified in-memory
+		// state, but there is no credential file to persist.
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+	return p.mutateAccount(uid, func(account *Account) {
+		if account.Auth.Extra == nil {
+			account.Auth.Extra = make(map[string]json.RawMessage)
+		}
+		account.Auth.Extra["restrictedUntil"] = raw
+	})
 }
 
 // NoteSuccess clears every account-level penalty and the named model window
@@ -1229,8 +1273,23 @@ func (p *Pool) NoteSuccess(a *Account, model ...string) error {
 		a.State.DisabledBy = ""
 		a.State.Reason = ""
 	}
+	uid := strings.TrimSpace(a.Auth.UID)
+	if uid == "" {
+		uid = strings.TrimSpace(a.State.UID)
+	}
+	_, hadRestriction := a.Auth.Extra["restrictedUntil"]
+	delete(a.Auth.Extra, "restrictedUntil")
 	a.mu.Unlock()
-	return nil
+	if !hadRestriction || uid == "" || a.pool == nil {
+		return nil
+	}
+	err := p.mutateAccount(uid, func(account *Account) {
+		delete(account.Auth.Extra, "restrictedUntil")
+	})
+	if errors.Is(err, ErrAccountNotFound) {
+		return nil
+	}
+	return err
 }
 
 // AdmissionWait explains why Pick found no candidate and, when the reason is a

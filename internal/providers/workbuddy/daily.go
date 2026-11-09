@@ -159,9 +159,7 @@ func (p *Provider) runDailyChat(ctx context.Context, account *Account, trigger s
 			result.Skipped = true
 			result.Restricted = true
 		}
-		if !taskDayDone(auth.LastActivityReport, now) {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
-		}
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 		return result, nil
 	}
 	p.clearTaskRestriction(account)
@@ -171,9 +169,7 @@ func (p *Provider) runDailyChat(ctx context.Context, account *Account, trigger s
 	_ = p.refreshCreditAccount(ctx, account)
 	result.OK = true
 	result.Msg = "每日活跃对话成功完成"
-	if !taskDayDone(auth.LastActivityReport, now) {
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
-	}
+	result.Activity = p.dailyActivityEvent(account, trigger, true, result.Msg, now)
 	return result, nil
 }
 
@@ -325,12 +321,6 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		result.Msg = "今日网页活跃已完成，跳过本轮"
 		return result, nil
 	}
-	// A separate DailyChat call may already have emitted the day's history
-	// row. The web leg still runs for the official web credit, but it must not
-	// append a second activity event for the same daily activity.
-	firstDailyActivity := !taskDayDone(auth.LastDailyChat, now) &&
-		!taskDayDone(auth.LastActivityReport, now)
-
 	web := p.runDailyWebRounds(ctx, account, auth)
 	result.OK = web.OK
 	result.Skipped = web.Skipped
@@ -356,11 +346,9 @@ func (p *Provider) runDailyChatWeb(ctx context.Context, account *Account, trigge
 		// the same day cannot double-run the activity.
 		p.clearTaskRestriction(account)
 		_ = p.persistLastDailyChat(account, now)
-		if firstDailyActivity {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, web.Msg)
-		}
-	} else if firstDailyActivity {
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
+		result.Activity = p.dailyActivityEvent(account, trigger, true, web.Msg, now)
+	} else {
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 	}
 	return result, nil
 }
@@ -423,9 +411,19 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 			break
 		}
 		// Turn failures already paid with the per-round wait budget; v1 only
-		// backs off when the round never reached the sandbox/turn.
+		// backs off when the round never reached the sandbox/turn. A backoff
+		// must never sleep past the account's remaining total budget.
 		if round.Phase == "create" || round.Phase == "session" {
-			p.taskSleepFor(p.taskBackoffDelay(index))
+			delay := p.taskBackoffDelay(index)
+			if !deadline.IsZero() {
+				remaining := deadline.Sub(time.Now())
+				if remaining <= 0 {
+					delay = 0
+				} else if delay > remaining {
+					delay = remaining
+				}
+			}
+			p.taskSleepFor(delay)
 		}
 	}
 	if last.Attempts == 0 {
@@ -518,9 +516,14 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 		OK: turn.OK, Status: turn.Status, Events: turn.Events, Chunks: turn.Chunks,
 		ElapsedMS: turn.ElapsedMS, Error: turn.Error,
 		Conversation: conversation, Phase: "turn", Model: model,
-		Retryable: !turn.OK,
+		Retryable: !turn.OK && !turn.Terminal,
 	}
 	if statusResult.OK {
+		statusResult.Msg = fmt.Sprintf("网页通道会话跑完（%s）：%d 段输出，%d ms",
+			firstNonEmpty(turn.Status, "completed"), turn.Chunks, turn.ElapsedMS)
+		if round > 0 {
+			statusResult.Msg = fmt.Sprintf("（重试 %d 次后）%s", round, statusResult.Msg)
+		}
 		p.releaseWebConversation(ctx, account, conversation, false)
 		return statusResult
 	}
@@ -630,11 +633,6 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 		return result, nil
 	}
 
-	// DailyChat/DailyChatWeb and the streak report all describe the same daily
-	// activity in v1's history. Emit at most one daily_chat row per day.
-	firstDailyActivity := !taskDayDone(auth.LastDailyChat, now) &&
-		!taskDayDone(authExtraString(auth, "lastDailyChatWeb"), now)
-
 	event := buildTaskEvent(auth, "chat", 0, nil, now)
 	body, err := json.Marshal([]any{event})
 	if err != nil {
@@ -646,30 +644,22 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 		p.taskChatBase()+tasksReportPath, headers, body, tasksDefaultTimeout)
 	if err != nil {
 		result.Error = p.taskRedactError(account, err)
-		if firstDailyActivity {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
-		}
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 		return result, nil
 	}
 	if response.Status < 200 || response.Status >= 300 {
 		result.Error = fmt.Sprintf("活跃上报失败 HTTP %d", response.Status)
-		if firstDailyActivity {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
-		}
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 		return result, nil
 	}
 	if err := taskPayloadError(response.Payload); err != nil {
 		result.Error = "活跃上报被上游拒绝（未返回 code=0）: " + p.taskRedactError(account, err)
-		if firstDailyActivity {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
-		}
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 		return result, nil
 	}
 	if !taskCodeIsZero(response.Payload) {
 		result.Error = "活跃上报被上游拒绝（未返回 code=0）"
-		if firstDailyActivity {
-			result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Error)
-		}
+		result.Activity = p.dailyActivityEvent(account, trigger, false, result.Error, now)
 		return result, nil
 	}
 
@@ -689,9 +679,7 @@ func (p *Provider) runReportActivity(ctx context.Context, account *Account, trig
 	default:
 		result.Msg = fmt.Sprintf("对话活跃上报成功（连续打卡 %d 天）", *days)
 	}
-	if firstDailyActivity {
-		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
-	}
+	result.Activity = p.dailyActivityEvent(account, trigger, true, result.Msg, now)
 	return result, nil
 }
 
@@ -777,6 +765,24 @@ func (p *Provider) persistTaskExtra(account *Account, key string, value any) err
 		}
 		account.Auth.Extra[key] = raw
 	})
+}
+
+// dailyActivityEvent emits at most one daily_chat history row per account per
+// local day, across DailyChat, DailyChatWeb, and ReportActivity. The marker is
+// persisted so a scheduler restart cannot repeat a failure row either.
+func (p *Provider) dailyActivityEvent(account *Account, trigger string, ok bool, message string, now time.Time) *ActivityEvent {
+	if p == nil || account == nil {
+		return nil
+	}
+	auth := taskAuthSnapshot(account)
+	if taskDayDone(authExtraString(auth, "lastDailyEventDay"), now) {
+		return nil
+	}
+	event := p.newActivity(account, taskDailyChatTask, trigger, ok, message)
+	if event != nil {
+		_ = p.persistTaskExtra(account, "lastDailyEventDay", now.Format(tasksDayLayout))
+	}
+	return event
 }
 
 func taskDayDone(stamp string, now time.Time) bool {

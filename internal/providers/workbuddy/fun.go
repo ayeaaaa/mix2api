@@ -421,6 +421,8 @@ func (p *Provider) ensureGrowthBuddy(ctx context.Context, account *Account) bool
 		return true
 	}
 	p.progressGrowthTask(ctx, run, *buddy)
+	// Persist the partial attempt even when the claim has not landed yet.
+	_ = p.persistGrowthState(account, run)
 	refreshed, err := p.fetchGrowthTasks(ctx, account, false)
 	if err != nil {
 		return false
@@ -433,11 +435,8 @@ func (p *Provider) ensureGrowthBuddy(ctx context.Context, account *Account) bool
 			break
 		}
 	}
-	if claimed {
-		_ = p.persistGrowthState(account, run)
-		return true
-	}
-	return false
+	_ = p.persistGrowthState(account, run)
+	return claimed
 }
 
 // StreakBonus performs v1's idempotent streak loop: yesterday's makeup card,

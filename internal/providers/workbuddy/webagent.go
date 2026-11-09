@@ -29,6 +29,7 @@ type acpTurnResult struct {
 	Chunks    int
 	ElapsedMS int64
 	Error     string
+	Terminal  bool
 }
 
 // acpTurnChannel is the streamable-HTTP transport: one SSE GET carries events
@@ -251,8 +252,9 @@ func runACPTurn(
 			switch strings.ToLower(status) {
 			case "completed":
 				finished = true
-			case "failed", "error":
+			case "failed", "error", "cancelled", "canceled", "deleted":
 				result.Error = "会话状态=" + status
+				result.Terminal = true
 			}
 			if finished || result.Error != "" {
 				break

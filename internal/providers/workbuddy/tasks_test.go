@@ -547,6 +547,9 @@ func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
 		result.Status != "completed" || result.Error != "" {
 		t.Fatalf("web result = %+v", result)
 	}
+	if !strings.Contains(result.Msg, "网页通道会话跑完") || !strings.Contains(result.Msg, "重试 1 次后") {
+		t.Fatalf("web success Msg = %q", result.Msg)
+	}
 	if fake.count(http.MethodPost, "/console/as/conversations/") != 2 {
 		t.Fatalf("create calls = %d, want 2", fake.count(http.MethodPost, "/console/as/conversations/"))
 	}
@@ -1580,6 +1583,7 @@ func TestTasksRestrictedAllSelectorsAndDailyPersistence(t *testing.T) {
 	dir := t.TempDir()
 	future := float64(time.Now().Add(time.Hour).Unix())
 	writeTaskAccount(t, dir, "cn-restricted", realmCN, map[string]any{"restrictedUntil": future})
+	writeTaskAccount(t, dir, "cn-cool", realmCN, nil)
 	writeTaskAccount(t, dir, "intl-restricted", realmIntl, map[string]any{"restrictedUntil": future})
 	var checkinCalls int
 	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
@@ -1593,7 +1597,11 @@ func TestTasksRestrictedAllSelectorsAndDailyPersistence(t *testing.T) {
 			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
 		}
 	})
-	cn, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	cn, cnPool := setupTaskProvider(t, realmCN, dir, server.URL)
+	cool := accountByUID(t, cnPool, "cn-cool")
+	cool.mu.Lock()
+	cool.State.CoolUntil = time.Now().Add(time.Hour)
+	cool.mu.Unlock()
 	if rows, err := cn.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
 		t.Fatalf("CheckinAll restricted = %+v, %v", rows, err)
 	}
@@ -1667,9 +1675,13 @@ func TestTasksDailyChatPersists403Restriction(t *testing.T) {
 	account := accountByUID(t, pool, "intl-403")
 	account.mu.RLock()
 	until := taskRestrictedUntil(account.Auth)
+	coolUntil := account.State.CoolUntil
 	account.mu.RUnlock()
 	if until <= float64(time.Now().Unix()) {
 		t.Fatalf("restrictedUntil = %v, want future", until)
+	}
+	if !coolUntil.After(time.Now()) {
+		t.Fatalf("runtime coolUntil = %v, want future", coolUntil)
 	}
 	restarted, restartedPool := setupTaskProvider(t, realmIntl, dir, server.URL)
 	if rows, err := restarted.DailyChatAll(context.Background()); err != nil || len(rows) != 0 {
@@ -1686,9 +1698,10 @@ func TestTasksDailyChatPersists403Restriction(t *testing.T) {
 	account = accountByUID(t, restartedPool, "intl-403")
 	account.mu.RLock()
 	until = taskRestrictedUntil(account.Auth)
+	coolUntil = account.State.CoolUntil
 	account.mu.RUnlock()
-	if until != 0 {
-		t.Fatalf("successful forced DailyChat did not clear restriction: %v", until)
+	if until != 0 || !coolUntil.IsZero() {
+		t.Fatalf("successful forced DailyChat did not clear restriction state: extra=%v runtime=%v", until, coolUntil)
 	}
 }
 
@@ -2131,5 +2144,293 @@ func TestTasksDesktopEventShapes(t *testing.T) {
 	playbook := buildPlaybookEvents(auth, 0, now)
 	if len(playbook) != 2 || playbook[1]["eventCode"] != "playbook_prompt_send" {
 		t.Fatalf("playbook events = %+v", playbook)
+	}
+}
+
+func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "cn-chat403", realmCN, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmCN, dir, map[string]any{})
+	fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+		return http.StatusForbidden, http.Header{"Content-Type": []string{"application/json"}},
+			[]byte(`{"code":11140,"msg":"账号存在异常行为，已被限制使用"}`)
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+	_, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err == nil {
+		t.Fatal("OpenChat unexpectedly succeeded")
+	}
+	account := accountByUID(t, provider.Pool(), "cn-chat403")
+	account.mu.RLock()
+	until := taskRestrictedUntil(account.Auth)
+	coolUntil := account.State.CoolUntil
+	account.mu.RUnlock()
+	if until <= float64(time.Now().Unix()) || !coolUntil.After(time.Now()) {
+		t.Fatalf("chat 403 restriction not unified: extra=%v runtime=%v", until, coolUntil)
+	}
+	if rows, err := provider.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("CheckinAll after chat 403 = %+v, %v", rows, err)
+	}
+	if rows, err := provider.GrowthTasksAll(context.Background(), true); err != nil || len(rows) != 0 {
+		t.Fatalf("GrowthTasksAll after chat 403 = %+v, %v", rows, err)
+	}
+	if accounts := provider.Pool().TaskAccounts(); len(accounts) != 0 {
+		t.Fatalf("TaskAccounts after chat 403 = %+v", accounts)
+	}
+	restarted, restartedPool := setupTaskProvider(t, realmCN, dir, server.URL)
+	restartedAccount := accountByUID(t, restartedPool, "cn-chat403")
+	restartedAccount.mu.RLock()
+	persistedUntil := taskRestrictedUntil(restartedAccount.Auth)
+	restartedAccount.mu.RUnlock()
+	if persistedUntil <= float64(time.Now().Unix()) {
+		t.Fatalf("chat 403 restriction not persisted across restart: %v", persistedUntil)
+	}
+	if rows, err := restarted.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("CheckinAll after chat 403 restart = %+v, %v", rows, err)
+	}
+	// NoteSuccess is the chat-path proof that the restriction is gone; it must
+	// clear both runtime and persisted state.
+	if err := provider.Pool().NoteSuccess(account); err != nil {
+		t.Fatalf("NoteSuccess: %v", err)
+	}
+	account.mu.RLock()
+	until = taskRestrictedUntil(account.Auth)
+	coolUntil = account.State.CoolUntil
+	account.mu.RUnlock()
+	if until != 0 || !coolUntil.IsZero() {
+		t.Fatalf("NoteSuccess did not clear restriction: extra=%v runtime=%v", until, coolUntil)
+	}
+	cleared, clearedPool := setupTaskProvider(t, realmCN, dir, server.URL)
+	clearedAccount := accountByUID(t, clearedPool, "cn-chat403")
+	clearedAccount.mu.RLock()
+	until = taskRestrictedUntil(clearedAccount.Auth)
+	clearedAccount.mu.RUnlock()
+	if until != 0 {
+		t.Fatalf("NoteSuccess did not persist cleared restriction: %v", until)
+	}
+	if accounts := cleared.Pool().TaskAccounts(); len(accounts) != 1 {
+		t.Fatalf("TaskAccounts after NoteSuccess = %+v", accounts)
+	}
+}
+
+func TestTasksMPClaimableRequiresTargetProgress(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-mptruth", realmCN, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		mp := strings.EqualFold(r.Header.Get("X-Client-Platform"), "miniprogram") ||
+			strings.EqualFold(r.Header.Get("X-Client-Platform"), "mp-weixin")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && !mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto", "accept_status": "claimed",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "Sequential_Tasks_1", "accept_status": "accepted",
+					"progress": map[string]any{"current": 0, "target": 2},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/report":
+			return http.StatusOK, map[string]any{"code": 0}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-mptruth", false)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	foundReported := false
+	for _, code := range result.Reported {
+		if code == "Sequential_Tasks_1" {
+			foundReported = true
+		}
+	}
+	if !foundReported {
+		t.Fatalf("successful MP report not tracked: %+v", result.Reported)
+	}
+	for _, code := range result.Claimable {
+		if code == "Sequential_Tasks_1" {
+			t.Fatalf("unreached MP target marked claimable: %+v", result.Claimable)
+		}
+	}
+	for _, task := range result.Tasks {
+		if task.TaskCode == "Sequential_Tasks_1" && task.Status == "completed" {
+			t.Fatalf("unreached MP target marked completed: %+v", task)
+		}
+	}
+}
+
+func TestTasksDailyFailureEventDeduplicatedAcrossLegs(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-faildedupe", realmIntl, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch {
+		case r.URL.Path == chatPath:
+			return http.StatusInternalServerError, map[string]any{"code": 1, "msg": "chat broken"}
+		case r.Method == http.MethodPost && r.URL.Path == "/console/as/conversations/":
+			return http.StatusInternalServerError, map[string]any{"code": 14220, "msg": "web broken"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmIntl, dir, server.URL)
+	daily, err := provider.DailyChat(context.Background(), "intl-faildedupe")
+	if err != nil {
+		t.Fatalf("DailyChat: %v", err)
+	}
+	if daily.OK || daily.Activity == nil || daily.Activity.OK {
+		t.Fatalf("first failed leg activity = %+v", daily)
+	}
+	web, err := provider.DailyChatWeb(context.Background(), "intl-faildedupe")
+	if err != nil {
+		t.Fatalf("DailyChatWeb: %v", err)
+	}
+	if web.OK {
+		t.Fatalf("web unexpectedly succeeded: %+v", web)
+	}
+	if web.Activity != nil {
+		t.Fatalf("second failed leg duplicated the daily event: %+v", web.Activity)
+	}
+}
+
+func TestTasksWebRetryBackoffClampedToBudget(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-budget", realmIntl, nil)
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.Method == http.MethodPost && r.URL.Path == "/console/as/conversations/" {
+			return http.StatusServiceUnavailable, map[string]any{"code": 14220, "msg": "down"}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	})
+	provider, _ := setupTaskProvider(t, realmIntl, dir, server.URL)
+	var sleeps []time.Duration
+	provider.tasksSleep = func(delay time.Duration) { sleeps = append(sleeps, delay) }
+	provider.tasksBudget = 10 * time.Millisecond
+	provider.tasksBackoff = 500 * time.Millisecond
+	provider.tasksBackoffMax = time.Second
+	_, _ = provider.DailyChatWeb(context.Background(), "intl-budget")
+	if len(sleeps) == 0 {
+		t.Fatal("no retry backoff observed")
+	}
+	for _, delay := range sleeps {
+		if delay > 10*time.Millisecond {
+			t.Fatalf("retry backoff %v exceeded budget", delay)
+		}
+	}
+}
+
+func TestTasksACPStatusTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/acp" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Acp-Connection-Id", "conn-terminal")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	result := runACPTurn(context.Background(),
+		chatDoerFunc(func(ctx context.Context, req *http.Request, _ string) (*http.Response, error) {
+			return http.DefaultClient.Do(req.WithContext(ctx))
+		}),
+		server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
+		"", 50*time.Millisecond, time.Millisecond,
+		func() string { return "cancelled" })
+	if result.OK || !result.Terminal || !strings.Contains(result.Error, "cancelled") {
+		t.Fatalf("cancelled ACP turn = %+v", result)
+	}
+}
+
+func TestTasksCachedSummaryNilMaps(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-nilsummary", realmCN, nil)
+	_, server := newTaskTestUpstream(t, nil)
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	account := accountByUID(t, pool, "cn-nilsummary")
+	raw, _ := json.Marshal(growthSnapshot{Tasks: []GrowthTask{}})
+	account.mu.Lock()
+	account.Auth.Extra = map[string]json.RawMessage{"growthTasks": raw}
+	account.mu.Unlock()
+	snapshot, err := provider.GrowthSnapshot(context.Background(), "cn-nilsummary")
+	if err != nil {
+		t.Fatalf("GrowthSnapshot: %v", err)
+	}
+	if snapshot.Summary.Tiers == nil || snapshot.Summary.TierStatuses == nil || snapshot.Summary.Travel == nil {
+		t.Fatalf("cached summary nil maps: %+v", snapshot.Summary)
+	}
+	if snapshot.Summary.TierStatuses["7d"] != "locked" || snapshot.Summary.Travel["state"] != "unknown" {
+		t.Fatalf("cached summary defaults = %+v", snapshot.Summary)
+	}
+}
+
+func TestTasksEnsureBuddyPersistsPartialAttempt(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-partial-buddy", realmCN, nil)
+	buddyStatus := "not_accepted"
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case "/activity/growth/buddy/travel/status":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"state": "idle"}}
+		case "/activity/growth/buddy/travel/config":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"locations": []any{map[string]any{"id": 1, "name": "咖啡馆"}},
+			}}
+		case "/activity/growth/buddy/travel/depart":
+			return http.StatusBadRequest, map[string]any{"code": 400, "msg": "no active buddy"}
+		case "/v2/activity/growth/tasks":
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto",
+					"accept_status": buddyStatus,
+					"progress": map[string]any{
+						"current": map[bool]int{true: 1, false: 0}[buddyStatus != "not_accepted"],
+						"target":  1,
+					},
+				}},
+			}}
+		case "/v2/report":
+			buddyStatus = "completed"
+			return http.StatusOK, map[string]any{"code": 0}
+		case "/activity/growth/tasks/first_buddy/claim":
+			return http.StatusInternalServerError, map[string]any{"code": 1, "msg": "claim down"}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.CatTravel(context.Background(), "cn-partial-buddy")
+	if err != nil {
+		t.Fatalf("CatTravel: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("CatTravel unexpectedly succeeded without Buddy: %+v", result)
+	}
+	account := accountByUID(t, pool, "cn-partial-buddy")
+	account.mu.RLock()
+	raw, exists := authExtraJSON(account.Auth, "growthTasks")
+	account.mu.RUnlock()
+	if !exists {
+		t.Fatal("ensureBuddy did not persist partial task state")
+	}
+	var snapshot growthSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode partial snapshot: %v", err)
+	}
+	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].TaskCode != "first_buddy" ||
+		snapshot.Tasks[0].Status != "completed" {
+		t.Fatalf("partial snapshot = %+v", snapshot.Tasks)
 	}
 }

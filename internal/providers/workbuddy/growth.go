@@ -213,9 +213,16 @@ func (p *Provider) GrowthSnapshot(_ context.Context, uid string) (GrowthResult, 
 	if exists {
 		var snapshot growthSnapshot
 		if err := json.Unmarshal(raw, &snapshot); err == nil {
+			summary := normalizeGrowthSummary(snapshot.Summary)
+			if summary.StreakDays == 0 && snapshot.StreakDays != 0 {
+				summary.StreakDays = snapshot.StreakDays
+			}
 			result.Tasks = snapshot.Tasks
-			result.Summary = snapshot.Summary
+			result.Summary = summary
 			result.StreakDays = snapshot.StreakDays
+			if result.StreakDays == 0 {
+				result.StreakDays = result.Summary.StreakDays
+			}
 			result.Msg = "cached"
 		}
 	}
@@ -246,27 +253,42 @@ func (p *Provider) runGrowthRewardChain(ctx context.Context, account *Account, r
 	if catErr != nil {
 		result.Logs = append(result.Logs, "! 猫猫日常异常: "+p.taskRedactError(account, catErr))
 	} else {
-		if cat.Msg != "" {
+		if cat.Error != "" {
+			result.Logs = append(result.Logs, "! 猫猫日常: "+cat.Error)
+		} else if cat.Msg != "" {
 			result.Logs = append(result.Logs, "猫猫日常: "+cat.Msg)
 		}
 		if cat.OK && cat.Action == "claim" {
 			result.EarnedCredit += cat.Credit
 		}
 	}
+	p.taskSleepFor(p.taskGapDelay())
 	buddy, buddyErr := p.runBuddyCheckin(ctx, account)
 	if buddyErr != nil {
 		result.Logs = append(result.Logs, "! Buddy 盲盒异常: "+p.taskRedactError(account, buddyErr))
-	} else if buddy.Action == "open" {
-		result.Logs = append(result.Logs, "Buddy 盲盒: "+buddy.Msg)
-	}
-	if cat.Action == "claim" {
-		if second, secondErr := p.runCatTravel(ctx, account); secondErr != nil {
-			result.Logs = append(result.Logs, "! 猫猫日常异常: "+p.taskRedactError(account, secondErr))
-		} else if second.Msg != "" && second.Action == "depart" {
-			result.Logs = append(result.Logs, "猫猫日常: "+second.Msg)
+	} else {
+		if buddy.Error != "" {
+			result.Logs = append(result.Logs, "! Buddy 盲盒: "+buddy.Error)
+		} else if buddy.Action == "open" {
+			result.Logs = append(result.Logs, "Buddy 盲盒: "+buddy.Msg)
 		}
 	}
+	if cat.Action == "claim" {
+		p.taskSleepFor(p.taskGapDelay())
+		if second, secondErr := p.runCatTravel(ctx, account); secondErr != nil {
+			result.Logs = append(result.Logs, "! 猫猫日常异常: "+p.taskRedactError(account, secondErr))
+		} else {
+			if second.Error != "" {
+				result.Logs = append(result.Logs, "! 猫猫日常: "+second.Error)
+			} else if second.Msg != "" && second.Action == "depart" {
+				result.Logs = append(result.Logs, "猫猫日常: "+second.Msg)
+			}
+		}
+	}
+	// Cat/Buddy claims add credits after the growth snapshot refresh above.
+	_ = p.refreshCreditAccount(ctx, account)
 	result.Credits = creditSnapshotOf(account)
+	result.Msg = fmt.Sprintf("%s；奖励链完成，本次累计 +%g 积分", result.Msg, result.EarnedCredit)
 	result.Logs = p.scrubTaskLogs(account, result.Logs)
 	result.Logs = append(result.Logs, fmt.Sprintf("🎉 全部完成！本次累计新增到账: +%g 积分", result.EarnedCredit))
 }
@@ -819,6 +841,20 @@ func cloneGrowthSummary(summary GrowthSummary) GrowthSummary {
 	return out
 }
 
+func normalizeGrowthSummary(summary GrowthSummary) GrowthSummary {
+	out := cloneGrowthSummary(summary)
+	if out.Tiers == nil {
+		out.Tiers = []any{}
+	}
+	if out.TierStatuses == nil {
+		out.TierStatuses = map[string]string{"7d": "locked", "14d": "locked", "28d": "locked"}
+	}
+	if out.Travel == nil {
+		out.Travel = map[string]any{"state": "unknown"}
+	}
+	return out
+}
+
 func cachedGrowthSummary(auth Auth) GrowthSummary {
 	if raw, exists := authExtraJSON(auth, "growthTasks"); exists {
 		var snapshot growthSnapshot
@@ -827,27 +863,14 @@ func cachedGrowthSummary(auth Auth) GrowthSummary {
 			if summary.StreakDays == 0 && snapshot.StreakDays != 0 {
 				summary.StreakDays = snapshot.StreakDays
 			}
-			return cloneGrowthSummary(summary)
+			return normalizeGrowthSummary(summary)
 		}
 	}
-	return GrowthSummary{
-		Tiers:        []any{},
-		TierStatuses: map[string]string{"7d": "locked", "14d": "locked", "28d": "locked"},
-		Travel:       map[string]any{"state": "unknown"},
-	}
+	return normalizeGrowthSummary(GrowthSummary{})
 }
 
 func (p *Provider) fetchGrowthSummary(ctx context.Context, account *Account, baseline GrowthSummary) (GrowthSummary, error) {
-	summary := cloneGrowthSummary(baseline)
-	if summary.Tiers == nil {
-		summary.Tiers = []any{}
-	}
-	if summary.TierStatuses == nil {
-		summary.TierStatuses = map[string]string{"7d": "locked", "14d": "locked", "28d": "locked"}
-	}
-	if summary.Travel == nil {
-		summary.Travel = map[string]any{"state": "unknown"}
-	}
+	summary := normalizeGrowthSummary(baseline)
 	headers := p.taskChatHeaders(account, false)
 	base := p.taskChatBase()
 
@@ -1096,6 +1119,20 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 			if reported {
 				run.reported = appendUnique(run.reported, task.TaskCode)
 			}
+			reached := false
+			if reported {
+				if freshTasks, fetchErr := p.fetchGrowthTasks(ctx, run.account, true); fetchErr == nil {
+					for _, fresh := range freshTasks {
+						if fresh.TaskCode != task.TaskCode {
+							continue
+						}
+						run.tasks = mergeGrowthTasks(run.tasks, []GrowthTask{fresh})
+						reached = fresh.Status == "completed" || fresh.Current >= fresh.Target
+						task = fresh
+						break
+					}
+				}
+			}
 			p.taskSleepFor(1500 * time.Millisecond)
 			if run.autoClaim {
 				if growthClaimedToday(run.claims, task.TaskCode, run.now) {
@@ -1111,9 +1148,12 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 					run.log("✓ 小程序任务 [%s] 点亮并领奖成功: +%g 积分", task.Name, credit)
 					total += credit
 				}
-			} else if reported {
+			} else if reported && reached {
 				run.setTaskStatus(task.TaskCode, "completed", maxInt(task.Target, task.Current))
 				run.claimable = appendUnique(run.claimable, task.TaskCode)
+			} else if reported {
+				run.log("? 小程序任务 [%s] 已上报但进度 %d/%d 未达成，未标记可领取",
+					task.Name, task.Current, task.Target)
 			} else {
 				run.log("! 小程序任务 [%s] 上报未成功，未标记完成", task.Name)
 			}
