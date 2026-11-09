@@ -1,0 +1,18 @@
+[
+  {
+    "type": "chat.completion.chunk",
+    "objects": [
+      "chat.completion.chunk"
+    ],
+    "role": "assistant",
+    "finish_reason": "stop",
+    "content": "answer",
+    "reasoning_content": "thinking ",
+    "usage": {
+      "completion_tokens": 2,
+      "prompt_tokens": 3,
+      "total_tokens": 5
+    },
+    "done": true
+  }
+]

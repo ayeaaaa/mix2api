@@ -39,6 +39,26 @@ v1.6.5 parity remains **pending** for CodeArts as well; the goldens lock down
 v2's scoped semantics and must be reviewed before being replaced by recorded
 oracle assertions.
 
+## WorkBuddy fixtures
+
+The `workbuddy_*.golden.json` and `workbuddy_chat_stream*.golden.json` files are
+**v2 regression fixtures**, generated from the local fake WorkBuddy upstream
+through the real intl/cn providers and API server. They are **not captured
+v1.6.5 oracle output**. The v2 regression contract is **complete** for these
+scoped fixtures; v1.6.5 oracle parity is **pending**. They cover the scoped
+WorkBuddy surface: provider health for both realms, exact per-realm models and
+the WorkBuddy-only `realm=all` union, catalog refresh, chat non-stream/SSE
+(text, tools, reasoning, images), 429 and 401 refresh/retry, cross-exit
+failover, credits refresh, the daily-token guard, CN check-in, intl daily
+activity, CN growth tasks, and legacy admin account listing.
+
+Dynamic values follow the same normalizer as the other providers; WorkBuddy
+adds timestamp recognition for `addedAt`, `updated_iso`, `lastCheckin`,
+`lastDailyChat`, `lastActivityReport`, and activity `ts`. The fake upstream URL
+and temporary accounts path are replaced before comparison. See
+`tests/oracle/workbuddy.md` for the read-only v1.6.5 oracle procedure. Actual
+v1.6.5 parity remains **pending** for WorkBuddy as well.
+
 ### Final-review parity fixes and exclusions
 
 These are v1.6.5-aligned behavior changes, not new golden recordings:

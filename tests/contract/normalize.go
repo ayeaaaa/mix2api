@@ -274,7 +274,11 @@ func isTimestampKey(key string) bool {
 		"requesttime", "updated", "updatedat", "modified", "started",
 		"startedat", "finished", "finishedat", "deletedat", "requestedat",
 		"completedat", "expires", "expiresat", "fetchedat", "retryafter",
-		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil", "until":
+		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil", "until",
+		// WorkBuddy panel views emit both epoch fields and their local-wire
+		// presentation forms; activity rows use the short "ts" spelling.
+		"addedat", "updatediso", "lastcheckin", "lastactivityreport",
+		"lastdailychat", "ts":
 		return true
 	}
 	for _, suffix := range []string{

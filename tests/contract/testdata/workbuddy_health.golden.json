@@ -1,0 +1,1 @@
+{"ok":true,"version":"v2-workbuddy-contract","providers":{"cn":{"accounts":1,"base_url":"<upstream>","configured":true,"cooling":0,"disabled":0,"healthy":1,"ok":true,"provider":"workbuddy","realm":"cn"},"intl":{"accounts":1,"base_url":"<upstream>","configured":true,"cooling":0,"disabled":0,"healthy":1,"ok":true,"provider":"workbuddy","realm":"intl"}}}
