@@ -99,6 +99,12 @@ func (p *Provider) activityHistoryPath() string {
 	return filepath.Join(dir, activityHistoryFile)
 }
 
+// ActivityHistoryPath returns the resolved activity-history file. App
+// composition uses it to point both realms at one shared file.
+func (p *Provider) ActivityHistoryPath() string {
+	return p.activityHistoryPath()
+}
+
 // recordActivity appends one already-redacted task event. History is an
 // operational record, never a credential channel: ActivityEvent only contains
 // timestamp/uid/nickname/realm/task/trigger/result/message. Write errors are

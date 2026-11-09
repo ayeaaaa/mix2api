@@ -1,1 +1,1 @@
-{"error":{"code":429,"message":"every usable WorkBuddy account is waiting for the upstream model window to reset","reset_at":1794247581,"retry_after":60,"type":"rate_limit_error"}}
+{"error":{"code":429,"message":"every usable WorkBuddy account is waiting for the upstream model window to reset","reset_at":1794250473,"retry_after":60,"type":"rate_limit_error"}}

@@ -62,4 +62,15 @@ func TestSetupProvidersFromEnv(t *testing.T) {
 			t.Fatalf("registry[%q].ID() = %q", realm, provider.ID())
 		}
 	}
+	for _, realm := range []string{"raccoon", "codearts", "intl", "cn"} {
+		if err := validateAPIKeyRealm(realm, setup.Registry); err != nil {
+			t.Fatalf("validateAPIKeyRealm(%q): %v", realm, err)
+		}
+	}
+	if err := validateAPIKeyRealm("missing", setup.Registry); err == nil {
+		t.Fatal("validateAPIKeyRealm accepted an unregistered realm")
+	}
+	if err := validateAPIKeyRealm("", setup.Registry); err != nil {
+		t.Fatalf("blank API key realm rejected: %v", err)
+	}
 }

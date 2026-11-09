@@ -66,8 +66,18 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		return
 	}
 
+	boundRealm := ""
+	if !request.explicitRealm {
+		var boundFailure *apiFailure
+		boundRealm, boundFailure = s.apiKeyBoundRealm(r)
+		if boundFailure != nil {
+			writeFailure(w, boundFailure)
+			return
+		}
+	}
+
 	if provider == nil {
-		resolved, err := s.resolveChatProvider(r.Context(), request)
+		resolved, err := s.resolveChatProvider(r.Context(), request, boundRealm)
 		if err != nil {
 			writeFailure(w, err)
 			return
@@ -76,12 +86,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	}
 
 	var allowRealmFallback *bool
-	suppressRealmFallback := request.explicitRealm
-	if s.opts.APIKeyRealm != nil {
-		if realm := strings.TrimSpace(s.opts.APIKeyRealm(r)); realm != "" {
-			suppressRealmFallback = true
-		}
-	}
+	suppressRealmFallback := request.explicitRealm || boundRealm != ""
 	if suppressRealmFallback {
 		disabled := false
 		allowRealmFallback = &disabled
@@ -233,15 +238,16 @@ func chatSessionKey(r *http.Request, payload map[string]json.RawMessage) string 
 }
 
 // resolveChatProvider applies the documented resolution order: an explicit
-// realm (X-Realm, then query, then body), a unique model match across
-// registered providers, then the only registered provider.
+// realm (X-Realm, then query, then body), the realm bound to the API key, a
+// unique model match across registered providers, then the only registered
+// provider. An explicit realm always overrides the key binding.
 //
 // Explicit-realm and single-provider requests are deliberately not rejected by
 // a catalog pre-check: a stale/empty cache must not hide a model the upstream
 // supports. The provider classifies unknown models. Multi-provider resolution
 // still needs a catalog match, but each lookup is bounded so discovery cannot
 // stall chat.
-func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPRequest) (providers.Provider, error) {
+func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPRequest, boundRealm string) (providers.Provider, error) {
 	if realm := strings.TrimSpace(request.realm); realm != "" {
 		if realm == "all" {
 			candidates := s.workBuddyProviders()
@@ -254,6 +260,14 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		provider := s.providerForRealm(realm)
 		if provider == nil {
 			return nil, localFailure(http.StatusNotFound, "unknown realm: "+realm)
+		}
+		return provider, nil
+	}
+
+	if boundRealm := strings.TrimSpace(boundRealm); boundRealm != "" {
+		provider := s.providerForRealm(boundRealm)
+		if provider == nil {
+			return nil, localFailure(http.StatusBadRequest, "invalid api key realm: "+boundRealm)
 		}
 		return provider, nil
 	}

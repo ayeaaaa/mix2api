@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -79,6 +80,67 @@ func TestModelsMultipleProvidersRequireRealm(t *testing.T) {
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
 	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+}
+
+func TestModelsAPIKeyRealmDefaultsAndExplicitRealmOverrides(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
+	beta := &stubProvider{id: "beta", realm: "beta", models: []providers.Model{{"id": "beta-model"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{alpha, beta},
+		APIKeyRealm: func(*http.Request) string { return "beta" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bound models status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode bound models: %v", err)
+	}
+	if body["realm"] != "beta" {
+		t.Fatalf("bound models realm = %#v, want beta", body["realm"])
+	}
+	data, _ := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "beta-model" {
+		t.Fatalf("bound models data = %#v", body["data"])
+	}
+
+	rec = serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=alpha", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("explicit models status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode explicit models: %v", err)
+	}
+	if body["realm"] != "alpha" {
+		t.Fatalf("explicit realm = %#v, want alpha", body["realm"])
+	}
+
+	rec = serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", map[string]string{"X-Realm": "alpha"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("header models status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode header models: %v", err)
+	}
+	if body["realm"] != "alpha" {
+		t.Fatalf("header realm = %#v, want alpha", body["realm"])
+	}
+}
+
+func TestModelsInvalidAPIKeyRealm400(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{alpha},
+		APIKeyRealm: func(*http.Request) string { return "missing" },
+	})
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "invalid api key realm") {
+		t.Fatalf("failure = %#v", failure)
+	}
 }
 
 func TestModelsRealmAllUnion(t *testing.T) {

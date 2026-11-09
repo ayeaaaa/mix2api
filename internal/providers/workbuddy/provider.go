@@ -43,6 +43,13 @@ type Provider struct {
 	// intl→cn fallback. SetPeer wires it from app composition (Task 11).
 	peer *Provider
 
+	// admissionMu/admissionActive/admissionNotify implement the provider-wide
+	// chat ceiling from Config.MaxConcurrent. A permit is held for the full
+	// stream lifetime and released exactly once by admittedChatStream.
+	admissionMu     sync.Mutex
+	admissionActive int
+	admissionNotify chan struct{}
+
 	// chatBaseURL and chatDoer are same-package test seams for the chat path.
 	// Their zero values use the account product endpoint and the provider
 	// transport respectively.
@@ -213,6 +220,7 @@ func New(realm string, store *config.Store) (*Provider, error) {
 		tasksBudget:       tasksBudgetDefault,
 		tasksTurnWait:     tasksTurnWait,
 		tasksPollInterval: tasksPollDefault,
+		admissionNotify:   make(chan struct{}),
 	}
 	provider.NewPool()
 	if provider.poolErr != nil {

@@ -140,6 +140,24 @@ func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.Ha
 	return protected.ServeHTTP
 }
 
+// apiKeyBoundRealm returns the concrete provider realm bound to the request's
+// API key. An empty result means the key is unbound. An unknown realm (or the
+// WorkBuddy-only discovery alias "all") is an operator configuration error and
+// is rejected instead of silently falling back to model matching.
+func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
+	if s == nil || s.opts.APIKeyRealm == nil {
+		return "", nil
+	}
+	realm := strings.ToLower(strings.TrimSpace(s.opts.APIKeyRealm(r)))
+	if realm == "" {
+		return "", nil
+	}
+	if realm == "all" || s.providerForRealm(realm) == nil {
+		return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
+	}
+	return realm, nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	response := healthResponse{OK: true, Version: s.opts.Version}
 	if len(s.providers) > 0 {

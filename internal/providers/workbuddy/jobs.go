@@ -408,10 +408,10 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			// The CN activity report shares the daily_chat history row with
-			// the intl daily-activity job. A later success replaces the same
-			// day's failed attempt so the panel never shows two rows for one
-			// account/day.
+			// The CN activity report uses the same daily_chat task key as the
+			// intl daily-activity job, but de-duplication is scoped by
+			// uid + task + realm + day. It therefore replaces only a same-realm
+			// failed attempt and cannot collide with an intl row.
 			provider.recordDailyActivity(report.Activity)
 			if report.Busy {
 				result.Skipped++

@@ -113,6 +113,12 @@ tree (never the original) so its intl desktop/VSCode endpoint resolves to
 `$BASE`, or run the fake behind a local HTTPS reverse proxy with a trusted
 certificate. Keep the production UA/version values unchanged.
 
+Both the oracle seed above and the v2 contract fixture use a four-hour
+`expiresAt`, so `expiresIn` is a comparable `4.0 hours`. Point every override
+directly at the fake origin: v2's transport refuses redirects, so a fake that
+answers 302 is endpoint-error evidence, not parity evidence. Do not compare a
+redirected v1 response with a direct v2 response.
+
 ## 3. Seed realistic fake auth documents
 
 ```bash

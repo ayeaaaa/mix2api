@@ -9,6 +9,7 @@ import (
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/codearts"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/workbuddy"
 )
 
 func TestBuildProviderInitFailureIsGeneric(t *testing.T) {
@@ -166,6 +167,71 @@ func TestCodeArtsProxySlotsSnapshot(t *testing.T) {
 	}
 	if nilSlots := codeartsProxySlots(nil)(); nilSlots != nil {
 		t.Fatalf("nil provider slots = %#v", nilSlots)
+	}
+}
+
+func TestBuildSharesWorkBuddyActivityPath(t *testing.T) {
+	root := t.TempDir()
+	accountsDir := filepath.Join(root, "accounts")
+	setup, err := Build(Paths{AccountsDir: accountsDir, UsageDir: filepath.Join(root, "usage")})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := filepath.Join(accountsDir, workbuddy.ActivityHistoryFile)
+	for _, realm := range []string{"intl", "cn"} {
+		provider, ok := setup.Registry.Get(realm)
+		if !ok {
+			t.Fatalf("registry has no %q provider", realm)
+		}
+		wb, ok := provider.(*workbuddy.Provider)
+		if !ok {
+			t.Fatalf("registry[%q] = %T, want *workbuddy.Provider", realm, provider)
+		}
+		if got := wb.ActivityHistoryPath(); got != want {
+			t.Fatalf("registry[%q] activity path = %q, want %q", realm, got, want)
+		}
+	}
+}
+
+func TestBuildWiresCodeArtsSlotsIntoWorkBuddyLogin(t *testing.T) {
+	root := t.TempDir()
+	setup, err := Build(Paths{
+		AccountsDir: filepath.Join(root, "accounts"),
+		UsageDir:    filepath.Join(root, "usage"),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	provider, ok := setup.Registry.Get("codearts")
+	if !ok {
+		t.Fatal("registry has no codearts provider")
+	}
+	codeartsProvider, ok := provider.(*codearts.Provider)
+	if !ok {
+		t.Fatalf("codearts provider = %T", provider)
+	}
+	if _, err := codeartsProvider.Pool().Add(codearts.Auth{
+		UserID:           "login-slot-user",
+		UserName:         "Login Slot User",
+		CloudDragonToken: "login-slot-token-never-log",
+		ProxySlot:        "slot-login",
+	}); err != nil {
+		t.Fatalf("add codearts account: %v", err)
+	}
+
+	for _, realm := range []string{"intl", "cn"} {
+		provider, ok := setup.Registry.Get(realm)
+		if !ok {
+			t.Fatalf("registry has no %q provider", realm)
+		}
+		wb, ok := provider.(*workbuddy.Provider)
+		if !ok {
+			t.Fatalf("registry[%q] = %T", realm, provider)
+		}
+		slots := wb.LoginTakenSlots()
+		if len(slots) != 1 || slots[0] != "slot-login" {
+			t.Fatalf("registry[%q] login taken slots = %#v, want [slot-login]", realm, slots)
+		}
 	}
 }
 

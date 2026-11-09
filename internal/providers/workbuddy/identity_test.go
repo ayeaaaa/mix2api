@@ -16,6 +16,9 @@ import (
 
 func TestIdentityRealmEndpoints(t *testing.T) {
 	t.Setenv("WB_CN_CHAT_UPSTREAM", "")
+	t.Setenv("WB_INTL_CHAT_UPSTREAM", "")
+	t.Setenv("WB_BILLING_UPSTREAM", "")
+	t.Setenv("WB_TASK_WEB_UPSTREAM", "")
 
 	cases := []struct {
 		realm   string
@@ -81,6 +84,47 @@ func TestIdentityCNUpstreamOverride(t *testing.T) {
 				t.Fatalf("invalid override %q became %q", raw, got)
 			}
 		})
+	}
+}
+
+func TestIdentityUpstreamEnvOverridesAndInvalidValues(t *testing.T) {
+	t.Setenv("WB_INTL_CHAT_UPSTREAM", " http://127.0.0.1:18080/base/ ")
+	if got := endpointFor("intl", productDesktop); got != "http://127.0.0.1:18080/base" {
+		t.Fatalf("intl override = %q", got)
+	}
+	t.Setenv("WB_BILLING_UPSTREAM", "http://127.0.0.1:18081/")
+	if got := creditBillingBaseForRealm(realmIntl); got != "http://127.0.0.1:18081" {
+		t.Fatalf("intl billing override = %q", got)
+	}
+	if got := creditBillingBaseForRealm(realmCN); got != "http://127.0.0.1:18081" {
+		t.Fatalf("cn billing override = %q", got)
+	}
+	t.Setenv("WB_TASK_WEB_UPSTREAM", "http://127.0.0.1:18082/")
+	if got := (&Provider{realm: realmIntl}).taskWebBase(); got != "http://127.0.0.1:18082" {
+		t.Fatalf("intl task web override = %q", got)
+	}
+	if got := (&Provider{realm: realmCN}).taskWebBase(); got != "http://127.0.0.1:18082" {
+		t.Fatalf("cn task web override = %q", got)
+	}
+
+	for _, tc := range []struct {
+		name string
+		env  string
+		want func() string
+		def  string
+	}{
+		{"intl", "WB_INTL_CHAT_UPSTREAM", func() string { return endpointFor("intl", productDesktop) }, "https://www.workbuddy.ai"},
+		{"billing", "WB_BILLING_UPSTREAM", func() string { return creditBillingBaseForRealm(realmIntl) }, "https://www.workbuddy.ai"},
+		{"task web", "WB_TASK_WEB_UPSTREAM", func() string { return (&Provider{realm: realmIntl}).taskWebBase() }, "https://www.workbuddy.ai"},
+	} {
+		for _, raw := range []string{"www.example.test", "ftp://example.test", "https://", "://bad", "javascript:alert(1)"} {
+			t.Run(tc.name+"/"+raw, func(t *testing.T) {
+				t.Setenv(tc.env, raw)
+				if got := tc.want(); got != tc.def {
+					t.Fatalf("invalid %s override %q = %q, want default %q", tc.name, raw, got, tc.def)
+				}
+			})
+		}
 	}
 }
 

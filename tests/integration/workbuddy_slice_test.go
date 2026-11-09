@@ -30,6 +30,8 @@ const (
 type workbuddySliceUpstream struct {
 	mu sync.Mutex
 
+	calls []workbuddySliceCall
+
 	intlChatCalls int
 	cnChatCalls   int
 	refreshCalls  int
@@ -39,6 +41,24 @@ type workbuddySliceUpstream struct {
 	unauthorizedToken string
 	refreshedAccess   string
 	refreshedRefresh  string
+}
+
+type workbuddySliceCall struct {
+	Method string
+	Path   string
+	Token  string
+}
+
+func (f *workbuddySliceUpstream) countPath(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, call := range f.calls {
+		if call.Path == path {
+			count++
+		}
+	}
+	return count
 }
 
 func (f *workbuddySliceUpstream) setUnauthorizedToken(token string) {
@@ -55,6 +75,9 @@ func (f *workbuddySliceUpstream) counts() (intlChat, cnChat, refresh int) {
 
 func (f *workbuddySliceUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	f.mu.Lock()
+	f.calls = append(f.calls, workbuddySliceCall{Method: r.Method, Path: r.URL.Path, Token: token})
+	f.mu.Unlock()
 
 	switch r.URL.Path {
 	case "/v2/plugin/auth/token/refresh":
@@ -77,12 +100,18 @@ func (f *workbuddySliceUpstream) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			},
 		})
 	case "/v3/config":
-		models := []any{"hy4-preview", "hy3", "deepseek-v4.1-flash", "glm-5.3"}
+		models := []any{"hy4-preview", "hy3", "deepseek-v4.1-flash", "glm-5.3", "remote-only-slice"}
 		writeWorkBuddySliceJSON(w, http.StatusOK, map[string]any{
 			"code": 0,
 			"data": map[string]any{
 				"agents": map[string]any{
 					"cli": map[string]any{"models": models},
+				},
+				"models": []any{
+					map[string]any{
+						"id": "remote-only-slice", "name": "Remote Only Slice",
+						"credits": "x0.5", "supportsToolCall": true,
+					},
 				},
 			},
 		})
@@ -159,7 +188,9 @@ func (f *workbuddySliceUpstream) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			"code": 0, "data": map[string]any{"state": "idle"},
 		})
 	default:
-		writeWorkBuddySliceJSON(w, http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}})
+		writeWorkBuddySliceJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{"message": "unknown fake endpoint: " + r.URL.Path},
+		})
 	}
 }
 
@@ -369,7 +400,7 @@ func saveWorkBuddySliceAccount(t *testing.T, dir string, account workbuddySliceA
 		Domain:          domain,
 		AccessToken:     token,
 		RefreshToken:    "refresh-" + account.UID,
-		ExpiresAt:       time.Now().Add(24 * time.Hour),
+		ExpiresAt:       time.Now().Add(4 * time.Hour),
 		Platform:        "CLI",
 		Product:         "workbuddy",
 		Source:          "oauth",
@@ -491,6 +522,20 @@ func TestWorkBuddySliceOverHTTP(t *testing.T) {
 	if !containsWorkBuddyID(intlIDs, workbuddySliceModel) {
 		t.Fatalf("intl catalog does not advertise %q: %v", workbuddySliceModel, intlIDs)
 	}
+	if !containsWorkBuddyID(intlIDs, "remote-only-slice") {
+		t.Fatalf("intl catalog did not consume the remote-only model: %v", intlIDs)
+	}
+	if !containsWorkBuddyID(allIDs, "glm-5.2") || containsWorkBuddyID(intlIDs, "glm-5.2") {
+		t.Fatalf("realm=all did not include the CN-only glm-5.2 exactly once: all=%v intl=%v", allIDs, intlIDs)
+	}
+	for _, excluded := range []string{"raccoon-090dd3", "OpenPangu-2.0-Flash"} {
+		if containsWorkBuddyID(allIDs, excluded) {
+			t.Fatalf("realm=all leaked non-WorkBuddy model %q: %v", excluded, allIDs)
+		}
+	}
+	if got := fixture.fake.countPath("/v3/config"); got < 2 {
+		t.Fatalf("catalog endpoint calls = %d, want one per realm", got)
+	}
 
 	// Chat: explicit intl streaming and cn non-streaming both traverse the real
 	// generic API and the real provider.
@@ -564,6 +609,26 @@ func TestWorkBuddySliceOverHTTP(t *testing.T) {
 	tasksBody := sliceJSON(t, "tasks cn", tasksRec)
 	if tasks, ok := tasksBody["tasks"].([]any); !ok || len(tasks) != 1 {
 		t.Fatalf("tasks = %#v", tasksBody["tasks"])
+	}
+
+	for path, minimum := range map[string]int{
+		"/v2/chat/completions":                      2,
+		"/billing/meter/get-user-resource-summary":  1,
+		"/v2/billing/meter/checkin-activity-status": 1,
+		"/v2/billing/meter/daily-checkin":           1,
+		"/v2/activity/growth/tasks":                 1,
+	} {
+		if got := fixture.fake.countPath(path); got < minimum {
+			t.Fatalf("%s calls = %d, want at least %d", path, got, minimum)
+		}
+	}
+	unknown, err := fixture.client.Get(fixture.upstream.URL + "/definitely-unknown-slice-path")
+	if err != nil {
+		t.Fatalf("fake unknown path request: %v", err)
+	}
+	_ = unknown.Body.Close()
+	if unknown.StatusCode != http.StatusNotFound {
+		t.Fatalf("fake unknown path status = %d, want 404", unknown.StatusCode)
 	}
 }
 
@@ -662,8 +727,35 @@ func TestWorkBuddySliceFailoverAndFallback(t *testing.T) {
 			"stream":   false,
 		}, apiHeaders)
 		sliceRequireStatus(t, "explicit suppress", rec, http.StatusTooManyRequests)
+		fixture.assertNoSecrets(t, "explicit suppress", rec)
 		if _, cnChat, _ := fixture.fake.counts(); cnChat != 0 {
 			t.Fatalf("explicit-realm cn fallback calls = %d, want 0", cnChat)
+		}
+	})
+
+	t.Run("API key realm binds routing", func(t *testing.T) {
+		fixture := newWorkBuddySliceFixture(t, fallbackAccounts, workbuddySliceOptions{
+			APIKeyRealm: "cn",
+		})
+		rec := fixture.do(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model":    "glm-5.2",
+			"messages": []any{map[string]any{"role": "user", "content": "bound cn"}},
+			"stream":   false,
+		}, apiHeaders)
+		sliceRequireStatus(t, "api key bind route", rec, http.StatusOK)
+		fixture.assertNoSecrets(t, "api key bind route", rec)
+		if text := workbuddyCompletionText(sliceJSON(t, "api key bind route", rec)); text != "cn-ok" {
+			t.Fatalf("bound completion = %q", text)
+		}
+		intlChat, cnChat, _ := fixture.fake.counts()
+		if intlChat != 0 || cnChat != 1 {
+			t.Fatalf("bound chat calls intl=%d cn=%d, want 0/1", intlChat, cnChat)
+		}
+		modelsRec := fixture.do(t, http.MethodGet, "/v1/models", nil, apiHeaders)
+		sliceRequireStatus(t, "api key bind models", modelsRec, http.StatusOK)
+		fixture.assertNoSecrets(t, "api key bind models", modelsRec)
+		if realm := sliceJSON(t, "api key bind models", modelsRec)["realm"]; realm != "cn" {
+			t.Fatalf("bound models realm = %#v, want cn", realm)
 		}
 	})
 
@@ -679,6 +771,7 @@ func TestWorkBuddySliceFailoverAndFallback(t *testing.T) {
 			"stream":   false,
 		}, apiHeaders)
 		sliceRequireStatus(t, "api key suppress", rec, http.StatusTooManyRequests)
+		fixture.assertNoSecrets(t, "api key suppress", rec)
 		if _, cnChat, _ := fixture.fake.counts(); cnChat != 0 {
 			t.Fatalf("api-key cn fallback calls = %d, want 0", cnChat)
 		}

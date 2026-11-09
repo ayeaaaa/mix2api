@@ -155,7 +155,7 @@ func saveWorkBuddyContractAccount(t *testing.T, dir string, account workbuddyCon
 		Domain:          domain,
 		AccessToken:     token,
 		RefreshToken:    "refresh-" + account.UID,
-		ExpiresAt:       time.Now().Add(24 * time.Hour),
+		ExpiresAt:       time.Now().Add(4 * time.Hour),
 		Platform:        "CLI",
 		Product:         "workbuddy",
 		Source:          "oauth",
@@ -289,6 +289,18 @@ func (f *workbuddyContractUpstream) counts() (chat, refresh int) {
 	return f.chatCalls, f.refreshCalls
 }
 
+func (f *workbuddyContractUpstream) countPath(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, call := range f.calls {
+		if call.Path == path {
+			count++
+		}
+	}
+	return count
+}
+
 func (f *workbuddyContractUpstream) snapshot() []workbuddyContractCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -333,8 +345,15 @@ func (f *workbuddyContractUpstream) ServeHTTP(w http.ResponseWriter, r *http.Req
 			"data": map[string]any{
 				"agents": map[string]any{
 					"cli": map[string]any{"models": []any{
-						workbuddyContractModel, "hy3", "deepseek-v4.1-flash", "glm-5.3",
+						workbuddyContractModel, "hy3", "deepseek-v4.1-flash", "glm-5.3", "remote-only-contract",
 					}},
+				},
+				"models": []any{
+					map[string]any{
+						"id": "remote-only-contract", "name": "Remote Only Contract",
+						"descriptionEn": "live remote membership", "credits": "x0.5",
+						"supportsToolCall": true, "supportsReasoning": true,
+					},
 				},
 			},
 		})
@@ -409,7 +428,9 @@ func (f *workbuddyContractUpstream) ServeHTTP(w http.ResponseWriter, r *http.Req
 			"code": 0, "data": map[string]any{"state": "idle"},
 		})
 	default:
-		writeWorkBuddyContractJSON(w, http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}})
+		writeWorkBuddyContractJSON(w, http.StatusNotFound, map[string]any{
+			"error": map[string]any{"message": "unknown fake endpoint: " + r.URL.Path},
+		})
 	}
 }
 
@@ -531,6 +552,26 @@ func workbuddyContractUnion(intl, cn []string) []string {
 	return out
 }
 
+func workbuddyContractHasID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+func workbuddyContractFindModel(root map[string]any, id string) map[string]any {
+	data, _ := root["data"].([]any)
+	for _, raw := range data {
+		entry, _ := raw.(map[string]any)
+		if entry != nil && entry["id"] == id {
+			return entry
+		}
+	}
+	return nil
+}
+
 func workbuddyContractCompletion(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	root := decodeJSONBody(t, recorder.Body.Bytes())
@@ -613,12 +654,11 @@ func workbuddyContractAssertGoldenSSE(t *testing.T, actual []byte, name string) 
 }
 
 func TestWorkBuddyContractHealthModelsCatalog(t *testing.T) {
-	fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
-		workbuddyContractAccount{UID: "intl-contract", Realm: "intl"},
-		workbuddyContractAccount{UID: "cn-contract", Realm: "cn"},
-	)
-
 	t.Run("health", func(t *testing.T) {
+		fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
+			workbuddyContractAccount{UID: "intl-contract", Realm: "intl"},
+			workbuddyContractAccount{UID: "cn-contract", Realm: "cn"},
+		)
 		rec := fixture.doAPI(t, http.MethodGet, "/health?force=1", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("health status = %d body=%s", rec.Code, rec.Body)
@@ -630,6 +670,10 @@ func TestWorkBuddyContractHealthModelsCatalog(t *testing.T) {
 	})
 
 	t.Run("models", func(t *testing.T) {
+		fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
+			workbuddyContractAccount{UID: "intl-contract", Realm: "intl"},
+			workbuddyContractAccount{UID: "cn-contract", Realm: "cn"},
+		)
 		intlRec := fixture.doAPI(t, http.MethodGet, "/v1/models?realm=intl", nil)
 		if intlRec.Code != http.StatusOK {
 			t.Fatalf("models intl status = %d body=%s", intlRec.Code, intlRec.Body)
@@ -646,10 +690,21 @@ func TestWorkBuddyContractHealthModelsCatalog(t *testing.T) {
 		if cnRec.Code != http.StatusOK {
 			t.Fatalf("models cn status = %d body=%s", cnRec.Code, cnRec.Body)
 		}
+		fixture.assertNoSecrets(t, "models cn", cnRec.Body.Bytes())
 		cnRoot := decodeJSONBody(t, cnRec.Body.Bytes())
 		cnIDs := workbuddyContractModelIDs(t, cnRoot)
 		if cnRoot["realm"] != "cn" || len(cnIDs) == 0 {
 			t.Fatalf("cn models envelope = %#v", cnRoot)
+		}
+		if !workbuddyContractHasID(intlIDs, "remote-only-contract") {
+			t.Fatalf("intl models did not consume the live remote-only model: %v", intlIDs)
+		}
+		if entry := workbuddyContractFindModel(intlRoot, "remote-only-contract"); entry == nil ||
+			entry["name"] != "Remote Only Contract" || entry["description"] != "live remote membership" {
+			t.Fatalf("remote-only model metadata = %#v", entry)
+		}
+		if calls := fixture.fake.countPath(workbuddyFakeCatalogPath); calls < 2 {
+			t.Fatalf("live catalog calls = %d, want one per realm", calls)
 		}
 
 		allRec := fixture.doAPI(t, http.MethodGet, "/v1/models?realm=all", nil)
@@ -663,10 +718,17 @@ func TestWorkBuddyContractHealthModelsCatalog(t *testing.T) {
 		if strings.Join(allIDs, "\x00") != strings.Join(want, "\x00") {
 			t.Fatalf("models all = %v, want exact union %v", allIDs, want)
 		}
+		if !workbuddyContractHasID(allIDs, "glm-5.2") || workbuddyContractHasID(intlIDs, "glm-5.2") {
+			t.Fatalf("realm=all did not include the distinct CN-only glm-5.2: intl=%v cn=%v", intlIDs, cnIDs)
+		}
 		workbuddyContractAssertGoldenJSON(t, allRec.Body.Bytes(), "workbuddy_models_all.golden.json", nil)
 	})
 
 	t.Run("catalog_refresh", func(t *testing.T) {
+		fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
+			workbuddyContractAccount{UID: "intl-contract", Realm: "intl"},
+			workbuddyContractAccount{UID: "cn-contract", Realm: "cn"},
+		)
 		rec := fixture.doPanel(t, http.MethodPost, "/catalog/refresh", map[string]any{"realm": "intl"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("catalog refresh status = %d body=%s", rec.Code, rec.Body)
@@ -677,12 +739,17 @@ func TestWorkBuddyContractHealthModelsCatalog(t *testing.T) {
 }
 
 func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
-	fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
-		workbuddyContractAccount{UID: "intl-chat", Realm: "intl"},
-	)
-	fixture.fake.setMode("intl-chat", "text")
+	newFixture := func(t *testing.T, mode string) *workbuddyContractFixture {
+		t.Helper()
+		fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
+			workbuddyContractAccount{UID: "intl-chat", Realm: "intl"},
+		)
+		fixture.fake.setMode("intl-chat", mode)
+		return fixture
+	}
 
 	t.Run("nonstream", func(t *testing.T) {
+		fixture := newFixture(t, "text")
 		rec := fixture.doAPI(t, http.MethodPost, "/v1/chat/completions?realm=intl", map[string]any{
 			"model":    workbuddyContractModel,
 			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
@@ -700,6 +767,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 	})
 
 	t.Run("stream", func(t *testing.T) {
+		fixture := newFixture(t, "text")
 		rec := fixture.doAPI(t, http.MethodPost, "/v1/chat/completions?realm=intl", map[string]any{
 			"model":    workbuddyContractModel,
 			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
@@ -716,7 +784,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 	})
 
 	t.Run("tools", func(t *testing.T) {
-		fixture.fake.setMode("intl-chat", "tool")
+		fixture := newFixture(t, "tool")
 		rec := fixture.doAPI(t, http.MethodPost, "/v1/chat/completions?realm=intl", map[string]any{
 			"model":    workbuddyContractModel,
 			"messages": []any{map[string]any{"role": "user", "content": "look it up"}},
@@ -736,7 +804,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 	})
 
 	t.Run("reasoning", func(t *testing.T) {
-		fixture.fake.setMode("intl-chat", "reasoning")
+		fixture := newFixture(t, "reasoning")
 		rec := fixture.doAPI(t, http.MethodPost, "/v1/chat/completions?realm=intl", map[string]any{
 			"model":            workbuddyContractModel,
 			"messages":         []any{map[string]any{"role": "user", "content": "think"}},
@@ -746,6 +814,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("chat reasoning status = %d body=%s", rec.Code, rec.Body)
 		}
+		fixture.assertNoSecrets(t, "chat reasoning", rec.Body.Bytes())
 		events, err := NormalizeSSE(rec.Body.Bytes())
 		if err != nil || len(events) == 0 || events[0].ReasoningContent != "thinking " || events[0].Content != "answer" {
 			t.Fatalf("reasoning events = %#v err=%v", events, err)
@@ -754,7 +823,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 	})
 
 	t.Run("images", func(t *testing.T) {
-		fixture.fake.setMode("intl-chat", "image")
+		fixture := newFixture(t, "image")
 		rec := fixture.doAPI(t, http.MethodPost, "/v1/chat/completions?realm=intl", map[string]any{
 			"model": workbuddyContractModel,
 			"messages": []any{map[string]any{
@@ -769,6 +838,7 @@ func TestWorkBuddyContractChatSSEToolsImagesReasoning(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("chat images status = %d body=%s", rec.Code, rec.Body)
 		}
+		fixture.assertNoSecrets(t, "chat images", rec.Body.Bytes())
 		if message := workbuddyContractCompletion(t, rec); message["content"] != "image-ok" {
 			t.Fatalf("image completion = %#v", message)
 		}
@@ -855,12 +925,16 @@ func TestWorkBuddyContractErrors429401Failover(t *testing.T) {
 }
 
 func TestWorkBuddyContractCreditsGuardsCheckinDailyGrowth(t *testing.T) {
-	fixture := newWorkBuddyContractFixture(t, workbuddyContractOptions{},
-		workbuddyContractAccount{UID: "intl-task", Realm: "intl"},
-		workbuddyContractAccount{UID: "cn-task", Realm: "cn"},
-	)
+	newTaskFixture := func(t *testing.T) *workbuddyContractFixture {
+		t.Helper()
+		return newWorkBuddyContractFixture(t, workbuddyContractOptions{},
+			workbuddyContractAccount{UID: "intl-task", Realm: "intl"},
+			workbuddyContractAccount{UID: "cn-task", Realm: "cn"},
+		)
+	}
 
 	t.Run("credits", func(t *testing.T) {
+		fixture := newTaskFixture(t)
 		rec := fixture.doPanel(t, http.MethodPost, "/accounts/credits?realm=cn", map[string]any{})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("credits status = %d body=%s", rec.Code, rec.Body)
@@ -892,6 +966,7 @@ func TestWorkBuddyContractCreditsGuardsCheckinDailyGrowth(t *testing.T) {
 	})
 
 	t.Run("checkin", func(t *testing.T) {
+		fixture := newTaskFixture(t)
 		rec := fixture.doPanel(t, http.MethodPost, "/accounts/checkin?realm=cn", map[string]any{"uid": "cn-task"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("checkin status = %d body=%s", rec.Code, rec.Body)
@@ -903,6 +978,7 @@ func TestWorkBuddyContractCreditsGuardsCheckinDailyGrowth(t *testing.T) {
 	})
 
 	t.Run("daily", func(t *testing.T) {
+		fixture := newTaskFixture(t)
 		rec := fixture.doPanel(t, http.MethodPost, "/accounts/daily-chat", map[string]any{"uid": "intl-task"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("daily status = %d body=%s", rec.Code, rec.Body)
@@ -914,6 +990,7 @@ func TestWorkBuddyContractCreditsGuardsCheckinDailyGrowth(t *testing.T) {
 	})
 
 	t.Run("growth", func(t *testing.T) {
+		fixture := newTaskFixture(t)
 		rec := fixture.doPanel(t, http.MethodGet, "/tasks?realm=cn", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("growth status = %d body=%s", rec.Code, rec.Body)

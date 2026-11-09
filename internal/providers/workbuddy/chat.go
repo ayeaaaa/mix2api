@@ -135,7 +135,32 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	if !cfg.Enabled {
 		return nil, newAPIError(KindInvalid, http.StatusBadRequest, "WorkBuddy provider is disabled")
 	}
-	return p.openChat(ctx, req, cfg, true)
+	return p.openChatAdmitted(ctx, req, cfg, true)
+}
+
+// openChatAdmitted acquires one provider-wide chat permit before opening the
+// upstream stream and transfers ownership of that permit to the returned
+// stream. Every error path releases it; the fallback path acquires the peer's
+// own permit before replaying there.
+func (p *Provider) openChatAdmitted(
+	ctx context.Context,
+	req providers.ChatRequest,
+	cfg Config,
+	allowFallback bool,
+) (providers.ChatStream, error) {
+	if err := p.acquireChatAdmission(ctx, cfg.MaxConcurrent); err != nil {
+		return nil, err
+	}
+	stream, err := p.openChat(ctx, req, cfg, allowFallback)
+	if err != nil {
+		p.releaseChatAdmission()
+		return nil, err
+	}
+	if stream == nil {
+		p.releaseChatAdmission()
+		return nil, nil
+	}
+	return newAdmittedChatStream(stream, p.releaseChatAdmission), nil
 }
 
 // refreshChatConfig reloads this realm's shared settings on every request so
@@ -313,7 +338,7 @@ func (p *Provider) openChat(
 		if !peerCfg.Enabled {
 			return nil, primaryErr
 		}
-		return peer.openChat(ctx, req, peerCfg, false)
+		return peer.openChatAdmitted(ctx, req, peerCfg, false)
 	}
 	return nil, primaryErr
 }

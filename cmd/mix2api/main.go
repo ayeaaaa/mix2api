@@ -11,6 +11,7 @@ import (
 
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/version"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
 const (
@@ -61,6 +62,22 @@ func apiKeyRealmResolver(realm string) func(*http.Request) string {
 	return func(*http.Request) string { return realm }
 }
 
+// validateAPIKeyRealm rejects a configured binding that names no registered
+// provider. It runs after provider construction and before the listener opens.
+func validateAPIKeyRealm(realm string, registry *providers.Registry) error {
+	realm = strings.ToLower(strings.TrimSpace(realm))
+	if realm == "" {
+		return nil
+	}
+	if registry == nil {
+		return fmt.Errorf("MIX2API_API_KEY_REALM %q cannot be validated without a provider registry", realm)
+	}
+	if _, ok := registry.Get(realm); !ok {
+		return fmt.Errorf("MIX2API_API_KEY_REALM %q is not a registered provider realm", realm)
+	}
+	return nil
+}
+
 // Validate refuses a non-loopback bind without both auth surfaces. A loopback
 // server may start without them, but the routes still fail closed until the
 // operator supplies PANEL_PASSWORD / MIX2API_API_KEY.
@@ -102,6 +119,9 @@ func main() {
 	setup, err := setupProviders()
 	if err != nil {
 		// Startup failures may name local paths but never credential values.
+		log.Fatalf("startup: %v", err)
+	}
+	if err := validateAPIKeyRealm(cfg.APIKeyRealm, setup.Registry); err != nil {
 		log.Fatalf("startup: %v", err)
 	}
 

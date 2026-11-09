@@ -590,6 +590,16 @@ func (p *Provider) SetLoginTakenSlots(taken func() []string) {
 	p.oauthMu.Unlock()
 }
 
+// LoginTakenSlots returns the current cross-provider exclusions used by
+// browser-login auto slot selection. It is a diagnostics helper for app
+// composition tests; the callback is evaluated on demand.
+func (p *Provider) LoginTakenSlots() []string {
+	if p == nil {
+		return nil
+	}
+	return p.takenLoginSlots()
+}
+
 func (p *Provider) takenLoginSlots() []string {
 	if p == nil {
 		return nil

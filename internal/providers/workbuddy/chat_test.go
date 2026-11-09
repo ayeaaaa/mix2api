@@ -221,6 +221,15 @@ func accountByUID(t *testing.T, pool *Pool, uid string) *Account {
 	return account
 }
 
+func chatStreamUsage(t *testing.T, stream providers.ChatStream) StreamUsage {
+	t.Helper()
+	reporter, ok := stream.(StreamUsageReporter)
+	if !ok {
+		t.Fatalf("stream %T does not report usage", stream)
+	}
+	return reporter.StreamUsage()
+}
+
 func boolPointer(value bool) *bool { return &value }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +841,7 @@ func TestChat429FailoverAndCooldowns(t *testing.T) {
 		if account.State.CoolUntil.After(now) {
 			t.Fatalf("model-scoped 429 parked the whole account until %v", account.State.CoolUntil)
 		}
-		if got := stream.(*chatStream).StreamUsage().Account; got != "b-429" {
+		if got := chatStreamUsage(t, stream).Account; got != "b-429" {
 			t.Fatalf("serving account = %q", got)
 		}
 	})
@@ -1241,6 +1250,82 @@ func TestChatGuardAndBusyAdmission429(t *testing.T) {
 	})
 }
 
+func TestChatMaxConcurrentAdmission(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-admission", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{
+		"workbuddy": map[string]any{"intl": map[string]any{"max_concurrent": 1}},
+	})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	request := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	first, err := provider.OpenChat(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first OpenChat: %v", err)
+	}
+
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	_, err = provider.OpenChat(blockedCtx, request)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second OpenChat err = %v, want deadline while one permit is held", err)
+	}
+	if calls := fake.snapshot(); len(calls) != 1 {
+		t.Fatalf("blocked request reached upstream %d times, want 1", len(calls))
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+	second, err := provider.OpenChat(context.Background(), request)
+	if err != nil {
+		t.Fatalf("OpenChat after Close: %v", err)
+	}
+	_ = drainChatFrames(t, second)
+	// Reading EOF releases the permit even when the caller forgets Close.
+	third, err := provider.OpenChat(context.Background(), request)
+	if err != nil {
+		t.Fatalf("OpenChat after EOF release: %v", err)
+	}
+	_ = third.Close()
+}
+
+func TestChatAdmissionReleasedOnOpenError(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-admission-error", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{
+		"workbuddy": map[string]any{"intl": map[string]any{"max_concurrent": 1}},
+	})
+	fake := &chatTestFake{
+		status: http.StatusBadRequest,
+		body:   `{"error":{"message":"bad request"}}`,
+	}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+	request := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if _, err := provider.OpenChat(context.Background(), request); err == nil {
+		t.Fatal("invalid upstream request unexpectedly succeeded")
+	}
+
+	fake.mu.Lock()
+	fake.status = http.StatusOK
+	fake.body = ssePayload(chatChunk("ok", "stop"), "[DONE]")
+	fake.mu.Unlock()
+	stream, err := provider.OpenChat(context.Background(), request)
+	if err != nil {
+		t.Fatalf("OpenChat after upstream error: %v", err)
+	}
+	_ = stream.Close()
+}
+
 func TestChat403RestrictedRotatesButContentDoesNot(t *testing.T) {
 	t.Run("restricted rotates", func(t *testing.T) {
 		dir := t.TempDir()
@@ -1383,7 +1468,7 @@ func TestChatCrossExitFallback(t *testing.T) {
 		if calls := cnFake.snapshot(); len(calls) != 1 {
 			t.Fatalf("cn fallback calls = %d", len(calls))
 		}
-		usage := stream.(*chatStream).StreamUsage()
+		usage := chatStreamUsage(t, stream)
 		if usage.Realm != realmCN || usage.Account != "cn-a" {
 			t.Fatalf("usage realm/account = %q/%q", usage.Realm, usage.Account)
 		}
@@ -1631,7 +1716,7 @@ func TestChatSSEFramesGzipUsageAndCloseOnce(t *testing.T) {
 	if strings.TrimSpace(frames[len(frames)-1]) != "data: [DONE]" {
 		t.Fatalf("last frame = %q", frames[len(frames)-1])
 	}
-	usage := stream.(*chatStream).StreamUsage()
+	usage := chatStreamUsage(t, stream)
 	if usage.Realm != realmIntl || usage.Account != "intl-sse" || usage.Model != "deepseek-v4.1-flash" {
 		t.Fatalf("usage identity = %+v", usage)
 	}
@@ -1926,7 +2011,7 @@ func TestChatUsagePreservesAbsentFields(t *testing.T) {
 	}
 	defer stream.Close()
 	_ = drainChatFrames(t, stream)
-	usage := stream.(*chatStream).StreamUsage()
+	usage := chatStreamUsage(t, stream)
 	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 || usage.TotalTokens != 15 ||
 		usage.CachedTokens != 4 || usage.ReasoningTokens != 2 || usage.Credit != 3 {
 		t.Fatalf("usage merge = %+v", usage)
@@ -2111,7 +2196,7 @@ func TestChatSSEToolFinishPostDoneUsage(t *testing.T) {
 	if !strings.Contains(got[3], `"usage"`) {
 		t.Fatalf("post-DONE usage frame = %q", got[3])
 	}
-	usage := stream.(*chatStream).StreamUsage()
+	usage := chatStreamUsage(t, stream)
 	if usage.FinishReason != "tool_calls" || usage.TotalTokens != 10 || usage.Credit != 1 {
 		t.Fatalf("usage/finish = %+v", usage)
 	}
