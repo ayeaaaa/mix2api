@@ -457,8 +457,9 @@ func (p *Provider) clearTaskRestriction(account *Account) {
 	}
 	if pool := p.Pool(); pool != nil && account.pool != nil {
 		// A successful request proves the vendor lifted the restriction; clear
-		// runtime cooldown and persisted restrictedUntil together.
-		_ = pool.NoteSuccess(account)
+		// only the restriction and its account cooldown, preserving model
+		// windows, manual disablement, and terminal-token state.
+		_ = pool.ClearRestriction(account)
 		return
 	}
 	account.mu.Lock()
@@ -1096,6 +1097,18 @@ func authExtraFloat(auth Auth, key string) float64 {
 		return 0
 	}
 	return number
+}
+
+func authExtraBool(auth Auth, key string) bool {
+	raw, exists := authExtraJSON(auth, key)
+	if !exists {
+		return false
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value
 }
 
 func taskUUID() string {

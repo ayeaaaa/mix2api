@@ -2172,6 +2172,19 @@ func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
 	if until <= float64(time.Now().Unix()) || !coolUntil.After(time.Now()) {
 		t.Fatalf("chat 403 restriction not unified: extra=%v runtime=%v", until, coolUntil)
 	}
+	// A repeated probe refreshes runtime from the same persisted window but
+	// must not extend either clock.
+	if err := provider.Pool().NoteRestricted(account, "repeated 403"); err != nil {
+		t.Fatalf("repeated NoteRestricted: %v", err)
+	}
+	account.mu.RLock()
+	repeatedUntil := taskRestrictedUntil(account.Auth)
+	repeatedCool := account.State.CoolUntil
+	account.mu.RUnlock()
+	if repeatedUntil != until || !repeatedCool.Equal(coolUntil) {
+		t.Fatalf("repeated 403 extended restriction: first=%v/%v repeated=%v/%v",
+			until, coolUntil, repeatedUntil, repeatedCool)
+	}
 	if rows, err := provider.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
 		t.Fatalf("CheckinAll after chat 403 = %+v, %v", rows, err)
 	}
@@ -2185,12 +2198,41 @@ func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
 	restartedAccount := accountByUID(t, restartedPool, "cn-chat403")
 	restartedAccount.mu.RLock()
 	persistedUntil := taskRestrictedUntil(restartedAccount.Auth)
+	seededCool := restartedAccount.State.CoolUntil
 	restartedAccount.mu.RUnlock()
 	if persistedUntil <= float64(time.Now().Unix()) {
 		t.Fatalf("chat 403 restriction not persisted across restart: %v", persistedUntil)
 	}
+	if !seededCool.After(time.Now()) {
+		t.Fatalf("restart did not seed runtime restriction: %v", seededCool)
+	}
+	// Even if the runtime cooldown is emptied, a repeated restricted-account
+	// probe must refresh it from the persisted window, not extend the clock.
+	restartedAccount.mu.Lock()
+	restartedAccount.State.CoolUntil = time.Time{}
+	restartedAccount.mu.Unlock()
+	if err := restarted.Pool().NoteRestricted(restartedAccount, "reseed"); err != nil {
+		t.Fatalf("reseed NoteRestricted: %v", err)
+	}
+	restartedAccount.mu.RLock()
+	reseededCool := restartedAccount.State.CoolUntil
+	reseededUntil := taskRestrictedUntil(restartedAccount.Auth)
+	restartedAccount.mu.RUnlock()
+	if !reseededCool.After(time.Now()) || reseededUntil != persistedUntil {
+		t.Fatalf("restriction reseed failed: cool=%v until=%v want-%v", reseededCool, reseededUntil, persistedUntil)
+	}
 	if rows, err := restarted.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
 		t.Fatalf("CheckinAll after chat 403 restart = %+v, %v", rows, err)
+	}
+	restarted.chatBaseURL = server.URL
+	beforeCalls := len(fake.snapshot())
+	if _, err := restarted.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model": "deepseek-v4.1-flash", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})); err == nil {
+		t.Fatal("restarted restricted account served a chat request")
+	}
+	if len(fake.snapshot()) != beforeCalls {
+		t.Fatal("restarted restricted account hot-probed upstream")
 	}
 	// NoteSuccess is the chat-path proof that the restriction is gone; it must
 	// clear both runtime and persisted state.
@@ -2432,5 +2474,158 @@ func TestTasksEnsureBuddyPersistsPartialAttempt(t *testing.T) {
 	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].TaskCode != "first_buddy" ||
 		snapshot.Tasks[0].Status != "completed" {
 		t.Fatalf("partial snapshot = %+v", snapshot.Tasks)
+	}
+}
+
+func TestTasksACPStatusFailedErrorRetryable(t *testing.T) {
+	for _, status := range []string{"failed", "error"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/acp" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Acp-Connection-Id", "conn-"+status)
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		result := runACPTurn(context.Background(),
+			chatDoerFunc(func(ctx context.Context, req *http.Request, _ string) (*http.Response, error) {
+				return http.DefaultClient.Do(req.WithContext(ctx))
+			}),
+			server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
+			"", 50*time.Millisecond, time.Millisecond,
+			func() string { return status })
+		server.Close()
+		if result.OK || result.Terminal || !strings.Contains(result.Error, status) {
+			t.Fatalf("%s ACP turn = %+v, want retryable non-terminal failure", status, result)
+		}
+	}
+}
+
+func TestTasksDailyEventPrefersLaterSuccess(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-eventretry", realmIntl, nil)
+	fail := true
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == chatPath {
+			if fail {
+				return http.StatusInternalServerError, map[string]any{"code": 1, "msg": "chat down"}
+			}
+			return http.StatusOK, map[string]any{"choices": []any{}}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	})
+	provider, _ := setupTaskProvider(t, realmIntl, dir, server.URL)
+	first, err := provider.DailyChat(context.Background(), "intl-eventretry")
+	if err != nil || first.OK || first.Activity == nil || first.Activity.OK {
+		t.Fatalf("first failed daily = %+v, %v", first, err)
+	}
+	fail = false
+	second, err := provider.DailyChat(context.Background(), "intl-eventretry")
+	if err != nil || !second.OK || second.Activity == nil || !second.Activity.OK {
+		t.Fatalf("later successful daily = %+v, %v", second, err)
+	}
+	report, err := provider.ReportActivity(context.Background(), "intl-eventretry")
+	if err != nil || !report.OK {
+		t.Fatalf("ReportActivity = %+v, %v", report, err)
+	}
+	if report.Activity != nil {
+		t.Fatalf("duplicate event after preferred success row: %+v", report.Activity)
+	}
+}
+
+func TestTasksClearRestrictionPreservesUnrelatedState(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-clearpreserve", realmCN, map[string]any{
+		"restrictedUntil": float64(time.Now().Add(time.Hour).Unix()),
+	})
+	_, server := newTaskTestUpstream(t, nil)
+	provider, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	account := accountByUID(t, pool, "cn-clearpreserve")
+	modelUntil := time.Now().Add(30 * time.Minute)
+	account.mu.Lock()
+	account.State.CoolUntil = time.Now().Add(2 * time.Hour)
+	account.State.Disabled = true
+	account.State.ManualDisabled = true
+	account.modelCoolUntil = map[string]time.Time{"deepseek-test": modelUntil}
+	account.mu.Unlock()
+	account.SetTokenExpired(true)
+	provider.clearTaskRestriction(account)
+	account.mu.RLock()
+	until := taskRestrictedUntil(account.Auth)
+	coolUntil := account.State.CoolUntil
+	disabled := account.State.Disabled
+	manualDisabled := account.State.ManualDisabled
+	modelWindow := account.modelCoolUntil["deepseek-test"]
+	tokenExpired := account.tokenExpired
+	account.mu.RUnlock()
+	if until != 0 || !coolUntil.IsZero() {
+		t.Fatalf("restriction not cleared: extra=%v runtime=%v", until, coolUntil)
+	}
+	if !disabled || !manualDisabled || !tokenExpired {
+		t.Fatalf("unrelated account flags changed: disabled=%v manual=%v token=%v", disabled, manualDisabled, tokenExpired)
+	}
+	if !modelWindow.Equal(modelUntil) {
+		t.Fatalf("model window changed: %v want %v", modelWindow, modelUntil)
+	}
+}
+
+func TestTasksMPReachedTargetAutoClaimOffKeepsStatus(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-mpreached", realmCN, nil)
+	reported := false
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		mp := strings.EqualFold(r.Header.Get("X-Client-Platform"), "miniprogram") ||
+			strings.EqualFold(r.Header.Get("X-Client-Platform"), "mp-weixin")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && !mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto", "accept_status": "claimed",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && mp:
+			status, current := "accepted", 0
+			if reported {
+				status, current = "completed", 1
+			}
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "Sequential_Tasks_1", "accept_status": status,
+					"progress": map[string]any{"current": current, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/report":
+			reported = true
+			return http.StatusOK, map[string]any{"code": 0}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-mpreached", false)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	claimable := false
+	for _, code := range result.Claimable {
+		if code == "Sequential_Tasks_1" {
+			claimable = true
+		}
+	}
+	if !claimable {
+		t.Fatalf("reached MP target not claimable: %+v", result.Claimable)
+	}
+	status := ""
+	for _, task := range result.Tasks {
+		if task.TaskCode == "Sequential_Tasks_1" {
+			status = task.Status
+		}
+	}
+	if status != "completed" {
+		t.Fatalf("reached MP task status reverted to %q, tasks=%+v", status, result.Tasks)
 	}
 }

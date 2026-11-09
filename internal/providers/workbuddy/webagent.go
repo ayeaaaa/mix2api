@@ -252,7 +252,10 @@ func runACPTurn(
 			switch strings.ToLower(status) {
 			case "completed":
 				finished = true
-			case "failed", "error", "cancelled", "canceled", "deleted":
+			case "failed", "error":
+				// v1 keeps failed/error turns retryable.
+				result.Error = "会话状态=" + status
+			case "cancelled", "canceled", "deleted":
 				result.Error = "会话状态=" + status
 				result.Terminal = true
 			}

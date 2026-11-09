@@ -776,13 +776,54 @@ func (p *Provider) dailyActivityEvent(account *Account, trigger string, ok bool,
 	}
 	auth := taskAuthSnapshot(account)
 	if taskDayDone(authExtraString(auth, "lastDailyEventDay"), now) {
-		return nil
+		if authExtraBool(auth, "lastDailyEventOK") {
+			// The day already has the preferred success row.
+			return nil
+		}
+		if !ok {
+			// A duplicate failure must not add another row.
+			return nil
+		}
+		// A later success supersedes the earlier failure row as the preferred
+		// daily outcome; append the success row and mark the day successful.
 	}
 	event := p.newActivity(account, taskDailyChatTask, trigger, ok, message)
 	if event != nil {
-		_ = p.persistTaskExtra(account, "lastDailyEventDay", now.Format(tasksDayLayout))
+		_ = p.persistDailyEventMarker(account, now, ok)
 	}
 	return event
+}
+
+func (p *Provider) persistDailyEventMarker(account *Account, now time.Time, ok bool) error {
+	if p == nil || account == nil {
+		return nil
+	}
+	dayRaw, err := json.Marshal(now.Format(tasksDayLayout))
+	if err != nil {
+		return err
+	}
+	okRaw, err := json.Marshal(ok)
+	if err != nil {
+		return err
+	}
+	uid := accountUID(account)
+	if p.Pool() == nil || uid == "" {
+		account.mu.Lock()
+		if account.Auth.Extra == nil {
+			account.Auth.Extra = make(map[string]json.RawMessage)
+		}
+		account.Auth.Extra["lastDailyEventDay"] = dayRaw
+		account.Auth.Extra["lastDailyEventOK"] = okRaw
+		account.mu.Unlock()
+		return nil
+	}
+	return p.Pool().mutateAccount(uid, func(account *Account) {
+		if account.Auth.Extra == nil {
+			account.Auth.Extra = make(map[string]json.RawMessage)
+		}
+		account.Auth.Extra["lastDailyEventDay"] = dayRaw
+		account.Auth.Extra["lastDailyEventOK"] = okRaw
+	})
 }
 
 func taskDayDone(stamp string, now time.Time) bool {

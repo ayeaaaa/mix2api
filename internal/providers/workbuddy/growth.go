@@ -1160,7 +1160,20 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 			p.taskSleepFor(p.taskGapDelay())
 		}
 	}
-	return supported, total
+	updated := make([]GrowthTask, 0, len(supported))
+	seen := make(map[string]bool, len(supported))
+	for _, task := range supported {
+		if seen[task.TaskCode] {
+			continue
+		}
+		seen[task.TaskCode] = true
+		fresh := run.currentTask(task.TaskCode)
+		if fresh.TaskCode == "" {
+			fresh = task
+		}
+		updated = append(updated, fresh)
+	}
+	return updated, total
 }
 
 func filterMPGrowthTasks(tasks []GrowthTask) []GrowthTask {

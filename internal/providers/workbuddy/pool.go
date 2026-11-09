@@ -255,6 +255,14 @@ func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 	if account.Weight < minWeight {
 		account.Weight = minWeight
 	}
+	// Seed the runtime restriction from the persisted window at load time so a
+	// restarted provider does not hot-probe a still-restricted account.
+	if until := taskRestrictedUntil(auth); until > 0 {
+		restrictedUntil := time.Unix(int64(until), 0)
+		if restrictedUntil.After(account.State.CoolUntil) {
+			account.State.CoolUntil = restrictedUntil
+		}
+	}
 	account.Auth.ProxyURL = p.resolveProxySlot(auth.ProxySlot, auth.Extra)
 	p.applyStoredLimits(account)
 	return account
@@ -1209,7 +1217,13 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 	}
 	now := p.nowTime()
 	a.mu.Lock()
-	if taskRestrictedUntil(a.Auth) > float64(now.Unix()) {
+	if persisted := taskRestrictedUntil(a.Auth); persisted > float64(now.Unix()) {
+		// The persisted window is authoritative across restarts. Refresh the
+		// runtime cooldown from it without extending the clock (no hot-probing).
+		restrictedUntil := time.Unix(int64(persisted), 0)
+		if restrictedUntil.After(a.State.CoolUntil) {
+			a.State.CoolUntil = restrictedUntil
+		}
 		a.mu.Unlock()
 		return nil
 	}
@@ -1244,6 +1258,37 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 		}
 		account.Auth.Extra["restrictedUntil"] = raw
 	})
+}
+
+// ClearRestriction clears only the account-level 403/11140 restriction and the
+// account cooldown it owns. Model windows, terminal-token state, and manual
+// disablement are deliberately untouched.
+func (p *Pool) ClearRestriction(a *Account) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	a.mu.Lock()
+	uid := strings.TrimSpace(a.Auth.UID)
+	if uid == "" {
+		uid = strings.TrimSpace(a.State.UID)
+	}
+	_, hadRestriction := a.Auth.Extra["restrictedUntil"]
+	delete(a.Auth.Extra, "restrictedUntil")
+	a.State.CoolUntil = time.Time{}
+	a.mu.Unlock()
+	if !hadRestriction || uid == "" || a.pool == nil {
+		return nil
+	}
+	err := p.mutateAccount(uid, func(account *Account) {
+		delete(account.Auth.Extra, "restrictedUntil")
+	})
+	if errors.Is(err, ErrAccountNotFound) {
+		return nil
+	}
+	return err
 }
 
 // NoteSuccess clears every account-level penalty and the named model window
