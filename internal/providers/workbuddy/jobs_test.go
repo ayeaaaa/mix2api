@@ -113,6 +113,21 @@ func (f *jobsFixture) addTaskAccount(t *testing.T, uid string, enabled, tasks bo
 	return account
 }
 
+func (f *jobsFixture) addIntlTaskAccount(t *testing.T, uid string, enabled, tasks bool) *Account {
+	t.Helper()
+	auth := Auth{
+		UID: uid, Nickname: "Nick " + uid, Realm: realmIntl, Domain: "www.workbuddy.ai",
+		AccessToken: wbRouteToken(t, uid, realmIntl), RefreshToken: "refresh-" + uid,
+		Platform: "CLI", Source: sourceOAuth, Enabled: enabled, EnabledSet: true,
+		TasksEnabled: tasks, TasksEnabledSet: true,
+	}
+	account, err := f.intl.Pool().Add(auth)
+	if err != nil {
+		t.Fatalf("add intl task account %s: %v", uid, err)
+	}
+	return account
+}
+
 func jobsByName(t *testing.T, provider *Provider) map[string]*scheduledJob {
 	t.Helper()
 	out := map[string]*scheduledJob{}
@@ -363,6 +378,36 @@ func TestJobsReportActivityCN(t *testing.T) {
 	}
 	if got := f.fake.count(http.MethodPost, "/v2/report"); got != 1 {
 		t.Fatalf("activity report POSTs = %d, want 1", got)
+	}
+}
+
+func TestJobsDailyBusyAndRestrictedSkip(t *testing.T) {
+	f := newJobsFixture(t)
+	busyAccount := f.addIntlTaskAccount(t, "intl-daily-busy", true, true)
+	busyAccount.taskMu.Lock()
+	busyReport, err := jobsByName(t, f.intl)["workbuddy-daily-activity"].RunForce(context.Background())
+	busyAccount.taskMu.Unlock()
+	if err != nil {
+		t.Fatalf("busy daily job: %v", err)
+	}
+	if busyReport.Skipped != 1 || busyReport.Failed != 0 || busyReport.Succeeded != 0 {
+		t.Fatalf("busy daily accounting = %+v, want skipped", busyReport)
+	}
+
+	f2 := newJobsFixture(t)
+	f2.addIntlTaskAccount(t, "intl-daily-restricted", true, true)
+	f2.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == chatPath {
+			return http.StatusForbidden, map[string]any{"code": 11140, "msg": "账号存在异常行为，已被限制使用"}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	}
+	report, err := jobsByName(t, f2.intl)["workbuddy-daily-activity"].RunForce(context.Background())
+	if err != nil {
+		t.Fatalf("restricted daily job: %v", err)
+	}
+	if report.Skipped != 1 || report.Failed != 0 || report.Succeeded != 0 {
+		t.Fatalf("restricted daily accounting = %+v, want skipped", report)
 	}
 }
 

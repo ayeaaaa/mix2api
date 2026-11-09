@@ -128,16 +128,21 @@ func (p *Provider) recordActivityEvent(event *ActivityEvent, replaceFailure bool
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	if replaceFailure && projected.OK && projected.Task == taskDailyChatTask {
+	if replaceFailure && projected.Task == taskDailyChatTask {
 		rows, readErr := readActivityRowsLocked(path)
 		if readErr != nil {
 			return
 		}
 		for index := len(rows) - 1; index >= 0; index-- {
 			row := rows[index]
-			if row.OK || row.UID != projected.UID || row.Task != projected.Task ||
-				activityDay(row.TS) != activityDay(projected.TS) {
+			if row.UID != projected.UID || row.Task != projected.Task ||
+				row.Realm != projected.Realm || activityDay(row.TS) != activityDay(projected.TS) {
 				continue
+			}
+			if row.OK && !projected.OK {
+				// The day already has its preferred successful outcome; a later
+				// failure must not add a second row or replace it.
+				return
 			}
 			rows[index] = projected
 			writeActivityRowsLocked(path, rows)

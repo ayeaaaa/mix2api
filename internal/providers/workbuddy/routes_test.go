@@ -3,7 +3,9 @@ package workbuddy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -620,6 +622,7 @@ func TestRoutesAccountsTestPinnedAndMulti(t *testing.T) {
 		provider.chatDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
 			return server.Client().Do(req)
 		})
+		setFakePublicNetwork(provider)
 	}
 
 	rec := f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": "uid-probe-a"})
@@ -997,6 +1000,30 @@ func TestRoutesDailyChatSkipsWebOnDesktopRestriction(t *testing.T) {
 	}
 }
 
+func TestRoutesDailyChatWebBusyPropagates(t *testing.T) {
+	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, nil)
+	provider.dailyWebRun = func(context.Context, *Account, string) (DailyResult, error) {
+		return DailyResult{Busy: true, Msg: taskBusyMessage}, nil
+	}
+	account := accountByUID(t, pool, "web-daily")
+	result, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual)
+	if err != nil {
+		t.Fatalf("runDailyActivity: %v", err)
+	}
+	if !result.Busy || result.OK || result.Web == nil || !result.Web.Busy {
+		t.Fatalf("busy web result = %+v", result)
+	}
+	account.mu.RLock()
+	stamped := account.Auth.LastDailyChat
+	account.mu.RUnlock()
+	if !strings.HasPrefix(stamped, time.Now().Format("2006-01-02")) {
+		t.Fatalf("busy web leg rolled back desktop stamp = %q", stamped)
+	}
+	if data, err := os.ReadFile(provider.activityHistoryPath()); err == nil && strings.Contains(string(data), `"ok":false`) {
+		t.Fatalf("busy web leg recorded a failure row: %s", data)
+	}
+}
+
 func TestRoutesDailyChatWebFailureRetriesAndKeepsOneRow(t *testing.T) {
 	webFail := true
 	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, _ int) (int, any) {
@@ -1022,6 +1049,13 @@ func TestRoutesDailyChatWebFailureRetriesAndKeepsOneRow(t *testing.T) {
 	rows := readActivityLines(t, provider.activityHistoryPath())
 	if len(rows) != 1 || rows[0].OK || !strings.Contains(rows[0].Message, "网页通道失败") {
 		t.Fatalf("first activity rows = %+v", rows)
+	}
+	if _, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual); err != nil {
+		t.Fatalf("second failed runDailyActivity: %v", err)
+	}
+	rows = readActivityLines(t, provider.activityHistoryPath())
+	if len(rows) != 1 || rows[0].OK {
+		t.Fatalf("repeated failure rows = %+v, want one failure row", rows)
 	}
 
 	webFail = false
@@ -1077,8 +1111,14 @@ func TestRoutesAccountsTestExpiredTokenRefreshAnd401Retry(t *testing.T) {
 		t.Fatalf("add expired account: %v", err)
 	}
 	wbRouteAddAccount(t, f.intl, "uid-401", realmIntl, nil)
-	rotated := wbRouteToken(t, "uid-expired", realmIntl)
-	rotated401 := wbRouteToken(t, "uid-401", realmIntl)
+	rotated := makeJWT(t, map[string]any{
+		"sub": "uid-expired", "iss": "https://www.workbuddy.ai/auth/realms/copilot",
+		"exp": 4102444800, "jti": "rotated-expired",
+	})
+	rotated401 := makeJWT(t, map[string]any{
+		"sub": "uid-401", "iss": "https://www.workbuddy.ai/auth/realms/copilot",
+		"exp": 4102444800, "jti": "rotated-401",
+	})
 	var refreshCalls, chat401Calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == tokenRefreshPath {
@@ -1133,6 +1173,91 @@ func TestRoutesAccountsTestExpiredTokenRefreshAnd401Retry(t *testing.T) {
 	}
 	if chat401Calls != 2 || refreshCalls != 2 {
 		t.Fatalf("401 probe chat=%d refresh=%d, want exactly one retry", chat401Calls, refreshCalls)
+	}
+}
+
+func TestRoutesAccountsTest401RefreshGuards(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "uid-no-refresh", realmIntl, nil)
+	account := f.intl.Pool().Get("uid-no-refresh")
+	account.mu.Lock()
+	account.Auth.RefreshToken = ""
+	account.mu.Unlock()
+	unchanged := wbRouteToken(t, "uid-unchanged", realmIntl)
+	unchangedAuth := Auth{
+		UID: "uid-unchanged", Nickname: "Unchanged", Realm: realmIntl,
+		AccessToken: unchanged, RefreshToken: "refresh-unchanged", Platform: "CLI",
+		Source: sourceOAuth, Enabled: true, EnabledSet: true,
+		TasksEnabled: true, TasksEnabledSet: true,
+	}
+	if _, err := f.intl.Pool().Add(unchangedAuth); err != nil {
+		t.Fatalf("add unchanged account: %v", err)
+	}
+	apiKey := Auth{
+		UID: "apikey-guard", Nickname: "API Key", Realm: realmCN,
+		Domain: "www.workbuddy.cn", AccessToken: "ck_guard.secret", APIKey: true,
+		Platform: "CLI", Source: sourceAPIKey, Enabled: true, EnabledSet: true,
+		TasksEnabled: false, TasksEnabledSet: true,
+	}
+	if _, err := f.cn.Pool().Add(apiKey); err != nil {
+		t.Fatalf("add api key: %v", err)
+	}
+
+	var mu sync.Mutex
+	refreshes := map[string]int{}
+	chats := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Header.Get("X-User-Id")
+		if r.URL.Path == tokenRefreshPath {
+			mu.Lock()
+			refreshes[uid]++
+			mu.Unlock()
+			token := unchanged
+			if uid != "uid-unchanged" {
+				token = wbRouteToken(t, uid, realmIntl)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"accessToken": token, "refreshToken": "rotated", "expiresAt": 4102444800000,
+			}})
+			return
+		}
+		mu.Lock()
+		chats[uid]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"expired"}`)
+	}))
+	t.Cleanup(server.Close)
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.chatBaseURL = server.URL
+		provider.chatDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
+			return server.Client().Do(req)
+		})
+		provider.tokenBaseURL = server.URL
+	}
+
+	for _, uid := range []string{"uid-no-refresh", "apikey-guard", "uid-unchanged"} {
+		rec := f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": uid})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", uid, rec.Code, rec.Body)
+		}
+		row := decodeWBRoutesJSON(t, rec)
+		if row["ok"] != false || row["status"].(json.Number).String() != "401" {
+			t.Fatalf("%s row = %#v", uid, row)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if refreshes["uid-no-refresh"] != 0 || refreshes["apikey-guard"] != 0 {
+		t.Fatalf("unrefreshable accounts hit refresh: %#v", refreshes)
+	}
+	if chats["uid-no-refresh"] != 1 || chats["apikey-guard"] != 1 {
+		t.Fatalf("unrefreshable chat attempts = %#v", chats)
+	}
+	if refreshes["uid-unchanged"] != 1 || chats["uid-unchanged"] != 1 {
+		t.Fatalf("no-op refresh retried the same 401: refresh=%#v chats=%#v", refreshes, chats)
 	}
 }
 
@@ -1226,6 +1351,110 @@ func TestRoutesActivityReadErrorIsNotSilentlyEmpty(t *testing.T) {
 	rec := f.do(http.MethodGet, "/activity/history?range=all", nil)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "unreadable") {
 		t.Fatalf("unreadable activity status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestRoutesStandaloneWebSuccessReplacesDailyFailure(t *testing.T) {
+	webFail := true
+	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, _ int) (int, any) {
+		if webFail {
+			return http.StatusServiceUnavailable, map[string]any{"code": 14220, "msg": "try later"}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"id": "conv-1"}}
+	})
+	account := accountByUID(t, pool, "web-daily")
+	if result, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual); err != nil || result.OK {
+		t.Fatalf("initial failed activity = %+v, %v", result, err)
+	}
+	if rows := readActivityLines(t, provider.activityHistoryPath()); len(rows) != 1 || rows[0].OK {
+		t.Fatalf("initial rows = %+v", rows)
+	}
+	webFail = false
+	web, err := provider.runDailyChatWeb(context.Background(), account, taskTriggerManual)
+	if err != nil || !web.OK {
+		t.Fatalf("standalone web = %+v, %v", web, err)
+	}
+	provider.recordDailyActivity(web.Activity)
+	rows := readActivityLines(t, provider.activityHistoryPath())
+	if len(rows) != 1 || !rows[0].OK || !strings.Contains(rows[0].Message, "网页通道") {
+		t.Fatalf("standalone web rows = %+v, want one replacement success row", rows)
+	}
+}
+
+func TestRoutesDailyActivityRealmCollisionKeepsRows(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	now := time.Now().Format(time.RFC3339)
+	f.intl.recordDailyActivity(&ActivityEvent{
+		TS: now, UID: "same-uid", Realm: realmCN, Task: taskDailyChatTask,
+		Trigger: taskTriggerManual, OK: false, Message: "cn failure",
+	})
+	f.intl.recordDailyActivity(&ActivityEvent{
+		TS: now, UID: "same-uid", Realm: realmIntl, Task: taskDailyChatTask,
+		Trigger: taskTriggerManual, OK: true, Message: "intl success",
+	})
+	rows := readActivityLines(t, f.intl.activityHistoryPath())
+	if len(rows) != 2 || rows[0].Realm != realmCN || rows[1].Realm != realmIntl {
+		t.Fatalf("realm collision rows = %+v, want separate realm rows", rows)
+	}
+}
+
+func setFakePublicNetwork(provider *Provider) {
+	provider.networkURL = "https://public.example"
+	provider.networkLookup = func(context.Context, string) ([]string, error) {
+		return []string{"93.184.216.34", "8.8.8.8"}, nil
+	}
+	provider.networkDial = func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+}
+
+func TestRoutesProbeNetworkGuardsAndAllAddresses(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	provider := f.intl
+
+	provider.networkURL = "http://public.example"
+	info := provider.probeNetwork(context.Background(), realmIntl)
+	if info["ok"] != false || !strings.Contains(wbRouteText(info["error"]), "https") {
+		t.Fatalf("http network probe = %#v", info)
+	}
+
+	provider.networkURL = "https://public.example"
+	provider.networkLookup = func(context.Context, string) ([]string, error) {
+		return []string{"93.184.216.34", "127.0.0.1"}, nil
+	}
+	provider.networkDial = func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("mixed-public resolution was dialed")
+		return nil, nil
+	}
+	info = provider.probeNetwork(context.Background(), realmIntl)
+	if info["ok"] != false || !strings.Contains(wbRouteText(info["error"]), "非公网") {
+		t.Fatalf("private network probe = %#v", info)
+	}
+
+	dialed := []string{}
+	provider.networkLookup = func(context.Context, string) ([]string, error) {
+		return []string{"93.184.216.34", "8.8.8.8"}, nil
+	}
+	provider.networkDial = func(_ context.Context, _, address string) (net.Conn, error) {
+		dialed = append(dialed, address)
+		if strings.HasPrefix(address, "93.184.216.34:") {
+			return nil, errors.New("first public address failed")
+		}
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+	info = provider.probeNetwork(context.Background(), realmIntl)
+	if info["ok"] != true || wbRouteText(info["ip"]) != "8.8.8.8" {
+		t.Fatalf("all-address network probe = %#v", info)
+	}
+	if len(dialed) != 2 || !strings.HasPrefix(dialed[0], "93.184.216.34:") || !strings.HasPrefix(dialed[1], "8.8.8.8:") {
+		t.Fatalf("dialed addresses = %#v, want both public addresses in order", dialed)
+	}
+	if addresses := info["addresses"].([]string); len(addresses) != 2 {
+		t.Fatalf("resolved addresses = %#v", addresses)
 	}
 }
 

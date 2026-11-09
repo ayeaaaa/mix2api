@@ -1548,15 +1548,28 @@ func (p *Provider) runDailyActivity(ctx context.Context, account *Account, trigg
 		p.recordDailyActivity(result.Activity)
 		return result, nil
 	}
-	web, webErr := p.runDailyChatWeb(ctx, account, trigger)
+	webRunner := p.runDailyChatWeb
+	if p.dailyWebRun != nil {
+		webRunner = p.dailyWebRun
+	}
+	web, webErr := webRunner(ctx, account, trigger)
 	result.Web = &DailyWebResult{
-		OK: web.OK, Skipped: web.Skipped, Conversation: web.Conversation,
+		OK: web.OK, Skipped: web.Skipped, Busy: web.Busy, Conversation: web.Conversation,
 		Status: web.Status, Model: web.Model, Events: web.Events, Chunks: web.Chunks,
 		ElapsedMS: web.ElapsedMS, Attempts: web.Attempts, ModelsTried: web.ModelsTried,
 		Phase: web.Phase, BudgetExhausted: web.BudgetExhausted, Retryable: web.Retryable,
 		Msg: web.Msg, Error: web.Error,
 	}
 	now := p.taskNowTime()
+	if web.Busy {
+		// Another task currently owns the account. Propagate Busy rather than
+		// converting it to a web failure or rolling back the desktop stamp.
+		result.Busy = true
+		result.OK = false
+		result.Error = ""
+		result.Msg = firstNonEmpty(web.Msg, taskBusyMessage)
+		return result, nil
+	}
 	if webErr != nil || !web.OK {
 		message := firstNonEmpty(web.Error, "未知错误")
 		if webErr != nil {
@@ -1665,7 +1678,7 @@ func (p *Provider) handleAccountsDailyChatWeb(w http.ResponseWriter, r *http.Req
 			return
 		}
 		results = append(results, result)
-		provider.recordActivity(result.Activity)
+		provider.recordDailyActivity(result.Activity)
 	}
 	provider.invalidateHealth()
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
@@ -2558,29 +2571,37 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) probeNetwork(ctx context.Context, realm string) map[string]any {
+	sourceURL := strings.TrimSpace(p.networkURL)
+	if sourceURL == "" {
+		sourceURL = p.chatURLFor(productDesktop)
+	}
 	info := map[string]any{
-		"realm": realm, "url": p.chatURLFor(productDesktop), "host": "", "ip": "",
+		"realm": realm, "url": sourceURL, "host": "", "ip": "", "addresses": []string{},
 		"ok": false, "dns_ms": nil, "tcp_ms": nil, "error": "",
 	}
-	parsed, err := url.Parse(strings.TrimSpace(wbAdminText(info["url"])))
+	parsed, err := url.Parse(strings.TrimSpace(sourceURL))
 	if err != nil || parsed.Hostname() == "" {
 		info["error"] = "upstream URL has no host"
+		return info
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		info["error"] = "上游地址必须是 https + 主机名：" + sourceURL
 		return info
 	}
 	host := parsed.Hostname()
 	port := parsed.Port()
 	if port == "" {
-		if parsed.Scheme == "http" {
-			port = "80"
-		} else {
-			port = "443"
-		}
+		port = "443"
 	}
 	info["host"] = host
 	probeCtx, cancel := context.WithTimeout(nonNilContext(ctx), 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	addresses, err := net.DefaultResolver.LookupHost(probeCtx, host)
+	lookup := p.networkLookup
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupHost
+	}
+	addresses, err := lookup(probeCtx, host)
 	info["dns_ms"] = time.Since(started).Milliseconds()
 	if err != nil || len(addresses) == 0 {
 		if err == nil {
@@ -2589,18 +2610,53 @@ func (p *Provider) probeNetwork(ctx context.Context, realm string) map[string]an
 		info["error"] = "DNS 解析失败：" + safeJobError(err)
 		return info
 	}
-	info["ip"] = addresses[0]
-	started = time.Now()
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := dialer.DialContext(probeCtx, "tcp", net.JoinHostPort(addresses[0], port))
-	info["tcp_ms"] = time.Since(started).Milliseconds()
-	if err != nil {
-		info["error"] = "TCP 连接失败：" + safeJobError(err)
+	info["addresses"] = append([]string(nil), addresses...)
+	public := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if !isPublicAddress(address) {
+			info["error"] = "解析到非公网地址，已拒绝连接：" + address
+			return info
+		}
+		public = append(public, address)
+	}
+	dial := p.networkDial
+	if dial == nil {
+		dialer := &net.Dialer{Timeout: 3 * time.Second}
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		}
+	}
+	var lastErr error
+	for _, address := range public {
+		started = time.Now()
+		conn, dialErr := dial(probeCtx, "tcp", net.JoinHostPort(address, port))
+		info["tcp_ms"] = time.Since(started).Milliseconds()
+		if dialErr != nil {
+			lastErr = dialErr
+			continue
+		}
+		_ = conn.Close()
+		info["ip"] = address
+		info["ok"] = true
 		return info
 	}
-	_ = conn.Close()
-	info["ok"] = true
+	if lastErr == nil {
+		lastErr = errors.New("no dialable address")
+	}
+	info["ip"] = public[0]
+	info["error"] = "TCP 连接失败：" + safeJobError(lastErr)
 	return info
+}
+
+// isPublicAddress mirrors v1's probe guard: loopback, private, link-local,
+// multicast, unspecified, and otherwise non-global addresses are never dialed.
+func isPublicAddress(address string) bool {
+	ip := net.ParseIP(strings.TrimSpace(address))
+	if ip == nil {
+		return false
+	}
+	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
 }
 
 func (p *Provider) probeAccount(ctx context.Context, account *Account, model string) (map[string]any, error) {
@@ -2661,11 +2717,19 @@ func (p *Provider) probeAccount(ctx context.Context, account *Account, model str
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr != nil && apiErr.Kind == KindAuth {
 			// A probe is explicitly allowed one credential refresh, exactly like
-			// the chat path's second 401 attempt. It stays pinned to this account.
-			if refreshErr := p.ForceRefresh(probeCtx, account); refreshErr == nil {
-				stream, err = send()
-			} else {
-				err = refreshErr
+			// the chat path's second 401 attempt. API keys and accounts without a
+			// refresh token are not refreshable; a no-op refresh that leaves the
+			// access token unchanged must not produce a second identical 401.
+			auth := taskAuthSnapshot(account)
+			if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
+				before := auth.AccessToken
+				if refreshErr := p.ForceRefresh(probeCtx, account); refreshErr == nil {
+					if after := taskAuthSnapshot(account).AccessToken; after != "" && after != before {
+						stream, err = send()
+					}
+				} else {
+					err = refreshErr
+				}
 			}
 		}
 	}

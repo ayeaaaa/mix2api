@@ -23,6 +23,7 @@ const (
 type DailyWebResult struct {
 	OK              bool     `json:"ok"`
 	Skipped         bool     `json:"skipped,omitempty"`
+	Busy            bool     `json:"busy,omitempty"`
 	Conversation    string   `json:"conversation,omitempty"`
 	Status          string   `json:"status,omitempty"`
 	Model           string   `json:"model,omitempty"`

@@ -1,8 +1,10 @@
 package workbuddy
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -130,6 +132,16 @@ type Provider struct {
 	// creditsSweepMu prevents a second multi-account panel sweep from piling
 	// onto the same accounts. A single-account refresh never takes this lock.
 	creditsSweepMu sync.Mutex
+
+	// dailyWebRun is a same-package test seam for the daily web leg. Its zero
+	// value calls runDailyChatWeb.
+	dailyWebRun func(context.Context, *Account, string) (DailyResult, error)
+
+	// Network diagnostics seams for /accounts/test. Zero values use the chat
+	// upstream URL, the system resolver, and a direct TCP dialer respectively.
+	networkURL    string
+	networkLookup func(context.Context, string) ([]string, error)
+	networkDial   func(context.Context, string, string) (net.Conn, error)
 
 	// Task 8 seams. tasksDoer/tasks*BaseURL/tasksTimeout/tasksNow/tasksSleep
 	// isolate the checkin, daily, growth, and fun paths from the shared chat and

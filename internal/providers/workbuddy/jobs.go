@@ -385,17 +385,15 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			success := daily.OK
-			skipped := daily.Skipped || daily.Busy
-			if !success {
+			if daily.Busy || daily.Skipped || daily.Restricted {
+				result.Skipped++
+			} else if daily.OK {
+				result.Succeeded++
+			} else {
 				result.Failed++
 				if daily.Error != "" {
 					result.Errors = append(result.Errors, auth.UID+": "+daily.Error)
 				}
-			} else if skipped {
-				result.Skipped++
-			} else {
-				result.Succeeded++
 			}
 		case jobKindReport:
 			if auth.Realm != realmCN || taskEnterpriseID(auth) != "" {
@@ -814,8 +812,11 @@ func (p *Provider) SchedulerStatus() map[string]any {
 }
 
 // schedulerActivitySnapshot projects activity_history into the scheduler
-// panel's logs and today's completed daily-chat slots. This replaces the v1
-// in-memory scheduler log/round bookkeeping with the durable activity file.
+// panel's logs and today's completed daily-chat slots. This is an approximation
+// of v1's in-memory scheduler state: logs are the latest activity rows (not
+// scheduler-only messages), and done_slots are inferred from successful daily
+// activity timestamps mapped back to the configured slots. Per-account success
+// can therefore complete more than one slot if the activity ran late.
 func (p *Provider) schedulerActivitySnapshot(now time.Time, times []string) ([]string, []string) {
 	activityLogMu.Lock()
 	rows, err := readActivityRowsLocked(p.activityHistoryPath())
