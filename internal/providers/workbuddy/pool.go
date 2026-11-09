@@ -77,10 +77,11 @@ type Pool struct {
 
 	// remainingWeights is the provider-computed (uid, model) hook for the
 	// remaining-usage preference. Keys are uid + "\x00" + model.
-	remainingWeights map[string]int
-	proOnly          map[string]bool
-	guardCheck       func(*Account, string) bool
-	loadErr          error
+	remainingWeights   map[string]int
+	proOnly            map[string]bool
+	guardCheck         func(*Account, string) bool
+	expiringWindowDays int
+	loadErr            error
 
 	// writeMu serializes mutations and credential-file writes.
 	writeMu sync.Mutex
@@ -224,17 +225,19 @@ func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 		MaxConcurrent:  maxConcurrent,
 	}
 	account := &Account{
-		Auth:           auth,
-		State:          state,
-		Credits:        credits,
-		DisabledModels: disabledModelSet(auth.DisabledModels),
-		Group:          auth.Group,
-		Weight:         float64(auth.Weight),
-		Tier:           tier,
-		Path:           auth.Path,
-		pool:           p,
-		maxConcurrent:  maxConcurrent,
-		paidUser:       paid,
+		Auth:               auth,
+		State:              state,
+		Credits:            credits,
+		DisabledModels:     disabledModelSet(auth.DisabledModels),
+		Group:              auth.Group,
+		Weight:             float64(auth.Weight),
+		Tier:               tier,
+		ExpiringWindowDays: p.expiringWindow(),
+		Path:               auth.Path,
+		pool:               p,
+		maxConcurrent:      maxConcurrent,
+		paidUser:           paid,
+		paidKnown:          known,
 	}
 	if account.Weight < minWeight {
 		account.Weight = minWeight
@@ -277,7 +280,12 @@ func (p *Pool) Config() Config {
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.cfg
+	return clonePoolConfig(p.cfg)
+}
+
+func clonePoolConfig(cfg Config) Config {
+	cfg.AutoSwitchProducts = append([]string(nil), cfg.AutoSwitchProducts...)
+	return cfg
 }
 
 // SetConfig replaces the scheduling configuration and applies the account
@@ -291,7 +299,7 @@ func (p *Pool) SetConfig(cfg Config) {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 	p.mu.Lock()
-	p.cfg = cfg
+	p.cfg = clonePoolConfig(cfg)
 	accounts := append([]*Account(nil), p.accounts...)
 	p.mu.Unlock()
 	for _, account := range accounts {
@@ -373,6 +381,10 @@ func (p *Pool) Stats() PoolStats {
 		account.mu.RLock()
 		disabled := !account.Auth.Enabled || account.State.Disabled
 		cooling := !disabled && account.State.CoolUntil.After(now)
+		// Healthy uses the same predicate as Pick, including runtime token
+		// expiry and credential presence. A token-expired account is neither
+		// disabled nor cooling, but it is not healthy either.
+		healthy := !disabled && !cooling && account.healthyLocked(now)
 		account.mu.RUnlock()
 		stats.Total++
 		switch {
@@ -380,7 +392,7 @@ func (p *Pool) Stats() PoolStats {
 			stats.Disabled++
 		case cooling:
 			stats.Cooling++
-		default:
+		case healthy:
 			stats.Healthy++
 		}
 	}
@@ -618,7 +630,7 @@ func (p *Pool) pickManual(eligible []*Account) *Account {
 	if len(entries) == 0 {
 		return nil
 	}
-	return p.smoothWeightedPick("manual", entries)
+	return p.smoothWeightedPick("manual", entries, nil)
 }
 
 func (p *Pool) pickExpiring(eligible []*Account) *Account {
@@ -653,7 +665,7 @@ func (p *Pool) pickExpiring(eligible []*Account) *Account {
 	if len(entries) == 0 {
 		return nil
 	}
-	return p.smoothWeightedPick("expiring", entries)
+	return p.smoothWeightedPick("expiring", entries, nil)
 }
 
 func (p *Pool) pickRemaining(eligible []*Account, model string) *Account {
@@ -677,7 +689,21 @@ func (p *Pool) pickRemaining(eligible []*Account, model string) *Account {
 	if len(entries) == 0 {
 		return nil
 	}
-	return p.smoothWeightedPick("remaining", entries)
+	// Match v1 keep_uids: preserve rotation state for every account still in
+	// the pool, not only the entries taking part in this model's pick. Pruning
+	// by the current entries would reset another model's progress on every
+	// interleaved request and collapse the weighted share.
+	keepUIDs := make(map[string]bool)
+	for _, account := range p.Accounts() {
+		if uid := accountUID(account); uid != "" {
+			keepUIDs[uid] = true
+		}
+	}
+	keep := func(key string) bool {
+		uid, _, ok := strings.Cut(key, "\x00")
+		return ok && keepUIDs[uid]
+	}
+	return p.smoothWeightedPick("remaining", entries, keep)
 }
 
 func (p *Pool) pickFallback(eligible []*Account) *Account {
@@ -686,14 +712,15 @@ func (p *Pool) pickFallback(eligible []*Account) *Account {
 		uid := accountUID(account)
 		entries = append(entries, weightEntry{account: account, key: uid, weight: 1})
 	}
-	return p.smoothWeightedPick("rotation", entries)
+	return p.smoothWeightedPick("rotation", entries, nil)
 }
 
 // smoothWeightedPick implements nginx's smooth weighted round-robin. Every
 // entry accrues its weight each pick; the largest running total wins and pays
 // back the whole round's weight. Equal weights therefore degenerate to a plain
-// rotation, and the state is pruned to the entries participating in this pick.
-func (p *Pool) smoothWeightedPick(stateName string, entries []weightEntry) *Account {
+// rotation. A nil keep function prunes the state to the entries participating
+// in this pick; otherwise keep decides which stored keys survive.
+func (p *Pool) smoothWeightedPick(stateName string, entries []weightEntry, keep func(string) bool) *Account {
 	if p == nil || len(entries) == 0 {
 		return nil
 	}
@@ -704,12 +731,16 @@ func (p *Pool) smoothWeightedPick(stateName string, entries []weightEntry) *Acco
 		state = make(map[string]int)
 		p.weightStates[stateName] = state
 	}
-	keep := make(map[string]bool, len(entries))
+	current := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		keep[entry.key] = true
+		current[entry.key] = true
 	}
 	for key := range state {
-		if !keep[key] {
+		preserve := current[key]
+		if keep != nil {
+			preserve = keep(key)
+		}
+		if !preserve {
 			delete(state, key)
 		}
 	}
@@ -767,11 +798,28 @@ func (p *Pool) ApplyExpiringWindow(days int) {
 	if days < 0 {
 		days = 0
 	}
-	for _, account := range p.Accounts() {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	p.mu.Lock()
+	p.expiringWindowDays = days
+	accounts := append([]*Account(nil), p.accounts...)
+	p.mu.Unlock()
+	for _, account := range accounts {
 		account.mu.Lock()
 		account.ExpiringWindowDays = days
 		account.mu.Unlock()
 	}
+}
+
+// expiringWindow returns the pool's default preference window. New accounts
+// inherit it so an ApplyExpiringWindow call is not lost on a later Add.
+func (p *Pool) expiringWindow() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.expiringWindowDays
 }
 
 func remainingWeightMap(table map[string]int) map[string]map[string]int {
@@ -860,12 +908,14 @@ func (p *Pool) SaveAccount(account *Account) error {
 		return ErrAccountNotFound
 	}
 	auth := authSnapshotLocked(account)
+	runtimeProxy := account.Auth.ProxyURL
 	account.mu.RUnlock()
 
 	saved, err := SaveAccount(p.dir, auth)
 	if err != nil {
 		return err
 	}
+	saved.ProxyURL = runtimeProxy
 	account.mu.Lock()
 	account.Auth = saved
 	account.Path = saved.Path
@@ -894,12 +944,14 @@ func (p *Pool) mutateAccount(uid string, mutate func(*Account)) error {
 	}
 	mutate(account)
 	auth := authSnapshotLocked(account)
+	runtimeProxy := account.Auth.ProxyURL
 	account.mu.Unlock()
 
 	saved, err := SaveAccount(p.dir, auth)
 	if err != nil {
 		return err
 	}
+	saved.ProxyURL = runtimeProxy
 	account.mu.Lock()
 	account.Auth = saved
 	account.Path = saved.Path
@@ -1087,6 +1139,7 @@ func (p *Pool) SetTier(uid string, tier any) error {
 		}
 		account.Tier = label
 		account.paidUser = paid
+		account.paidKnown = known
 	})
 }
 
@@ -1118,30 +1171,60 @@ func rawTierValue(tier any) json.RawMessage {
 }
 
 // SetProxySlot persists one account's proxy-slot binding and resolves the
-// runtime URL. The credential write goes through SaveAccount's ownership and
-// collision checks.
+// runtime URL under the same write lock, so a concurrent slot update cannot
+// leave the account pointing at a different proxy than the one it stored.
+//
+// An empty slot id is an explicit "direct" request: it clears the persisted
+// slot and v1's legacy proxy extra, and sets the runtime proxy to direct. A
+// non-empty id that is missing or disabled still falls back to the legacy
+// proxy, matching v1's apply_proxy_slots.
 func (p *Pool) SetProxySlot(uid, slotID string) error {
-	slotID = strings.TrimSpace(slotID)
-	if err := p.mutateAccount(uid, func(account *Account) {
-		account.Auth.ProxySlot = slotID
-	}); err != nil {
-		return err
+	if p == nil {
+		return ErrAccountNotFound
 	}
+	slotID = strings.TrimSpace(slotID)
+
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+
 	account := p.Get(uid)
 	if account == nil {
 		return ErrAccountNotFound
 	}
-	proxy := p.resolveProxySlot(slotID, account.authExtra())
+	p.mu.RLock()
+	slots := append(transport.Slots(nil), p.slots...)
+	p.mu.RUnlock()
+
 	account.mu.Lock()
-	account.Auth.ProxyURL = proxy
+	if account.removed {
+		account.mu.Unlock()
+		return ErrAccountNotFound
+	}
+	before := cloneAuth(account.Auth)
+	account.Auth.ProxySlot = slotID
+	runtimeProxy := ""
+	if slotID == "" {
+		delete(account.Auth.Extra, "proxy")
+	} else {
+		runtimeProxy = resolveProxyForSlots(slots, slotID, account.Auth.Extra)
+	}
+	auth := authSnapshotLocked(account)
+	account.mu.Unlock()
+
+	saved, err := SaveAccount(p.dir, auth)
+	if err != nil {
+		account.mu.Lock()
+		account.Auth = before
+		account.mu.Unlock()
+		return err
+	}
+
+	account.mu.Lock()
+	account.Auth = saved
+	account.Path = saved.Path
+	account.Auth.ProxyURL = runtimeProxy
 	account.mu.Unlock()
 	return nil
-}
-
-func (a *Account) authExtra() map[string]json.RawMessage {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.Auth.Extra
 }
 
 func (p *Pool) resolveProxySlot(slotID string, extra map[string]json.RawMessage) string {
@@ -1244,6 +1327,7 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 			label, paid = "pro", true
 		}
 		maxConcurrent := p.accountMaxConcurrentLocked(p.Config())
+		expiringWindow := p.expiringWindow()
 		existing.mu.Lock()
 		if existing.removed {
 			existing.mu.Unlock()
@@ -1258,6 +1342,7 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		existing.Weight = float64(saved.Weight)
 		existing.Tier = label
 		existing.paidUser = paid
+		existing.paidKnown = known
 		existing.Models = oldModels
 		existing.tokenExpired = false
 		existing.State.Disabled = !saved.Enabled
@@ -1272,6 +1357,7 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		existing.State.LastUsed = oldLastUsed
 		existing.maxConcurrent = maxConcurrent
 		existing.State.MaxConcurrent = maxConcurrent
+		existing.ExpiringWindowDays = expiringWindow
 		existing.mu.Unlock()
 		return existing, nil
 	}

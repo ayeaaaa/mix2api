@@ -27,8 +27,8 @@ const (
 )
 
 // Provider is one WorkBuddy realm instance. The two instances share the same
-// implementation but own separate configuration; account pools are added by a
-// later task and will be filtered to the instance realm.
+// implementation but own separate configuration and account pools filtered to
+// the instance realm.
 type Provider struct {
 	realm       string
 	store       *config.Store

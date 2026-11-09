@@ -152,6 +152,7 @@ type Account struct {
 	maxConcurrent int
 	tokenExpired  bool
 	paidUser      bool
+	paidKnown     bool
 }
 
 // UID returns the normalized account identifier.
@@ -304,11 +305,13 @@ func (a *Account) IsPaidUser() bool {
 }
 
 func (a *Account) paidUserLocked() bool {
-	if a.paidUser {
-		return true
+	if a.paidKnown {
+		return a.paidUser
 	}
-	switch strings.ToLower(strings.TrimSpace(a.Tier)) {
-	case "pro", "paid", "premium":
+	// A tier document without a paid field is unknown. A package label such as
+	// "Pro" is display metadata, not evidence of entitlement; only an explicit
+	// paid flag (above) or a credits snapshot may decide the gate.
+	if a.Credits != nil && a.Credits.IsPaidUser {
 		return true
 	}
 	return false
@@ -344,8 +347,9 @@ func (a *Account) SetCredits(snapshot *CreditSnapshot) {
 	}
 	a.mu.Lock()
 	a.Credits = cloneCreditSnapshot(snapshot)
-	if a.Credits != nil && a.Credits.IsPaidUser {
-		a.paidUser = true
+	if a.Credits != nil && a.Credits.IsPaidUser && !a.paidKnown {
+		// Advisory fallback only while the tier is unknown; an explicit tier
+		// paid:false remains authoritative.
 		if a.Tier == "" {
 			a.Tier = "pro"
 		}
@@ -438,7 +442,9 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		expired = true
 	}
 	expiresIn := any(nil)
-	if !expiry.IsZero() {
+	if expired {
+		expiresIn = "expired"
+	} else if !expiry.IsZero() {
 		expiresIn = humanDelta(expiry.Sub(now))
 	}
 
@@ -446,10 +452,9 @@ func (a *Account) viewAt(now time.Time) AccountView {
 	var cooldownFor any
 	if cooling {
 		seconds := int(math.Round(a.State.CoolUntil.Sub(now).Seconds()))
-		if seconds < 0 {
-			seconds = 0
+		if seconds > 0 {
+			cooldownFor = seconds
 		}
-		cooldownFor = seconds
 	}
 
 	disabledModels := append([]string(nil), a.Auth.DisabledModels...)
@@ -508,9 +513,10 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		LastCheckin:        a.Auth.LastCheckin,
 		LastDailyChat:      a.Auth.LastDailyChat,
 		LastActivityReport: a.Auth.LastActivityReport,
-		CanCheckin:         a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
-		CanDailyChat:       a.Auth.Realm == realmIntl,
-		CanReportActivity: (a.Auth.Realm == realmCN || a.Auth.Realm == realmIntl) &&
+		CanCheckin:         !a.Auth.APIKey && a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
+		CanDailyChat:       !a.Auth.APIKey && a.Auth.Realm == realmIntl,
+		CanReportActivity: !a.Auth.APIKey &&
+			(a.Auth.Realm == realmCN || a.Auth.Realm == realmIntl) &&
 			strings.TrimSpace(a.Auth.EnterpriseID) == "",
 	}
 }
@@ -581,19 +587,22 @@ func maskProxyURL(value string) string {
 	return proxyUserinfo.ReplaceAllString(text, "${1}<redacted>@")
 }
 
+// humanDelta mirrors v1 _human_delta: whole days, one decimal hour, or whole
+// minutes; non-positive durations read "expired".
 func humanDelta(delta time.Duration) string {
 	seconds := delta.Seconds()
 	if !(seconds > 0) {
 		return "expired"
 	}
-	switch {
-	case seconds >= 86400:
-		return fmt.Sprintf("%.1fd", seconds/86400)
-	case seconds >= 3600:
-		return fmt.Sprintf("%dh", int(seconds)/3600)
-	default:
-		return fmt.Sprintf("%dm", int(seconds)/60)
+	days := seconds / 86400
+	if days >= 1 {
+		return fmt.Sprintf("%.0f days", days)
 	}
+	hours := seconds / 3600
+	if hours >= 1 {
+		return fmt.Sprintf("%.1f hours", hours)
+	}
+	return fmt.Sprintf("%d min", int(seconds/60))
 }
 
 func unixSeconds(value time.Time) int64 {

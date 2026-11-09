@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/accountstate"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
@@ -244,8 +245,13 @@ func TestPoolPickSkipsManualDisabledCoolingAndExcluded(t *testing.T) {
 	}
 	account := pool.Get("a")
 	account.mu.Lock()
+	account.Auth.Note = "note access-a and device-secret-value"
+	account.Auth.Extra = map[string]json.RawMessage{
+		"deviceToken": json.RawMessage(`"device-secret-value"`),
+	}
 	account.State.CoolUntil = time.Now().Add(time.Hour)
-	account.State.LastError = "token access-a leaked"
+	account.State.LastError = "token access-a device-secret-value"
+	account.State.Reason = "reason access-a"
 	account.mu.Unlock()
 
 	if got := pickUIDs(t, pool, "m", 12); strings.Contains(strings.Join(got, ","), "a") {
@@ -254,9 +260,15 @@ func TestPoolPickSkipsManualDisabledCoolingAndExcluded(t *testing.T) {
 	if _, err := pool.Pick("m", "", map[string]bool{"b": true, "c": true}); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("Pick with all usable accounts excluded = %v, want ErrNoAccount", err)
 	}
-	view := pool.Get("b").View()
-	if strings.Contains(view.LastError, "access-b") {
-		t.Fatalf("view leaked token: %q", view.LastError)
+	view := account.View()
+	for field, value := range map[string]string{
+		"note":      view.Note,
+		"lastError": view.LastError,
+		"reason":    view.Reason,
+	} {
+		if strings.Contains(value, "access-a") || strings.Contains(value, "device-secret-value") {
+			t.Fatalf("view %s leaked a secret: %q", field, value)
+		}
 	}
 
 	if err := pool.ClearCooldown("a"); err != nil {
@@ -1041,5 +1053,434 @@ func TestPoolAPIKeyViewMasksCredential(t *testing.T) {
 	}
 	if view.ExpiresAt != 0 || view.TokenExpired {
 		t.Fatalf("static key view expiry = %d/%v", view.ExpiresAt, view.TokenExpired)
+	}
+	if view.CanCheckin || view.CanReportActivity {
+		t.Fatalf("API key view advertises personal tasks: checkin=%v report=%v", view.CanCheckin, view.CanReportActivity)
+	}
+}
+
+func mustRawJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal raw JSON: %v", err)
+	}
+	return json.RawMessage(data)
+}
+
+func TestPoolRemainingWeightsInterleavedModelsKeepRotationState(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	writePoolAccount(t, dir, "b", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	pool.ApplyRemainingWeights(map[string]map[string]int{
+		"a": {"m": 3, "n": 2},
+		"b": {"m": 2, "n": 3},
+	})
+
+	counts := map[string]map[string]int{
+		"m": {},
+		"n": {},
+	}
+	for round := 0; round < 10; round++ {
+		for _, model := range []string{"m", "n"} {
+			account, err := pool.Pick(model, "", nil)
+			if err != nil {
+				t.Fatalf("Pick(%s): %v", model, err)
+			}
+			counts[model][account.Auth.UID]++
+		}
+	}
+	if counts["m"]["a"] != 6 || counts["m"]["b"] != 4 {
+		t.Fatalf("model m counts = %v, want a=6 b=4", counts["m"])
+	}
+	if counts["n"]["a"] != 4 || counts["n"]["b"] != 6 {
+		t.Fatalf("model n counts = %v, want a=4 b=6", counts["n"])
+	}
+}
+
+func TestPoolProOnlyExplicitFreeTierBeatsPackageLabel(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "paid", realmIntl, map[string]any{
+		"tier": map[string]any{"paid": true, "package": "Pro"},
+	})
+	writePoolAccount(t, dir, "free-pro-label", realmIntl, map[string]any{
+		"tier":    map[string]any{"paid": false, "package": "Pro"},
+		"credits": map[string]any{"remain": 100, "is_paid_user": true},
+	})
+	writePoolAccount(t, dir, "unknown-pro-label", realmIntl, map[string]any{
+		"tier": map[string]any{"package": "Pro"},
+	})
+	_, pool := newPoolProvider(t, realmIntl, dir)
+
+	free := pool.Get("free-pro-label")
+	if free.Tier != "Pro" || free.IsPaidUser() {
+		t.Fatalf("explicit free tier = %q paid=%v, want Pro/false", free.Tier, free.IsPaidUser())
+	}
+	unknown := pool.Get("unknown-pro-label")
+	if unknown.IsPaidUser() {
+		t.Fatalf("package label alone granted PRO: tier=%q", unknown.Tier)
+	}
+	pool.SetProOnlyModels([]string{"pro-model"})
+	if got := pickUIDs(t, pool, "pro-model", 6); !reflectEqual(countsOnly(got), []string{"paid"}) {
+		t.Fatalf("pro-only picks = %v, want only paid", got)
+	}
+}
+
+func TestPoolSetProxySlotEmptyClearsLegacyAndDisabledFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	writePoolSettings(t, dir, map[string]any{
+		"proxy_slots": []any{
+			map[string]any{"id": "enabled", "url": "http://slotuser:slotpass@slot.example:8080", "enabled": true},
+			map[string]any{"id": "disabled", "url": "http://disableduser:disabledpass@slot.example:8080", "enabled": false},
+		},
+	})
+	legacy := "http://legacyuser:legacypass@legacy.example:8080"
+	writePoolAccount(t, dir, "direct", realmIntl, map[string]any{"proxy": legacy})
+	writePoolAccount(t, dir, "fallback", realmIntl, map[string]any{"proxy": legacy})
+	_, pool := newPoolProvider(t, realmIntl, dir)
+
+	if got := pool.Get("direct").ProxyURL(); got != legacy {
+		t.Fatalf("legacy proxy at load = %q, want %q", got, legacy)
+	}
+	if err := pool.SetProxySlot("direct", "enabled"); err != nil {
+		t.Fatalf("SetProxySlot enabled: %v", err)
+	}
+	if got := pool.Get("direct").ProxyURL(); !strings.Contains(got, "slotpass") {
+		t.Fatalf("slot proxy = %q", got)
+	}
+	if err := pool.SetNote("direct", "proxy survives credential saves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.Get("direct").ProxyURL(); !strings.Contains(got, "slotpass") {
+		t.Fatalf("credential save lost the runtime proxy: %q", got)
+	}
+	if err := pool.SetProxySlot("direct", ""); err != nil {
+		t.Fatalf("SetProxySlot direct: %v", err)
+	}
+	if got := pool.Get("direct").ProxyURL(); got != "" {
+		t.Fatalf("explicit direct proxy = %q, want empty", got)
+	}
+	if err := pool.SetNote("direct", "still direct"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.Get("direct").ProxyURL(); got != "" {
+		t.Fatalf("credential save resurrected a direct proxy: %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "direct.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := saved["proxy"]; ok {
+		t.Fatalf("explicit direct left legacy proxy on disk: %s", data)
+	}
+
+	if err := pool.SetProxySlot("fallback", "disabled"); err != nil {
+		t.Fatalf("SetProxySlot disabled: %v", err)
+	}
+	if got := pool.Get("fallback").ProxyURL(); got != legacy {
+		t.Fatalf("disabled slot fallback = %q, want legacy", got)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "fallback.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytesContains(data, "legacy.example") {
+		t.Fatalf("disabled slot discarded the legacy fallback: %s", data)
+	}
+
+	_, reloaded := newPoolProvider(t, realmIntl, dir)
+	if got := reloaded.Get("direct").ProxyURL(); got != "" {
+		t.Fatalf("direct did not survive reload: %q", got)
+	}
+	if got := reloaded.Get("fallback").ProxyURL(); got != legacy {
+		t.Fatalf("disabled-slot fallback did not survive reload: %q", got)
+	}
+}
+
+func bytesContains(data []byte, text string) bool {
+	return strings.Contains(string(data), text)
+}
+
+func TestPoolApplyExpiringWindowCoversAccountsAddedLater(t *testing.T) {
+	dir := t.TempDir()
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	pool.ApplyExpiringWindow(7)
+
+	add := func(uid string, days float64) *Account {
+		t.Helper()
+		auth := Auth{
+			UID:         uid,
+			AccessToken: "token-" + uid,
+			Realm:       realmIntl,
+			Extra: map[string]json.RawMessage{
+				"credits": mustRawJSON(t, poolCredits(days)),
+			},
+		}
+		account, err := pool.Add(auth)
+		if err != nil {
+			t.Fatalf("Add(%s): %v", uid, err)
+		}
+		return account
+	}
+
+	urgent := add("added-urgent", 1)
+	outside := add("added-outside", 30)
+	if urgent.ExpiringWindowDays != 7 || outside.ExpiringWindowDays != 7 {
+		t.Fatalf("added window = %d/%d, want 7/7", urgent.ExpiringWindowDays, outside.ExpiringWindowDays)
+	}
+	if got := pickUIDs(t, pool, "m", 8); !reflectEqual(countsOnly(got), []string{"added-urgent"}) {
+		t.Fatalf("added expiring account was not prioritised: %v", got)
+	}
+}
+
+func TestPoolManualWeightOutranksExpiringAndRemaining(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "heavy", realmIntl, map[string]any{
+		"weight":  5,
+		"credits": poolCredits(1),
+	})
+	writePoolAccount(t, dir, "soon", realmIntl, map[string]any{
+		"credits": poolCredits(1),
+	})
+	writePoolAccount(t, dir, "later", realmIntl, map[string]any{
+		"credits": poolCredits(30),
+	})
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	pool.ApplyExpiringWindow(7)
+	pool.ApplyRemainingWeights(map[string]map[string]int{
+		"soon":  {"m": 9},
+		"later": {"m": 2},
+	})
+	if got := pickUIDs(t, pool, "m", 8); !reflectEqual(countsOnly(got), []string{"heavy"}) {
+		t.Fatalf("manual weight did not outrank automatic priorities: %v", got)
+	}
+}
+
+func TestPoolSetConfigCopiesProductsAndAppliesNewCap(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	writePoolAccount(t, dir, "b", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+
+	cfg := Config{
+		AccountMaxConcurrent: 1,
+		AutoSwitchProducts:   []string{"workbuddy", "cli"},
+	}
+	pool.SetConfig(cfg)
+	cfg.AutoSwitchProducts[0] = "mutated"
+	got := pool.Config()
+	if got.AccountMaxConcurrent != 1 || !reflectEqual(got.AutoSwitchProducts, []string{"workbuddy", "cli"}) {
+		t.Fatalf("pool config = %+v (products copied?)", got)
+	}
+	got.AutoSwitchProducts[0] = "returned-mutation"
+	if again := pool.Config(); !reflectEqual(again.AutoSwitchProducts, []string{"workbuddy", "cli"}) {
+		t.Fatalf("returned products slice aliases pool state: %v", again.AutoSwitchProducts)
+	}
+	for _, account := range pool.Accounts() {
+		if account.State.MaxConcurrent != 1 {
+			t.Fatalf("%s max concurrent = %d, want 1", account.Auth.UID, account.State.MaxConcurrent)
+		}
+	}
+	a := pool.Get("a")
+	if !pool.Acquire(a) || pool.Acquire(a) {
+		t.Fatalf("new cap was not enforced: active=%d", a.State.ActiveConcurrent)
+	}
+	pool.Release(a)
+
+	added, err := pool.Add(Auth{UID: "late", AccessToken: "late-token", Realm: realmIntl})
+	if err != nil {
+		t.Fatalf("Add late: %v", err)
+	}
+	if added.State.MaxConcurrent != 1 {
+		t.Fatalf("new account max concurrent = %d, want 1", added.State.MaxConcurrent)
+	}
+}
+
+func TestPoolTaskActiveIndependentOfDispatch(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, map[string]any{"enabled": false, "tasksEnabled": true})
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	account := pool.Get("a")
+	if account.Auth.Enabled {
+		t.Fatal("fixture should be dispatch-disabled")
+	}
+	if !account.TaskActive() {
+		t.Fatal("tasks should remain active while dispatch is disabled")
+	}
+	if got := poolUIDs(pool.TaskAccounts()); !reflectEqual(got, []string{"a"}) {
+		t.Fatalf("task accounts = %v, want [a]", got)
+	}
+	if err := pool.SetTasks("a", false); err != nil {
+		t.Fatal(err)
+	}
+	if account.TaskActive() || len(pool.TaskAccounts()) != 0 {
+		t.Fatal("SetTasks(false) did not stop task participation")
+	}
+}
+
+func TestPoolAddRejectsCrossRealmAccount(t *testing.T) {
+	dir := t.TempDir()
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	_, err := pool.Add(Auth{UID: "cn-account", AccessToken: "token", Realm: realmCN})
+	if !errors.Is(err, ErrRealmMismatch) {
+		t.Fatalf("Add cn into intl pool = %v, want ErrRealmMismatch", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "cn-account.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("cross-realm Add wrote a file: %v", statErr)
+	}
+}
+
+func TestPoolRemoveDeletesAliasesWithoutTouchingOtherRealm(t *testing.T) {
+	dir := t.TempDir()
+	canonical := writePoolAccount(t, dir, "shared", realmIntl, nil)
+
+	writeAlias := func(name, realm string) string {
+		t.Helper()
+		payload := map[string]any{
+			"uid":         "shared",
+			"accessToken": "access-" + name,
+			"realm":       realm,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name+".json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	intlAlias := writeAlias("intl-alias", realmIntl)
+	cnPath := writeAlias("cn-shared", realmCN)
+
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	if got := len(pool.Accounts()); got != 1 {
+		t.Fatalf("intl pool count = %d, want 1 after alias dedupe", got)
+	}
+	_, cnPool := newPoolProvider(t, realmCN, dir)
+	if cnPool.Get("shared") == nil {
+		t.Fatal("cn account missing before remove")
+	}
+	if err := pool.Remove("shared"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, path := range []string{canonical, intlAlias} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("intl file %s survived remove: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(cnPath); err != nil {
+		t.Fatalf("cn file was touched by intl remove: %v", err)
+	}
+	_, reloadedCN := newPoolProvider(t, realmCN, dir)
+	if reloadedCN.Get("shared") == nil {
+		t.Fatal("remove of intl account deleted the cn account")
+	}
+}
+
+func TestPoolSetNoteTruncatesRunes(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	long := strings.Repeat("界", 500)
+	if err := pool.SetNote("a", long); err != nil {
+		t.Fatal(err)
+	}
+	note := pool.Get("a").Auth.Note
+	if utf8.RuneCountInString(note) != 200 {
+		t.Fatalf("note rune length = %d, want 200", utf8.RuneCountInString(note))
+	}
+}
+
+func TestPoolSetTierStringIsExplicitAndPersistent(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	if err := pool.SetTier("a", "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if pool.Get("a").Tier != "pro" || !pool.Get("a").IsPaidUser() {
+		t.Fatalf("string tier = %q paid=%v", pool.Get("a").Tier, pool.Get("a").IsPaidUser())
+	}
+	pool.SetProOnlyModels([]string{"pro-model"})
+	if got := pickUIDs(t, pool, "pro-model", 4); !reflectEqual(countsOnly(got), []string{"a"}) {
+		t.Fatalf("string tier did not grant PRO: %v", got)
+	}
+	_, reloaded := newPoolProvider(t, realmIntl, dir)
+	if again := reloaded.Get("a"); again.Tier != "pro" || !again.IsPaidUser() {
+		t.Fatalf("reloaded string tier = %q paid=%v", again.Tier, again.IsPaidUser())
+	}
+}
+
+func TestPoolTokenExpiredStatsViewAndHumanDelta(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	writePoolAccount(t, dir, "b", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	a := pool.Get("a")
+	a.SetTokenExpired(true)
+
+	view := a.View()
+	if !view.TokenExpired || !view.NeedRelogin || view.ExpiresIn != "expired" {
+		t.Fatalf("token-expired view = %+v", view)
+	}
+	stats := pool.Stats()
+	if stats.Total != 2 || stats.Healthy != 1 || stats.Disabled != 0 || stats.Cooling != 0 {
+		t.Fatalf("token-expired stats = %+v, want total=2 healthy=1", stats)
+	}
+	if pool.CountReady("m") != 1 {
+		t.Fatalf("CountReady with token-expired account = %d, want 1", pool.CountReady("m"))
+	}
+	a.SetTokenExpired(false)
+	if a.View().TokenExpired {
+		t.Fatal("token-expired flag did not clear")
+	}
+
+	now := time.Unix(1_700_000_000, 0)
+	a.mu.Lock()
+	a.State.CoolUntil = now.Add(100 * time.Millisecond)
+	a.mu.Unlock()
+	short := a.viewAt(now)
+	if !short.InCooldown || short.CooldownFor != nil {
+		t.Fatalf("sub-second cooldown = inCooldown:%v cooldownFor:%v, want true/nil", short.InCooldown, short.CooldownFor)
+	}
+	a.mu.Lock()
+	a.State.CoolUntil = now.Add(2 * time.Second)
+	a.mu.Unlock()
+	if got := a.viewAt(now).CooldownFor; got != 2 {
+		t.Fatalf("2s cooldownFor = %v, want 2", got)
+	}
+
+	for _, test := range []struct {
+		delta time.Duration
+		want  string
+	}{
+		{-time.Second, "expired"},
+		{10 * time.Second, "0 min"},
+		{90 * time.Minute, "1.5 hours"},
+		{5 * time.Hour, "5.0 hours"},
+		{36 * time.Hour, "2 days"},
+		{48 * time.Hour, "2 days"},
+	} {
+		if got := humanDelta(test.delta); got != test.want {
+			t.Fatalf("humanDelta(%v) = %q, want %q", test.delta, got, test.want)
+		}
+	}
+}
+
+func TestPoolHealthStatsIgnoreTokenExpired(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, nil)
+	writePoolAccount(t, dir, "b", realmIntl, nil)
+	_, pool := newPoolProvider(t, realmIntl, dir)
+	pool.Get("a").SetTokenExpired(true)
+	if got := pool.Stats().Healthy; got != 1 {
+		t.Fatalf("healthy = %d, want 1", got)
 	}
 }
