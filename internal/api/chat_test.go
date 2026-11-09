@@ -1423,7 +1423,7 @@ func TestChatRealmFallbackSuppression(t *testing.T) {
 	}
 }
 
-func TestChatAPIKeyRealmRoutesWithoutCatalogLookup(t *testing.T) {
+func TestChatAPIKeyRealmOutranksRequestRealm(t *testing.T) {
 	alpha := &stubProvider{
 		id: "alpha", realm: "alpha",
 		models:     []providers.Model{{"id": "alpha-model"}},
@@ -1439,25 +1439,57 @@ func TestChatAPIKeyRealmRoutesWithoutCatalogLookup(t *testing.T) {
 		APIKeyRealm: func(*http.Request) string { return "beta" },
 	})
 
-	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
-		`{"model":"model-not-in-any-catalog","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("bound chat status = %d, body = %s", rec.Code, rec.Body)
+	cases := []struct {
+		name    string
+		path    string
+		body    string
+		headers map[string]string
+	}{
+		{
+			name: "default",
+			path: "/v1/chat/completions",
+			body: `{"model":"model-not-in-any-catalog","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name: "query realm",
+			path: "/v1/chat/completions?realm=alpha",
+			body: `{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name:    "header realm",
+			path:    "/v1/chat/completions",
+			body:    `{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			headers: map[string]string{"X-Realm": "alpha"},
+		},
+		{
+			name: "body realm",
+			path: "/v1/chat/completions",
+			body: `{"model":"alpha-model","realm":"alpha","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		},
+		{
+			name: "realm all",
+			path: "/v1/chat/completions?realm=all",
+			body: `{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		},
 	}
-	if len(beta.opened()) != 1 || len(alpha.opened()) != 0 {
-		t.Fatalf("bound chat providers alpha=%d beta=%d, want beta only", len(alpha.opened()), len(beta.opened()))
-	}
-	if flag := beta.opened()[0].AllowRealmFallback; flag == nil || *flag {
-		t.Fatalf("bound AllowRealmFallback = %v, want explicit false", flag)
-	}
-
-	rec = serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=alpha",
-		`{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("explicit chat status = %d, body = %s", rec.Code, rec.Body)
-	}
-	if len(alpha.opened()) != 1 || len(beta.opened()) != 1 {
-		t.Fatalf("explicit chat providers alpha=%d beta=%d, want one each", len(alpha.opened()), len(beta.opened()))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			beta.openStream = newStubStream("data: [DONE]\n\n")
+			before := len(beta.opened())
+			rec := serveRequest(srv.Handler, http.MethodPost, tc.path, tc.body, tc.headers)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if got := len(beta.opened()); got != before+1 {
+				t.Fatalf("beta OpenChat calls = %d, want %d", got, before+1)
+			}
+			if len(alpha.opened()) != 0 {
+				t.Fatalf("bound key leaked to alpha %d times", len(alpha.opened()))
+			}
+			if flag := beta.opened()[before].AllowRealmFallback; flag == nil || *flag {
+				t.Fatalf("AllowRealmFallback = %v, want explicit false", flag)
+			}
+		})
 	}
 }
 
@@ -1471,24 +1503,21 @@ func TestChatInvalidAPIKeyRealm400(t *testing.T) {
 		Providers:   []providers.Provider{alpha},
 		APIKeyRealm: func(*http.Request) string { return "missing" },
 	})
-	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
-		`{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
-	message, _ := failure["message"].(string)
-	if !strings.Contains(message, "invalid api key realm") {
-		t.Fatalf("failure = %#v", failure)
+	for _, path := range []string{
+		"/v1/chat/completions",
+		"/v1/chat/completions?realm=alpha",
+		"/v1/chat/completions?realm=all",
+	} {
+		rec := serveRequest(srv.Handler, http.MethodPost, path,
+			`{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+		failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+		message, _ := failure["message"].(string)
+		if !strings.Contains(message, "invalid api key realm") {
+			t.Fatalf("%s failure = %#v", path, failure)
+		}
 	}
 	if len(alpha.opened()) != 0 {
 		t.Fatal("invalid key realm reached a provider")
-	}
-
-	rec = serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=alpha",
-		`{"model":"alpha-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("explicit realm did not override invalid key realm: status=%d body=%s", rec.Code, rec.Body)
-	}
-	if len(alpha.opened()) != 1 {
-		t.Fatalf("explicit override providers = %d, want alpha once", len(alpha.opened()))
 	}
 }
 

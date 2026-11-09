@@ -737,25 +737,33 @@ func TestWorkBuddySliceFailoverAndFallback(t *testing.T) {
 		fixture := newWorkBuddySliceFixture(t, fallbackAccounts, workbuddySliceOptions{
 			APIKeyRealm: "cn",
 		})
-		rec := fixture.do(t, http.MethodPost, "/v1/chat/completions", map[string]any{
-			"model":    "glm-5.2",
-			"messages": []any{map[string]any{"role": "user", "content": "bound cn"}},
-			"stream":   false,
-		}, apiHeaders)
-		sliceRequireStatus(t, "api key bind route", rec, http.StatusOK)
-		fixture.assertNoSecrets(t, "api key bind route", rec)
-		if text := workbuddyCompletionText(sliceJSON(t, "api key bind route", rec)); text != "cn-ok" {
-			t.Fatalf("bound completion = %q", text)
+		for _, path := range []string{
+			"/v1/chat/completions",
+			"/v1/chat/completions?realm=intl",
+			"/v1/chat/completions?realm=all",
+		} {
+			rec := fixture.do(t, http.MethodPost, path, map[string]any{
+				"model":    "glm-5.2",
+				"messages": []any{map[string]any{"role": "user", "content": "bound cn"}},
+				"stream":   false,
+			}, apiHeaders)
+			sliceRequireStatus(t, "api key bind route "+path, rec, http.StatusOK)
+			fixture.assertNoSecrets(t, "api key bind route "+path, rec)
+			if text := workbuddyCompletionText(sliceJSON(t, "api key bind route "+path, rec)); text != "cn-ok" {
+				t.Fatalf("%s bound completion = %q", path, text)
+			}
 		}
 		intlChat, cnChat, _ := fixture.fake.counts()
-		if intlChat != 0 || cnChat != 1 {
-			t.Fatalf("bound chat calls intl=%d cn=%d, want 0/1", intlChat, cnChat)
+		if intlChat != 0 || cnChat != 3 {
+			t.Fatalf("bound chat calls intl=%d cn=%d, want 0/3", intlChat, cnChat)
 		}
-		modelsRec := fixture.do(t, http.MethodGet, "/v1/models", nil, apiHeaders)
-		sliceRequireStatus(t, "api key bind models", modelsRec, http.StatusOK)
-		fixture.assertNoSecrets(t, "api key bind models", modelsRec)
-		if realm := sliceJSON(t, "api key bind models", modelsRec)["realm"]; realm != "cn" {
-			t.Fatalf("bound models realm = %#v, want cn", realm)
+		for _, path := range []string{"/v1/models", "/v1/models?realm=intl", "/v1/models?realm=all"} {
+			modelsRec := fixture.do(t, http.MethodGet, path, nil, apiHeaders)
+			sliceRequireStatus(t, "api key bind models "+path, modelsRec, http.StatusOK)
+			fixture.assertNoSecrets(t, "api key bind models "+path, modelsRec)
+			if realm := sliceJSON(t, "api key bind models "+path, modelsRec)["realm"]; realm != "cn" {
+				t.Fatalf("%s bound models realm = %#v, want cn", path, realm)
+			}
 		}
 	})
 

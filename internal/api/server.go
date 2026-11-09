@@ -34,9 +34,12 @@ type ServerOptions struct {
 	APIKeyAuth func(http.Handler) http.Handler
 
 	// APIKeyRealm optionally reports the realm bound to the request's API key.
-	// A non-empty result is an operator-written exit choice, so generic chat
-	// must not let a provider fall back across realms. Task 11 wires this to
-	// the key configuration; nil means keys do not bind a realm.
+	// A non-empty result is an operator-written exit policy: it outranks
+	// X-Realm/query/body hints (including realm=all) and suppresses provider
+	// realm fallback. The command currently exposes one global
+	// MIX2API_API_KEY_REALM value, so every key shares the same binding;
+	// per-key/multi-key realm configuration is out of scope for this slice.
+	// Nil means keys do not bind a realm.
 	APIKeyRealm func(*http.Request) string
 }
 

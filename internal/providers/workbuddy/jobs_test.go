@@ -407,6 +407,13 @@ func TestJobsReportActivityCNReplacesFailedDailyRow(t *testing.T) {
 	}
 
 	job := jobsByName(t, f.intl)["workbuddy-report-activity"]
+	// A same-task intl row must survive the CN report job: de-duplication is
+	// scoped by uid + task + realm + day.
+	f.intl.recordDailyActivity(&ActivityEvent{
+		TS: f.now.Format(time.RFC3339), UID: "intl-existing", Realm: realmIntl,
+		Task: taskDailyChatTask, Trigger: taskTriggerScheduler, OK: true, Message: "intl ok",
+	})
+
 	first, err := job.RunForce(context.Background())
 	if err == nil {
 		t.Fatal("failed report run returned no per-account error")
@@ -415,8 +422,19 @@ func TestJobsReportActivityCNReplacesFailedDailyRow(t *testing.T) {
 		t.Fatalf("first report result = %+v, want one failure", first)
 	}
 	rows := readActivityRowsForTest(t, activityPath)
-	if len(rows) != 1 || rows[0].OK || rows[0].Task != taskDailyChatTask {
-		t.Fatalf("failed-day activity rows = %+v, want one failed daily_chat row", rows)
+	failed := activityRowByUID(t, rows, "cn-report-daily")
+	if failed == nil {
+		t.Fatalf("failed-day activity rows = %+v, want the cn failure row", rows)
+	}
+	if failed.OK || failed.Task != taskDailyChatTask || failed.Realm != realmCN ||
+		failed.Trigger != taskTriggerScheduler || !strings.Contains(failed.Message, "HTTP 500") {
+		t.Fatalf("cn failure row = %+v, want cn/scheduler/daily_chat/failed HTTP 500", failed)
+	}
+	if existing := activityRowByUID(t, rows, "intl-existing"); existing == nil || !existing.OK || existing.Realm != realmIntl {
+		t.Fatalf("intl row was lost or changed by the CN report job: %+v", rows)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows after failure = %+v, want one intl row plus one cn failure", rows)
 	}
 
 	second, err := job.RunForce(context.Background())
@@ -427,9 +445,31 @@ func TestJobsReportActivityCNReplacesFailedDailyRow(t *testing.T) {
 		t.Fatalf("second report result = %+v, want one success", second)
 	}
 	rows = readActivityRowsForTest(t, activityPath)
-	if len(rows) != 1 || !rows[0].OK || rows[0].Task != taskDailyChatTask {
-		t.Fatalf("activity rows after failure then success = %+v, want one successful daily_chat row", rows)
+	succeeded := activityRowByUID(t, rows, "cn-report-daily")
+	if succeeded == nil {
+		t.Fatalf("activity rows after failure then success = %+v, want the cn success row", rows)
 	}
+	if !succeeded.OK || succeeded.Task != taskDailyChatTask || succeeded.Realm != realmCN ||
+		succeeded.Trigger != taskTriggerScheduler || !strings.Contains(succeeded.Message, "连续打卡 3 天") {
+		t.Fatalf("cn success row = %+v, want the replacement success row", succeeded)
+	}
+	if existing := activityRowByUID(t, rows, "intl-existing"); existing == nil || !existing.OK || existing.Realm != realmIntl {
+		t.Fatalf("intl row was lost after the CN success: %+v", rows)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows after failure then success = %+v, want the intl row and one cn success row", rows)
+	}
+}
+
+func activityRowByUID(t *testing.T, rows []ActivityEvent, uid string) *ActivityEvent {
+	t.Helper()
+	for index := range rows {
+		if rows[index].UID == uid {
+			row := rows[index]
+			return &row
+		}
+	}
+	return nil
 }
 
 func readActivityRowsForTest(t *testing.T, path string) []ActivityEvent {

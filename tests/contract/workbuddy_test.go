@@ -114,6 +114,13 @@ func newWorkBuddyContractFixture(
 	}
 	intl.SetTwin(cn)
 	cn.SetTwin(intl)
+	sharedLimit := intl.Config().MaxConcurrent
+	if cnLimit := cn.Config().MaxConcurrent; cnLimit > sharedLimit {
+		sharedLimit = cnLimit
+	}
+	sharedAdmission := workbuddy.NewAdmission(sharedLimit)
+	intl.SetAdmission(sharedAdmission)
+	cn.SetAdmission(sharedAdmission)
 	activityPath := filepath.Join(accountsDir, workbuddy.ActivityHistoryFile)
 	intl.SetActivityPath(activityPath)
 	cn.SetActivityPath(activityPath)

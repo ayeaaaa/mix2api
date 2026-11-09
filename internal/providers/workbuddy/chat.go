@@ -138,29 +138,40 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	return p.openChatAdmitted(ctx, req, cfg, true)
 }
 
-// openChatAdmitted acquires one provider-wide chat permit before opening the
+// openChatAdmitted acquires one process-wide chat permit before opening the
 // upstream stream and transfers ownership of that permit to the returned
-// stream. Every error path releases it; the fallback path acquires the peer's
-// own permit before replaying there.
+// stream. Every error path releases it. The fallback path reuses this same
+// permit and calls peer.openChat directly, so intl→cn cannot consume two slots.
 func (p *Provider) openChatAdmitted(
 	ctx context.Context,
 	req providers.ChatRequest,
 	cfg Config,
 	allowFallback bool,
 ) (providers.ChatStream, error) {
-	if err := p.acquireChatAdmission(ctx, cfg.MaxConcurrent); err != nil {
+	admission := p.currentAdmission()
+	if admission == nil {
+		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy chat admission is unavailable")
+	}
+	// A live panel edit may raise the shared ceiling. Growth wakes waiters;
+	// shrink is ignored by the limiter.
+	admission.SetLimit(cfg.MaxConcurrent)
+	if err := admission.Acquire(ctx); err != nil {
+		if errors.Is(err, ErrAdmissionBusy) {
+			return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable,
+				fmt.Sprintf("gateway is at its concurrent chat limit (%d in flight); retry shortly", admission.Limit()))
+		}
 		return nil, err
 	}
 	stream, err := p.openChat(ctx, req, cfg, allowFallback)
 	if err != nil {
-		p.releaseChatAdmission()
+		admission.Release()
 		return nil, err
 	}
 	if stream == nil {
-		p.releaseChatAdmission()
+		admission.Release()
 		return nil, nil
 	}
-	return newAdmittedChatStream(stream, p.releaseChatAdmission), nil
+	return newAdmittedChatStream(stream, admission.Release), nil
 }
 
 // refreshChatConfig reloads this realm's shared settings on every request so
@@ -338,7 +349,7 @@ func (p *Provider) openChat(
 		if !peerCfg.Enabled {
 			return nil, primaryErr
 		}
-		return peer.openChatAdmitted(ctx, req, peerCfg, false)
+		return peer.openChat(ctx, req, peerCfg, false)
 	}
 	return nil, primaryErr
 }

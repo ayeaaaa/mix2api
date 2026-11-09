@@ -235,6 +235,36 @@ func TestBuildWiresCodeArtsSlotsIntoWorkBuddyLogin(t *testing.T) {
 	}
 }
 
+func TestBuildSharesWorkBuddyChatAdmission(t *testing.T) {
+	root := t.TempDir()
+	setup, err := Build(Paths{AccountsDir: filepath.Join(root, "accounts"), UsageDir: filepath.Join(root, "usage")})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var providers []*workbuddy.Provider
+	for _, realm := range []string{"intl", "cn"} {
+		provider, ok := setup.Registry.Get(realm)
+		if !ok {
+			t.Fatalf("registry has no %q provider", realm)
+		}
+		wb, ok := provider.(*workbuddy.Provider)
+		if !ok {
+			t.Fatalf("registry[%q] = %T", realm, provider)
+		}
+		providers = append(providers, wb)
+	}
+	admission := providers[0].ChatAdmission()
+	if admission == nil {
+		t.Fatal("intl ChatAdmission is nil")
+	}
+	if providers[1].ChatAdmission() != admission {
+		t.Fatal("intl and cn do not share one process-wide chat admission")
+	}
+	if got := admission.Limit(); got != 32 {
+		t.Fatalf("default shared admission limit = %d, want v1 default 32", got)
+	}
+}
+
 func TestBuildDoesNotCreateUnusedUsageDir(t *testing.T) {
 	root := t.TempDir()
 	blocker := filepath.Join(root, "blocker")

@@ -105,6 +105,17 @@ func Build(paths Paths) (*Setup, error) {
 	intlProvider.SetTwin(cnProvider)
 	cnProvider.SetTwin(intlProvider)
 
+	// v1 has one process-wide chat ceiling, not one per realm. Both instances
+	// share this limiter so intl, cn, and the opt-in fallback consume the same
+	// permits. The default is 32; a larger per-realm panel value raises it.
+	sharedLimit := intlProvider.Config().MaxConcurrent
+	if cnLimit := cnProvider.Config().MaxConcurrent; cnLimit > sharedLimit {
+		sharedLimit = cnLimit
+	}
+	sharedAdmission := workbuddy.NewAdmission(sharedLimit)
+	intlProvider.SetAdmission(sharedAdmission)
+	cnProvider.SetAdmission(sharedAdmission)
+
 	// One shared activity history keeps the intl daily-activity and cn
 	// report/growth histories in the same panel timeline.
 	activityPath := filepath.Join(paths.AccountsDir, workbuddy.ActivityHistoryFile)

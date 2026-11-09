@@ -24,9 +24,10 @@ type commandConfig struct {
 	Port          string
 	PanelPassword string
 	APIKey        string
-	// APIKeyRealm binds the configured API key to one provider realm. When
-	// set, generic chat treats the key as an explicit exit choice and
-	// suppresses WorkBuddy's intl→cn fallback.
+	// APIKeyRealm binds every configured API key to one provider realm. When
+	// set, generic chat/models treat it as policy ahead of request realm hints
+	// and suppress WorkBuddy's intl→cn fallback. Per-key bindings are out of
+	// scope; this env applies process-wide.
 	APIKeyRealm string
 }
 

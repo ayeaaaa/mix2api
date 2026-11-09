@@ -238,9 +238,11 @@ Useful failure recordings, each from fresh state:
   the refreshed token; record the same non-stream request and confirm exactly
   one refresh call.
 - **Cross-exit failover**: enable the intl `realm_fallback_enabled` setting,
-  keep the intl 429, and record an unqualified `hy4-preview` request. Then
-  repeat with `?realm=intl` and with an API-key realm binding to prove both
-  suppress fallback.
+  keep the intl 429, and record an unqualified `hy4-preview` request. Repeat
+  with `?realm=intl` to prove an explicit realm suppresses fallback. Separately
+  record an API-key realm binding with an explicit conflicting `?realm` and
+  `?realm=all`; v1 treats the key binding as policy, so all of those requests
+  still route to the bound realm and cannot escape.
 - **Daily-token guard**: set the shared `daily_token_limit` to 1 and seed
   today's token usage for one account; record the 429 error body.
 

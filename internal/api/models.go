@@ -22,12 +22,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	realm, _ := realmFromRequest(r)
-	if realm == "" {
-		boundRealm, failure := s.apiKeyBoundRealm(r)
-		if failure != nil {
-			writeFailure(w, failure)
-			return
-		}
+	if boundRealm, failure := s.apiKeyBoundRealm(r); failure != nil {
+		writeFailure(w, failure)
+		return
+	} else if boundRealm != "" {
+		// The key's realm is policy: it outranks X-Realm/query/body, including
+		// realm=all.
 		realm = boundRealm
 	}
 	if realm == "" {

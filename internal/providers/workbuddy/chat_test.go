@@ -1256,6 +1256,8 @@ func TestChatMaxConcurrentAdmission(t *testing.T) {
 	provider := setupChatProvider(t, realmIntl, dir, map[string]any{
 		"workbuddy": map[string]any{"intl": map[string]any{"max_concurrent": 1}},
 	})
+	shared := NewAdmissionWithWait(1, 80*time.Millisecond)
+	provider.SetAdmission(shared)
 	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
 	server := newChatTestServer(t, fake)
 	provider.chatBaseURL = server.URL
@@ -1268,12 +1270,17 @@ func TestChatMaxConcurrentAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first OpenChat: %v", err)
 	}
+	if got := shared.InFlight(); got != 1 {
+		t.Fatalf("in-flight permits = %d, want 1", got)
+	}
 
-	blockedCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	_, err = provider.OpenChat(blockedCtx, request)
-	cancel()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second OpenChat err = %v, want deadline while one permit is held", err)
+	_, err = provider.OpenChat(context.Background(), request)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("second OpenChat err = %v, want 503 busy", err)
+	}
+	if !strings.Contains(strings.ToLower(apiErr.SafeMessage()), "concurrent") {
+		t.Fatalf("busy message = %q", apiErr.SafeMessage())
 	}
 	if calls := fake.snapshot(); len(calls) != 1 {
 		t.Fatalf("blocked request reached upstream %d times, want 1", len(calls))
@@ -1282,17 +1289,132 @@ func TestChatMaxConcurrentAdmission(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first stream: %v", err)
 	}
+	if got := shared.InFlight(); got != 0 {
+		t.Fatalf("in-flight permits after Close = %d, want 0", got)
+	}
 	second, err := provider.OpenChat(context.Background(), request)
 	if err != nil {
 		t.Fatalf("OpenChat after Close: %v", err)
 	}
 	_ = drainChatFrames(t, second)
 	// Reading EOF releases the permit even when the caller forgets Close.
+	if got := shared.InFlight(); got != 0 {
+		t.Fatalf("in-flight permits after EOF = %d, want 0", got)
+	}
 	third, err := provider.OpenChat(context.Background(), request)
 	if err != nil {
 		t.Fatalf("OpenChat after EOF release: %v", err)
 	}
 	_ = third.Close()
+}
+
+func TestChatSharedAdmissionAcrossRealmsAndFallback(t *testing.T) {
+	newSharedProviders := func(t *testing.T, fallback bool) (*Provider, *Provider, *Admission) {
+		t.Helper()
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "intl-shared", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "cn-shared", realmCN, map[string]any{"product": productDesktop})
+		writePoolSettings(t, dir, map[string]any{
+			"workbuddy": map[string]any{
+				"intl": map[string]any{
+					"max_concurrent":         1,
+					"realm_fallback_enabled": fallback,
+				},
+				"cn": map[string]any{"max_concurrent": 1},
+			},
+		})
+		intl, _ := newPoolProvider(t, realmIntl, dir)
+		cn, _ := newPoolProvider(t, realmCN, dir)
+		intl.SetPeer(cn)
+		cn.SetPeer(intl)
+		shared := NewAdmissionWithWait(1, 80*time.Millisecond)
+		intl.SetAdmission(shared)
+		cn.SetAdmission(shared)
+		return intl, cn, shared
+	}
+
+	t.Run("one shared cap across realms", func(t *testing.T) {
+		intl, cn, shared := newSharedProviders(t, false)
+		intlFake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		cnFake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		intl.chatBaseURL = newChatTestServer(t, intlFake).URL
+		cn.chatBaseURL = newChatTestServer(t, cnFake).URL
+		request := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		})
+
+		intlStream, err := intl.OpenChat(context.Background(), request)
+		if err != nil {
+			t.Fatalf("intl OpenChat: %v", err)
+		}
+		_, err = cn.OpenChat(context.Background(), request)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+			t.Fatalf("cn OpenChat while intl holds the shared permit = %v, want 503 busy", err)
+		}
+		if calls := cnFake.snapshot(); len(calls) != 0 {
+			t.Fatalf("saturated cn request reached upstream %d times", len(calls))
+		}
+		_ = intlStream.Close()
+		if got := shared.InFlight(); got != 0 {
+			t.Fatalf("shared in-flight after intl close = %d", got)
+		}
+		cnStream, err := cn.OpenChat(context.Background(), request)
+		if err != nil {
+			t.Fatalf("cn OpenChat after release: %v", err)
+		}
+		_ = cnStream.Close()
+	})
+
+	t.Run("fallback reuses the outer permit", func(t *testing.T) {
+		intl, cn, shared := newSharedProviders(t, true)
+		intlFake := &chatTestFake{status: http.StatusTooManyRequests, body: `{"error":{"message":"throttled"}}`}
+		cnFake := &chatTestFake{body: ssePayload(chatChunk("cn", "stop"), "[DONE]")}
+		intl.chatBaseURL = newChatTestServer(t, intlFake).URL
+		cn.chatBaseURL = newChatTestServer(t, cnFake).URL
+		request := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		})
+		stream, err := intl.OpenChat(context.Background(), request)
+		if err != nil {
+			t.Fatalf("fallback OpenChat: %v", err)
+		}
+		if got := shared.InFlight(); got != 1 {
+			t.Fatalf("fallback in-flight permits = %d, want exactly 1", got)
+		}
+		if calls := cnFake.snapshot(); len(calls) != 1 {
+			t.Fatalf("cn fallback calls = %d, want 1", len(calls))
+		}
+		_ = stream.Close()
+		if got := shared.InFlight(); got != 0 {
+			t.Fatalf("fallback in-flight after Close = %d, want 0", got)
+		}
+	})
+}
+
+func TestChatAdmissionLimitIncreaseWakesWaiter(t *testing.T) {
+	admission := NewAdmissionWithWait(1, time.Second)
+	if err := admission.Acquire(context.Background()); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- admission.Acquire(context.Background())
+	}()
+	time.Sleep(20 * time.Millisecond)
+	admission.SetLimit(2)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiter after limit increase: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter was not woken by limit increase")
+	}
+	admission.Release()
+	admission.Release()
 }
 
 func TestChatAdmissionReleasedOnOpenError(t *testing.T) {
@@ -1301,6 +1423,7 @@ func TestChatAdmissionReleasedOnOpenError(t *testing.T) {
 	provider := setupChatProvider(t, realmIntl, dir, map[string]any{
 		"workbuddy": map[string]any{"intl": map[string]any{"max_concurrent": 1}},
 	})
+	provider.SetAdmission(NewAdmissionWithWait(1, 100*time.Millisecond))
 	fake := &chatTestFake{
 		status: http.StatusBadRequest,
 		body:   `{"error":{"message":"bad request"}}`,
