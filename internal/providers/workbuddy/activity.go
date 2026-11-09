@@ -3,6 +3,7 @@ package workbuddy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,7 +23,10 @@ const (
 	activityCompactBytes = 2_000_000
 )
 
-var activityLogMu sync.Mutex
+var (
+	activityLogMu   sync.Mutex
+	errActivityRead = errors.New("activity history is unreadable")
+)
 
 var (
 	activityBearerPattern   = regexp.MustCompile(`(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
@@ -96,6 +100,17 @@ func (p *Provider) activityHistoryPath() string {
 // deliberately ignored so a full disk cannot turn a successful check-in into
 // a failed one.
 func (p *Provider) recordActivity(event *ActivityEvent) {
+	p.recordActivityEvent(event, false)
+}
+
+// recordDailyActivity keeps one daily-chat row per account/day: a later success
+// replaces the same day's earlier failure row instead of leaving both the
+// failed and successful attempt in the panel history.
+func (p *Provider) recordDailyActivity(event *ActivityEvent) {
+	p.recordActivityEvent(event, true)
+}
+
+func (p *Provider) recordActivityEvent(event *ActivityEvent, replaceFailure bool) {
 	if p == nil || event == nil {
 		return
 	}
@@ -113,6 +128,22 @@ func (p *Provider) recordActivity(event *ActivityEvent) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
+	if replaceFailure && projected.OK && projected.Task == taskDailyChatTask {
+		rows, readErr := readActivityRowsLocked(path)
+		if readErr != nil {
+			return
+		}
+		for index := len(rows) - 1; index >= 0; index-- {
+			row := rows[index]
+			if row.OK || row.UID != projected.UID || row.Task != projected.Task ||
+				activityDay(row.TS) != activityDay(projected.TS) {
+				continue
+			}
+			rows[index] = projected
+			writeActivityRowsLocked(path, rows)
+			return
+		}
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return
@@ -120,18 +151,33 @@ func (p *Provider) recordActivity(event *ActivityEvent) {
 	_, _ = file.Write(append(data, '\n'))
 	_ = file.Close()
 	if info, err := os.Stat(path); err == nil && info.Size() > activityCompactBytes {
-		rows := readActivityRowsLocked(path)
-		rows, changed := retainedActivityRows(rows, time.Now())
-		if changed {
-			writeActivityRowsLocked(path, rows)
+		if rows, readErr := readActivityRowsLocked(path); readErr == nil {
+			rows, changed := retainedActivityRows(rows, time.Now())
+			if changed {
+				writeActivityRowsLocked(path, rows)
+			}
 		}
 	}
 }
 
-func readActivityRowsLocked(path string) []ActivityEvent {
+func activityDay(stamp string) string {
+	stamp = strings.TrimSpace(stamp)
+	if index := strings.IndexByte(stamp, 'T'); index > 0 {
+		return stamp[:index]
+	}
+	if len(stamp) >= 10 {
+		return stamp[:10]
+	}
+	return stamp
+}
+
+func readActivityRowsLocked(path string) ([]ActivityEvent, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return []ActivityEvent{}, nil
+		}
+		return nil, errActivityRead
 	}
 	rows := make([]ActivityEvent, 0)
 	for _, line := range strings.Split(string(data), "\n") {
@@ -145,7 +191,7 @@ func readActivityRowsLocked(path string) []ActivityEvent {
 		}
 		rows = append(rows, projectActivityEvent(row))
 	}
-	return rows
+	return rows, nil
 }
 
 func retainedActivityRows(rows []ActivityEvent, now time.Time) ([]ActivityEvent, bool) {
@@ -194,6 +240,10 @@ func writeActivityRowsLocked(path string, rows []ActivityEvent) {
 func (p *Provider) handleActivityHistory(w http.ResponseWriter, r *http.Request) {
 	result, err := p.queryActivity(r.URL.Query())
 	if err != nil {
+		if errors.Is(err, errActivityRead) {
+			writeWBAdminError(w, wbServerError("activity history is unreadable"))
+			return
+		}
 		writeWBAdminError(w, wbBadRequest(err.Error()))
 		return
 	}
@@ -249,7 +299,11 @@ func (p *Provider) queryActivity(query map[string][]string) (map[string]any, err
 	path := p.activityHistoryPath()
 	if path != "" {
 		activityLogMu.Lock()
-		allRows := readActivityRowsLocked(path)
+		allRows, readErr := readActivityRowsLocked(path)
+		if readErr != nil {
+			activityLogMu.Unlock()
+			return nil, fmt.Errorf("%w: %v", errActivityRead, readErr)
+		}
 		retained, changed := retainedActivityRows(allRows, time.Now())
 		if changed {
 			writeActivityRowsLocked(path, retained)

@@ -65,7 +65,9 @@ func (s jobSlot) key(now time.Time) string {
 
 // JobRunResult is the per-job report returned by RunJobs and the scheduler
 // panel trigger. Errors are redacted and per-account; one failed account never
-// aborts the rest of the job.
+// aborts the rest of the job. Skipped includes disabled/task-off/restricted,
+// already-completed, and busy (account task lock held) accounts; only genuine
+// upstream failures increment Failed.
 type JobRunResult struct {
 	Name      string   `json:"name"`
 	Ran       bool     `json:"ran"`
@@ -384,7 +386,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				continue
 			}
 			success := daily.OK
-			skipped := daily.Skipped
+			skipped := daily.Skipped || daily.Busy
 			if !success {
 				result.Failed++
 				if daily.Error != "" {
@@ -409,7 +411,9 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				continue
 			}
 			provider.recordActivity(report.Activity)
-			if report.Error != "" && !report.OK {
+			if report.Busy {
+				result.Skipped++
+			} else if report.Error != "" && !report.OK {
 				result.Failed++
 				result.Errors = append(result.Errors, auth.UID+": "+report.Error)
 			} else if report.Skipped {
@@ -434,7 +438,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 			}
 			if growth.OK && !growth.Skipped {
 				result.Succeeded++
-			} else if growth.Skipped {
+			} else if growth.Skipped || growth.Busy {
 				result.Skipped++
 			} else {
 				result.Failed++
@@ -455,7 +459,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			jobCountTaskResult(cat.OK, cat.Skipped, cat.Error, auth.UID, result)
+			jobCountTaskResult(cat.OK, cat.Skipped || cat.Busy, cat.Error, auth.UID, result)
 			provider.invalidateGrowthSnapshot(auth.UID)
 		case jobKindStreak:
 			if !growthTaskEligible(auth) {
@@ -470,7 +474,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			jobCountTaskResult(streak.OK, streak.Skipped, streak.Error, auth.UID, result)
+			jobCountTaskResult(streak.OK, streak.Skipped || streak.Busy, streak.Error, auth.UID, result)
 			provider.invalidateGrowthSnapshot(auth.UID)
 		}
 	}
@@ -786,8 +790,9 @@ func (p *Provider) SchedulerStatus() map[string]any {
 	if budgetSeconds <= 0 {
 		budgetSeconds = int(tasksBudgetDefault.Seconds())
 	}
+	logs, doneSlots := p.schedulerActivitySnapshot(now, times)
 	dailyChat := map[string]any{
-		"times": times, "random": randomSlots, "done_slots": []string{},
+		"times": times, "random": randomSlots, "done_slots": doneSlots,
 		"next_slot": nextSlot, "live": []any{},
 		"budget_s": budgetSeconds, "abandoned": 0,
 	}
@@ -804,8 +809,60 @@ func (p *Provider) SchedulerStatus() map[string]any {
 		"quota_scans":   p.schedulerQuotaScans(now),
 		"daily_chat":    dailyChat,
 		"jobs":          jobs,
-		"logs":          []string{},
+		"logs":          logs,
 	}
+}
+
+// schedulerActivitySnapshot projects activity_history into the scheduler
+// panel's logs and today's completed daily-chat slots. This replaces the v1
+// in-memory scheduler log/round bookkeeping with the durable activity file.
+func (p *Provider) schedulerActivitySnapshot(now time.Time, times []string) ([]string, []string) {
+	activityLogMu.Lock()
+	rows, err := readActivityRowsLocked(p.activityHistoryPath())
+	activityLogMu.Unlock()
+	if err != nil {
+		return []string{}, []string{}
+	}
+	logs := make([]string, 0, len(rows))
+	done := map[string]bool{}
+	today := now.Format("2006-01-02")
+	for _, row := range rows {
+		status := "failed"
+		if row.OK {
+			status = "ok"
+		}
+		logs = append(logs, fmt.Sprintf("[%s] %s %s %s: %s", row.TS, row.Task, row.Trigger, status, row.Message))
+		if row.Task != taskDailyChatTask || !row.OK || row.Realm != realmIntl || activityDay(row.TS) != today {
+			continue
+		}
+		stamp, err := time.Parse(time.RFC3339, row.TS)
+		if err != nil {
+			continue
+		}
+		slot := latestConfiguredTime(times, stamp.Format("15:04"))
+		if slot != "" {
+			done[slot] = true
+		}
+	}
+	if len(logs) > 20 {
+		logs = logs[len(logs)-20:]
+	}
+	doneSlots := make([]string, 0, len(done))
+	for slot := range done {
+		doneSlots = append(doneSlots, slot)
+	}
+	sort.Strings(doneSlots)
+	return logs, doneSlots
+}
+
+func latestConfiguredTime(times []string, current string) string {
+	latest := ""
+	for _, slot := range times {
+		if slot <= current {
+			latest = slot
+		}
+	}
+	return latest
 }
 
 func (p *Provider) schedulerWindows(now time.Time) []map[string]any {

@@ -366,6 +366,20 @@ func TestJobsReportActivityCN(t *testing.T) {
 	}
 }
 
+func TestJobsBusyReportCountsSkipped(t *testing.T) {
+	f := newJobsFixture(t)
+	account := f.addTaskAccount(t, "cn-busy-report", true, true, false)
+	account.taskMu.Lock()
+	report, err := jobsByName(t, f.intl)["workbuddy-report-activity"].RunForce(context.Background())
+	account.taskMu.Unlock()
+	if err != nil {
+		t.Fatalf("busy report job: %v", err)
+	}
+	if report.Skipped != 1 || report.Failed != 0 || report.Succeeded != 0 {
+		t.Fatalf("busy report accounting = %+v, want skipped", report)
+	}
+}
+
 func TestJobsPanicContained(t *testing.T) {
 	f := newJobsFixture(t)
 	job := jobsByName(t, f.intl)["workbuddy-checkin"]
@@ -393,6 +407,13 @@ func TestJobsRunLockAndSchedulerPayload(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.dir, "quota_scan.json"), []byte(`{"scans":[{"uid":"uid-scan","model":"m2","next_at":4102444800,"last_result":"ok","attempts":1}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	activityRow, _ := json.Marshal(ActivityEvent{
+		TS: f.now.Format(time.RFC3339), UID: "uid-daily", Realm: realmIntl,
+		Task: taskDailyChatTask, Trigger: taskTriggerScheduler, OK: true, Message: "ok",
+	})
+	if err := os.WriteFile(filepath.Join(f.dir, "activity_history.jsonl"), append(activityRow, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	status := f.intl.SchedulerStatus()
 	for _, key := range []string{
 		"enabled", "mode", "mode_cn", "mode_intl", "last_run_time",
@@ -416,6 +437,12 @@ func TestJobsRunLockAndSchedulerPayload(t *testing.T) {
 		if _, exists := daily[key]; !exists {
 			t.Fatalf("daily_chat missing %q: %#v", key, daily)
 		}
+	}
+	if done := daily["done_slots"].([]string); len(done) != 1 || done[0] != "09:00" {
+		t.Fatalf("daily_chat done_slots = %#v", daily["done_slots"])
+	}
+	if logs := status["logs"].([]string); len(logs) != 1 || !strings.Contains(logs[0], "daily_chat") {
+		t.Fatalf("scheduler logs = %#v", logs)
 	}
 	f.setNow(time.Date(2026, 11, 9, 9, 1, 0, 0, time.Local))
 	if _, err := f.intl.RunJobs(context.Background(), "workbuddy-checkin", true); err != nil {

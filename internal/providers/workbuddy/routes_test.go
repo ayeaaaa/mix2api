@@ -313,6 +313,13 @@ func TestRoutesWorkBuddyAccountsRealmAndNoTokenLeak(t *testing.T) {
 	if len(wbRouteText(rows[0]["machineId"])) != 36 || len(wbRouteText(rows[0]["sessionId"])) != 36 {
 		t.Fatalf("account fingerprint ids = %q/%q", rows[0]["machineId"], rows[0]["sessionId"])
 	}
+	if rows[0]["softStreak"].(json.Number).String() != "0" ||
+		rows[0]["unscopedStreak"].(json.Number).String() != "0" ||
+		rows[0]["fails"].(json.Number).String() != "0" ||
+		rows[0]["failWindow"].(json.Number).String() != "600" ||
+		rows[0]["breakerFor"] != nil || rows[0]["degradeFor"] != nil || rows[0]["lastFailFor"] != nil {
+		t.Fatalf("account parity placeholders = %#v", rows[0])
+	}
 	assertWBNoSecret(t, "accounts", rec.Body.String(), "refresh-uid-intl", "refresh-uid-cn")
 
 	rec = f.do(http.MethodGet, "/accounts?realm=cn", nil)
@@ -648,6 +655,10 @@ func TestRoutesAccountsTestPinnedAndMulti(t *testing.T) {
 	if _, ok := network["ok"]; !ok {
 		t.Fatalf("multi probe network = %#v", network)
 	}
+	if wbRouteText(network["host"]) == "" || wbRouteText(network["ip"]) == "" ||
+		network["dns_ms"] == nil || network["tcp_ms"] == nil || network["ok"] != true {
+		t.Fatalf("multi probe network fields = %#v", network)
+	}
 	mu.Lock()
 	if seen["uid-probe-a"] != 2 || seen["uid-probe-b"] != 1 || seen["uid-probe-cn"] != 0 {
 		t.Fatalf("multi probe requests = %#v", seen)
@@ -698,6 +709,9 @@ func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
 	reset := decodeWBRoutesJSON(t, rec)
 	if reset["ok"] != true {
 		t.Fatalf("restriction reset = %#v", reset)
+	}
+	if !strings.Contains(wbRouteText(reset["message"]), "unchanged") {
+		t.Fatalf("restriction reset message overclaims: %q", reset["message"])
 	}
 }
 
@@ -755,6 +769,17 @@ func TestRoutesProductSemantics(t *testing.T) {
 	cnAccount.mu.RUnlock()
 	if cnProduct != productVSCode {
 		t.Fatalf("cn product = %q by uid", cnProduct)
+	}
+	rec = f.do(http.MethodPost, "/accounts/product", map[string]any{"product": "workbuddy"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk product status=%d body=%s", rec.Code, rec.Body)
+	}
+	body = decodeWBRoutesJSON(t, rec)
+	if len(body["changed"].([]any)) != 2 {
+		t.Fatalf("bulk product changed = %#v", body["changed"])
+	}
+	if accounts := wbRouteObjects(t, body["accounts"]); len(accounts) != 2 {
+		t.Fatalf("bulk product response scope = %#v", body["accounts"])
 	}
 }
 
@@ -969,6 +994,238 @@ func TestRoutesDailyChatSkipsWebOnDesktopRestriction(t *testing.T) {
 	}
 	if got := fake.count(http.MethodPost, "/console/as/conversations/"); got != 0 {
 		t.Fatalf("web conversation created after desktop restriction: %d", got)
+	}
+}
+
+func TestRoutesDailyChatWebFailureRetriesAndKeepsOneRow(t *testing.T) {
+	webFail := true
+	_, provider, pool, _ := setupDailyWebFake(t, realmIntl, func(_ *taskTestUpstream, _ int) (int, any) {
+		if webFail {
+			return http.StatusServiceUnavailable, map[string]any{"code": 14220, "msg": "try later"}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"id": "conv-1"}}
+	})
+	account := accountByUID(t, pool, "web-daily")
+	first, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual)
+	if err != nil {
+		t.Fatalf("first runDailyActivity: %v", err)
+	}
+	if first.OK || first.Web == nil || first.Web.OK {
+		t.Fatalf("first result = %+v, want web failure", first)
+	}
+	account.mu.RLock()
+	stamped := account.Auth.LastDailyChat
+	account.mu.RUnlock()
+	if stamped != "" {
+		t.Fatalf("failed web leg stamped lastDailyChat = %q", stamped)
+	}
+	rows := readActivityLines(t, provider.activityHistoryPath())
+	if len(rows) != 1 || rows[0].OK || !strings.Contains(rows[0].Message, "网页通道失败") {
+		t.Fatalf("first activity rows = %+v", rows)
+	}
+
+	webFail = false
+	second, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual)
+	if err != nil {
+		t.Fatalf("retry runDailyActivity: %v", err)
+	}
+	if !second.OK || second.Web == nil || !second.Web.OK {
+		t.Fatalf("retry result = %+v, want success", second)
+	}
+	account.mu.RLock()
+	stamped = account.Auth.LastDailyChat
+	account.mu.RUnlock()
+	if !strings.HasPrefix(stamped, time.Now().Format("2006-01-02")) {
+		t.Fatalf("retry lastDailyChat = %q", stamped)
+	}
+	rows = readActivityLines(t, provider.activityHistoryPath())
+	if len(rows) != 1 || !rows[0].OK || !strings.Contains(rows[0].Message, "网页通道") {
+		t.Fatalf("retry activity rows = %+v, want one replaced success row", rows)
+	}
+}
+
+func readActivityLines(t *testing.T, path string) []ActivityEvent {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read activity history: %v", err)
+	}
+	rows := []ActivityEvent{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var row ActivityEvent
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("decode activity row %q: %v", line, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func TestRoutesAccountsTestExpiredTokenRefreshAnd401Retry(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	expired := Auth{
+		UID: "uid-expired", Nickname: "Expired", Realm: realmIntl,
+		AccessToken:  wbRouteToken(t, "uid-expired", realmIntl),
+		RefreshToken: "refresh-expired", Platform: "CLI", Source: sourceOAuth,
+		Enabled: true, EnabledSet: true, TasksEnabled: true, TasksEnabledSet: true,
+		ExpiresAt: time.Now().Add(-time.Hour),
+	}
+	if _, err := f.intl.Pool().Add(expired); err != nil {
+		t.Fatalf("add expired account: %v", err)
+	}
+	wbRouteAddAccount(t, f.intl, "uid-401", realmIntl, nil)
+	rotated := wbRouteToken(t, "uid-expired", realmIntl)
+	rotated401 := wbRouteToken(t, "uid-401", realmIntl)
+	var refreshCalls, chat401Calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == tokenRefreshPath {
+			refreshCalls++
+			token := rotated
+			if r.Header.Get("X-User-Id") == "uid-401" {
+				token = rotated401
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"accessToken": token, "refreshToken": "rotated", "expiresAt": 4102444800000,
+			}})
+			return
+		}
+		if r.Header.Get("X-User-Id") == "uid-401" {
+			chat401Calls++
+			if chat401Calls == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":"expired"}`)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.chatBaseURL = server.URL
+		provider.chatDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
+			return server.Client().Do(req)
+		})
+	}
+	f.intl.tokenBaseURL = server.URL
+
+	rec := f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": "uid-expired"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expired probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	row := decodeWBRoutesJSON(t, rec)
+	if row["ok"] != true || wbRouteText(row["reply"]) != "ok" {
+		t.Fatalf("expired probe = %#v", row)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("expired probe refresh calls = %d, want 1", refreshCalls)
+	}
+
+	rec = f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": "uid-401"})
+	row = decodeWBRoutesJSON(t, rec)
+	if row["ok"] != true || wbRouteText(row["reply"]) != "ok" {
+		t.Fatalf("401 probe = %#v", row)
+	}
+	if chat401Calls != 2 || refreshCalls != 2 {
+		t.Fatalf("401 probe chat=%d refresh=%d, want exactly one retry", chat401Calls, refreshCalls)
+	}
+}
+
+func TestRoutesAccountsTestPropagatesAbortedSSE(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	account := wbRouteAddAccount(t, f.intl, "uid-abort", realmIntl, nil)
+	account.mu.Lock()
+	account.State.ErrCount = 2
+	account.mu.Unlock()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", "500")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+	}))
+	t.Cleanup(server.Close)
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.chatBaseURL = server.URL
+		provider.chatDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
+			return server.Client().Do(req)
+		})
+	}
+	rec := f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": "uid-abort"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("aborted probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	row := decodeWBRoutesJSON(t, rec)
+	if row["ok"] != false || row["status"].(json.Number).String() == "200" || wbRouteText(row["error"]) == "" {
+		t.Fatalf("aborted probe row = %#v", row)
+	}
+	account.mu.RLock()
+	fails := account.State.ErrCount
+	account.mu.RUnlock()
+	if fails != 2 {
+		t.Fatalf("aborted stream changed success/error counters: fails=%d", fails)
+	}
+}
+
+func TestRoutesPanelPhoneMaskBoundaries(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	account := wbRouteAddAccount(t, f.intl, "uid-phone-mask", realmIntl, nil)
+	account.mu.Lock()
+	account.Auth.Nickname = "老王 138-1234-5678"
+	account.mu.Unlock()
+	long := wbRouteAddAccount(t, f.intl, "uid-long-digits", realmIntl, nil)
+	long.mu.Lock()
+	long.Auth.Nickname = "13812345678901234567890"
+	long.mu.Unlock()
+	order := wbRouteAddAccount(t, f.cn, "uid-order-id", realmCN, nil)
+	order.mu.Lock()
+	order.Auth.Nickname = "6ef20bf4-76fa-4085-b179-97517476cc1e"
+	order.mu.Unlock()
+
+	rec := f.do(http.MethodGet, "/accounts", nil)
+	rows := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	byUID := map[string]map[string]any{}
+	for _, row := range rows {
+		byUID[wbRouteText(row["uid"])] = row
+	}
+	if got := wbRouteText(byUID["uid-phone-mask"]["nickname"]); got != "老王 138****5678" {
+		t.Fatalf("single-account nickname = %q", got)
+	}
+	if got := wbRouteText(byUID["uid-long-digits"]["nickname"]); got != "13812345678901234567890" {
+		t.Fatalf("long digit nickname was masked: %q", got)
+	}
+
+	rec = f.do(http.MethodGet, "/accounts?realm=cn", nil)
+	rows = wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	if got := wbRouteText(rows[0]["nickname"]); got != "6ef20bf4-76fa-4085-b179-97517476cc1e" {
+		t.Fatalf("order id nickname was masked: %q", got)
+	}
+	nested := maskPanelNames(map[string]any{
+		"account": map[string]any{"nickname": "13812345678"},
+		"uid":     "6ef20bf4-76fa-4085-b179-97517476cc1e",
+	}).(map[string]any)
+	accountMap := nested["account"].(map[string]any)
+	if wbRouteText(accountMap["nickname"]) != "138****5678" {
+		t.Fatalf("nested account nickname = %#v", accountMap)
+	}
+	if wbRouteText(nested["uid"]) != "6ef20bf4-76fa-4085-b179-97517476cc1e" {
+		t.Fatalf("identity uid was masked: %#v", nested["uid"])
+	}
+}
+
+func TestRoutesActivityReadErrorIsNotSilentlyEmpty(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	dir := filepath.Join(f.dir, "activity-as-dir")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.intl.SetActivityPath(dir)
+	rec := f.do(http.MethodGet, "/activity/history?range=all", nil)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "unreadable") {
+		t.Fatalf("unreadable activity status=%d body=%s", rec.Code, rec.Body)
 	}
 }
 

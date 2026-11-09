@@ -113,35 +113,39 @@ type ModelCooldownView struct {
 // AccountView is the v1-compatible public account row. It intentionally has
 // no access/refresh token fields, no raw proxy URL, and no unredacted errors.
 type AccountView struct {
-	UID                  string              `json:"uid"`
-	Nickname             string              `json:"nickname"`
-	Domain               string              `json:"domain"`
-	Realm                string              `json:"realm"`
-	Platform             string              `json:"platform"`
-	Product              string              `json:"product"`
-	EnterpriseID         string              `json:"enterpriseId"`
-	Enabled              bool                `json:"enabled"`
-	TasksEnabled         bool                `json:"tasksEnabled"`
-	Weight               int                 `json:"weight"`
-	Note                 string              `json:"note"`
-	Group                string              `json:"group"`
-	DisabledModels       []string            `json:"disabledModels"`
-	Source               string              `json:"source"`
-	APIKey               bool                `json:"apiKey"`
-	CredentialMask       string              `json:"credentialMask"`
-	ProxySlot            string              `json:"proxySlot"`
-	Proxy                string              `json:"proxy"`
-	ExpiresAt            int64               `json:"expiresAt"`
-	ExpiresIn            any                 `json:"expiresIn"`
-	TokenExpired         bool                `json:"tokenExpired"`
-	NeedRelogin          bool                `json:"needRelogin"`
-	HasRefreshToken      bool                `json:"hasRefreshToken"`
-	Reason               string              `json:"reason"`
-	LastError            string              `json:"lastError"`
-	LastErrorDetail      any                 `json:"lastErrorDetail"`
-	InCooldown           bool                `json:"inCooldown"`
-	CooldownFor          any                 `json:"cooldownFor"`
-	RestrictedFor        any                 `json:"restrictedFor"`
+	UID             string   `json:"uid"`
+	Nickname        string   `json:"nickname"`
+	Domain          string   `json:"domain"`
+	Realm           string   `json:"realm"`
+	Platform        string   `json:"platform"`
+	Product         string   `json:"product"`
+	EnterpriseID    string   `json:"enterpriseId"`
+	Enabled         bool     `json:"enabled"`
+	TasksEnabled    bool     `json:"tasksEnabled"`
+	Weight          int      `json:"weight"`
+	Note            string   `json:"note"`
+	Group           string   `json:"group"`
+	DisabledModels  []string `json:"disabledModels"`
+	Source          string   `json:"source"`
+	APIKey          bool     `json:"apiKey"`
+	CredentialMask  string   `json:"credentialMask"`
+	ProxySlot       string   `json:"proxySlot"`
+	Proxy           string   `json:"proxy"`
+	ExpiresAt       int64    `json:"expiresAt"`
+	ExpiresIn       any      `json:"expiresIn"`
+	TokenExpired    bool     `json:"tokenExpired"`
+	NeedRelogin     bool     `json:"needRelogin"`
+	HasRefreshToken bool     `json:"hasRefreshToken"`
+	Reason          string   `json:"reason"`
+	LastError       string   `json:"lastError"`
+	LastErrorDetail any      `json:"lastErrorDetail"`
+	InCooldown      bool     `json:"inCooldown"`
+	CooldownFor     any      `json:"cooldownFor"`
+	RestrictedFor   any      `json:"restrictedFor"`
+	// v1's soft/unscoped rate-limit ladders and breaker/degrade windows are
+	// not modeled by v2's simpler account breaker. These fields stay zero/nil
+	// for panel shape compatibility; Fails and FailWindow are real (the current
+	// consecutive-error count and the v1 600s failure window).
 	SoftStreak           int                 `json:"softStreak"`
 	UnscopedStreak       int                 `json:"unscopedStreak"`
 	BreakerFor           any                 `json:"breakerFor"`

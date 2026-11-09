@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -137,7 +139,7 @@ func writeWBAdminJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(body)
 }
 
-var panelPhonePattern = regexp.MustCompile(`(1[3-9]\d)[- .·]?\d{4}[- .·]?(\d{4})`)
+var panelPhonePattern = regexp.MustCompile(`(1[3-9]\d)[ \t\-.·]?(\d{4})[ \t\-.·]?(\d{4})`)
 
 var panelIdentityKeys = map[string]bool{
 	"uid": true, "account": true, "accountId": true, "id": true,
@@ -145,20 +147,52 @@ var panelIdentityKeys = map[string]bool{
 	"key": true, "token": true, "accessToken": true, "refreshToken": true,
 }
 
+func panelIdentifierByte(value byte) bool {
+	return value == '_' || (value >= '0' && value <= '9') ||
+		(value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
+}
+
+func maskPanelPhoneText(text string) string {
+	matches := panelPhonePattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+	var builder strings.Builder
+	last := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if (start > 0 && panelIdentifierByte(text[start-1])) ||
+			(end < len(text) && panelIdentifierByte(text[end])) {
+			continue
+		}
+		builder.WriteString(text[last:start])
+		builder.WriteString(text[match[2]:match[3]])
+		builder.WriteString("****")
+		builder.WriteString(text[match[6]:match[7]])
+		last = end
+	}
+	builder.WriteString(text[last:])
+	return builder.String()
+}
+
 // maskPanelNames mirrors v1's panel-side nickname masking: phone numbers in
 // nickname fields and in preformatted strings are masked (138****5678) while
-// identity keys are never rewritten. Export documents use the same response
-// writer, matching v1's export redaction.
+// identity keys are never rewritten. Only a string value directly under an
+// identity key is skipped; nested objects under that key are still projected.
+// Export documents use the same response writer, matching v1's export
+// redaction.
 func maskPanelNames(value any) any {
 	switch typed := value.(type) {
 	case string:
-		return panelPhonePattern.ReplaceAllString(typed, "$1****$2")
+		return maskPanelPhoneText(typed)
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, item := range typed {
 			if panelIdentityKeys[key] {
-				out[key] = item
-				continue
+				if _, ok := item.(string); ok {
+					out[key] = item
+					continue
+				}
 			}
 			out[key] = maskPanelNames(item)
 		}
@@ -1503,19 +1537,18 @@ func (p *Provider) handleAccountsDailyChat(w http.ResponseWriter, r *http.Reques
 // actually succeeded. A desktop account-level restriction skips the web leg.
 // Both activity events are recorded here (Task 8 de-duplicates per day).
 func (p *Provider) runDailyActivity(ctx context.Context, account *Account, trigger string) (DailyResult, error) {
+	auth := taskAuthSnapshot(account)
+	previousLastDailyChat := auth.LastDailyChat
 	result, err := p.runDailyChat(ctx, account, trigger)
-	p.recordActivity(result.Activity)
 	if err != nil {
+		p.recordDailyActivity(result.Activity)
 		return result, err
 	}
-	if result.Restricted || !result.OK || result.Skipped {
-		return result, nil
-	}
-	if !p.dailyChatWebEnabled() {
+	if result.Restricted || !result.OK || result.Skipped || !p.dailyChatWebEnabled() {
+		p.recordDailyActivity(result.Activity)
 		return result, nil
 	}
 	web, webErr := p.runDailyChatWeb(ctx, account, trigger)
-	p.recordActivity(web.Activity)
 	result.Web = &DailyWebResult{
 		OK: web.OK, Skipped: web.Skipped, Conversation: web.Conversation,
 		Status: web.Status, Model: web.Model, Events: web.Events, Chunks: web.Chunks,
@@ -1523,19 +1556,50 @@ func (p *Provider) runDailyActivity(ctx context.Context, account *Account, trigg
 		Phase: web.Phase, BudgetExhausted: web.BudgetExhausted, Retryable: web.Retryable,
 		Msg: web.Msg, Error: web.Error,
 	}
-	if webErr != nil {
+	now := p.taskNowTime()
+	if webErr != nil || !web.OK {
+		message := firstNonEmpty(web.Error, "未知错误")
+		if webErr != nil {
+			message = safeJobError(webErr)
+		}
 		result.OK = false
-		result.Error = "网页通道失败：" + safeJobError(webErr)
-		result.Msg = result.Error
-		return result, nil
-	}
-	if !web.OK {
-		result.OK = false
-		result.Error = "网页通道失败：" + firstNonEmpty(web.Error, "未知错误")
+		result.Error = "网页通道失败：" + message
 		result.Msg = "每日活跃对话未完成（" + result.Error + "）"
+		// The desktop leg stamped LastDailyChat before the web result existed.
+		// A failed web leg must remain retryable, so put the previous stamp back
+		// and mark the daily activity outcome as failed.
+		p.restoreLastDailyChat(account, previousLastDailyChat)
+		_ = p.persistDailyEventMarker(account, now, false)
+		result.Activity = p.newActivity(account, taskDailyChatTask, trigger, false, result.Msg)
+		p.recordDailyActivity(result.Activity)
 		return result, nil
 	}
+	message := result.Msg
+	if !web.Skipped {
+		message = fmt.Sprintf("每日活跃对话成功完成（网页通道 %s：%d 段输出，%d ms）",
+			firstNonEmpty(web.Status, "completed"), web.Chunks, web.ElapsedMS)
+	}
+	result.Msg = message
+	result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, message)
+	_ = p.persistDailyEventMarker(account, now, true)
+	p.recordDailyActivity(result.Activity)
 	return result, nil
+}
+
+func (p *Provider) restoreLastDailyChat(account *Account, previous string) {
+	if p == nil || account == nil {
+		return
+	}
+	uid := account.UID()
+	if uid == "" || p.Pool() == nil {
+		account.mu.Lock()
+		account.Auth.LastDailyChat = previous
+		account.mu.Unlock()
+		return
+	}
+	_ = p.Pool().mutateAccount(uid, func(account *Account) {
+		account.Auth.LastDailyChat = previous
+	})
 }
 
 func (p *Provider) dailyTargets(payload map[string]any) ([]*Account, *wbAdminError) {
@@ -2225,21 +2289,20 @@ func (p *Provider) handleAccountsProduct(w http.ResponseWriter, r *http.Request)
 	}
 	uid := wbAdminText(payload["uid"])
 	realmSelector := wbRequestRealm(r, payload, "")
-	providersList, failure := p.routeProviders(realmSelector, realmIntl)
+	if uid == "" && realmSelector == "" {
+		realmSelector = "all"
+	}
+	providersList, failure := p.routeProviders(realmSelector, "all")
 	if failure != nil {
 		writeWBAdminError(w, failure)
 		return
-	}
-	realm := realmSelector
-	if realm == "" {
-		realm = realmIntl
 	}
 	if uid != "" {
 		provider, account := p.providerForUID(uid, realmSelector)
 		if account == nil {
 			writeWBAdminJSON(w, http.StatusOK, map[string]any{
 				"ok": true, "product": target, "changed": []string{},
-				"accounts": p.importAccountsViews(realm),
+				"accounts": accountViewsForProviders(p.allProviders()),
 			})
 			return
 		}
@@ -2262,8 +2325,19 @@ func (p *Provider) handleAccountsProduct(w http.ResponseWriter, r *http.Request)
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "product": target, "changed": changed,
-		"accounts": p.importAccountsViews(realm),
+		"accounts": accountViewsForProviders(providersList),
 	})
+}
+
+func accountViewsForProviders(providersList []*Provider) []AccountView {
+	out := make([]AccountView, 0)
+	for _, provider := range providersList {
+		if pool := provider.Pool(); pool != nil {
+			out = append(out, pool.List()...)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+	return out
 }
 
 func (p *Provider) handleAccountsDelete(w http.ResponseWriter, r *http.Request) {
@@ -2461,25 +2535,15 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, wire)
 	}
-	passed, failedCount, networkFailures := 0, 0, 0
+	passed, failedCount := 0, 0
 	for _, row := range rows {
 		if row["ok"] == true {
 			passed++
 		} else {
 			failedCount++
-			if row["network"] == true {
-				networkFailures++
-			}
 		}
 	}
-	network := map[string]any{
-		"realm": realm, "url": provider.EndpointFor(productDesktop),
-		"host": "", "ip": "", "ok": networkFailures == 0,
-		"dns_ms": nil, "tcp_ms": nil, "error": "",
-	}
-	if networkFailures > 0 && passed == 0 {
-		network["error"] = "所有账号都报告本机网络不可用"
-	}
+	network := provider.probeNetwork(r.Context(), realm)
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"summary": map[string]any{
@@ -2491,6 +2555,52 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 		"results":  rows,
 		"accounts": provider.Pool().List(),
 	})
+}
+
+func (p *Provider) probeNetwork(ctx context.Context, realm string) map[string]any {
+	info := map[string]any{
+		"realm": realm, "url": p.chatURLFor(productDesktop), "host": "", "ip": "",
+		"ok": false, "dns_ms": nil, "tcp_ms": nil, "error": "",
+	}
+	parsed, err := url.Parse(strings.TrimSpace(wbAdminText(info["url"])))
+	if err != nil || parsed.Hostname() == "" {
+		info["error"] = "upstream URL has no host"
+		return info
+	}
+	host := parsed.Hostname()
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	info["host"] = host
+	probeCtx, cancel := context.WithTimeout(nonNilContext(ctx), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	addresses, err := net.DefaultResolver.LookupHost(probeCtx, host)
+	info["dns_ms"] = time.Since(started).Milliseconds()
+	if err != nil || len(addresses) == 0 {
+		if err == nil {
+			err = errors.New("no DNS addresses")
+		}
+		info["error"] = "DNS 解析失败：" + safeJobError(err)
+		return info
+	}
+	info["ip"] = addresses[0]
+	started = time.Now()
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(probeCtx, "tcp", net.JoinHostPort(addresses[0], port))
+	info["tcp_ms"] = time.Since(started).Milliseconds()
+	if err != nil {
+		info["error"] = "TCP 连接失败：" + safeJobError(err)
+		return info
+	}
+	_ = conn.Close()
+	info["ok"] = true
+	return info
 }
 
 func (p *Provider) probeAccount(ctx context.Context, account *Account, model string) (map[string]any, error) {
@@ -2519,6 +2629,15 @@ func (p *Provider) probeAccount(ctx context.Context, account *Account, model str
 	}
 	probeCtx, cancel := context.WithTimeout(nonNilContext(ctx), 20*time.Second)
 	defer cancel()
+	if err := p.EnsureToken(probeCtx, account); err != nil {
+		row["elapsed_ms"] = time.Since(started).Milliseconds()
+		row["status"] = http.StatusBadGateway
+		row["error"] = p.redactTokenErrorText(account, err.Error())
+		account.mu.RLock()
+		row["fails"] = account.State.ErrCount
+		account.mu.RUnlock()
+		return row, nil
+	}
 	cfg := p.refreshChatConfig()
 	baseBody, resolvedModel, err := p.buildChatBody(req)
 	if err != nil {
@@ -2533,7 +2652,23 @@ func (p *Provider) probeAccount(ctx context.Context, account *Account, model str
 		row["error"] = "account concurrency is full"
 		return row, nil
 	}
-	stream, err := p.sendChatOnce(probeCtx, account, baseBody, resolvedModel, req, cfg, newTurnRequestID(), newMessageID())
+	send := func() (*chatStream, error) {
+		return p.sendChatOnce(probeCtx, account, baseBody, resolvedModel, req, cfg,
+			newTurnRequestID(), newMessageID())
+	}
+	stream, err := send()
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr != nil && apiErr.Kind == KindAuth {
+			// A probe is explicitly allowed one credential refresh, exactly like
+			// the chat path's second 401 attempt. It stays pinned to this account.
+			if refreshErr := p.ForceRefresh(probeCtx, account); refreshErr == nil {
+				stream, err = send()
+			} else {
+				err = refreshErr
+			}
+		}
+	}
 	if err != nil {
 		p.Pool().Release(account)
 		row["elapsed_ms"] = time.Since(started).Milliseconds()
@@ -2559,7 +2694,25 @@ func (p *Provider) probeAccount(ctx context.Context, account *Account, model str
 		return row, nil
 	}
 	defer stream.Close()
-	reply := aggregateProbeReply(stream)
+	reply, readErr := aggregateProbeReply(stream)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		row["elapsed_ms"] = time.Since(started).Milliseconds()
+		var apiErr *APIError
+		if errors.As(readErr, &apiErr) && apiErr != nil {
+			row["status"] = apiErr.Status
+			row["error"] = firstNonEmpty(apiErr.SafeMessage(), "upstream chat stream aborted")
+			if apiErr.Kind == KindNetwork {
+				row["network"] = true
+			}
+		} else {
+			row["status"] = http.StatusBadGateway
+			row["error"] = wbSafeErrorText(readErr)
+		}
+		account.mu.RLock()
+		row["fails"] = account.State.ErrCount
+		account.mu.RUnlock()
+		return row, nil
+	}
 	_ = p.Pool().NoteSuccess(account, resolvedModel)
 	row["ok"] = true
 	row["status"] = http.StatusOK
@@ -2577,14 +2730,14 @@ func (p *Provider) probeAccount(ctx context.Context, account *Account, model str
 	return row, nil
 }
 
-func aggregateProbeReply(stream providers.ChatStream) string {
+func aggregateProbeReply(stream providers.ChatStream) (string, error) {
 	var builder strings.Builder
 	for i := 0; i < 256; i++ {
 		frame, err := stream.Next()
 		if len(frame) > 0 {
 			data := strings.TrimSpace(streamSSEData(frame))
 			if data == "[DONE]" {
-				break
+				return strings.TrimSpace(builder.String()), nil
 			}
 			var payload map[string]any
 			if json.Unmarshal([]byte(data), &payload) == nil {
@@ -2603,12 +2756,14 @@ func aggregateProbeReply(stream providers.ChatStream) string {
 			}
 		}
 		if err != nil {
-			break
+			if errors.Is(err, io.EOF) {
+				return strings.TrimSpace(builder.String()), nil
+			}
+			return strings.TrimSpace(builder.String()), err
 		}
 	}
-	return strings.TrimSpace(builder.String())
+	return strings.TrimSpace(builder.String()), nil
 }
-
 func (p *Provider) handleAccountsEnable(w http.ResponseWriter, r *http.Request) {
 	payload, failure := readWBAdminPayload(w, r)
 	if failure != nil {
@@ -2691,7 +2846,7 @@ func (p *Provider) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (p *Provider) handleSettingsRestrictionReset(w http.ResponseWriter, r *http.Request) {
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok":                true,
-		"message":           "风控连坐暂停已立即解除 / Restriction hold cleared",
+		"message":           "v2 has no cross-account restriction-hold state; per-account restriction windows are unchanged",
 		"restriction_holds": map[string]any{},
 	})
 }
