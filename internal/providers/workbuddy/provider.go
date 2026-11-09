@@ -56,6 +56,13 @@ type Provider struct {
 	oauthStartTimeout   time.Duration
 	oauthTokenTimeout   time.Duration
 	oauthProfileTimeout time.Duration
+
+	// poolOnce/pool own this realm's account pool. New initializes it eagerly
+	// so an unreadable accounts directory is reported at construction;
+	// NewPool is idempotent for later callers.
+	poolOnce sync.Once
+	pool     *Pool
+	poolErr  error
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
@@ -74,13 +81,18 @@ func New(realm string, store *config.Store) (*Provider, error) {
 		return nil, errors.New("workbuddy: accounts directory is empty")
 	}
 
-	return &Provider{
+	provider := &Provider{
 		realm:       normalized,
 		store:       store,
 		accountsDir: accountsDir,
 		cfg:         LoadConfig(store, normalized),
 		transport:   transport.NewClient(transport.ClientOptions{RefuseRedirects: true}),
-	}, nil
+	}
+	provider.NewPool()
+	if provider.poolErr != nil {
+		return nil, provider.poolErr
+	}
+	return provider, nil
 }
 
 // ID returns the stable provider instance identifier.
