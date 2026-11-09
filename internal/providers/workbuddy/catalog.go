@@ -71,7 +71,7 @@ type CatalogMeta struct {
 type CatalogResult struct {
 	OK         bool    `json:"ok"`
 	Realm      string  `json:"realm"`
-	Source     string  `json:"source"`
+	Source     *string `json:"source"`
 	Count      int     `json:"count"`
 	Cooldown   bool    `json:"cooldown,omitempty"`
 	RetryAfter float64 `json:"retry_after,omitempty"`
@@ -469,6 +469,10 @@ func mergeCatalog(primary []catalogEntry, realm string, extras bool) []catalogEn
 			merged[item.ID] = base
 		}
 		live := cloneMeta(item.Meta)
+		// Capture the bundled reasoning block before the live overlay replaces
+		// it. A live entry often carries only a bare "effort" while the
+		// bundled table still knows the selectable effort list.
+		baseReasoning := base["reasoning"]
 		// A live x0.00 placeholder must not downgrade a model the bundled
 		// table knows is paid (v1 issue #774).
 		if creditsIsFree(live["credits"]) && metaText(base["credits"]) != "" && !creditsIsFree(base["credits"]) {
@@ -478,13 +482,13 @@ func mergeCatalog(primary []catalogEntry, realm string, extras bool) []catalogEn
 			base[key] = value
 		}
 		if liveReasoning, ok := metaMap(item.Meta["reasoning"]); ok {
-			base["reasoning"] = mergeReasoning(base["reasoning"], liveReasoning)
+			base["reasoning"] = mergeReasoning(baseReasoning, liveReasoning)
 		}
 	}
 
 	out := make([]catalogEntry, 0, len(merged))
 	seen := make(map[string]bool, len(merged))
-	for _, id := range catalogUIOrder(realm) {
+	for _, id := range effectiveCatalogUIOrder(realm, primaryIDs) {
 		if item, ok := merged[id]; ok && !seen[id] {
 			seen[id] = true
 			out = append(out, catalogEntry{ID: id, Meta: item})
@@ -508,6 +512,23 @@ func mergeCatalog(primary []catalogEntry, realm string, extras bool) []catalogEn
 		}
 	}
 	return out
+}
+
+// effectiveCatalogUIOrder applies v1's hy4-preview remap: when the live
+// catalogue lists the paid plain name but not the free -f sibling, the first
+// UI slot (which normally holds hy4-preview-f) advertises hy4-preview. The
+// same remap runs for remote and legacy desktop lists because both pass
+// through mergeCatalog.
+func effectiveCatalogUIOrder(realm string, primaryIDs map[string]bool) []string {
+	order := append([]string(nil), catalogUIOrder(realm)...)
+	if primaryIDs["hy4-preview"] && !primaryIDs["hy4-preview-f"] {
+		for i, id := range order {
+			if id == "hy4-preview-f" {
+				order[i] = "hy4-preview"
+			}
+		}
+	}
+	return order
 }
 
 func mergeReasoning(base any, live map[string]any) map[string]any {
@@ -635,7 +656,7 @@ func (p *Provider) loadCatalog(ctx context.Context, previous catalogSnapshot) ([
 
 func (p *Provider) fetchRemoteCatalog(ctx context.Context) ([]catalogEntry, bool) {
 	account, ok := p.representativeCatalogAccount()
-	if !ok {
+	if !ok || account.AccessToken == "" {
 		return nil, false
 	}
 	url := p.catalogURL()
@@ -851,12 +872,15 @@ func (p *Provider) representativeCatalogAccount() (catalogAccountSnapshot, bool)
 	if p == nil || p.pool == nil {
 		return catalogAccountSnapshot{}, false
 	}
+	var first *Account
 	for _, account := range p.pool.Accounts() {
+		if account == nil {
+			continue
+		}
 		account.mu.RLock()
-		valid := !account.removed &&
+		removed := account.removed
+		valid := !removed &&
 			account.Auth.Realm == p.realm &&
-			account.Auth.Enabled &&
-			!account.State.Disabled &&
 			strings.TrimSpace(account.Auth.AccessToken) != ""
 		snapshot := catalogAccountSnapshot{
 			UID:         strings.TrimSpace(account.Auth.UID),
@@ -866,16 +890,36 @@ func (p *Provider) representativeCatalogAccount() (catalogAccountSnapshot, bool)
 			Account:     account,
 		}
 		account.mu.RUnlock()
+		if removed {
+			continue
+		}
+		if first == nil {
+			first = account
+		}
 		if valid {
 			return snapshot, true
 		}
+	}
+	// v1 representative() falls back to the first realm candidate even when
+	// it has no token; the fetch then fails softly and the caller falls back.
+	if first != nil {
+		first.mu.RLock()
+		snapshot := catalogAccountSnapshot{
+			UID:         strings.TrimSpace(first.Auth.UID),
+			AccessToken: strings.TrimSpace(first.Auth.AccessToken),
+			APIKey:      first.Auth.APIKey || IsAPIKeyToken(first.Auth.AccessToken),
+			ProxyURL:    strings.TrimSpace(first.Auth.ProxyURL),
+			Account:     first,
+		}
+		first.mu.RUnlock()
+		return snapshot, true
 	}
 	return catalogAccountSnapshot{}, false
 }
 
 func (p *Provider) hasUsableCatalogAccount() bool {
-	_, ok := p.representativeCatalogAccount()
-	return ok
+	account, ok := p.representativeCatalogAccount()
+	return ok && account.AccessToken != ""
 }
 
 func (p *Provider) catalogURL() string {
@@ -918,9 +962,8 @@ func (p *Provider) catalogHeaders(account catalogAccountSnapshot, ua string) htt
 	headers.Set("Origin", origin)
 	headers.Set("Referer", origin+"/")
 	headers.Set("Authorization", "Bearer "+account.AccessToken)
-	if account.UID != "" {
-		headers.Set("X-User-Id", account.UID)
-	}
+	// v1 writes X-User-Id unconditionally, including an empty uid.
+	headers.Set("X-User-Id", account.UID)
 	if account.APIKey {
 		// A static API key must send both auth headers. Authorization alone
 		// made the endpoint omit four models while still answering HTTP 200.
@@ -990,10 +1033,11 @@ func (p *Provider) RefreshCatalog(ctx context.Context) (CatalogResult, error) {
 	}
 	p.storeCatalog(entries, "remote", p.catalogNowTime(), nil)
 	p.applyProOnlyModels()
+	source := "remote"
 	return CatalogResult{
 		OK:     true,
 		Realm:  p.realm,
-		Source: "remote",
+		Source: &source,
 		Count:  len(entries),
 		Msg:    "已从上游 API 更新清单，共 " + strconv.Itoa(len(entries)) + " 个模型",
 	}, nil
@@ -1232,6 +1276,7 @@ func wireModelEntry(modelID string, meta map[string]any, realm string, created i
 		entitlement := map[string]any{
 			"source":   "catalog",
 			"required": "standard",
+			"at":       nil,
 		}
 		if at, ok := ingestedAt(realm); ok {
 			entitlement["at"] = at.Unix()

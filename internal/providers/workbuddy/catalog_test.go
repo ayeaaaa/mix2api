@@ -3,8 +3,10 @@ package workbuddy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -48,6 +50,36 @@ func anyStringList(values []string) []any {
 		out[i] = value
 	}
 	return out
+}
+
+var v1IntlStaticIDs = []string{
+	"default-model", "fast-model", "balanced-model", "primary-model",
+	"deepseek-v4.1-flash", "deepseek-v4.1-flash-sg", "glm-5.3-flash",
+	"gpt-6-astra", "hy4-preview", "hy3", "gpt-5.6-sol", "gpt-5.6-terra",
+	"gpt-5.6-luna", "glm-5.3", "minimax-m3.1-flash", "kimi-k3.1-pro",
+	"kimi-k3.1-pro-highspeed", "kimi-k3", "grok-4.7", "gemini-3.8-flash",
+	"gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol",
+}
+
+var v1CNStaticIDs = []string{
+	"hy3", "hy3-x", "hy4-preview", "hy4-preview-dev", "hy4-preview-f",
+	"hy4-preview-x", "minimax-m2.5", "glm-5v-turbo", "glm-5.3",
+	"glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5.0-turbo", "glm-4.6v",
+	"kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "kimi-k2.6",
+	"kimi-k2.5", "kimi-k2-thinking", "minimax-m3", "minimax-m2.7",
+	"glm-4.6", "deepseek-v4-flash", "deepseek-v4.1-flash",
+	"deepseek-v4-pro", "deepseek-v3-2-volc", "deepseek-v3-1-volc",
+	"deepseek-v3-1-lkeap", "deepseek-v3-1", "deepseek-v3-0324-lkeap",
+	"deepseek-r1-0528-lkeap", "kimi-k2-instruct-taiji", "default-1.1",
+	"deepseek-r1-0528", "deepseek-v3-0324", "default-1.2",
+	"hunyuan-2.0-instruct", "hunyuan-chat",
+}
+
+var v1CNLiveIDs = []string{
+	"auto", "hy4-preview", "hy3", "hy3-x", "deepseek-v4.1-flash",
+	"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo",
+	"minimax-m3", "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7",
+	"kimi-k2.6", "deepseek-v4-pro",
 }
 
 func catalogPayload(ids []string, meta map[string]map[string]any, tiers []any) map[string]any {
@@ -218,6 +250,12 @@ func TestCatalogStaticExtractionRealmSeparation(t *testing.T) {
 	if len(cn) != 39 {
 		t.Fatalf("cn static models = %d, want 39", len(cn))
 	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(staticIntlJSON)); got != "830b5a1c6f245fcf99ce2ece6a42ec184e0d3961688354c539e4e1f282cf1d2b" {
+		t.Fatalf("static_intl.json digest = %s, want the v1 extraction", got)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(staticCNJSON)); got != "094899dad870abb6fcbd18f68394a600f13ddc482a78d5a34f59c923eefdb71d" {
+		t.Fatalf("static_cn.json digest = %s, want the v1 extraction", got)
+	}
 
 	intlIDs := staticCatalogIDs(realmIntl)
 	cnIDs := staticCatalogIDs(realmCN)
@@ -236,6 +274,12 @@ func TestCatalogStaticExtractionRealmSeparation(t *testing.T) {
 	}
 	if containsString(cnIDs, "gpt-6-astra") || containsString(cnIDs, "grok-4.7") {
 		t.Fatalf("cn static catalog leaked intl-only ids: %v", cnIDs)
+	}
+	if strings.Join(intlIDs, ",") != strings.Join(v1IntlStaticIDs, ",") {
+		t.Fatalf("intl static id order = %v", intlIDs)
+	}
+	if strings.Join(cnIDs, ",") != strings.Join(v1CNStaticIDs, ",") {
+		t.Fatalf("cn static id order = %v", cnIDs)
 	}
 
 	intlMeta, ok := staticMetaForRealm(realmIntl, "deepseek-v4.1-flash")
@@ -769,12 +813,12 @@ func TestCatalogCacheTTLForceLastGoodAndCooldown(t *testing.T) {
 		t.Fatalf("300s cache refreshed too early: calls=%d", calls)
 	}
 
-	now = now.Add(2 * time.Second)
+	now = now.Add(1 * time.Second)
 	if _, err := provider.Models(context.Background(), false); err != nil {
-		t.Fatalf("Models after TTL: %v", err)
+		t.Fatalf("Models at exact TTL: %v", err)
 	}
 	if calls != 2 {
-		t.Fatalf("stale cache did not refresh: calls=%d", calls)
+		t.Fatalf("stale cache did not refresh at exactly 300s: calls=%d", calls)
 	}
 
 	if _, err := provider.Models(context.Background(), true); err != nil {
@@ -836,7 +880,7 @@ func TestCatalogCacheTTLForceLastGoodAndCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshCatalog: %v", err)
 	}
-	if res.OK {
+	if res.OK || res.Source != nil {
 		t.Fatalf("RefreshCatalog unexpectedly succeeded with a failing upstream: %#v", res)
 	}
 	if !strings.Contains(res.Msg, "保留") {
@@ -847,7 +891,7 @@ func TestCatalogCacheTTLForceLastGoodAndCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshCatalog cooldown: %v", err)
 	}
-	if res.OK || !res.Cooldown || res.RetryAfter <= 0 {
+	if res.OK || !res.Cooldown || res.RetryAfter <= 0 || res.Source != nil {
 		t.Fatalf("cooldown result = %#v", res)
 	}
 	if calls != before {
@@ -862,7 +906,7 @@ func TestCatalogCacheTTLForceLastGoodAndCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshCatalog after cooldown: %v", err)
 	}
-	if !res.OK || res.Source != "remote" || res.Count != len(first) {
+	if !res.OK || res.Source == nil || *res.Source != "remote" || res.Count != len(first) {
 		t.Fatalf("manual refresh result = %#v", res)
 	}
 	if got, ok := provider.CatalogMeta(); !ok || got.Source != "remote" {
@@ -1112,7 +1156,7 @@ func TestCatalogErrorsRedactCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshCatalog: %v", err)
 	}
-	if res.OK {
+	if res.OK || res.Source != nil {
 		t.Fatal("RefreshCatalog unexpectedly succeeded")
 	}
 	for _, secret := range []string{"token-intl", "refresh-secret"} {
@@ -1185,6 +1229,297 @@ func TestCatalogDailyRefreshSkipsMissingAccount(t *testing.T) {
 	}
 }
 
+func TestCatalogLiveReasoningMergePreservesBundledEfforts(t *testing.T) {
+	provider, _ := providerWithAccount(t, realmIntl)
+	provider.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return catalogHTTPResponse(http.StatusOK, catalogPayload(
+			[]string{"deepseek-v4.1-flash"},
+			map[string]map[string]any{
+				"deepseek-v4.1-flash": {
+					"credits":   "x0.11",
+					"reasoning": map[string]any{"effort": "high", "summary": "auto"},
+				},
+			}, nil)), nil
+	})
+	models, err := provider.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	deepseek := catalogModelByID(t, models, "deepseek-v4.1-flash")
+	efforts, _ := deepseek["reasoning_efforts"].([]string)
+	if strings.Join(efforts, ",") != "low,high,max" {
+		t.Fatalf("bundled reasoning efforts lost after bare live effort: %#v", deepseek["reasoning_efforts"])
+	}
+	if deepseek["reasoning_default_effort"] != "high" {
+		t.Fatalf("reasoning_default_effort = %v, want high", deepseek["reasoning_default_effort"])
+	}
+	if _, fixed := deepseek["reasoning_fixed_effort"]; fixed {
+		t.Fatalf("bare live effort pinned a selectable model: %#v", deepseek["reasoning_fixed_effort"])
+	}
+}
+
+func TestCatalogLiveReasoningPrecedence(t *testing.T) {
+	provider, _ := providerWithAccount(t, realmIntl)
+	provider.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return catalogHTTPResponse(http.StatusOK, catalogPayload(
+			[]string{"deepseek-v4.1-flash"},
+			map[string]map[string]any{
+				"deepseek-v4.1-flash": {
+					"credits": "x0.11",
+					"reasoning": map[string]any{
+						"supportedEfforts": []any{"low", "medium", "high"},
+						"defaultEffort":    "medium",
+					},
+				},
+			}, nil)), nil
+	})
+	models, err := provider.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	deepseek := catalogModelByID(t, models, "deepseek-v4.1-flash")
+	efforts, _ := deepseek["reasoning_efforts"].([]string)
+	if strings.Join(efforts, ",") != "low,medium,high" {
+		t.Fatalf("live reasoning efforts did not win: %#v", deepseek["reasoning_efforts"])
+	}
+	if deepseek["reasoning_default_effort"] != "medium" {
+		t.Fatalf("live defaultEffort did not win: %v", deepseek["reasoning_default_effort"])
+	}
+}
+
+func TestCatalogCNHy4PreviewOrderRemapRemoteAndLegacy(t *testing.T) {
+	meta := map[string]map[string]any{
+		"hy4-preview":         {"credits": "x0.29"},
+		"hy3":                 {"credits": "x0.00"},
+		"deepseek-v4.1-flash": {"credits": "x0.11"},
+		"glm-5.3":             {"credits": "x0.69"},
+	}
+	provider, _ := providerWithAccount(t, realmCN)
+	provider.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return catalogHTTPResponse(http.StatusOK, catalogPayload(v1CNLiveIDs, meta, nil)), nil
+	})
+	models, err := provider.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models remote: %v", err)
+	}
+	ids := catalogModelIDs(models)
+	if len(ids) == 0 || ids[0] != "hy4-preview" {
+		t.Fatalf("cn remote remap ids = %v, want hy4-preview first", ids)
+	}
+	if containsString(ids, "hy4-preview-f") {
+		t.Fatalf("cn remote still advertised the stale free sibling: %v", ids)
+	}
+
+	// The v1 order remap also applies to the legacy desktop models-only file,
+	// whose extras are false.
+	provider2, _ := providerWithAccount(t, realmCN)
+	provider2.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return nil, errors.New("offline")
+	})
+	cachePath := filepath.Join(t.TempDir(), "legacy-hy4.json")
+	legacy := map[string]any{"models": []any{
+		map[string]any{"id": "hy4-preview", "credits": "x0.29"},
+		map[string]any{"id": "hy3", "credits": "x0.00"},
+	}}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+	provider2.catalogDesktopPath = func(string) string { return cachePath }
+	models, err = provider2.Models(context.Background(), false)
+	if err != nil {
+		t.Fatalf("Models legacy: %v", err)
+	}
+	ids = catalogModelIDs(models)
+	if len(ids) == 0 || ids[0] != "hy4-preview" {
+		t.Fatalf("cn legacy remap ids = %v, want hy4-preview first", ids)
+	}
+	if containsString(ids, "hy4-preview-f") {
+		t.Fatalf("legacy fallback still advertised the stale free sibling: %v", ids)
+	}
+}
+
+func TestCatalogRepresentativeParityAndUserIDHeader(t *testing.T) {
+	provider, _ := newCatalogProvider(t, realmIntl, nil,
+		map[string]any{
+			"uid":         "a-disabled",
+			"accessToken": "token-a",
+			"realm":       realmIntl,
+			"enabled":     false,
+		},
+		map[string]any{
+			"uid":         "b-enabled",
+			"accessToken": "token-b",
+			"realm":       realmIntl,
+		},
+	)
+	var header http.Header
+	provider.catalogDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
+		header = req.Header.Clone()
+		return catalogHTTPResponse(http.StatusOK, catalogPayload([]string{"hy3"}, map[string]map[string]any{
+			"hy3": {"credits": "x0.00"},
+		}, nil)), nil
+	})
+	if _, err := provider.Models(context.Background(), false); err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	// v1 representative() returns the first realm account with a token,
+	// regardless of its enabled flag; the scheduler, not catalog discovery,
+	// decides whether that account may chat.
+	if got := header.Get("Authorization"); got != "Bearer token-a" {
+		t.Fatalf("representative Authorization = %q, want token-a", got)
+	}
+	if got := header.Get("X-User-Id"); got != "a-disabled" {
+		t.Fatalf("representative X-User-Id = %q", got)
+	}
+
+	// v1 always writes X-User-Id, even for an empty uid.
+	headers := provider.catalogHeaders(catalogAccountSnapshot{AccessToken: "t"}, "ua")
+	values, present := headers["X-User-Id"]
+	if !present || len(values) != 1 || values[0] != "" {
+		t.Fatalf("X-User-Id header = %#v, want an unconditional empty value", headers)
+	}
+}
+
+func TestCatalogEntitlementAtIsNullWithoutRealmStamp(t *testing.T) {
+	resetTierState()
+	t.Cleanup(resetTierState)
+	ingestModelTiers(realmIntl, map[string]any{"modelTiers": []any{
+		map[string]any{"requiredUserType": "standard", "modelIds": []any{"fallback-pro"}},
+	}})
+	entry := wireModelEntry("fallback-pro", map[string]any{"credits": "x1.00"}, realmCN, 1)
+	entitlement, _ := entry["entitlement"].(map[string]any)
+	if entitlement == nil {
+		t.Fatalf("cross-realm fallback entitlement = %#v", entry["entitlement"])
+	}
+	at, present := entitlement["at"]
+	if !present || at != nil {
+		t.Fatalf("entitlement.at = %#v present=%v, want explicit null", at, present)
+	}
+}
+
+type catalogFailingBody struct{}
+
+func (catalogFailingBody) Read([]byte) (int, error) { return 0, errors.New("body read failed") }
+func (catalogFailingBody) Close() error             { return nil }
+
+type catalogRepeatBody struct{ remaining int64 }
+
+func (r *catalogRepeatBody) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if int64(n) > r.remaining {
+		n = int(r.remaining)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = ' '
+	}
+	r.remaining -= int64(n)
+	return n, nil
+}
+func (r *catalogRepeatBody) Close() error { return nil }
+
+func TestCatalogRejectsUnusableHTTPResponses(t *testing.T) {
+	cases := []struct {
+		name string
+		resp *http.Response
+	}{
+		{
+			name: "non-2xx",
+			resp: &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{"code":0}`))},
+		},
+		{
+			name: "malformed",
+			resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"broken":`))},
+		},
+		{
+			name: "oversized",
+			resp: &http.Response{StatusCode: http.StatusOK, Body: &catalogRepeatBody{remaining: catalogMaxBodyBytes + 1}},
+		},
+		{
+			name: "body-read-error",
+			resp: &http.Response{StatusCode: http.StatusOK, Body: catalogFailingBody{}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, _ := providerWithAccount(t, realmIntl)
+			calls := 0
+			provider.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+				calls++
+				return tc.resp, nil
+			})
+			models, err := provider.Models(context.Background(), false)
+			if err != nil {
+				t.Fatalf("Models: %v", err)
+			}
+			if len(models) != len(intlUIOrder) {
+				t.Fatalf("fallback model count = %d, want %d", len(models), len(intlUIOrder))
+			}
+			if meta, ok := provider.CatalogMeta(); !ok || meta.Source != "bundled" {
+				t.Fatalf("CatalogMeta = %#v/%v", meta, ok)
+			}
+			if calls != 2 {
+				t.Fatalf("bad response should be tried with both UAs, calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestCatalogDesktopCacheIngestsTiers(t *testing.T) {
+	provider, pool := providerWithAccount(t, realmCN)
+	provider.catalogDoer = catalogDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return nil, errors.New("offline")
+	})
+	payload := desktopCatalogPayload([]string{"glm-5.3"}, map[string]map[string]any{
+		"glm-5.3": {"credits": "x0.69"},
+	})
+	payload["modelTiers"] = []any{
+		map[string]any{"requiredUserType": "standard", "modelIds": []any{"glm-5.3"}},
+	}
+	cachePath := filepath.Join(t.TempDir(), "desktop-with-tiers.json")
+	data, _ := json.Marshal(payload)
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatalf("write desktop cache: %v", err)
+	}
+	provider.catalogDesktopPath = func(string) string { return cachePath }
+	if _, err := provider.Models(context.Background(), false); err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if !requiresPro("glm-5.3", realmCN) {
+		t.Fatal("desktop cache modelTiers were not ingested")
+	}
+	pool.mu.RLock()
+	gated := pool.proOnly["glm-5.3"]
+	pool.mu.RUnlock()
+	if !gated {
+		t.Fatal("desktop cache tiers were not wired into Pool.SetProOnlyModels")
+	}
+}
+
+func TestCatalogLimitsPerFieldFallback(t *testing.T) {
+	// A live model with only maxInputTokens uses the models.dev output limit;
+	// per-field precedence must not discard the supplied context value.
+	contextLength, output := modelLimits("kimi-k2.8-preview", map[string]any{
+		"maxInputTokens": float64(777000),
+	})
+	if contextLength != 777000 {
+		t.Fatalf("context = %d, want live 777000", contextLength)
+	}
+	if output != 0 {
+		t.Fatalf("output = %d, want omitted (models.dev 0)", output)
+	}
+	contextLength, output = modelLimits("kimi-k2.7", map[string]any{
+		"maxInputTokens":  float64(777000),
+		"maxOutputTokens": float64(1234),
+	})
+	if contextLength != 777000 || output != 1234 {
+		t.Fatalf("limits = %d/%d, want 777000/1234", contextLength, output)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tiers
 // ---------------------------------------------------------------------------
@@ -1211,8 +1546,11 @@ func TestTiersIngestSnapshotAndRequiresPro(t *testing.T) {
 	if !requiresPro("pro-model", realmIntl) || !requiresPro("shared-model", realmIntl) {
 		t.Fatal("standard tier was not recorded")
 	}
-	if requiresPro("disabled-model", realmIntl) || requiresPro("priority-model", realmIntl) || requiresPro("priority-flag-model", realmIntl) {
-		t.Fatal("disabled/priority-only tiers must not gate models")
+	if requiresPro("disabled-model", realmIntl) || requiresPro("priority-model", realmIntl) {
+		t.Fatal("disabled/priority-badge tiers must not gate models")
+	}
+	if !requiresPro("priority-flag-model", realmIntl) {
+		t.Fatal("a bare priority flag without the badge/exclusive mode must not weaken Pro gating")
 	}
 	if !requiresPro("exclusive-model", realmIntl) {
 		t.Fatal("exclusive badge must gate the model")

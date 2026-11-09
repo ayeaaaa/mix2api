@@ -122,11 +122,6 @@ func priorityOnlyTier(entry map[string]any) bool {
 	if strings.EqualFold(strings.TrimSpace(metaText(entry["accessMode"])), "exclusive") {
 		return false
 	}
-	// Some catalogue revisions express the same preference as a bare
-	// priority flag instead of the badge. It is still not an entitlement.
-	if priority, ok := boolValue(entry["priority"]); ok && priority {
-		return true
-	}
 	labels := make([]string, 0, 2)
 	switch badge := entry["badge"].(type) {
 	case map[string]any:
