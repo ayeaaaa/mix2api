@@ -45,6 +45,10 @@ type creditsTestCall struct {
 	UserID         string
 	APIKey         string
 	ClientPlatform string
+	DeviceToken    string
+	MachineID      string
+	SessionID      string
+	RequestID      string
 }
 
 type creditsTestServer struct {
@@ -63,6 +67,10 @@ func (s *creditsTestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserID:         r.Header.Get("X-User-Id"),
 		APIKey:         r.Header.Get("X-API-Key"),
 		ClientPlatform: r.Header.Get("X-Client-Platform"),
+		DeviceToken:    r.Header.Get("X-Device-Token"),
+		MachineID:      r.Header.Get("X-Machine-ID"),
+		SessionID:      r.Header.Get("X-Session-ID"),
+		RequestID:      r.Header.Get("X-Request-ID"),
 	}
 
 	s.mu.Lock()
@@ -228,6 +236,16 @@ func TestCreditsParsePackageNoExpiryExpiredAndSort(t *testing.T) {
 		unknown.DaysLeft != nil || unknown.IsExpired || unknown.NoExpiry {
 		t.Fatalf("unknown package = %+v", unknown)
 	}
+	if unknown.Status != "weird" {
+		t.Fatalf("string status was not preserved: %#v", unknown.Status)
+	}
+	stringStatus := parseCreditPackage(map[string]any{
+		"PackageCode": "status-string",
+		"Status":      "3",
+	}, now)
+	if stringStatus.Status != "3" {
+		t.Fatalf("numeric-looking string status was not preserved: %#v", stringStatus.Status)
+	}
 
 	packages := []CreditPackage{expired, unknown, noExpiry, later, soon}
 	sortCreditPackages(packages)
@@ -277,6 +295,27 @@ func TestCreditsSnapshotTotalsEarliestCheckinAndISO(t *testing.T) {
 	}
 	if len(snapshot.Packages) != 4 || snapshot.Packages[0].PackageCode != "b" {
 		t.Fatalf("packages were not sorted: %+v", snapshot.Packages)
+	}
+}
+
+func TestCreditsSnapshotCloneDeepCopiesPointers(t *testing.T) {
+	original := &CreditSnapshot{
+		Packages: []CreditPackage{
+			{Name: "A", PackageCode: "a", Remain: 1, DaysLeft: creditTestFloat(2)},
+		},
+		Checkin:          &CheckinStatus{TodayCheckedIn: true, StreakDays: 4, Active: true},
+		EarliestExpiring: &EarliestExpiring{Name: "A", PackageCode: "a", Remain: 1, DaysLeft: 2},
+	}
+	copied := cloneCreditSnapshot(original)
+	*copied.Packages[0].DaysLeft = 99
+	copied.Packages[0].Name = "changed"
+	copied.Packages[0].Remain = 55
+	copied.Checkin.StreakDays = 123
+	copied.EarliestExpiring.Name = "changed"
+	if *original.Packages[0].DaysLeft != 2 || original.Packages[0].Name != "A" ||
+		original.Packages[0].Remain != 1 || original.Checkin.StreakDays != 4 ||
+		original.EarliestExpiring.Name != "A" {
+		t.Fatalf("clone aliased the original: %+v", original)
 	}
 }
 
@@ -368,8 +407,11 @@ func TestCreditsCNRefreshPersistsTierAndUsage(t *testing.T) {
 		}
 	})
 
-	provider, pool, _ := newCreditsPool(t, realmCN, map[string]map[string]any{
+	provider, pool, dir := newCreditsPool(t, realmCN, map[string]map[string]any{
 		"cn-a": nil,
+	})
+	writePoolSettings(t, dir, map[string]any{
+		"upstream": map[string]any{"device_token": "device-secret-value"},
 	})
 	provider.creditsBillingBaseURL = server.URL
 	provider.creditsCheckinBaseURL = server.URL
@@ -479,6 +521,16 @@ func TestCreditsCNRefreshPersistsTierAndUsage(t *testing.T) {
 		}
 		if call.UserID != "cn-a" || call.ClientPlatform != "web" {
 			t.Fatalf("billing headers = %+v", call)
+		}
+		if call.DeviceToken != "device-secret-value" {
+			t.Fatalf("X-Device-Token = %q", call.DeviceToken)
+		}
+		if call.RequestID == "" || len(call.RequestID) != 32 {
+			t.Fatalf("X-Request-ID = %q", call.RequestID)
+		}
+		if call.MachineID != creditDerivedID("cn-a", "machine") ||
+			call.SessionID != creditDerivedID("cn-a", "session") {
+			t.Fatalf("fingerprint headers = %q/%q", call.MachineID, call.SessionID)
 		}
 	}
 	freeCall := creditCallsWithPath(calls, creditsFreePackagesPath)[0]
@@ -655,6 +707,46 @@ func TestCreditsEnterpriseAPIKeyAndIntlFixtures(t *testing.T) {
 		}
 	})
 
+	t.Run("cn enterprise falls back after personal billing error", func(t *testing.T) {
+		enterpriseBody := creditTestJSON(t, map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"credit":         8,
+				"limitNum":       32,
+				"cycleStartTime": "2026-11-01 00:00:00",
+				"cycleEndTime":   "2026-12-01 00:00:00",
+			},
+		})
+		server, fixture := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+			switch r.URL.Path {
+			case creditsSummaryPath:
+				return http.StatusInternalServerError, `{"error":"personal billing down"}`
+			case creditsEnterprisePath:
+				return http.StatusOK, enterpriseBody
+			default:
+				return http.StatusNotFound, `{"code":404}`
+			}
+		})
+		provider, _, _ := newCreditsPool(t, realmCN, map[string]map[string]any{
+			"ent-err": {"enterpriseId": "ent-1"},
+		})
+		provider.creditsBillingBaseURL = server.URL
+		provider.creditsNow = func() time.Time { return now }
+
+		result, err := provider.RefreshCredits(context.Background())
+		if err != nil {
+			t.Fatalf("RefreshCredits: %v", err)
+		}
+		snapshot := result.Results[0].Credits
+		if !result.Results[0].OK || snapshot == nil || !snapshot.IsEnterprise ||
+			snapshot.Size != 32 || snapshot.Remain != 24 {
+			t.Fatalf("fallback snapshot = %+v", snapshot)
+		}
+		if len(creditCallsWithPath(fixture.snapshot(), creditsEnterprisePath)) != 1 {
+			t.Fatalf("enterprise endpoint not called after personal error: %+v", fixture.snapshot())
+		}
+	})
+
 	t.Run("intl get-user-resource fallback preserves checkin and paid tier", func(t *testing.T) {
 		body := creditTestJSON(t, map[string]any{
 			"code": 0,
@@ -684,7 +776,11 @@ func TestCreditsEnterpriseAPIKeyAndIntlFixtures(t *testing.T) {
 		})
 		provider, pool, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
 			"intl-a": {
-				"tier": map[string]any{"paid": true, "package": "Pro"},
+				"tier": map[string]any{
+					"paid":       true,
+					"package":    "Pro",
+					"checked_at": float64(now.Unix()),
+				},
 			},
 		})
 		provider.creditsBillingBaseURL = server.URL
@@ -718,7 +814,105 @@ func TestCreditsEnterpriseAPIKeyAndIntlFixtures(t *testing.T) {
 			!strings.Contains(calls[0].Body, `"PageSize":100`) {
 			t.Fatalf("fallback body = %s", calls[0].Body)
 		}
+		if calls[0].DeviceToken != "" {
+			t.Fatalf("intl request carried X-Device-Token: %q", calls[0].DeviceToken)
+		}
+		if calls[0].MachineID != creditDerivedID("intl-a", "machine") ||
+			calls[0].SessionID != creditDerivedID("intl-a", "session") {
+			t.Fatalf("intl fingerprint headers = %q/%q", calls[0].MachineID, calls[0].SessionID)
+		}
 	})
+}
+
+func TestCreditsIntlTierRefreshAndTTL(t *testing.T) {
+	now := creditTestNow()
+	fallbackBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"Response": map[string]any{
+				"Data": map[string]any{
+					"Accounts": []any{
+						map[string]any{
+							"PackageName":      "Intl Pack",
+							"PackageCode":      "intl-pack",
+							"CapacitySize":     50,
+							"CapacityRemain":   40,
+							"CapacityUsed":     10,
+							"DeductionEndTime": creditTestMillis(now.Add(48 * time.Hour)),
+						},
+					},
+				},
+			},
+		},
+	})
+	summaryBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"IsPaidUser":              true,
+			"SubscriptionPackageName": "WorkBuddy Pro",
+			"SubscriptionPackageCode": "pro",
+			"ProTrialStatus":          1,
+		},
+	})
+	var mu sync.Mutex
+	fallbackCalls, summaryCalls := 0, 0
+	server, _ := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case creditsGetUserResourcePath:
+			fallbackCalls++
+			return http.StatusOK, fallbackBody
+		case creditsSummaryPath:
+			summaryCalls++
+			return http.StatusOK, summaryBody
+		default:
+			return http.StatusNotFound, `{"code":404}`
+		}
+	})
+	provider, pool, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
+		"intl-a": nil,
+	})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsNow = func() time.Time { return now }
+
+	result, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	if !result.Results[0].OK || !result.Results[0].Credits.IsPaidUser {
+		t.Fatalf("upgraded row = %+v", result.Results[0])
+	}
+	account := pool.Get("intl-a")
+	if account.Tier != "WorkBuddy Pro" || !account.IsPaidUser() {
+		t.Fatalf("tier after upgrade = %q paid=%v", account.Tier, account.IsPaidUser())
+	}
+	account.mu.RLock()
+	persistedTier := append([]byte(nil), account.Auth.Tier...)
+	account.mu.RUnlock()
+	if len(persistedTier) == 0 {
+		t.Fatal("upgraded tier was not persisted")
+	}
+
+	// The same fixed clock is inside the 24h TTL: the second balance refresh
+	// must not spend another summary request.
+	if _, err := provider.RefreshCredits(context.Background()); err != nil {
+		t.Fatalf("second RefreshCredits: %v", err)
+	}
+	mu.Lock()
+	gotFallback, gotSummary := fallbackCalls, summaryCalls
+	mu.Unlock()
+	if gotFallback != 2 {
+		t.Fatalf("fallback calls = %d, want 2", gotFallback)
+	}
+	if gotSummary != 1 {
+		t.Fatalf("summary calls = %d, want 1 (TTL)", gotSummary)
+	}
+	_, reloadedPool := newPoolProvider(t, realmIntl, provider.AccountsDir())
+	reloaded := reloadedPool.Get("intl-a")
+	if reloaded.Tier != "WorkBuddy Pro" || !reloaded.IsPaidUser() {
+		t.Fatalf("reloaded tier = %q paid=%v", reloaded.Tier, reloaded.IsPaidUser())
+	}
 }
 
 func TestCreditsRefreshIsolatesErrorsAndRedactsSecrets(t *testing.T) {
@@ -755,6 +949,11 @@ func TestCreditsRefreshIsolatesErrorsAndRedactsSecrets(t *testing.T) {
 	}
 	if result.Results[0].UID != "bad" || result.Results[0].OK || result.Results[0].Error == "" {
 		t.Fatalf("bad row = %+v", result.Results[0])
+	}
+	for _, secret := range []string{"access-bad", "refresh-bad", "secret-value"} {
+		if strings.Contains(result.Results[0].Error, secret) {
+			t.Fatalf("row error leaked %q: %q", secret, result.Results[0].Error)
+		}
 	}
 	if result.Results[1].UID != "good" || !result.Results[1].OK || result.Results[1].Credits == nil {
 		t.Fatalf("good row = %+v", result.Results[1])
@@ -826,6 +1025,220 @@ func TestCreditsPoolSetCreditsPersistsAndClears(t *testing.T) {
 	}
 }
 
+func TestCreditsRefreshForTargetSelection(t *testing.T) {
+	now := creditTestNow()
+	fallbackBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"Response": map[string]any{
+				"Data": map[string]any{
+					"Accounts": []any{
+						map[string]any{
+							"PackageName":      "Pack",
+							"PackageCode":      "pack",
+							"CapacitySize":     10,
+							"CapacityRemain":   10,
+							"CapacityUsed":     0,
+							"DeductionEndTime": creditTestMillis(now.Add(24 * time.Hour)),
+						},
+					},
+				},
+			},
+		},
+	})
+	var mu sync.Mutex
+	counts := map[string]int{}
+	server, _ := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		if r.URL.Path != creditsGetUserResourcePath {
+			return http.StatusNotFound, `{"code":404}`
+		}
+		mu.Lock()
+		counts[r.Header.Get("X-User-Id")]++
+		mu.Unlock()
+		return http.StatusOK, fallbackBody
+	})
+	tier := map[string]any{
+		"paid":       true,
+		"package":    "Pro",
+		"checked_at": float64(now.Unix()),
+	}
+	provider, _, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
+		"a": {"group": "G1", "tier": tier},
+		"b": {"group": "G2", "tier": tier},
+		"c": {"group": "G2", "tier": tier},
+	})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsNow = func() time.Time { return now }
+	reset := func() {
+		mu.Lock()
+		counts = map[string]int{}
+		mu.Unlock()
+	}
+	snapshotCounts := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[string]int, len(counts))
+		for uid, count := range counts {
+			out[uid] = count
+		}
+		return out
+	}
+
+	ctx := context.Background()
+	if result, err := provider.RefreshCreditsFor(ctx, CreditsRefreshTargets{UID: "a"}); err != nil {
+		t.Fatalf("UID refresh: %v", err)
+	} else if len(result.Results) != 1 || result.Results[0].UID != "a" ||
+		len(result.Accounts) != 3 {
+		t.Fatalf("UID result = %+v", result)
+	}
+	if got := snapshotCounts(); got["a"] != 1 || got["b"] != 0 || got["c"] != 0 {
+		t.Fatalf("UID selection counts = %v", got)
+	}
+
+	reset()
+	if result, err := provider.RefreshCreditsFor(ctx, CreditsRefreshTargets{UIDs: []string{"b", "b"}}); err != nil {
+		t.Fatalf("UIDs refresh: %v", err)
+	} else if len(result.Results) != 1 || result.Results[0].UID != "b" {
+		t.Fatalf("UIDs result = %+v", result)
+	}
+	if got := snapshotCounts(); got["b"] != 1 || got["a"] != 0 || got["c"] != 0 {
+		t.Fatalf("UIDs selection counts = %v", got)
+	}
+
+	reset()
+	if result, err := provider.RefreshCreditsFor(ctx, CreditsRefreshTargets{UIDs: []string{}}); err != nil {
+		t.Fatalf("empty UIDs refresh: %v", err)
+	} else if len(result.Results) != 0 {
+		t.Fatalf("empty UIDs refreshed: %+v", result.Results)
+	}
+	if got := snapshotCounts(); len(got) != 0 {
+		t.Fatalf("empty UIDs made requests: %v", got)
+	}
+
+	reset()
+	if result, err := provider.RefreshCreditsFor(ctx, CreditsRefreshTargets{Realm: realmCN}); err != nil {
+		t.Fatalf("realm refresh: %v", err)
+	} else if len(result.Results) != 0 {
+		t.Fatalf("other realm refreshed: %+v", result.Results)
+	}
+	if got := snapshotCounts(); len(got) != 0 {
+		t.Fatalf("other realm made requests: %v", got)
+	}
+
+	reset()
+	if result, err := provider.RefreshCreditsFor(ctx, CreditsRefreshTargets{Realm: "all", Group: "G2"}); err != nil {
+		t.Fatalf("group refresh: %v", err)
+	} else if len(result.Results) != 2 {
+		t.Fatalf("group result = %+v", result.Results)
+	}
+	if got := snapshotCounts(); got["b"] != 1 || got["c"] != 1 || got["a"] != 0 {
+		t.Fatalf("group selection counts = %v", got)
+	}
+}
+
+func TestCreditsRefreshSingleFlightPerAccount(t *testing.T) {
+	now := creditTestNow()
+	fallbackBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"Response": map[string]any{
+				"Data": map[string]any{
+					"Accounts": []any{
+						map[string]any{
+							"PackageName":      "Pack",
+							"PackageCode":      "pack",
+							"CapacitySize":     10,
+							"CapacityRemain":   10,
+							"CapacityUsed":     0,
+							"DeductionEndTime": creditTestMillis(now.Add(24 * time.Hour)),
+						},
+					},
+				},
+			},
+		},
+	})
+
+	var mu sync.Mutex
+	calls := 0
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var startOnce sync.Once
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+	server, _ := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		startOnce.Do(func() { started <- struct{}{} })
+		<-release
+		return http.StatusOK, fallbackBody
+	})
+	provider, _, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
+		"intl-a": {
+			"tier": map[string]any{
+				"paid":       true,
+				"package":    "Pro",
+				"checked_at": float64(now.Unix()),
+			},
+		},
+	})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsNow = func() time.Time { return now }
+	joined := make(chan struct{}, 1)
+	provider.creditJoinHook = func() {
+		select {
+		case joined <- struct{}{}:
+		default:
+		}
+	}
+
+	type refreshOutcome struct {
+		result CreditsRefreshResult
+		err    error
+	}
+	first := make(chan refreshOutcome, 1)
+	second := make(chan refreshOutcome, 1)
+	go func() {
+		result, err := provider.RefreshCredits(context.Background())
+		first <- refreshOutcome{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first refresh did not reach upstream")
+	}
+	go func() {
+		result, err := provider.RefreshCredits(context.Background())
+		second <- refreshOutcome{result: result, err: err}
+	}()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second refresh did not join the in-flight account")
+	}
+	releaseAll()
+
+	for index, outcome := range []refreshOutcome{<-first, <-second} {
+		if outcome.err != nil {
+			t.Fatalf("refresh %d: %v", index, outcome.err)
+		}
+		if len(outcome.result.Results) != 1 || !outcome.result.Results[0].OK ||
+			outcome.result.Results[0].Credits == nil {
+			t.Fatalf("refresh %d rows = %+v", index, outcome.result.Results)
+		}
+		if outcome.result.Results[0].Credits.Remain != 10 {
+			t.Fatalf("refresh %d remain = %v", index, outcome.result.Results[0].Credits.Remain)
+		}
+	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Fatalf("upstream calls = %d, want one shared fetch", gotCalls)
+	}
+}
+
 func TestCreditsRefreshIncludesDisabledAccounts(t *testing.T) {
 	now := creditTestNow()
 	body := creditTestJSON(t, map[string]any{
@@ -873,7 +1286,7 @@ func TestCreditsRefreshIncludesDisabledAccounts(t *testing.T) {
 	}
 }
 
-func TestCreditsRefreshTokenRefreshOnceOn401(t *testing.T) {
+func TestCreditsRefresh401ForceRefreshesLocallyValidToken(t *testing.T) {
 	now := time.Now()
 	tokenFake := &tokenTestFake{
 		body: tokenSuccessBody("new-access", "new-refresh", now.Add(time.Hour)),
@@ -912,12 +1325,24 @@ func TestCreditsRefreshTokenRefreshOnceOn401(t *testing.T) {
 		return http.StatusOK, billingBody
 	})
 	provider, pool, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{
-		"intl-a": {"expiresAt": now.Add(-time.Minute).Unix()},
+		"intl-a": {
+			// Locally valid, but upstream revokes the token: EnsureToken
+			// would be a no-op, so the 401 path must ForceRefresh.
+			"expiresAt": now.Add(time.Hour).Unix(),
+			"tier": map[string]any{
+				"paid":       true,
+				"package":    "Pro",
+				"checked_at": float64(now.Unix()),
+			},
+		},
 	})
 	provider.creditsBillingBaseURL = server.URL
 	provider.creditsNow = func() time.Time { return now }
 	provider.tokenBaseURL = tokenServer.URL
 	provider.tokenNow = func() time.Time { return now }
+	if expires := pool.Get("intl-a").Auth.ExpiresAt; !expires.After(now) {
+		t.Fatalf("fixture token should be locally valid, expires %v", expires)
+	}
 
 	result, err := provider.RefreshCredits(context.Background())
 	if err != nil {
@@ -937,6 +1362,40 @@ func TestCreditsRefreshTokenRefreshOnceOn401(t *testing.T) {
 	}
 	if pool.Get("intl-a").Auth.AccessToken != "new-access" {
 		t.Fatalf("token was not rotated: %q", pool.Get("intl-a").Auth.AccessToken)
+	}
+}
+
+func TestCreditsTimeoutParityAndAuthHeuristics(t *testing.T) {
+	provider := &Provider{}
+	if got := provider.creditTimeout(creditsBillingTimeout); got != 15*time.Second {
+		t.Fatalf("billing timeout = %v", got)
+	}
+	if got := provider.creditTimeout(creditsFallbackTimeout); got != 30*time.Second {
+		t.Fatalf("fallback timeout = %v", got)
+	}
+	if got := provider.creditTimeout(creditsCheckinTimeout); got != 10*time.Second {
+		t.Fatalf("checkin timeout = %v", got)
+	}
+	provider.creditsTimeout = time.Second
+	if got := provider.creditTimeout(creditsFallbackTimeout); got != time.Second {
+		t.Fatalf("test override timeout = %v", got)
+	}
+
+	for _, text := range []string{
+		"invalid_token", "invalid-token", "HTTP 401", "Unauthorized",
+		"Authorization failed", "token expired", "登录已过期",
+	} {
+		if !creditAuthFailureText(text) {
+			t.Fatalf("%q was not treated as an auth failure", text)
+		}
+	}
+	for _, text := range []string{"", "<html><body>401 Unauthorized</body></html>"} {
+		if creditAuthFailureText(text) {
+			t.Fatalf("%q was treated as an auth failure", text)
+		}
+	}
+	if !creditAuthFailureText("<html>invalid_token</html>") {
+		t.Fatal("invalid_token should outrank the HTML bail-out")
 	}
 }
 
@@ -1025,6 +1484,14 @@ func TestCreditsPoolReadsRealmLimitsFromSettings(t *testing.T) {
 			"daily_token_limit": map[string]any{
 				"global": 100, "cn": 40,
 			},
+			"daily_credit_limit": map[string]any{
+				// Malformed intl override must inherit global 9, not turn
+				// corruption into an explicit "off".
+				"global": 9, "intl": "junk", "cn": 0,
+			},
+			"model_daily_token_limit": map[string]any{
+				"global": 50, "cn": "not-a-number",
+			},
 			"expiring_window_days": map[string]any{"global": 4, "intl": nil, "cn": nil},
 		},
 	})
@@ -1036,9 +1503,12 @@ func TestCreditsPoolReadsRealmLimitsFromSettings(t *testing.T) {
 	if intl == nil {
 		t.Fatal("missing intl account")
 	}
-	if intl.ReserveCredits != 20 || intl.DailyTokenLimit != 100 || intl.ExpiringWindowDays != 4 {
-		t.Fatalf("intl settings limits = %d/%d/%d", intl.ReserveCredits,
-			intl.DailyTokenLimit, intl.ExpiringWindowDays)
+	if intl.ReserveCredits != 20 || intl.DailyTokenLimit != 100 ||
+		intl.DailyCreditLimit != 9 || intl.ModelDailyTokenLimit != 50 ||
+		intl.ExpiringWindowDays != 4 {
+		t.Fatalf("intl settings limits = %d/%d/%d/%d/%d", intl.ReserveCredits,
+			intl.DailyTokenLimit, intl.DailyCreditLimit,
+			intl.ModelDailyTokenLimit, intl.ExpiringWindowDays)
 	}
 
 	_, cnPool := newPoolProvider(t, realmCN, dir)
@@ -1046,9 +1516,12 @@ func TestCreditsPoolReadsRealmLimitsFromSettings(t *testing.T) {
 	if cn == nil {
 		t.Fatal("missing cn account")
 	}
-	if cn.ReserveCredits != 5 || cn.DailyTokenLimit != 40 || cn.ExpiringWindowDays != 4 {
-		t.Fatalf("cn settings limits = %d/%d/%d", cn.ReserveCredits,
-			cn.DailyTokenLimit, cn.ExpiringWindowDays)
+	if cn.ReserveCredits != 5 || cn.DailyTokenLimit != 40 ||
+		cn.DailyCreditLimit != 0 || cn.ModelDailyTokenLimit != 50 ||
+		cn.ExpiringWindowDays != 4 {
+		t.Fatalf("cn settings limits = %d/%d/%d/%d/%d", cn.ReserveCredits,
+			cn.DailyTokenLimit, cn.DailyCreditLimit,
+			cn.ModelDailyTokenLimit, cn.ExpiringWindowDays)
 	}
 
 	legacyDir := t.TempDir()
@@ -1280,12 +1753,13 @@ func TestCreditsFetchGrantsRowsSummaryAndNoUpstream(t *testing.T) {
 				ExpireTime:  "2026-11-01 10:00:00",
 			},
 			{
-				Name:        "NoExpiry",
-				PackageCode: "no-expiry",
-				Remain:      5,
-				Size:        5,
-				NoExpiry:    true,
-				CreateTime:  "2026-11-04 10:00:00",
+				Name:         "NoExpiry",
+				PackageCode:  "no-expiry",
+				Remain:       5,
+				Size:         5,
+				NoExpiry:     true,
+				CreateTime:   "2026-11-04 10:00:00",
+				CycleEndTime: "2026-11-01 10:00:00",
 			},
 			{
 				Name:        "Unknown",
@@ -1298,15 +1772,15 @@ func TestCreditsFetchGrantsRowsSummaryAndNoUpstream(t *testing.T) {
 		},
 	})
 
-	result, err := provider.FetchGrants(context.Background())
+	result, err := provider.Grants(context.Background())
 	if err != nil {
-		t.Fatalf("FetchGrants: %v", err)
+		t.Fatalf("Grants: %v", err)
 	}
 	if !result.OK || len(result.Rows) != 5 {
 		t.Fatalf("grants result = %+v", result)
 	}
 	if failing.calls != 0 {
-		t.Fatalf("FetchGrants made %d upstream calls", failing.calls)
+		t.Fatalf("Grants made %d upstream calls", failing.calls)
 	}
 	order := make([]string, 0, len(result.Rows))
 	for _, row := range result.Rows {
@@ -1341,6 +1815,16 @@ func TestCreditsFetchGrantsRowsSummaryAndNoUpstream(t *testing.T) {
 		*result.Rows[1].DaysLeft <= 0 {
 		t.Fatalf("expiry fields = %+v / %+v", result.Rows[1], result.Rows[2])
 	}
+	if result.Rows[2].ExpireISO == "" {
+		t.Fatal("no-expiry row should still expose its cycle boundary")
+	}
+	rows, err := provider.FetchGrants(context.Background())
+	if err != nil {
+		t.Fatalf("FetchGrants wrapper: %v", err)
+	}
+	if len(rows) != len(result.Rows) || rows[0].Name != result.Rows[0].Name {
+		t.Fatalf("row wrapper = %+v", rows)
+	}
 
 	summary := result.Summary
 	if summary.Count != 5 || summary.Accounts != 2 || summary.Size != 37 ||
@@ -1370,9 +1854,9 @@ func TestCreditsFetchGrantsRowsSummaryAndNoUpstream(t *testing.T) {
 func TestCreditsFetchGrantsEmpty(t *testing.T) {
 	provider, _, _ := newCreditsPool(t, realmIntl, map[string]map[string]any{"a": nil})
 	provider.creditsNow = func() time.Time { return creditTestNow() }
-	result, err := provider.FetchGrants(context.Background())
+	result, err := provider.Grants(context.Background())
 	if err != nil {
-		t.Fatalf("FetchGrants: %v", err)
+		t.Fatalf("Grants: %v", err)
 	}
 	if !result.OK || result.Rows == nil || len(result.Rows) != 0 {
 		t.Fatalf("empty grants = %+v", result)

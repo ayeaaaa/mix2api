@@ -68,10 +68,9 @@ type GrantsResult struct {
 	Summary      GrantSummary `json:"summary"`
 }
 
-// FetchGrants flattens the cached credit packages into v1's grants rows and
-// summary. It performs no upstream request; call RefreshCredits first when the
-// numbers must be current.
-func (p *Provider) FetchGrants(ctx context.Context) (GrantsResult, error) {
+// Grants returns v1's full grants payload (rows plus summary/timestamps). It is
+// the richer panel accessor; FetchGrants is the plan's row-only wrapper.
+func (p *Provider) Grants(ctx context.Context) (GrantsResult, error) {
 	now := time.Now()
 	result := GrantsResult{
 		OK:           true,
@@ -204,9 +203,26 @@ func (p *Provider) FetchGrants(ctx context.Context) (GrantsResult, error) {
 	return result, nil
 }
 
+// FetchGrants is the plan's row-only contract and delegates to Grants.
+func (p *Provider) FetchGrants(ctx context.Context) ([]GrantRow, error) {
+	result, err := p.Grants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return result.Rows, nil
+}
+
+// FetchGrantsResult is a discoverable alias for the richer panel payload.
+func (p *Provider) FetchGrantsResult(ctx context.Context) (GrantsResult, error) {
+	return p.Grants(ctx)
+}
+
 func creditGrantStatus(pkg CreditPackage, expireAt *float64, now time.Time) string {
 	expired := pkg.IsExpired
-	if expireAt != nil && *expireAt <= float64(now.Unix()) {
+	// no_expiry packages can still carry a past billing-cycle boundary. That
+	// boundary is not when the credits lapse, so it must not mark the grant
+	// expired; only an explicit is_expired flag can do that.
+	if !pkg.NoExpiry && expireAt != nil && *expireAt <= float64(now.Unix()) {
 		expired = true
 	}
 	if expired {

@@ -2,6 +2,9 @@ package workbuddy
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +17,14 @@ import (
 )
 
 const (
-	// creditsTimeout mirrors v1's billing request timeout.
-	creditsTimeout = 15 * time.Second
+	// Billing HTTP budgets mirror v1: 15s for the summary/package/enterprise
+	// requests, 30s for the intl fallback, and 10s for checkin status.
+	creditsBillingTimeout  = 15 * time.Second
+	creditsFallbackTimeout = 30 * time.Second
+	creditsCheckinTimeout  = 10 * time.Second
+
+	// creditsTierTTL is v1's TIER_TTL_SECONDS.
+	creditsTierTTL = 24 * time.Hour
 
 	// creditsMaxBodyBytes caps one billing response. The endpoints answer a few
 	// hundred KiB at most; anything larger is not a legitimate snapshot.
@@ -37,7 +46,7 @@ const (
 )
 
 var (
-	// errCreditAuth marks a terminal 401 after the one allowed EnsureToken
+	// errCreditAuth marks a terminal 401 after the one allowed ForceRefresh
 	// retry. The raw path uses it to avoid retrying the same dead token on the
 	// fallback endpoint.
 	errCreditAuth = errors.New("workbuddy: credits authorization failed")
@@ -278,10 +287,11 @@ func limitForRealm(values map[string]any, key, realm string) int {
 	if grouped, ok := entry.(map[string]any); ok {
 		if realm == realmIntl || realm == realmCN {
 			if override, exists := grouped[realm]; exists {
-				if override == nil || override == "" {
-					// Blank/nil override means "inherit the global value".
-				} else {
-					return coerceLimitValue(override, 0)
+				// A malformed override means "inherit", exactly like a
+				// blank/nil slot; only an explicit numeric value (including a
+				// literal 0 = off) wins over the global setting.
+				if value, ok := limitOverrideValue(override); ok {
+					return value
 				}
 			}
 		}
@@ -292,6 +302,23 @@ func limitForRealm(values map[string]any, key, realm string) int {
 		return coerceLimitValue(global, 0)
 	}
 	return coerceLimitValue(entry, 0)
+}
+
+// limitOverrideValue accepts only explicit numeric overrides. Anything else
+// (nil, blank, junk strings, unsupported types) returns false so the caller
+// inherits the global value instead of treating corruption as "off".
+func limitOverrideValue(value any) (int, bool) {
+	if value == nil || value == "" {
+		return 0, false
+	}
+	number, ok := numericValue(value)
+	if !ok {
+		return 0, false
+	}
+	if number < 0 {
+		return 0, true
+	}
+	return int(number), true
 }
 
 func defaultLimit(key string) int {
@@ -645,7 +672,7 @@ func (p *Pool) setCreditsAndTier(uid string, snapshot *CreditSnapshot, tier any)
 				account.Auth.Extra["credits"] = raw
 			}
 		}
-		if tier != nil {
+		if creditTierPresent(tier) {
 			applyTierLocked(account, tier)
 		}
 	})
@@ -653,6 +680,19 @@ func (p *Pool) setCreditsAndTier(uid string, snapshot *CreditSnapshot, tier any)
 		return err
 	}
 	return marshalErr
+}
+
+// creditTierPresent rejects both a nil interface and a typed nil/empty tier
+// map. Without it, a nil map converted to `any` would marshal as JSON null and
+// erase a persisted tier.
+func creditTierPresent(tier any) bool {
+	if tier == nil {
+		return false
+	}
+	if values, ok := tier.(map[string]any); ok {
+		return len(values) > 0
+	}
+	return true
 }
 
 func creditSnapshotOf(account *Account) *CreditSnapshot {
@@ -664,10 +704,24 @@ func creditSnapshotOf(account *Account) *CreditSnapshot {
 	return cloneCreditSnapshot(account.Credits)
 }
 
+// CreditsRefreshTargets selects the accounts for RefreshCreditsFor. Leaving
+// every field empty means "all accounts in this provider realm". UID wins over
+// UIDs; an explicitly empty (non-nil) UIDs slice means "none", matching v1's
+// payload-presence contract. Realm "all" (or empty) means every account in this
+// provider; a different realm selects nothing because the two realms are
+// separate provider instances.
+type CreditsRefreshTargets struct {
+	UID   string
+	UIDs  []string
+	Realm string
+	Group string
+}
+
 // RefreshCredits refreshes every loaded account in this realm's pool. A failed
 // account is reported in its own row and never stops the rest of the sweep.
 // Disabled accounts are refreshed too, matching v1's all-pool sweep; requests
-// and persistence remain provider-private.
+// and persistence remain provider-private. Concurrent calls are coalesced per
+// account so one credential is never fetched or written out of order.
 func (p *Provider) RefreshCredits(ctx context.Context) (CreditsRefreshResult, error) {
 	result := CreditsRefreshResult{Results: []CreditRefreshRow{}}
 	if p == nil {
@@ -680,36 +734,161 @@ func (p *Provider) RefreshCredits(ctx context.Context) (CreditsRefreshResult, er
 	if pool == nil {
 		return result, errors.New("workbuddy: account pool is nil")
 	}
+	return p.refreshCreditAccounts(ctx, pool, pool.Accounts())
+}
 
-	for _, account := range pool.Accounts() {
-		row := CreditRefreshRow{UID: accountUID(account)}
-		if err := ctx.Err(); err != nil {
-			row.Error = p.redactCreditError(account, err)
-			row.Credits = creditSnapshotOf(account)
-			result.Results = append(result.Results, row)
-			continue
+// RefreshCreditsFor refreshes a v1-shaped target selection (uid/uids/realm/
+// group). It is the Task 9 panel entry point and shares the same per-account
+// single-flight and row semantics as RefreshCredits.
+func (p *Provider) RefreshCreditsFor(ctx context.Context, targets CreditsRefreshTargets) (CreditsRefreshResult, error) {
+	result := CreditsRefreshResult{Results: []CreditRefreshRow{}}
+	if p == nil {
+		return result, errors.New("workbuddy: provider is nil")
+	}
+	if ctx == nil {
+		return result, errors.New("workbuddy: credits refresh requires a context")
+	}
+	pool := p.Pool()
+	if pool == nil {
+		return result, errors.New("workbuddy: account pool is nil")
+	}
+	return p.refreshCreditAccounts(ctx, pool, p.creditTargetAccounts(pool, targets))
+}
+
+func (p *Provider) creditTargetAccounts(pool *Pool, targets CreditsRefreshTargets) []*Account {
+	if pool == nil {
+		return nil
+	}
+	var accounts []*Account
+	if uid := strings.TrimSpace(targets.UID); uid != "" {
+		if account := pool.Get(uid); account != nil {
+			accounts = []*Account{account}
 		}
-
-		snapshot, tier, err := p.fetchRawCredits(ctx, account)
-		if err == nil {
-			uid := accountUID(account)
-			if uid == "" {
-				err = errors.New("workbuddy: credit account has no uid")
-			} else {
-				err = pool.setCreditsAndTier(uid, snapshot, tier)
+	} else if targets.UIDs != nil {
+		seen := make(map[string]bool)
+		for _, rawUID := range targets.UIDs {
+			uid := strings.TrimSpace(rawUID)
+			if uid == "" || seen[uid] {
+				continue
+			}
+			seen[uid] = true
+			if account := pool.Get(uid); account != nil {
+				accounts = append(accounts, account)
 			}
 		}
-		if err != nil {
-			row.Error = p.redactCreditError(account, err)
-			row.Credits = creditSnapshotOf(account)
-		} else {
-			row.OK = true
-			row.Credits = snapshot
+	} else if realm := strings.TrimSpace(targets.Realm); realm != "" && !strings.EqualFold(realm, "all") {
+		if normalized, ok := normalizeRealm(realm); ok && normalized == p.realm {
+			accounts = pool.Accounts()
 		}
-		result.Results = append(result.Results, row)
+	} else {
+		accounts = pool.Accounts()
+	}
+	if group := strings.TrimSpace(targets.Group); group != "" {
+		filtered := accounts[:0]
+		for _, account := range accounts {
+			account.mu.RLock()
+			accountGroup := strings.TrimSpace(account.Group)
+			account.mu.RUnlock()
+			if accountGroup == group {
+				filtered = append(filtered, account)
+			}
+		}
+		accounts = filtered
+	}
+	return accounts
+}
+
+func (p *Provider) refreshCreditAccounts(ctx context.Context, pool *Pool, accounts []*Account) (CreditsRefreshResult, error) {
+	result := CreditsRefreshResult{Results: make([]CreditRefreshRow, 0, len(accounts))}
+	for _, account := range accounts {
+		result.Results = append(result.Results, p.refreshCreditAccount(ctx, account))
 	}
 	result.Accounts = pool.List()
 	return result, nil
+}
+
+type creditRefreshFlight struct {
+	done chan struct{}
+	row  CreditRefreshRow
+}
+
+// refreshCreditAccount coalesces concurrent refreshes of one account. The
+// first caller performs the upstream fetch and credential write; later callers
+// wait for that result instead of spending another request or racing the file.
+func (p *Provider) refreshCreditAccount(ctx context.Context, account *Account) CreditRefreshRow {
+	uid := accountUID(account)
+	p.creditsMu.Lock()
+	if p.creditFlights == nil {
+		p.creditFlights = make(map[*Account]*creditRefreshFlight)
+	}
+	if flight := p.creditFlights[account]; flight != nil {
+		p.creditsMu.Unlock()
+		if p.creditJoinHook != nil {
+			p.creditJoinHook()
+		}
+		select {
+		case <-flight.done:
+			p.creditsMu.Lock()
+			row := cloneCreditRefreshRow(flight.row)
+			p.creditsMu.Unlock()
+			return row
+		case <-ctx.Done():
+			return CreditRefreshRow{
+				UID:     uid,
+				Credits: creditSnapshotOf(account),
+				Error:   p.redactCreditError(account, ctx.Err()),
+			}
+		}
+	}
+	flight := &creditRefreshFlight{done: make(chan struct{})}
+	p.creditFlights[account] = flight
+	p.creditsMu.Unlock()
+
+	row := p.fetchAndPersistCreditAccount(ctx, account)
+
+	p.creditsMu.Lock()
+	flight.row = cloneCreditRefreshRow(row)
+	delete(p.creditFlights, account)
+	close(flight.done)
+	p.creditsMu.Unlock()
+	return row
+}
+
+func (p *Provider) fetchAndPersistCreditAccount(ctx context.Context, account *Account) CreditRefreshRow {
+	row := CreditRefreshRow{UID: accountUID(account)}
+	if err := ctx.Err(); err != nil {
+		row.Error = p.redactCreditError(account, err)
+		row.Credits = creditSnapshotOf(account)
+		return row
+	}
+
+	snapshot, tier, err := p.fetchRawCredits(ctx, account)
+	if err == nil {
+		if creditTierPresent(tier) {
+			if paid, ok := creditBool(tier["paid"]); ok {
+				snapshot.IsPaidUser = paid
+			}
+		}
+		uid := accountUID(account)
+		if uid == "" {
+			err = errors.New("workbuddy: credit account has no uid")
+		} else {
+			err = p.Pool().setCreditsAndTier(uid, snapshot, tier)
+		}
+	}
+	if err != nil {
+		row.Error = p.redactCreditError(account, err)
+		row.Credits = creditSnapshotOf(account)
+	} else {
+		row.OK = true
+		row.Credits = cloneCreditSnapshot(snapshot)
+	}
+	return row
+}
+
+func cloneCreditRefreshRow(row CreditRefreshRow) CreditRefreshRow {
+	row.Credits = cloneCreditSnapshot(row.Credits)
+	return row
 }
 
 func (p *Provider) fetchRawCredits(ctx context.Context, account *Account) (*CreditSnapshot, map[string]any, error) {
@@ -750,7 +929,13 @@ func (p *Provider) fetchRawCredits(ctx context.Context, account *Account) (*Cred
 	}
 
 	snapshot, err := p.fetchFallbackCredits(ctx, session)
-	return snapshot, nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	// v1's fetch_credits refreshes the intl tier from the billing summary at
+	// most once per TIER_TTL_SECONDS. Failure is soft: the balance still lands
+	// and the previous tier/timestamp stay untouched.
+	return snapshot, p.refreshIntlTierIfDue(ctx, session), nil
 }
 
 type creditAccountState struct {
@@ -760,7 +945,9 @@ type creditAccountState struct {
 	realm        string
 	enterpriseID string
 	proxyURL     string
+	product      string
 	apiKey       bool
+	canRefresh   bool
 }
 
 func creditAccountStateOf(account *Account) creditAccountState {
@@ -785,7 +972,9 @@ func creditAccountStateOf(account *Account) creditAccountState {
 		realm:        realm,
 		enterpriseID: enterprise,
 		proxyURL:     strings.TrimSpace(account.Auth.ProxyURL),
+		product:      normalizeProduct(account.Auth.Product),
 		apiKey:       tokenAuthIsAPIKey(account.Auth),
+		canRefresh:   !tokenAuthIsAPIKey(account.Auth) && strings.TrimSpace(account.Auth.RefreshToken) != "",
 	}
 }
 
@@ -808,8 +997,8 @@ func newCreditsSession(provider *Provider, account *Account) *creditsSession {
 	}
 }
 
-func (s *creditsSession) postJSON(ctx context.Context, endpoint string, body []byte, refreshOn401 bool) (int, map[string]any, error) {
-	status, payload, err := s.postOnce(ctx, endpoint, body)
+func (s *creditsSession) postJSON(ctx context.Context, endpoint string, body []byte, refreshOn401 bool, timeout time.Duration) (int, map[string]any, error) {
+	status, payload, err := s.postOnce(ctx, endpoint, body, timeout)
 	if err != nil {
 		return status, payload, err
 	}
@@ -818,11 +1007,18 @@ func (s *creditsSession) postJSON(ctx context.Context, endpoint string, body []b
 	}
 	if !s.refreshed {
 		s.refreshed = true
-		if refreshErr := s.provider.EnsureToken(ctx, s.account); refreshErr != nil {
+		if !s.state.canRefresh {
+			s.account.SetTokenExpired(true)
+			return status, payload, errCreditAuth
+		}
+		// A 401 is authoritative: the local expiry may still be in the future
+		// (upstream revocation / clock skew), so EnsureToken's due check is not
+		// enough. ForceRefresh always rotates the credential before the retry.
+		if refreshErr := s.provider.ForceRefresh(ctx, s.account); refreshErr != nil {
 			return status, payload, refreshErr
 		}
 		s.state = creditAccountStateOf(s.account)
-		status, payload, err = s.postOnce(ctx, endpoint, body)
+		status, payload, err = s.postOnce(ctx, endpoint, body, timeout)
 		if err != nil {
 			return status, payload, err
 		}
@@ -834,12 +1030,12 @@ func (s *creditsSession) postJSON(ctx context.Context, endpoint string, body []b
 	return status, payload, nil
 }
 
-func (s *creditsSession) postOnce(ctx context.Context, endpoint string, body []byte) (int, map[string]any, error) {
+func (s *creditsSession) postOnce(ctx context.Context, endpoint string, body []byte, defaultTimeout time.Duration) (int, map[string]any, error) {
 	client := s.provider.creditHTTPClient()
 	if client == nil {
 		return 0, nil, errors.New("workbuddy: credits HTTP client is nil")
 	}
-	timeout := s.provider.creditTimeout()
+	timeout := s.provider.creditTimeout(defaultTimeout)
 	requestCtx := nonNilContext(ctx)
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -893,11 +1089,11 @@ func (p *Provider) creditHTTPClient() ContextHTTPDoer {
 	return defaultProfileTransport
 }
 
-func (p *Provider) creditTimeout() time.Duration {
+func (p *Provider) creditTimeout(defaultTimeout time.Duration) time.Duration {
 	if p != nil && p.creditsTimeout > 0 {
 		return p.creditsTimeout
 	}
-	return creditsTimeout
+	return defaultTimeout
 }
 
 func (p *Provider) creditsNowTime() time.Time {
@@ -966,6 +1162,21 @@ func (p *Provider) creditHeaders(state creditAccountState) http.Header {
 	if state.apiKey {
 		headers.Set("X-API-Key", state.token)
 	}
+	if requestID := creditRequestID(); requestID != "" {
+		headers.Set("X-Request-ID", requestID)
+	}
+	if state.uid != "" {
+		headers.Set("X-Machine-ID", creditDerivedID(state.uid, "machine"))
+		headers.Set("X-Session-ID", creditDerivedID(state.uid, "session"))
+	}
+	// v1's billing headers carry the configured device token for desktop
+	// identities. Keep it CN-only here for the same #448 reason as chat: the
+	// intl client does not have this header and it links accounts to one device.
+	if p.realm == realmCN && state.product != productCLI {
+		if token, err := ResolveDeviceToken(p.accountsDir); err == nil && token != "" {
+			headers.Set("X-Device-Token", token)
+		}
+	}
 	if state.enterpriseID != "" {
 		headers.Set("X-Enterprise-Id", state.enterpriseID)
 		headers.Set("X-Tenant-Id", state.enterpriseID)
@@ -989,6 +1200,29 @@ func (p *Provider) redactCreditError(account *Account, err error) string {
 	return text
 }
 
+// creditDerivedID mirrors v1 wb_fingerprint.derive_id: a stable UUID-shaped id
+// per (uid, salt), so billing requests from one account look like one device
+// without sharing an identifier across accounts.
+func creditDerivedID(uid, salt string) string {
+	seed := salt + ":" + uid
+	if uid == "" {
+		seed = salt + ":anonymous"
+	}
+	sum := md5.Sum([]byte(seed))
+	h := hex.EncodeToString(sum[:])
+	h = h[:12] + "4" + h[13:16] + "a" + h[17:]
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// creditRequestID mirrors v1's per-request 32-hex id.
+func creditRequestID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(raw[:])
+}
+
 func creditEndpoint(base, path string) string {
 	return strings.TrimRight(strings.TrimSpace(base), "/") + path
 }
@@ -998,6 +1232,9 @@ func creditHTTPError(status int, payload map[string]any) error {
 		return errCreditAuth
 	}
 	if message := creditPayloadMessage(payload); message != "" {
+		if creditAuthFailureText(message) {
+			return fmt.Errorf("%w: HTTP %d: %s", errCreditAuth, status, message)
+		}
 		return fmt.Errorf("workbuddy: credits HTTP %d: %s", status, message)
 	}
 	return fmt.Errorf("workbuddy: credits HTTP %d", status)
@@ -1025,12 +1262,22 @@ func creditCodeError(payload map[string]any) error {
 	return fmt.Errorf("workbuddy: credits code %v", payload["code"])
 }
 
+// creditAuthFailureText is v1's _auth_failure_text. A credential-shaped error
+// names authorization; a bare HTML 401 from an intermediate proxy does not.
+// The Chinese login-expired message is the extra marker v1 checks on the CN
+// detailed path.
 func creditAuthFailureText(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
 		return false
 	}
-	for _, marker := range []string{"401", "authorization", "unauthorized", "登录已过期"} {
+	if strings.Contains(lower, "invalid_token") || strings.Contains(lower, "invalid-token") {
+		return true
+	}
+	if strings.Contains(lower, "<html") {
+		return false
+	}
+	for _, marker := range []string{"401", "unauthorized", "authorization", "token expired", "登录"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -1280,10 +1527,7 @@ func parseCreditPackage(raw map[string]any, now time.Time) CreditPackage {
 	if unit == "" {
 		unit = "credits"
 	}
-	status := 0
-	if value, ok := numericValue(raw["Status"]); ok {
-		status = int(value)
-	}
+	status := creditStatusValue(raw["Status"])
 
 	return CreditPackage{
 		Name:           name,
@@ -1308,6 +1552,23 @@ func parseCreditPackage(raw map[string]any, now time.Time) CreditPackage {
 		IsExpired:      isExpired,
 		Status:         status,
 	}
+}
+
+// creditStatusValue preserves v1's raw Status: numeric statuses become ints
+// (the shape every current upstream sends) while hand-edited/string values are
+// kept as-is instead of being silently coerced to 0.
+func creditStatusValue(value any) any {
+	if value == nil {
+		return 0
+	}
+	switch value.(type) {
+	case float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, json.Number:
+		if number, ok := numericValue(value); ok {
+			return int(number)
+		}
+	}
+	return value
 }
 
 func creditPackageNumber(raw map[string]any, keys ...string) float64 {
@@ -1434,7 +1695,7 @@ func (s *creditsSession) paidKnown() (bool, bool) {
 func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) (*CreditSnapshot, map[string]any, error) {
 	now := p.creditsNowTime()
 	base := p.creditsBillingBase()
-	status, payload, err := session.postJSON(ctx, creditEndpoint(base, creditsSummaryPath), []byte("{}"), true)
+	status, payload, err := session.postJSON(ctx, creditEndpoint(base, creditsSummaryPath), []byte("{}"), true, creditsBillingTimeout)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1484,7 +1745,7 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 			"Status":       []int{0},
 		})
 		freeStatus, freePayload, freeErr := session.postJSON(ctx,
-			creditEndpoint(base, creditsFreePackagesPath), body, false)
+			creditEndpoint(base, creditsFreePackagesPath), body, false, creditsBillingTimeout)
 		if freeErr == nil && freeStatus >= 200 && freeStatus < 300 {
 			if accounts, ok := anyList(creditObject(freePayload["data"])["Accounts"]); ok {
 				freeAccounts = accounts
@@ -1502,7 +1763,7 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 			"NeedRenewInfo": true,
 		})
 		paidStatus, paidPayload, paidErr := session.postJSON(ctx,
-			creditEndpoint(base, creditsPaidPackagesPath), body, false)
+			creditEndpoint(base, creditsPaidPackagesPath), body, false, creditsBillingTimeout)
 		if paidErr == nil && paidStatus >= 200 && paidStatus < 300 {
 			if accounts, ok := anyList(creditObject(paidPayload["data"])["Accounts"]); ok {
 				paidAccounts = accounts
@@ -1512,7 +1773,7 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 
 	var checkin *CheckinStatus
 	checkinStatus, checkinPayload, checkinErr := session.postJSON(ctx,
-		creditEndpoint(p.creditsCheckinBase(), creditsCheckinPath), []byte("{}"), false)
+		creditEndpoint(p.creditsCheckinBase(), creditsCheckinPath), []byte("{}"), false, creditsCheckinTimeout)
 	if checkinErr == nil && checkinStatus >= 200 && checkinStatus < 300 {
 		checkinData := creditObject(checkinPayload["data"])
 		if len(checkinData) > 0 {
@@ -1554,6 +1815,46 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 	return snapshot, tier, nil
 }
 
+func (p *Provider) refreshIntlTierIfDue(ctx context.Context, session *creditsSession) map[string]any {
+	if p == nil || session == nil || p.realm != realmIntl || session.state.apiKey ||
+		creditsUsesEnterprise(session.state) {
+		return nil
+	}
+	now := p.creditsNowTime()
+	if creditTierFresh(session.account, now) {
+		return nil
+	}
+	status, payload, err := session.postJSON(ctx,
+		creditEndpoint(p.creditsBillingBase(), creditsSummaryPath),
+		[]byte("{}"), false, creditsBillingTimeout)
+	if err != nil || status < 200 || status >= 300 || creditCodeError(payload) != nil {
+		return nil
+	}
+	return tierFromCreditSummary(creditObject(payload["data"]), now)
+}
+
+func creditTierFresh(account *Account, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	account.mu.RLock()
+	raw := append([]byte(nil), account.Auth.Tier...)
+	account.mu.RUnlock()
+	if len(strings.TrimSpace(string(raw))) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return false
+	}
+	var tier map[string]any
+	if err := json.Unmarshal(raw, &tier); err != nil {
+		return false
+	}
+	checked, ok := numericValue(tier["checked_at"])
+	if !ok || checked <= 0 {
+		return false
+	}
+	checkedAt := time.Unix(int64(checked), 0)
+	return now.Sub(checkedAt) < creditsTierTTL
+}
+
 func tierFromCreditSummary(data map[string]any, now time.Time) map[string]any {
 	if data == nil {
 		return nil
@@ -1583,7 +1884,7 @@ func (p *Provider) fetchFallbackCredits(ctx context.Context, session *creditsSes
 		"PackageEndTimeRangeEnd":   "2036-01-01 00:00:00",
 	})
 	status, payload, err := session.postJSON(ctx,
-		creditEndpoint(p.creditsBillingBase(), creditsGetUserResourcePath), body, true)
+		creditEndpoint(p.creditsBillingBase(), creditsGetUserResourcePath), body, true, creditsFallbackTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1621,7 +1922,7 @@ func (p *Provider) fetchEnterpriseCredits(ctx context.Context, session *creditsS
 		path = creditsEnterprisePathV2
 	}
 	status, payload, err := session.postJSON(ctx,
-		creditEndpoint(p.creditsBillingBase(), path), []byte("{}"), true)
+		creditEndpoint(p.creditsBillingBase(), path), []byte("{}"), true, creditsBillingTimeout)
 	if err != nil {
 		return nil, err
 	}

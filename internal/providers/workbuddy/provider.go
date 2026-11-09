@@ -102,6 +102,14 @@ type Provider struct {
 	creditsCheckinBaseURL string
 	creditsTimeout        time.Duration
 	creditsNow            func() time.Time
+
+	// creditsMu guards creditFlights, this provider's per-account single-flight
+	// table for the credits sweep. Concurrent callers share one upstream fetch
+	// and one credential write for the same account. creditJoinHook is a test
+	// seam invoked when a caller joins an in-flight refresh.
+	creditsMu      sync.Mutex
+	creditFlights  map[*Account]*creditRefreshFlight
+	creditJoinHook func()
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is

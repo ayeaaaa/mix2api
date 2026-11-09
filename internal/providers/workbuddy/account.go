@@ -60,7 +60,7 @@ type CreditPackage struct {
 	NoExpiry       bool     `json:"no_expiry"`
 	DaysLeft       *float64 `json:"days_left"`
 	IsExpired      bool     `json:"is_expired"`
-	Status         int      `json:"status"`
+	Status         any      `json:"status"`
 }
 
 // EarliestExpiring is v1's compact "spend these first" package summary.
