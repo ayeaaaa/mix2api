@@ -3,6 +3,7 @@ package workbuddy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,8 @@ type tokenTestFake struct {
 	body    string
 	respond func(*http.Request) (int, string)
 	delay   time.Duration
+	started chan struct{}
+	release chan struct{}
 }
 
 func (f *tokenTestFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +55,19 @@ func (f *tokenTestFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body := f.body
 	respond := f.respond
 	delay := f.delay
+	started := f.started
+	release := f.release
 	f.mu.Unlock()
 
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
 	if delay > 0 {
 		time.Sleep(delay)
 	}
@@ -67,10 +81,29 @@ func (f *tokenTestFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if status >= 300 {
 		w.WriteHeader(status)
 	}
-	if body == "" {
-		body = `{"code":0,"data":{}}`
-	}
 	_, _ = io.WriteString(w, body)
+}
+
+// blockTokenTestFake parks the fake after recording a request. The returned
+// release function is safe to call more than once.
+func blockTokenTestFake(f *tokenTestFake) (<-chan struct{}, func()) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	f.mu.Lock()
+	f.started = started
+	f.release = release
+	f.mu.Unlock()
+	var once sync.Once
+	return started, func() { once.Do(func() { close(release) }) }
+}
+
+func waitTokenTestStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("token refresh did not reach the fake upstream")
+	}
 }
 
 func (f *tokenTestFake) snapshot() []tokenTestCall {
@@ -657,23 +690,28 @@ func TestTokenEnsureProxyHeadersAndTimeout(t *testing.T) {
 	}
 
 	t.Run("timeout", func(t *testing.T) {
-		fake := &tokenTestFake{
-			body:  tokenSuccessBody("late-access", "late-refresh", now.Add(time.Hour)),
-			delay: 250 * time.Millisecond,
-		}
+		fake := &tokenTestFake{body: tokenSuccessBody("late-access", "late-refresh", now.Add(time.Hour))}
 		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
 			tokenTestAccountSpec{UID: "timeout", Fields: map[string]any{
 				"expiresAt": now.Add(-time.Minute).Unix(),
 			}},
 		)
+		started, release := blockTokenTestFake(fake)
+		defer release()
 		provider.tokenTimeout = 25 * time.Millisecond
-		start := time.Now()
-		err := provider.EnsureToken(context.Background(), pool.Get("timeout"))
-		if err == nil {
-			t.Fatal("timed-out refresh returned nil")
-		}
-		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
-			t.Fatalf("refresh took %v; timeout was not enforced", elapsed)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- provider.EnsureToken(context.Background(), pool.Get("timeout"))
+		}()
+		waitTokenTestStarted(t, started)
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("timed-out refresh returned nil")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("refresh remained blocked; timeout was not enforced")
 		}
 	})
 }
@@ -693,8 +731,12 @@ func TestTokenKeepaliveCountsSkipsAndNoCheckin(t *testing.T) {
 	now := fixedTokenNow()
 	fake := &tokenTestFake{body: tokenSuccessBody("keepalive-access", "keepalive-refresh", now.Add(time.Hour))}
 	provider, pool, _, _ := newTokenTestProvider(t, realmCN, now, fake,
-		tokenTestAccountSpec{UID: "valid", Fields: map[string]any{"expiresAt": now.Add(time.Hour).Unix()}},
-		tokenTestAccountSpec{UID: "due", Fields: map[string]any{"expiresAt": now.Add(time.Minute).Unix()}},
+		tokenTestAccountSpec{UID: "future", Fields: map[string]any{"expiresAt": now.Add(49 * time.Hour).Unix()}},
+		tokenTestAccountSpec{UID: "due", Fields: map[string]any{"expiresAt": now.Add(time.Hour).Unix()}},
+		tokenTestAccountSpec{UID: "opaque", Fields: map[string]any{
+			"accessToken": "opaque-token",
+			"expiresAt":   0,
+		}},
 		tokenTestAccountSpec{UID: "disabled", Fields: map[string]any{
 			"enabled":   false,
 			"expiresAt": now.Add(time.Minute).Unix(),
@@ -711,15 +753,15 @@ func TestTokenKeepaliveCountsSkipsAndNoCheckin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Keepalive: %v", err)
 	}
-	if result.Accounts != 4 || result.Refreshed != 1 || result.Skipped != 3 || result.Failed != 0 {
-		t.Fatalf("KeepaliveResult = %+v, want accounts=4 refreshed=1 skipped=3 failed=0", result)
+	if result.Accounts != 5 || result.Refreshed != 2 || result.Skipped != 3 || result.Failed != 0 {
+		t.Fatalf("KeepaliveResult = %+v, want accounts=5 refreshed=2 skipped=3 failed=0", result)
 	}
 	if len(result.Errors) != 0 {
 		t.Fatalf("Keepalive errors = %v", result.Errors)
 	}
 	calls := fake.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("keepalive refresh calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("keepalive refresh calls = %d, want 2", len(calls))
 	}
 	for _, call := range calls {
 		if strings.Contains(strings.ToLower(call.Path), "checkin") {
@@ -728,6 +770,12 @@ func TestTokenKeepaliveCountsSkipsAndNoCheckin(t *testing.T) {
 	}
 	if pool.Get("due").Auth.AccessToken != "keepalive-access" {
 		t.Fatalf("due account was not refreshed: %+v", pool.Get("due").Auth)
+	}
+	if pool.Get("opaque").Auth.AccessToken != "keepalive-access" {
+		t.Fatalf("unknown-expiry account was not refreshed: %+v", pool.Get("opaque").Auth)
+	}
+	if pool.Get("future").Auth.AccessToken == "keepalive-access" {
+		t.Fatal("account beyond the 48-hour lead was refreshed")
 	}
 	if pool.Get("disabled").Auth.AccessToken == "keepalive-access" {
 		t.Fatal("disabled account was refreshed")
@@ -807,5 +855,427 @@ func TestTokenEnsureRequiresContextAndAccount(t *testing.T) {
 	var nilProvider *Provider
 	if err := nilProvider.EnsureToken(context.Background(), &Account{}); err == nil {
 		t.Fatal("nil provider was accepted")
+	}
+}
+
+func TestTokenEnsureMalformedSuccessIsTransient(t *testing.T) {
+	now := fixedTokenNow()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "empty", body: ""},
+		{name: "html", body: "<html><body>proxy login</body></html>"},
+		{name: "null", body: "null"},
+		{name: "malformed", body: `{"data":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &tokenTestFake{status: http.StatusOK, body: tc.body}
+			provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+				tokenTestAccountSpec{UID: "still-valid", Fields: map[string]any{
+					"expiresAt": now.Add(30 * time.Second).Unix(),
+				}},
+				tokenTestAccountSpec{UID: "expired", Fields: map[string]any{
+					"expiresAt": now.Add(-time.Minute).Unix(),
+				}},
+			)
+
+			valid := pool.Get("still-valid")
+			validAccess, validRefresh := valid.Auth.AccessToken, valid.Auth.RefreshToken
+			if err := provider.EnsureToken(context.Background(), valid); err != nil {
+				t.Fatalf("malformed 2xx with valid token returned error: %v", err)
+			}
+			if valid.Auth.AccessToken != validAccess || valid.Auth.RefreshToken != validRefresh {
+				t.Fatalf("malformed 2xx replaced a valid credential: %+v", valid.Auth)
+			}
+			if valid.tokenExpired {
+				t.Fatal("malformed 2xx marked a valid token expired")
+			}
+
+			expired := pool.Get("expired")
+			expiredAccess, expiredRefresh := expired.Auth.AccessToken, expired.Auth.RefreshToken
+			err := provider.EnsureToken(context.Background(), expired)
+			if err == nil {
+				t.Fatal("malformed 2xx with expired token returned nil")
+			}
+			if expired.Auth.AccessToken != expiredAccess || expired.Auth.RefreshToken != expiredRefresh {
+				t.Fatalf("malformed 2xx replaced an expired credential: %+v", expired.Auth)
+			}
+			if expired.tokenExpired {
+				t.Fatal("malformed 2xx was treated as terminal")
+			}
+			if tokenTextLeaks(err.Error(), expiredAccess, expiredRefresh) ||
+				tokenTextLeaks(expired.State.LastError, expiredAccess, expiredRefresh) {
+				t.Fatalf("malformed 2xx leaked credentials: err=%q state=%q", err, expired.State.LastError)
+			}
+			if calls := fake.snapshot(); len(calls) != 2 {
+				t.Fatalf("refresh calls = %d, want 2", len(calls))
+			}
+		})
+	}
+}
+
+func TestTokenForceRefreshBypassesSkew(t *testing.T) {
+	now := fixedTokenNow()
+	t.Run("future expiry", func(t *testing.T) {
+		fake := &tokenTestFake{body: tokenSuccessBody("forced-access", "forced-refresh", now.Add(time.Hour))}
+		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+			tokenTestAccountSpec{UID: "force", Fields: map[string]any{
+				"expiresAt": now.Add(time.Hour).Unix(),
+			}},
+		)
+		account := pool.Get("force")
+		if err := provider.EnsureToken(context.Background(), account); err != nil {
+			t.Fatalf("EnsureToken: %v", err)
+		}
+		if calls := fake.snapshot(); len(calls) != 0 {
+			t.Fatalf("future token was refreshed by EnsureToken: %d calls", len(calls))
+		}
+		if err := provider.ForceRefresh(context.Background(), account); err != nil {
+			t.Fatalf("ForceRefresh: %v", err)
+		}
+		if calls := fake.snapshot(); len(calls) != 1 {
+			t.Fatalf("ForceRefresh calls = %d, want 1", len(calls))
+		}
+		if account.Auth.AccessToken != "forced-access" || account.Auth.RefreshToken != "forced-refresh" {
+			t.Fatalf("ForceRefresh did not rotate credentials: %+v", account.Auth)
+		}
+	})
+
+	t.Run("terminal", func(t *testing.T) {
+		fake := &tokenTestFake{status: http.StatusUnauthorized, body: `{"msg":"rejected"}`}
+		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+			tokenTestAccountSpec{UID: "force-terminal", Fields: map[string]any{
+				"expiresAt": now.Add(time.Hour).Unix(),
+			}},
+		)
+		account := pool.Get("force-terminal")
+		account.SetTokenExpired(true)
+		oldAccess := account.Auth.AccessToken
+		err := provider.ForceRefresh(context.Background(), account)
+		if err == nil {
+			t.Fatal("terminal ForceRefresh returned nil")
+		}
+		if calls := fake.snapshot(); len(calls) != 1 {
+			t.Fatalf("ForceRefresh calls = %d, want 1", len(calls))
+		}
+		if account.Auth.AccessToken != oldAccess {
+			t.Fatalf("terminal ForceRefresh replaced the credential: %+v", account.Auth)
+		}
+		if !account.tokenExpired || !account.State.Disabled {
+			t.Fatalf("terminal ForceRefresh did not mark the account: state=%+v", account.State)
+		}
+	})
+}
+
+func TestTokenSingleFlightErrorSharing(t *testing.T) {
+	now := fixedTokenNow()
+	fake := &tokenTestFake{status: http.StatusUnauthorized, body: `{"msg":"rejected"}`}
+	provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+		tokenTestAccountSpec{UID: "shared-error", Fields: map[string]any{
+			"expiresAt": now.Add(-time.Minute).Unix(),
+		}},
+	)
+	account := pool.Get("shared-error")
+	started, release := blockTokenTestFake(fake)
+	defer release()
+
+	const callers = 20
+	joined := make(chan struct{}, callers-1)
+	provider.tokenJoinHook = func() { joined <- struct{}{} }
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- provider.EnsureToken(context.Background(), account)
+		}()
+	}
+	close(start)
+	waitTokenTestStarted(t, started)
+	for i := 0; i < callers-1; i++ {
+		select {
+		case <-joined:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d callers joined the refresh flight", i, callers-1)
+		}
+	}
+	release()
+	wg.Wait()
+	close(errs)
+
+	var first string
+	for err := range errs {
+		if err == nil {
+			t.Fatal("shared failed flight returned nil to a waiter")
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Fatalf("shared flight returned different errors: %q / %q", first, err.Error())
+		}
+	}
+	if calls := fake.snapshot(); len(calls) != 1 {
+		t.Fatalf("shared flight calls = %d, want 1", len(calls))
+	}
+	if !account.tokenExpired || !account.State.Disabled {
+		t.Fatalf("shared terminal failure did not mark the account: %+v", account.State)
+	}
+}
+
+func TestTokenEnsureConcurrentReimportSupersedesStaleResult(t *testing.T) {
+	now := fixedTokenNow()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "401", status: http.StatusUnauthorized, body: `{"msg":"stale-access stale-refresh"}`},
+		{name: "500", status: http.StatusInternalServerError, body: `{"msg":"stale-access stale-refresh"}`},
+		{name: "200", status: http.StatusOK, body: tokenSuccessBody("stale-new-access", "stale-new-refresh", now.Add(time.Hour))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &tokenTestFake{status: tc.status, body: tc.body}
+			provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+				tokenTestAccountSpec{UID: "race", Fields: map[string]any{
+					"expiresAt": now.Add(-time.Minute).Unix(),
+				}},
+			)
+			account := pool.Get("race")
+			started, release := blockTokenTestFake(fake)
+			defer release()
+
+			type ensureResult struct {
+				refreshed bool
+				err       error
+			}
+			done := make(chan ensureResult, 1)
+			go func() {
+				refreshed, err := provider.ensureToken(context.Background(), account, tokenRefreshRequestPath)
+				done <- ensureResult{refreshed: refreshed, err: err}
+			}()
+			waitTokenTestStarted(t, started)
+
+			reimport := Auth{
+				UID:             "race",
+				AccessToken:     "reimport-access",
+				RefreshToken:    "reimport-refresh",
+				Realm:           realmIntl,
+				Domain:          "www.workbuddy.ai",
+				Platform:        "CLI",
+				Source:          sourceOAuth,
+				ExpiresAt:       now.Add(2 * time.Hour),
+				Enabled:         true,
+				EnabledSet:      true,
+				TasksEnabled:    true,
+				TasksEnabledSet: true,
+			}
+			if _, err := pool.Add(reimport); err != nil {
+				t.Fatalf("Pool.Add reimport: %v", err)
+			}
+			release()
+
+			result := <-done
+			if result.err != nil {
+				t.Fatalf("stale refresh returned error after reimport: %v", result.err)
+			}
+			if result.refreshed {
+				t.Fatal("stale response was counted as a refresh")
+			}
+			if account.Auth.AccessToken != "reimport-access" || account.Auth.RefreshToken != "reimport-refresh" {
+				t.Fatalf("stale response clobbered the reimport: %+v", account.Auth)
+			}
+			if account.tokenExpired || account.State.Disabled || account.State.LastError != "" {
+				t.Fatalf("stale response mutated reimported state: tokenExpired=%v state=%+v",
+					account.tokenExpired, account.State)
+			}
+			reloaded, err := LoadAccount(account.Path)
+			if err != nil {
+				t.Fatalf("LoadAccount: %v", err)
+			}
+			if reloaded.AccessToken != "reimport-access" || reloaded.RefreshToken != "reimport-refresh" {
+				t.Fatalf("stale response clobbered the persisted reimport: %+v", reloaded)
+			}
+			if calls := fake.snapshot(); len(calls) != 1 {
+				t.Fatalf("refresh calls = %d, want 1", len(calls))
+			}
+		})
+	}
+}
+
+func TestTokenKeepaliveMidSweepCancellation(t *testing.T) {
+	now := fixedTokenNow()
+	fake := &tokenTestFake{body: tokenSuccessBody("cancelled-access", "cancelled-refresh", now.Add(time.Hour))}
+	provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+		tokenTestAccountSpec{UID: "a-cancel", Fields: map[string]any{"expiresAt": now.Add(time.Minute).Unix()}},
+		tokenTestAccountSpec{UID: "z-later", Fields: map[string]any{"expiresAt": now.Add(time.Minute).Unix()}},
+	)
+	started, release := blockTokenTestFake(fake)
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type keepaliveResult struct {
+		result KeepaliveResult
+		err    error
+	}
+	done := make(chan keepaliveResult, 1)
+	go func() {
+		result, err := provider.Keepalive(ctx)
+		done <- keepaliveResult{result: result, err: err}
+	}()
+	waitTokenTestStarted(t, started)
+	cancel()
+	release()
+
+	var got keepaliveResult
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("keepalive did not stop after cancellation")
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("Keepalive error = %v, want context.Canceled", got.err)
+	}
+	if got.result.Accounts != 1 ||
+		got.result.Refreshed+got.result.Failed+got.result.Skipped != 1 {
+		t.Fatalf("KeepaliveResult after mid-sweep cancellation = %+v", got.result)
+	}
+	if calls := fake.snapshot(); len(calls) != 1 {
+		t.Fatalf("mid-sweep cancellation calls = %d, want 1", len(calls))
+	}
+	if pool.Get("z-later").Auth.AccessToken == "cancelled-access" {
+		t.Fatal("keepalive continued after cancellation")
+	}
+}
+
+func TestTokenKeepaliveNilContextAndPool(t *testing.T) {
+	var nilProvider *Provider
+	if _, err := nilProvider.Keepalive(context.Background()); err == nil {
+		t.Fatal("nil provider Keepalive was accepted")
+	}
+	provider := &Provider{}
+	if _, err := provider.Keepalive(nil); err == nil {
+		t.Fatal("nil Keepalive context was accepted")
+	}
+	if _, err := provider.Keepalive(context.Background()); err == nil {
+		t.Fatal("Keepalive without a pool was accepted")
+	}
+	if err := provider.ForceRefresh(nil, &Account{}); err == nil {
+		t.Fatal("nil ForceRefresh context was accepted")
+	}
+}
+
+func TestTokenEnsureStandalonePersistence(t *testing.T) {
+	now := fixedTokenNow()
+	fake := &tokenTestFake{body: tokenSuccessBody("standalone-access", "standalone-refresh", now.Add(time.Hour))}
+	provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+		tokenTestAccountSpec{UID: "standalone", Fields: map[string]any{
+			"expiresAt": now.Add(-time.Minute).Unix(),
+		}},
+	)
+	account := pool.Get("standalone")
+	account.pool = nil
+	if err := provider.EnsureToken(context.Background(), account); err != nil {
+		t.Fatalf("EnsureToken standalone: %v", err)
+	}
+	if account.Auth.AccessToken != "standalone-access" || account.Auth.RefreshToken != "standalone-refresh" {
+		t.Fatalf("standalone in-memory credentials = %+v", account.Auth)
+	}
+	reloaded, err := LoadAccount(account.Path)
+	if err != nil {
+		t.Fatalf("LoadAccount: %v", err)
+	}
+	if reloaded.AccessToken != "standalone-access" || reloaded.RefreshToken != "standalone-refresh" {
+		t.Fatalf("standalone persisted credentials = %+v", reloaded)
+	}
+}
+
+func TestTokenRedactionBodyAndProxy(t *testing.T) {
+	now := fixedTokenNow()
+
+	t.Run("terminal body", func(t *testing.T) {
+		fake := &tokenTestFake{status: http.StatusUnauthorized}
+		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+			tokenTestAccountSpec{UID: "redact-body", Fields: map[string]any{
+				"expiresAt": now.Add(-time.Minute).Unix(),
+			}},
+		)
+		account := pool.Get("redact-body")
+		oldAccess, oldRefresh := account.Auth.AccessToken, account.Auth.RefreshToken
+		fake.mu.Lock()
+		fake.body = `{"msg":"` + oldAccess + ` ` + oldRefresh + ` proxy-password"}`
+		fake.mu.Unlock()
+		err := provider.EnsureToken(context.Background(), account)
+		if err == nil {
+			t.Fatal("terminal body test returned nil")
+		}
+		if tokenTextLeaks(err.Error(), oldAccess, oldRefresh) ||
+			tokenTextLeaks(account.State.LastError, oldAccess, oldRefresh) {
+			t.Fatalf("terminal body leaked credentials: err=%q state=%q", err, account.State.LastError)
+		}
+	})
+
+	t.Run("malformed body", func(t *testing.T) {
+		fake := &tokenTestFake{}
+		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+			tokenTestAccountSpec{UID: "redact-malformed", Fields: map[string]any{
+				"expiresAt": now.Add(-time.Minute).Unix(),
+			}},
+		)
+		account := pool.Get("redact-malformed")
+		oldAccess, oldRefresh := account.Auth.AccessToken, account.Auth.RefreshToken
+		fake.mu.Lock()
+		fake.body = oldAccess + " " + oldRefresh + " <html>proxy-password</html>"
+		fake.mu.Unlock()
+		err := provider.EnsureToken(context.Background(), account)
+		if err == nil {
+			t.Fatal("malformed body test returned nil")
+		}
+		if tokenTextLeaks(err.Error(), oldAccess, oldRefresh) ||
+			tokenTextLeaks(account.State.LastError, oldAccess, oldRefresh) {
+			t.Fatalf("malformed body leaked credentials: err=%q state=%q", err, account.State.LastError)
+		}
+	})
+
+	t.Run("proxy", func(t *testing.T) {
+		fake := &tokenTestFake{}
+		provider, pool, _, _ := newTokenTestProvider(t, realmIntl, now, fake,
+			tokenTestAccountSpec{UID: "redact-proxy", Fields: map[string]any{
+				"expiresAt": now.Add(-time.Minute).Unix(),
+			}},
+		)
+		account := pool.Get("redact-proxy")
+		oldAccess, oldRefresh := account.Auth.AccessToken, account.Auth.RefreshToken
+		account.Auth.ProxyURL = "http://proxy-user:proxy-password@127.0.0.1:1"
+		err := provider.EnsureToken(context.Background(), account)
+		if err == nil {
+			t.Fatal("proxy failure returned nil")
+		}
+		for _, text := range []string{err.Error(), account.State.LastError} {
+			if tokenTextLeaks(text, "proxy-password", "proxy-user:proxy-password") {
+				t.Fatalf("proxy failure leaked credentials: %s", text)
+			}
+		}
+		raw := "dial " + account.Auth.ProxyURL + " failed " + oldAccess + " " + oldRefresh
+		redacted := provider.redactTokenErrorText(account, raw)
+		if tokenTextLeaks(redacted, "proxy-password", "proxy-user:proxy-password", oldAccess, oldRefresh) {
+			t.Fatalf("proxy redaction leaked credentials: %s", redacted)
+		}
+	})
+}
+
+func TestTokenKeepaliveLeadEnvironment(t *testing.T) {
+	t.Setenv("WB_KEEPALIVE_LEAD_HOURS", "6")
+	if got := keepaliveLead(); got != 6*time.Hour {
+		t.Fatalf("keepalive lead = %v, want 6h", got)
+	}
+	for _, invalid := range []string{"0", "721", "NaN", "+Inf", "not-a-number"} {
+		t.Setenv("WB_KEEPALIVE_LEAD_HOURS", invalid)
+		if got := keepaliveLead(); got != keepaliveRefreshLead {
+			t.Fatalf("keepalive lead for %q = %v, want %v", invalid, got, keepaliveRefreshLead)
+		}
 	}
 }

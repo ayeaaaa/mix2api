@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +29,14 @@ const (
 	// defaultTokenRefreshTimeout matches v1's 30-second refresh budget. The
 	// provider's tokenTimeout test seam may override it.
 	defaultTokenRefreshTimeout = 30 * time.Second
+
+	// keepaliveRefreshLead is v1 wb_scheduler's default 48-hour lead. The
+	// scheduled keepalive runs daily at 22:00; Task 10 owns that cadence.
+	// WB_KEEPALIVE_LEAD_HOURS may override it between 1 and 720 hours.
+	// EnsureToken keeps the request-path 120-second skew.
+	keepaliveRefreshLead  = 48 * time.Hour
+	keepaliveLeadMinHours = 1.0
+	keepaliveLeadMaxHours = 24.0 * 30
 
 	// tokenErrorLimit bounds runtime error text while keeping enough context
 	// for an operator to understand the failure.
@@ -45,7 +56,20 @@ type KeepaliveResult struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// tokenRefreshFlight is one in-progress refresh shared by concurrent Ensure
+// tokenRefreshMode selects the expiry predicate for one refresh attempt.
+type tokenRefreshMode uint8
+
+const (
+	// tokenRefreshRequestPath is EnsureToken's v1 120-second readiness skew.
+	tokenRefreshRequestPath tokenRefreshMode = iota
+	// tokenRefreshScheduled is Keepalive's v1 48-hour scheduled lead. An
+	// unknown/opaque expiry is due.
+	tokenRefreshScheduled
+	// tokenRefreshForced is ForceRefresh's post-401 retry and ignores expiry.
+	tokenRefreshForced
+)
+
+// tokenRefreshFlight is one in-progress refresh shared by concurrent refresh
 // callers. done is closed after refreshed and err are published.
 type tokenRefreshFlight struct {
 	done      chan struct{}
@@ -113,14 +137,24 @@ func (p *Provider) tokenRefreshBudget() time.Duration {
 // known expiry are no-ops. Concurrent calls for the same account share one
 // upstream request; every waiter observes the same result.
 func (p *Provider) EnsureToken(ctx context.Context, a *Account) error {
-	_, err := p.ensureToken(ctx, a)
+	_, err := p.ensureToken(ctx, a, tokenRefreshRequestPath)
+	return err
+}
+
+// ForceRefresh rotates a's credential regardless of its recorded expiry. Task 7
+// calls it after a chat 401 so a token that is marked expired or still carries
+// a future expiry is retried once with the same terminal-failure semantics as
+// EnsureToken. Static API keys remain no-ops, and concurrent refreshes share
+// one flight.
+func (p *Provider) ForceRefresh(ctx context.Context, a *Account) error {
+	_, err := p.ensureToken(ctx, a, tokenRefreshForced)
 	return err
 }
 
 // ensureToken is EnsureToken plus whether an upstream rotation actually
 // happened. Keepalive uses the count to report successful refreshes without
-// treating a transient no-op as a refreshed account.
-func (p *Provider) ensureToken(ctx context.Context, a *Account) (bool, error) {
+// treating a transient no-op or a superseded response as a refreshed account.
+func (p *Provider) ensureToken(ctx context.Context, a *Account, mode tokenRefreshMode) (bool, error) {
 	if p == nil {
 		return false, errors.New("workbuddy: provider is nil")
 	}
@@ -141,7 +175,7 @@ func (p *Provider) ensureToken(ctx context.Context, a *Account) (bool, error) {
 	if tokenAuthIsAPIKey(snapshot.auth) {
 		return false, nil
 	}
-	if !tokenRefreshDue(snapshot.auth, p.tokenNowTime()) {
+	if mode != tokenRefreshForced && !tokenRefreshNeeded(snapshot.auth, p.tokenNowTime(), mode) {
 		return false, nil
 	}
 
@@ -151,6 +185,9 @@ func (p *Provider) ensureToken(ctx context.Context, a *Account) (bool, error) {
 	}
 	if flight := p.tokenFlights[a]; flight != nil {
 		p.tokenMu.Unlock()
+		if p.tokenJoinHook != nil {
+			p.tokenJoinHook()
+		}
 		select {
 		case <-flight.done:
 			if flight.err != nil {
@@ -165,7 +202,7 @@ func (p *Provider) ensureToken(ctx context.Context, a *Account) (bool, error) {
 	p.tokenFlights[a] = flight
 	p.tokenMu.Unlock()
 
-	refreshed, err := p.refreshToken(ctx, a)
+	refreshed, err := p.refreshToken(ctx, a, mode)
 	if err != nil {
 		err = p.redactTokenError(a, err)
 	}
@@ -200,21 +237,79 @@ func tokenRefreshDue(auth Auth, now time.Time) bool {
 	return !now.Before(expiry.Add(-tokenRefreshSkew))
 }
 
-func tokenRefreshValid(snapshot tokenAccountSnapshot, now time.Time) bool {
-	if snapshot.tokenExpired || strings.TrimSpace(snapshot.auth.AccessToken) == "" {
+func tokenCredentialValid(auth Auth, tokenExpired bool, now time.Time) bool {
+	if tokenExpired || strings.TrimSpace(auth.AccessToken) == "" {
 		return false
 	}
-	expiry := snapshot.auth.ExpiresAt
+	expiry := auth.ExpiresAt
 	if expiry.IsZero() {
-		expiry = epochTime(parseJWTClaims(snapshot.auth.AccessToken).ExpiresAt)
+		expiry = epochTime(parseJWTClaims(auth.AccessToken).ExpiresAt)
 	}
 	return expiry.IsZero() || expiry.After(now)
 }
 
-// refreshToken performs one refresh for a. It re-checks due state after the
-// single-flight lock so a caller that joins after a successful rotation does
-// not spend the one-time refresh token again.
-func (p *Provider) refreshToken(ctx context.Context, a *Account) (bool, error) {
+// tokenKeepaliveDue is v1 wb_scheduler.keepalive_due: scheduled keepalive uses
+// a 48-hour lead and treats an unknown/opaque expiry as due. EnsureToken keeps
+// the request-path 120-second skew instead.
+func tokenKeepaliveDue(auth Auth, now time.Time) bool {
+	if tokenAuthIsAPIKey(auth) {
+		return false
+	}
+	if strings.TrimSpace(auth.AccessToken) == "" {
+		return true
+	}
+	expiry := auth.ExpiresAt
+	if expiry.IsZero() {
+		expiry = epochTime(parseJWTClaims(auth.AccessToken).ExpiresAt)
+	}
+	if expiry.IsZero() {
+		return true
+	}
+	return expiry.Sub(now) < keepaliveLead()
+}
+
+// keepaliveLead mirrors v1 wb_scheduler.keepalive_lead_seconds: the
+// WB_KEEPALIVE_LEAD_HOURS override is honoured only for finite values in
+// [1, 720]; missing or invalid values fall back to 48 hours.
+func keepaliveLead() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("WB_KEEPALIVE_LEAD_HOURS"))
+	if raw == "" {
+		return keepaliveRefreshLead
+	}
+	hours, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(hours) || math.IsInf(hours, 0) ||
+		hours < keepaliveLeadMinHours || hours > keepaliveLeadMaxHours {
+		return keepaliveRefreshLead
+	}
+	return time.Duration(hours * float64(time.Hour))
+}
+
+func tokenRefreshNeeded(auth Auth, now time.Time, mode tokenRefreshMode) bool {
+	switch mode {
+	case tokenRefreshScheduled:
+		return tokenKeepaliveDue(auth, now)
+	case tokenRefreshForced:
+		return true
+	default:
+		return tokenRefreshDue(auth, now)
+	}
+}
+
+// tokenCredentialsCurrentLocked verifies that the credential snapshot that
+// produced a refresh response is still installed. Callers hold Account.mu.
+func tokenCredentialsCurrentLocked(a *Account, snapshot tokenAccountSnapshot) bool {
+	if a == nil || a.removed || snapshot.removed {
+		return false
+	}
+	return strings.TrimSpace(a.Auth.UID) == strings.TrimSpace(snapshot.auth.UID) &&
+		a.Auth.AccessToken == snapshot.auth.AccessToken &&
+		strings.TrimSpace(a.Auth.RefreshToken) == strings.TrimSpace(snapshot.auth.RefreshToken)
+}
+
+// refreshToken performs one refresh for a. It re-checks the mode's due state
+// after the single-flight lock so a caller that joins after a re-import or a
+// successful rotation does not spend the one-time refresh token again.
+func (p *Provider) refreshToken(ctx context.Context, a *Account, mode tokenRefreshMode) (bool, error) {
 	snapshot := tokenAccountSnapshotOf(a)
 	if snapshot.removed {
 		return false, ErrAccountNotFound
@@ -222,15 +317,17 @@ func (p *Provider) refreshToken(ctx context.Context, a *Account) (bool, error) {
 	if tokenAuthIsAPIKey(snapshot.auth) {
 		return false, nil
 	}
-	if !tokenRefreshDue(snapshot.auth, p.tokenNowTime()) {
+	if mode != tokenRefreshForced && !tokenRefreshNeeded(snapshot.auth, p.tokenNowTime(), mode) {
 		return false, nil
 	}
 	auth := snapshot.auth
 	refreshToken := strings.TrimSpace(auth.RefreshToken)
 	if refreshToken == "" {
 		message := tokenTerminalMessage(auth.UID, "no refresh token; sign in again")
-		p.noteTokenTerminal(a, message)
-		return false, errors.New(message)
+		if p.noteTokenTerminal(a, snapshot, message) {
+			return false, errors.New(message)
+		}
+		return false, nil
 	}
 
 	if p.transport == nil {
@@ -258,31 +355,35 @@ func (p *Provider) refreshToken(ctx context.Context, a *Account) (bool, error) {
 
 	response, err := p.transport.Do(requestCtx, request, strings.TrimSpace(auth.ProxyURL))
 	if err != nil {
-		return p.noteTokenTransient(a, err)
+		return p.noteTokenTransient(a, snapshot, err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		drainTokenResponse(response.Body)
 		message := tokenTerminalMessage(auth.UID,
 			fmt.Sprintf("token refresh rejected (HTTP %d); sign in again", response.StatusCode))
-		p.noteTokenTerminal(a, message)
-		return false, errors.New(message)
+		if p.noteTokenTerminal(a, snapshot, message) {
+			return false, errors.New(message)
+		}
+		return false, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return p.noteTokenTransient(a,
+		drainTokenResponse(response.Body)
+		return p.noteTokenTransient(a, snapshot,
 			fmt.Errorf("token refresh HTTP %d", response.StatusCode))
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxAuthBody))
 	if err != nil {
-		return p.noteTokenTransient(a, errors.New("token refresh response read failed"))
+		return p.noteTokenTransient(a, snapshot, errors.New("token refresh response read failed"))
 	}
 	payload := map[string]json.RawMessage{}
 	if err := json.Unmarshal(raw, &payload); err != nil || payload == nil {
-		message := tokenTerminalMessage(auth.UID,
-			"token refresh returned an invalid response; sign in again")
-		p.noteTokenTerminal(a, message)
-		return false, errors.New(message)
+		// A 2xx body that is HTML, empty, null, or malformed is a transient
+		// upstream/proxy failure, not proof that the refresh token is dead.
+		return p.noteTokenTransient(a, snapshot,
+			errors.New("token refresh returned an invalid response"))
 	}
 
 	data := tokenRefreshData(payload)
@@ -290,8 +391,10 @@ func (p *Provider) refreshToken(ctx context.Context, a *Account) (bool, error) {
 	if accessToken == "" {
 		message := tokenTerminalMessage(auth.UID,
 			"token refresh returned no access token; sign in again")
-		p.noteTokenTerminal(a, message)
-		return false, errors.New(message)
+		if p.noteTokenTerminal(a, snapshot, message) {
+			return false, errors.New(message)
+		}
+		return false, nil
 	}
 	rotatedRefresh := strings.TrimSpace(decodeAuthString(data["refreshToken"]))
 	expiry := decodeEpochTime(data["expiresAt"])
@@ -302,10 +405,20 @@ func (p *Provider) refreshToken(ctx context.Context, a *Account) (bool, error) {
 		expiry = auth.ExpiresAt
 	}
 
-	if err := p.applyRefreshedToken(a, refreshToken, accessToken, rotatedRefresh, expiry); err != nil {
+	applied, err := p.applyRefreshedToken(a, snapshot, accessToken, rotatedRefresh, expiry)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return applied, nil
+}
+
+// drainTokenResponse consumes a bounded non-2xx body so net/http can reuse the
+// connection. Body text is never surfaced or logged.
+func drainTokenResponse(body io.Reader) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxAuthBody))
 }
 
 // tokenRefreshData accepts the one- and two-level data envelopes used by the
@@ -353,26 +466,27 @@ func (p *Provider) tokenRefreshHeaders(auth Auth) http.Header {
 }
 
 // applyRefreshedToken publishes a rotated credential and persists it. A
-// concurrent login that replaced the refresh token wins; this refresh then
-// does not overwrite the newer document.
+// concurrent Pool.Add/login/import that replaced the UID or either token wins;
+// this stale response is then ignored and reported as not refreshed.
 func (p *Provider) applyRefreshedToken(
 	a *Account,
-	expectedRefresh, accessToken, rotatedRefresh string,
+	snapshot tokenAccountSnapshot,
+	accessToken, rotatedRefresh string,
 	expiry time.Time,
-) error {
+) (bool, error) {
 	if a == nil {
-		return errors.New("workbuddy: token refresh requires an account")
+		return false, errors.New("workbuddy: token refresh requires an account")
 	}
 	a.mu.Lock()
 	if a.removed {
 		a.mu.Unlock()
-		return ErrAccountNotFound
+		return false, ErrAccountNotFound
 	}
-	if strings.TrimSpace(a.Auth.RefreshToken) != expectedRefresh {
-		// A login/import rotated the credential while the request was in
+	if !tokenCredentialsCurrentLocked(a, snapshot) {
+		// A login/import replaced the credential while the request was in
 		// flight. Do not clobber it with the now-stale response.
 		a.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	a.Auth.AccessToken = accessToken
 	if rotatedRefresh != "" {
@@ -393,9 +507,9 @@ func (p *Provider) applyRefreshedToken(
 	a.mu.Unlock()
 
 	if err := p.persistRefreshedToken(a); err != nil {
-		return fmt.Errorf("workbuddy: persist refreshed token: %w", err)
+		return true, fmt.Errorf("workbuddy: persist refreshed token: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func (p *Provider) persistRefreshedToken(a *Account) error {
@@ -429,14 +543,20 @@ func (p *Provider) persistRefreshedToken(a *Account) error {
 }
 
 // noteTokenTerminal records a failure that cannot be recovered by refreshing.
+// It applies only while the credential snapshot that produced the failure is
+// still installed, so a concurrent re-import is never disabled by a stale 401.
 // It marks the runtime token expired and last error, and auto-disables the
 // account unless the operator already disabled it. Auth.Enabled and task
 // participation are never changed here.
-func (p *Provider) noteTokenTerminal(a *Account, message string) {
+func (p *Provider) noteTokenTerminal(a *Account, snapshot tokenAccountSnapshot, message string) bool {
 	if a == nil {
-		return
+		return false
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !tokenCredentialsCurrentLocked(a, snapshot) {
+		return false
+	}
 	message = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
 	a.tokenExpired = true
 	a.State.LastError = message
@@ -445,21 +565,29 @@ func (p *Provider) noteTokenTerminal(a *Account, message string) {
 		a.State.Reason = message
 		a.State.DisabledBy = "auth"
 	}
-	a.mu.Unlock()
+	return true
 }
 
 // noteTokenTransient records a network/upstream failure without replacing the
-// credential. v1 keeps serving while the old access token remains valid and
-// reports the error once it has expired.
-func (p *Provider) noteTokenTransient(a *Account, cause error) (bool, error) {
-	snapshot := tokenAccountSnapshotOf(a)
-	message := tokenTerminalMessage(snapshot.auth.UID, "refresh failed: "+cause.Error())
-	message = p.redactTokenErrorText(a, message)
+// credential. A stale response for credentials replaced by a re-import is
+// ignored. Otherwise v1 keeps serving while the old access token remains valid
+// and reports the error once it has expired.
+func (p *Provider) noteTokenTransient(a *Account, snapshot tokenAccountSnapshot, cause error) (bool, error) {
+	if a == nil {
+		return false, nil
+	}
 	a.mu.Lock()
-	a.State.LastError = truncateText(message, tokenErrorLimit)
+	if !tokenCredentialsCurrentLocked(a, snapshot) {
+		a.mu.Unlock()
+		return false, nil
+	}
+	message := tokenTerminalMessage(snapshot.auth.UID, "refresh failed: "+cause.Error())
+	message = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	a.State.LastError = message
+	valid := tokenCredentialValid(a.Auth, a.tokenExpired, p.tokenNowTime())
 	a.mu.Unlock()
 
-	if tokenRefreshValid(tokenAccountSnapshotOf(a), p.tokenNowTime()) {
+	if valid {
 		return false, nil
 	}
 	return false, errors.New(message)
@@ -495,10 +623,12 @@ func (p *Provider) redactTokenErrorText(a *Account, text string) string {
 }
 
 // Keepalive refreshes every due, enabled OAuth account in this realm's pool.
-// Disabled, manual-disabled, removed, API-key, and not-yet-due accounts are
-// skipped. One account's failure never aborts the sweep; failures are returned
-// as redacted per-account messages alongside the result. It performs no
-// check-in side effect.
+// Due uses v1's scheduled 48-hour lead, not EnsureToken's 120-second request
+// skew, and an opaque/unknown expiry counts as due. Disabled, manual-disabled,
+// removed, API-key, and not-yet-due accounts are skipped. One account's failure
+// never aborts the sweep; failures and mid-sweep cancellation are returned as
+// redacted per-account messages alongside the result. It performs no check-in
+// side effect.
 func (p *Provider) Keepalive(ctx context.Context) (KeepaliveResult, error) {
 	result := KeepaliveResult{}
 	if p == nil {
@@ -514,9 +644,15 @@ func (p *Provider) Keepalive(ctx context.Context) (KeepaliveResult, error) {
 
 	accounts := pool.Accounts()
 	var failures []error
-	for _, account := range accounts {
+	canceled := func() bool {
 		if err := ctx.Err(); err != nil {
 			failures = append(failures, err)
+			return true
+		}
+		return false
+	}
+	for _, account := range accounts {
+		if canceled() {
 			break
 		}
 		snapshot := tokenAccountSnapshotOf(account)
@@ -525,14 +661,23 @@ func (p *Provider) Keepalive(ctx context.Context) (KeepaliveResult, error) {
 		if snapshot.removed || tokenAuthIsAPIKey(snapshot.auth) ||
 			!snapshot.auth.Enabled || snapshot.stateDisabled || snapshot.manualDisabled {
 			result.Skipped++
+			if canceled() {
+				break
+			}
 			continue
 		}
-		if !tokenRefreshDue(snapshot.auth, p.tokenNowTime()) {
+		if !tokenKeepaliveDue(snapshot.auth, p.tokenNowTime()) {
 			result.Skipped++
+			if canceled() {
+				break
+			}
 			continue
 		}
 
-		refreshed, err := p.ensureToken(ctx, account)
+		// Keepalive applies the 48-hour scheduled lead and re-checks it under
+		// the same single flight so a concurrent re-import is not refreshed
+		// again with a stale due decision.
+		refreshed, err := p.ensureToken(ctx, account, tokenRefreshScheduled)
 		if err != nil {
 			result.Failed++
 			uid := strings.TrimSpace(snapshot.auth.UID)
@@ -542,8 +687,7 @@ func (p *Provider) Keepalive(ctx context.Context) (KeepaliveResult, error) {
 			message := uid + ": " + p.redactTokenErrorText(account, err.Error())
 			result.Errors = append(result.Errors, message)
 			failures = append(failures, errors.New(message))
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				failures = append(failures, ctxErr)
+			if canceled() {
 				break
 			}
 			continue
@@ -552,6 +696,9 @@ func (p *Provider) Keepalive(ctx context.Context) (KeepaliveResult, error) {
 			result.Refreshed++
 		} else {
 			result.Skipped++
+		}
+		if canceled() {
+			break
 		}
 	}
 	if len(failures) > 0 {
