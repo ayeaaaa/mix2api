@@ -431,12 +431,10 @@ func (p *Provider) runGrowthLocked(ctx context.Context, account *Account, autoCl
 		run.tasks[index] = run.currentTask(run.tasks[index].TaskCode)
 	}
 
-	// 3. The mini-program chain is part of the same v1 run.
-	mpTasks, mpEarned := p.runMiniProgramGrowth(ctx, run)
-	if len(mpTasks) > 0 {
-		run.tasks = mergeGrowthTasks(run.tasks, mpTasks)
-	}
-	run.earned += mpEarned
+	// 3. The mini-program chain is part of the same v1 run. It mutates
+	// run.tasks directly; merging its return value would overwrite refreshed
+	// claimed/completed states with the pre-accept snapshot.
+	run.earned += p.runMiniProgramGrowth(ctx, run)
 
 	// 4. Refresh credits and persist the final task/claim state.
 	_ = p.refreshCreditAccount(ctx, account)
@@ -1043,17 +1041,17 @@ func (p *Provider) reportGrowthEvents(ctx context.Context, account *Account, eve
 // Mini-program chain
 // ---------------------------------------------------------------------------
 
-func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]GrowthTask, float64) {
+func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) float64 {
 	if run == nil || run.auth.Realm != realmCN {
-		return nil, 0
+		return 0
 	}
 	mpTasks, err := p.fetchGrowthTasks(ctx, run.account, true)
 	if err != nil || len(mpTasks) == 0 {
-		return nil, 0
+		return 0
 	}
 	supported := filterMPGrowthTasks(mpTasks)
 	if len(supported) == 0 {
-		return nil, 0
+		return 0
 	}
 	run.tasks = mergeGrowthTasks(run.tasks, supported)
 	run.log("📱 发现 %d 个小程序成长任务，开始执行自动化...", len(supported))
@@ -1071,7 +1069,12 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 		run.accepted = append(run.accepted, accepted...)
 		p.taskSleepFor(p.taskGapDelay())
 		if refreshed, fetchErr := p.fetchGrowthTasks(ctx, run.account, true); fetchErr == nil {
-			supported = mergeGrowthTasks(supported, filterMPGrowthTasks(refreshed))
+			refreshed = filterMPGrowthTasks(refreshed)
+			supported = mergeGrowthTasks(supported, refreshed)
+			// Persist the refreshed statuses into run.tasks before the
+			// processing loop so claimed/completed skip branches do not fall
+			// back to the pre-accept snapshot.
+			run.tasks = mergeGrowthTasks(run.tasks, refreshed)
 		}
 	}
 	total := 0.0
@@ -1160,20 +1163,7 @@ func (p *Provider) runMiniProgramGrowth(ctx context.Context, run *growthRun) ([]
 			p.taskSleepFor(p.taskGapDelay())
 		}
 	}
-	updated := make([]GrowthTask, 0, len(supported))
-	seen := make(map[string]bool, len(supported))
-	for _, task := range supported {
-		if seen[task.TaskCode] {
-			continue
-		}
-		seen[task.TaskCode] = true
-		fresh := run.currentTask(task.TaskCode)
-		if fresh.TaskCode == "" {
-			fresh = task
-		}
-		updated = append(updated, fresh)
-	}
-	return updated, total
+	return total
 }
 
 func filterMPGrowthTasks(tasks []GrowthTask) []GrowthTask {

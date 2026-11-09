@@ -2372,27 +2372,29 @@ func TestTasksWebRetryBackoffClampedToBudget(t *testing.T) {
 }
 
 func TestTasksACPStatusTerminal(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/acp" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Acp-Connection-Id", "conn-terminal")
-			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-			return
+	for _, status := range []string{"cancelled", "canceled", "deleted"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/acp" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Acp-Connection-Id", "conn-"+status)
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		result := runACPTurn(context.Background(),
+			chatDoerFunc(func(ctx context.Context, req *http.Request, _ string) (*http.Response, error) {
+				return http.DefaultClient.Do(req.WithContext(ctx))
+			}),
+			server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
+			"", 50*time.Millisecond, time.Millisecond,
+			func() string { return status })
+		server.Close()
+		if result.OK || !result.Terminal || !strings.Contains(result.Error, status) {
+			t.Fatalf("%s ACP turn = %+v, want terminal failure", status, result)
 		}
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	t.Cleanup(server.Close)
-	result := runACPTurn(context.Background(),
-		chatDoerFunc(func(ctx context.Context, req *http.Request, _ string) (*http.Response, error) {
-			return http.DefaultClient.Do(req.WithContext(ctx))
-		}),
-		server.URL+"/acp", "sandbox-token", "session-1", "/workspace", "Hi", "test-agent", "model",
-		"", 50*time.Millisecond, time.Millisecond,
-		func() string { return "cancelled" })
-	if result.OK || !result.Terminal || !strings.Contains(result.Error, "cancelled") {
-		t.Fatalf("cancelled ACP turn = %+v", result)
 	}
 }
 
@@ -2627,5 +2629,100 @@ func TestTasksMPReachedTargetAutoClaimOffKeepsStatus(t *testing.T) {
 	}
 	if status != "completed" {
 		t.Fatalf("reached MP task status reverted to %q, tasks=%+v", status, result.Tasks)
+	}
+}
+
+func TestTasksMPAcceptRefreshOverlaysRunTasks(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-mpoverlay", realmCN, nil)
+	accepted := false
+	_, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		mp := strings.EqualFold(r.Header.Get("X-Client-Platform"), "miniprogram") ||
+			strings.EqualFold(r.Header.Get("X-Client-Platform"), "mp-weixin")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && !mp:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "first_buddy", "task_type": "auto", "accept_status": "claimed",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/activity/growth/tasks" && mp:
+			if !accepted {
+				return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+					"tasks": []any{map[string]any{
+						"task_code": "Sequential_Tasks_1", "accept_status": "not_accepted",
+						"progress": map[string]any{"current": 0, "target": 1},
+					}},
+				}}
+			}
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"tasks": []any{map[string]any{
+					"task_code": "Sequential_Tasks_1", "accept_status": "accepted",
+					"progress": map[string]any{"current": 1, "target": 1},
+				}},
+			}}
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/activity/growth/tasks/accept":
+			accepted = true
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"results": []any{map[string]any{"task_code": "Sequential_Tasks_1", "status": "accepted"}},
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	})
+	provider, _ := setupTaskProvider(t, realmCN, dir, server.URL)
+	result, err := provider.GrowthTasks(context.Background(), "cn-mpoverlay", false)
+	if err != nil {
+		t.Fatalf("GrowthTasks: %v", err)
+	}
+	claimable := false
+	for _, code := range result.Claimable {
+		if code == "Sequential_Tasks_1" {
+			claimable = true
+		}
+	}
+	if !claimable {
+		t.Fatalf("refreshed accepted/1 MP task not claimable: %+v", result.Claimable)
+	}
+	status, current := "", -1
+	for _, task := range result.Tasks {
+		if task.TaskCode == "Sequential_Tasks_1" {
+			status, current = task.Status, task.Current
+		}
+	}
+	if status != "accepted" || current != 1 {
+		t.Fatalf("refreshed MP overlay lost in result: status=%q current=%d tasks=%+v", status, current, result.Tasks)
+	}
+}
+
+func TestTasksAddExistingReseedsRuntimeRestriction(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "cn-addseed", realmCN, nil)
+	_, server := newTaskTestUpstream(t, nil)
+	_, pool := setupTaskProvider(t, realmCN, dir, server.URL)
+	until := float64(time.Now().Add(time.Hour).Unix())
+	raw, _ := json.Marshal(until)
+	reimport := Auth{
+		UID:          "cn-addseed",
+		Realm:        realmCN,
+		AccessToken:  "new-access-token",
+		RefreshToken: "new-refresh-token",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		Extra:        map[string]json.RawMessage{"restrictedUntil": raw},
+	}
+	reimport.SetEnabled(true)
+	reimport.SetTasksEnabled(true)
+	account, err := pool.Add(reimport)
+	if err != nil {
+		t.Fatalf("Add existing: %v", err)
+	}
+	account.mu.RLock()
+	coolUntil := account.State.CoolUntil
+	persisted := taskRestrictedUntil(account.Auth)
+	account.mu.RUnlock()
+	if !coolUntil.After(time.Now()) || persisted != until {
+		t.Fatalf("Add existing did not reseed runtime restriction: cool=%v persisted=%v want=%v",
+			coolUntil, persisted, until)
 	}
 }

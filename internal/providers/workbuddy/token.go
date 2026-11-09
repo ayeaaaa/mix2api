@@ -499,6 +499,7 @@ func (p *Provider) applyRefreshedToken(
 	a.State.LastError = ""
 	a.State.ErrCount = 0
 	a.State.CoolUntil = time.Time{}
+	seedRuntimeRestrictionLocked(a)
 	if !a.State.ManualDisabled {
 		a.State.Disabled = false
 		a.State.Reason = ""

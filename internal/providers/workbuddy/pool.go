@@ -221,6 +221,22 @@ func (p *Pool) accountMaxConcurrentLocked(cfg Config) int {
 	return value
 }
 
+// seedRuntimeRestrictionLocked maps a persisted 403/11140 window onto the
+// runtime cooldown. Callers hold Account.mu.
+func seedRuntimeRestrictionLocked(account *Account) {
+	if account == nil {
+		return
+	}
+	until := taskRestrictedUntil(account.Auth)
+	if until <= 0 {
+		return
+	}
+	restrictedUntil := time.Unix(int64(until), 0)
+	if restrictedUntil.After(account.State.CoolUntil) {
+		account.State.CoolUntil = restrictedUntil
+	}
+}
+
 func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 	credits := decodeCreditSnapshot(auth.Extra["credits"])
 	tier, paid, known := tierLabel(auth.Tier)
@@ -257,12 +273,7 @@ func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 	}
 	// Seed the runtime restriction from the persisted window at load time so a
 	// restarted provider does not hot-probe a still-restricted account.
-	if until := taskRestrictedUntil(auth); until > 0 {
-		restrictedUntil := time.Unix(int64(until), 0)
-		if restrictedUntil.After(account.State.CoolUntil) {
-			account.State.CoolUntil = restrictedUntil
-		}
-	}
+	seedRuntimeRestrictionLocked(account)
 	account.Auth.ProxyURL = p.resolveProxySlot(auth.ProxySlot, auth.Extra)
 	p.applyStoredLimits(account)
 	return account
@@ -1099,6 +1110,7 @@ func (p *Pool) Enable(uid string) error {
 		account.State.ErrCount = 0
 		account.State.CoolUntil = time.Time{}
 		account.clearModelCooldownsLocked("")
+		seedRuntimeRestrictionLocked(account)
 	})
 }
 
@@ -1477,6 +1489,7 @@ func (p *Pool) ClearCooldown(uid string) error {
 	account.State.ErrCount = 0
 	account.State.LastError = ""
 	account.clearModelCooldownsLocked("")
+	seedRuntimeRestrictionLocked(account)
 	account.mu.Unlock()
 	return nil
 }
@@ -1762,6 +1775,7 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		existing.State.LastError = ""
 		existing.State.ErrCount = 0
 		existing.State.CoolUntil = time.Time{}
+		seedRuntimeRestrictionLocked(existing)
 		existing.State.ActiveConcurrent = oldActive
 		existing.State.LastUsed = oldLastUsed
 		existing.maxConcurrent = maxConcurrent
