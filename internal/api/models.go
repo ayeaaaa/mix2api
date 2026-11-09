@@ -21,7 +21,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	realm := realmFromRequest(r)
+	realm, _ := realmFromRequest(r)
 	if realm == "" {
 		if len(s.providers) == 0 {
 			writeFailure(w, localFailure(http.StatusNotFound, "no provider is registered"))

@@ -468,3 +468,57 @@ func TestConfigSaveReturnsStoreErrors(t *testing.T) {
 		t.Fatal("SaveConfig succeeded with an unusable store")
 	}
 }
+
+func TestConfigRealmFallbackAndRestrictedRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{
+		"realm_fallback_enabled": true,
+		"restricted_403_rotate_max": 3,
+		"workbuddy": {
+			"intl": {"auto_switch_product": true},
+			"cn": {"realm_fallback_enabled": false, "restricted_403_rotate_max": 999}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := config.New(path)
+	intl := LoadConfig(store, realmIntl)
+	if !intl.RealmFallbackEnabled || intl.Restricted403RotateMax != 3 {
+		t.Fatalf("intl fallback/rotation = %v/%d", intl.RealmFallbackEnabled, intl.Restricted403RotateMax)
+	}
+	if !intl.AutoSwitchProduct {
+		t.Fatal("auto_switch_product should remain a separate setting")
+	}
+	cn := LoadConfig(store, realmCN)
+	if cn.RealmFallbackEnabled {
+		t.Fatal("nested realm override did not disable fallback")
+	}
+	if cn.Restricted403RotateMax != 100 {
+		t.Fatalf("cn rotation clamp = %d, want 100", cn.Restricted403RotateMax)
+	}
+
+	// SaveConfig toggles only the requested realm and key.
+	if _, err := SaveConfig(store, realmCN, map[string]any{
+		"realm_fallback_enabled":    true,
+		"restricted_403_rotate_max": 2,
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	cn = LoadConfig(store, realmCN)
+	if !cn.RealmFallbackEnabled || cn.Restricted403RotateMax != 2 {
+		t.Fatalf("saved cn fallback/rotation = %v/%d", cn.RealmFallbackEnabled, cn.Restricted403RotateMax)
+	}
+	intlAgain := LoadConfig(store, realmIntl)
+	if !intlAgain.RealmFallbackEnabled || intlAgain.Restricted403RotateMax != 3 {
+		t.Fatalf("saving cn changed intl: %+v", intlAgain)
+	}
+
+	if _, err := SaveConfig(store, realmIntl, map[string]any{"realm_fallback_enabled": false}); err != nil {
+		t.Fatalf("SaveConfig disable: %v", err)
+	}
+	if LoadConfig(store, realmIntl).RealmFallbackEnabled {
+		t.Fatal("fallback disable did not round-trip")
+	}
+}

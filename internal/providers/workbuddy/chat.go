@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -60,7 +61,8 @@ var (
 	chatResetAtPatternBare    = regexp.MustCompile(`(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\s*UTC[+-]\d{1,2}`)
 	chatResetOffsetPattern    = regexp.MustCompile(`(?i)UTC([+-]\d{1,2})(?::?(\d{2}))?`)
 
-	chatToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	chatToolNamePattern      = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	chatUnicodeEscapePattern = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
 
 	accountScopePhrases = []string{
 		"account-level", "account level", "account-wide", "account scope",
@@ -168,8 +170,10 @@ func (p *Provider) openChat(
 	exclude := make(map[string]bool)
 	refreshed := make(map[string]bool)
 	var lastErr error
+	var bestRate *APIError
 	sawTransient := false
 	retriedTransient := false
+	restrictedRotations := 0
 
 	for attempt := 0; attempt < attemptLimit; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -193,15 +197,10 @@ func (p *Provider) openChat(
 				}
 				continue
 			}
-			if wait := p.modelCooldownWait(model, exclude); wait > 0 {
-				lastErr = &APIError{
-					Kind:        KindRateLimited,
-					Status:      http.StatusTooManyRequests,
-					Message:     "every WorkBuddy account is waiting for the upstream model window to reset",
-					RetryAfter:  wait,
-					ResetAt:     time.Now().Add(wait),
-					ModelScoped: true,
-				}
+			if wait, reason := pool.AdmissionWait(model, nil); wait > 0 {
+				rateErr := rateAdmissionError(reason, wait)
+				lastErr = rateErr
+				bestRate = shorterRateError(bestRate, rateErr)
 			}
 			break
 		}
@@ -252,8 +251,11 @@ func (p *Provider) openChat(
 
 		var apiErr *APIError
 		if errors.As(attemptErr, &apiErr) {
-			if apiErr.Kind == KindUpstream || apiErr.Kind == KindNetwork {
+			if apiErr.Kind == KindUpstream || apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport {
 				sawTransient = true
+			}
+			if apiErr.Kind == KindRateLimited {
+				bestRate = shorterRateError(bestRate, apiErr)
 			}
 			if apiErr.Kind != KindInvalid && req.SessionKey != "" {
 				pool.DemoteSession(req.SessionKey, currentUID)
@@ -280,6 +282,13 @@ func (p *Provider) openChat(
 				}
 			case KindRestricted:
 				_ = pool.NoteRestricted(account, apiErr.SafeMessage())
+				if restrictedRotations >= cfg.Restricted403RotateMax {
+					return nil, apiErr
+				}
+				restrictedRotations++
+			case KindNetwork:
+				// The machine has no DNS/route. Every credential would fail the
+				// same way, so do not charge this account.
 			default:
 				_ = pool.NoteError(account, apiErr.SafeMessage(), false, false)
 			}
@@ -287,7 +296,7 @@ func (p *Provider) openChat(
 		lastErr = attemptErr
 	}
 
-	primaryErr := p.finalChatError(lastErr, model, exclude)
+	primaryErr := p.finalChatError(lastErr, bestRate, model, pool)
 	if allowFallback && p.shouldRealmFallback(req, model, primaryErr, cfg) {
 		peer := p.Peer()
 		peerCfg := peer.refreshChatConfig()
@@ -299,7 +308,18 @@ func (p *Provider) openChat(
 	return nil, primaryErr
 }
 
-func (p *Provider) finalChatError(lastErr error, model string, exclude map[string]bool) error {
+func (p *Provider) finalChatError(lastErr error, bestRate *APIError, model string, pool *Pool) error {
+	if pool != nil {
+		if wait, reason := pool.AdmissionWait(model, nil); wait > 0 {
+			admission := rateAdmissionError(reason, wait)
+			if bestRate == nil || admission.RetryAfter < bestRate.RetryAfter {
+				return admission
+			}
+		}
+	}
+	if bestRate != nil {
+		return bestRate
+	}
 	if lastErr != nil {
 		var apiErr *APIError
 		if errors.As(lastErr, &apiErr) {
@@ -311,16 +331,6 @@ func (p *Provider) finalChatError(lastErr error, model string, exclude map[strin
 		return newAPIError(KindAuth, http.StatusBadGateway,
 			"WorkBuddy account credentials could not be prepared; sign in again")
 	}
-	if wait := p.modelCooldownWait(model, exclude); wait > 0 {
-		return &APIError{
-			Kind:        KindRateLimited,
-			Status:      http.StatusTooManyRequests,
-			Message:     "every WorkBuddy account is waiting for the upstream model window to reset",
-			RetryAfter:  wait,
-			ResetAt:     time.Now().Add(wait),
-			ModelScoped: true,
-		}
-	}
 	message := "no usable WorkBuddy account is available"
 	if strings.TrimSpace(p.realm) != "" {
 		message = fmt.Sprintf("no usable WorkBuddy account is available for realm %q; add or enable one at the dashboard", p.realm)
@@ -328,44 +338,64 @@ func (p *Provider) finalChatError(lastErr error, model string, exclude map[strin
 	return newAPIError(KindUnavailable, http.StatusServiceUnavailable, message)
 }
 
-func (p *Provider) modelCooldownWait(model string, exclude map[string]bool) time.Duration {
-	pool := p.Pool()
-	if pool == nil {
-		return 0
+func rateAdmissionError(reason string, wait time.Duration) *APIError {
+	if wait <= 0 {
+		wait = time.Second
 	}
-	now := pool.nowTime()
-	var earliest time.Time
-	for _, account := range pool.Accounts() {
-		uid := strings.TrimSpace(account.UID())
-		if uid == "" || exclude[uid] {
-			continue
-		}
-		account.mu.RLock()
-		if account.removed || !account.Auth.Enabled || account.State.Disabled || account.tokenExpired {
-			account.mu.RUnlock()
-			continue
-		}
-		until, ok := account.modelCoolUntil[strings.ToLower(strings.TrimSpace(model))]
-		account.mu.RUnlock()
-		if !ok || !until.After(now) {
-			continue
-		}
-		if earliest.IsZero() || until.Before(earliest) {
-			earliest = until
-		}
-	}
-	if earliest.IsZero() {
-		return 0
-	}
-	wait := earliest.Sub(now)
 	if wait < time.Second {
 		wait = time.Second
 	}
-	return wait
+	if strings.TrimSpace(reason) == "" {
+		reason = "WorkBuddy admission is temporarily blocked; retry shortly"
+	}
+	return &APIError{
+		Kind:       KindRateLimited,
+		Status:     http.StatusTooManyRequests,
+		Message:    reason,
+		RetryAfter: wait,
+		ResetAt:    time.Now().Add(wait),
+	}
+}
+
+// shorterRateError keeps the shortest wait seen during one request. v1 reports
+// the pool's earliest model/account window, not whichever account happened to
+// fail last.
+func shorterRateError(current, candidate *APIError) *APIError {
+	if candidate == nil {
+		return current
+	}
+	if current == nil || current.RetryAfter <= 0 ||
+		(candidate.RetryAfter > 0 && candidate.RetryAfter < current.RetryAfter) {
+		copied := *candidate
+		return &copied
+	}
+	return current
+}
+
+func isLocalNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"gaierror", "getaddrinfo failed", "name or service not known",
+		"nodename nor servname", "temporary failure in name resolution",
+		"no such host", "server misbehaving", "network is unreachable",
+		"network is down", "no route to host", "host is unreachable",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) shouldRealmFallback(req providers.ChatRequest, model string, primaryErr error, cfg Config) bool {
-	if p == nil || p.realm != realmIntl || !cfg.AutoSwitchProduct {
+	if p == nil || p.realm != realmIntl || !cfg.RealmFallbackEnabled {
 		return false
 	}
 	if req.AllowRealmFallback != nil && !*req.AllowRealmFallback {
@@ -455,12 +485,22 @@ func (p *Provider) sendChatWithAuthRetry(
 			apiErr.Terminal = true
 			return nil, apiErr
 		}
+		beforeToken := strings.TrimSpace(snapshot.auth.AccessToken)
 		if refreshErr := p.ForceRefresh(ctx, account); refreshErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
 			return nil, newAPIError(KindAuth, http.StatusBadGateway,
 				"WorkBuddy account credential refresh failed; sign in again")
+		}
+		afterToken := strings.TrimSpace(tokenAccountSnapshotOf(account).auth.AccessToken)
+		if afterToken == beforeToken {
+			// ForceRefresh can return nil for a transient refresh failure while
+			// the old token is still locally valid. The upstream already
+			// rejected that token, so retrying it would only produce a second
+			// 401 for the same request.
+			return nil, newAPIError(KindAuth, http.StatusBadGateway,
+				"WorkBuddy account credential refresh did not rotate; sign in again")
 		}
 		// Retry the same account and the same acquired slot once.
 	}
@@ -542,6 +582,7 @@ func (p *Provider) sendChatOnce(
 	}
 	request.Header = headers
 
+	requestStarted := time.Now()
 	response, err := doer.Do(requestCtx, request, proxyURL)
 	timer.Stop()
 	if err != nil {
@@ -550,10 +591,14 @@ func (p *Provider) sendChatOnce(
 			return nil, ctxErr
 		}
 		if headerTimedOut.Load() {
-			return nil, newAPIError(KindNetwork, http.StatusServiceUnavailable,
+			return nil, newAPIError(KindTransport, http.StatusBadGateway,
 				"WorkBuddy upstream response header timeout")
 		}
-		return nil, newAPIError(KindNetwork, http.StatusServiceUnavailable,
+		if isLocalNetworkError(err) {
+			return nil, newAPIError(KindNetwork, http.StatusServiceUnavailable,
+				"local network unavailable; check DNS/routes/proxy and retry")
+		}
+		return nil, newAPIError(KindTransport, http.StatusBadGateway,
 			"WorkBuddy upstream network request failed")
 	}
 	if response == nil {
@@ -566,7 +611,7 @@ func (p *Provider) sendChatOnce(
 			_ = response.Body.Close()
 		}
 		cancel()
-		return nil, newAPIError(KindNetwork, http.StatusServiceUnavailable,
+		return nil, newAPIError(KindTransport, http.StatusBadGateway,
 			"WorkBuddy upstream response header timeout")
 	}
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -597,8 +642,16 @@ func (p *Provider) sendChatOnce(
 
 	bodyText := ""
 	if response.Body != nil {
-		bodyText = readChatErrorBody(response.Body, response.Header.Get("Content-Encoding"))
+		errorTimeout := chatIdleTimeout(cfg)
+		if remaining := chatHeaderTimeout(cfg) - time.Since(requestStarted); remaining > 0 && remaining < errorTimeout {
+			errorTimeout = remaining
+		}
+		bodyText = readChatErrorBody(response.Body, response.Header.Get("Content-Encoding"), requestCtx, errorTimeout)
 		_ = response.Body.Close()
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		cancel()
+		return nil, ctxErr
 	}
 	cancel()
 	safeMessage := p.safeChatError(account, bodyText)
@@ -751,20 +804,49 @@ func chatIdleTimeout(cfg Config) time.Duration {
 	return timeout
 }
 
-func readChatErrorBody(body io.Reader, contentEncoding string) string {
+func readChatErrorBody(body io.ReadCloser, contentEncoding string, ctx context.Context, timeout time.Duration) string {
 	if body == nil {
 		return ""
 	}
-	var reader io.Reader = body
-	if strings.Contains(strings.ToLower(strings.TrimSpace(contentEncoding)), "gzip") {
-		if gzipReader, err := gzip.NewReader(body); err == nil {
-			defer gzipReader.Close()
-			reader = gzipReader
-		}
+	if timeout <= 0 {
+		timeout = time.Second
 	}
-	raw, err := io.ReadAll(io.LimitReader(reader, maxChatErrorBody))
-	if err != nil && len(raw) == 0 {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan readResult, 1)
+	go func() {
+		raw, err := io.ReadAll(io.LimitReader(body, maxChatErrorBody))
+		results <- readResult{data: raw, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var raw []byte
+	select {
+	case result := <-results:
+		raw = result.data
+		if result.err != nil && len(raw) == 0 {
+			return ""
+		}
+	case <-ctx.Done():
+		_ = body.Close()
 		return ""
+	case <-timer.C:
+		_ = body.Close()
+		return ""
+	}
+	if strings.Contains(strings.ToLower(strings.TrimSpace(contentEncoding)), "gzip") {
+		if gzipReader, err := gzip.NewReader(bytes.NewReader(raw)); err == nil {
+			decompressed, readErr := io.ReadAll(io.LimitReader(gzipReader, maxChatErrorBody))
+			_ = gzipReader.Close()
+			if readErr == nil {
+				raw = decompressed
+			}
+		}
 	}
 	return string(raw)
 }
@@ -845,10 +927,18 @@ func chatRestrictionIsAccountLevel(bodyText string) bool {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(bodyText)), &root); err == nil && root != nil {
 		candidates := []map[string]json.RawMessage{root}
-		if raw, ok := root["error"]; ok {
-			var nested map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &nested); err == nil && nested != nil {
-				candidates = append(candidates, nested)
+		for _, key := range []string{"error", "data"} {
+			if raw, ok := root[key]; ok {
+				var nested map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &nested); err == nil && nested != nil {
+					candidates = append(candidates, nested)
+					if innerRaw, ok := nested["error"]; ok {
+						var inner map[string]json.RawMessage
+						if err := json.Unmarshal(innerRaw, &inner); err == nil && inner != nil {
+							candidates = append(candidates, inner)
+						}
+					}
+				}
 			}
 		}
 		for _, candidate := range candidates {
@@ -924,6 +1014,19 @@ func chatWordByte(value byte) bool {
 		(value >= '0' && value <= '9') || value == '_'
 }
 
+func unescapeChatUnicode(text string) string {
+	if !strings.Contains(text, `\u`) {
+		return text
+	}
+	return chatUnicodeEscapePattern.ReplaceAllStringFunc(text, func(match string) string {
+		code, err := strconv.ParseUint(match[2:], 16, 16)
+		if err != nil {
+			return match
+		}
+		return string(rune(code))
+	})
+}
+
 func parseChatRetryAfter(value string, now time.Time) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -945,7 +1048,7 @@ func parseChatRetryAfter(value string, now time.Time) time.Duration {
 }
 
 func parseChatResetAt(bodyText string, now time.Time) time.Time {
-	text := strings.TrimSpace(bodyText)
+	text := unescapeChatUnicode(strings.TrimSpace(bodyText))
 	if text == "" {
 		return time.Time{}
 	}
@@ -1332,9 +1435,39 @@ func clampGPTMaxTokens(body map[string]any, model string) {
 	if !exists {
 		return
 	}
-	number, ok := chatPositiveInt(value)
+	number, ok := chatInteger(value)
 	if ok && number < 16 {
 		body["max_tokens"] = int64(16)
+	}
+}
+
+func chatInteger(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Int64()
+		if err != nil {
+			floatValue, floatErr := typed.Float64()
+			if floatErr != nil {
+				return 0, false
+			}
+			number = int64(floatValue)
+		}
+		return number, true
+	case float64:
+		return int64(typed), true
+	case float32:
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case int32:
+		return int64(typed), true
+	case string:
+		number, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return number, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -1406,12 +1539,17 @@ func normalizeChatToolChoice(body map[string]any) {
 	}
 	switch typed := value.(type) {
 	case string:
-		choice := strings.ToLower(strings.TrimSpace(typed))
-		switch choice {
-		case "auto", "none", "required":
-			body["tool_choice"] = choice
-		default:
+		choice := strings.TrimSpace(typed)
+		if choice == "" {
 			delete(body, "tool_choice")
+			break
+		}
+		if strings.EqualFold(choice, "none") {
+			body["tool_choice"] = "none"
+		} else {
+			// v1 passes every non-empty string through, including future or
+			// provider-specific values it does not know.
+			body["tool_choice"] = choice
 		}
 	case map[string]any:
 		kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["type"])))
@@ -1621,15 +1759,18 @@ func normalizeChatSchema(schema map[string]any) {
 	if items, exists := schema["items"]; exists {
 		switch typed := items.(type) {
 		case []any:
+			var first map[string]any
 			for _, item := range typed {
 				if nested, ok := item.(map[string]any); ok {
-					schema["items"] = cloneMap(nested)
+					first = cloneMap(nested)
 					break
 				}
 			}
-			if _, ok := schema["items"].([]any); ok {
-				schema["items"] = map[string]any{"type": "string"}
+			if first == nil {
+				first = map[string]any{"type": "string"}
 			}
+			normalizeChatSchema(first)
+			schema["items"] = first
 		case map[string]any:
 			normalizeChatSchema(typed)
 		case nil:

@@ -60,9 +60,24 @@ type Config struct {
 	TimeoutSeconds       float64 `json:"timeout_seconds"`
 	StreamTimeoutSeconds float64 `json:"stream_timeout_seconds"`
 	ModelsTTLSeconds     float64 `json:"models_ttl_seconds"`
-	MaxConcurrent        int     `json:"max_concurrent"`
-	AccountMaxConcurrent int     `json:"account_max_concurrent"`
-	AutoSwitchProduct    bool    `json:"auto_switch_product"`
+	// MaxConcurrent is the provider-wide chat ceiling. The generic API/app
+	// composition applies it (Task 11); WorkBuddy's pool enforces the
+	// per-account cap independently.
+	MaxConcurrent        int  `json:"max_concurrent"`
+	AccountMaxConcurrent int  `json:"account_max_concurrent"`
+	AutoSwitchProduct    bool `json:"auto_switch_product"`
+
+	// RealmFallbackEnabled is v1's realm_fallback_enabled switch: an intl
+	// request that is rate-limited or has no usable intl account may be replayed
+	// on the cn exit. It is independent from AutoSwitchProduct, which changes a
+	// single account's wire identity, not which realm serves the request.
+	RealmFallbackEnabled bool `json:"realm_fallback_enabled"`
+
+	// Restricted403RotateMax mirrors v1's default 0: an account-level 403/11140
+	// parks the account and stops the request instead of rotating the same
+	// device fingerprint through the rest of the pool. Operators may raise it
+	// to allow that many rotations.
+	Restricted403RotateMax int `json:"restricted_403_rotate_max"`
 
 	AutoSwitchProducts []string `json:"auto_switch_products"`
 	IdentityVersions   Versions `json:"identity_versions"`
@@ -89,17 +104,19 @@ var saveConfigReadHook func()
 
 func defaultConfig(realm string) Config {
 	return Config{
-		Enabled:              true,
-		Realm:                realm,
-		TimeoutSeconds:       defaultTimeoutSeconds,
-		StreamTimeoutSeconds: defaultStreamTimeoutSeconds,
-		ModelsTTLSeconds:     defaultModelsTTLSeconds,
-		MaxConcurrent:        defaultMaxConcurrent,
-		AccountMaxConcurrent: defaultAccountMaxConcurrent,
-		AutoSwitchProduct:    false,
-		AutoSwitchProducts:   append([]string(nil), defaultAutoSwitchProducts...),
-		IdentityVersions:     Versions{},
-		PrivateData:          "auto",
+		Enabled:                true,
+		Realm:                  realm,
+		TimeoutSeconds:         defaultTimeoutSeconds,
+		StreamTimeoutSeconds:   defaultStreamTimeoutSeconds,
+		ModelsTTLSeconds:       defaultModelsTTLSeconds,
+		MaxConcurrent:          defaultMaxConcurrent,
+		AccountMaxConcurrent:   defaultAccountMaxConcurrent,
+		AutoSwitchProduct:      false,
+		RealmFallbackEnabled:   false,
+		Restricted403RotateMax: 0,
+		AutoSwitchProducts:     append([]string(nil), defaultAutoSwitchProducts...),
+		IdentityVersions:       Versions{},
+		PrivateData:            "auto",
 	}
 }
 
@@ -164,6 +181,10 @@ func rawRealmSettings(settings map[string]any, realm string) map[string]any {
 	inherit("auto_switch_product", value, exists)
 	value, exists = settings["auto_switch_products"]
 	inherit("auto_switch_products", value, exists)
+	value, exists = settings["realm_fallback_enabled"]
+	inherit("realm_fallback_enabled", value, exists)
+	value, exists = settings["restricted_403_rotate_max"]
+	inherit("restricted_403_rotate_max", value, exists)
 	value, exists = settings["identity_versions"]
 	inherit("identity_versions", value, exists)
 
@@ -205,7 +226,8 @@ func SaveConfig(store *config.Store, realm string, patch map[string]any) (Config
 		switch key {
 		case "enabled", "timeout_seconds", "stream_timeout_seconds",
 			"models_ttl_seconds", "max_concurrent", "account_max_concurrent",
-			"auto_switch_product", "auto_switch_products",
+			"auto_switch_product", "realm_fallback_enabled",
+			"restricted_403_rotate_max", "auto_switch_products",
 			"identity_versions", "private_data":
 			raw[key] = value
 		}
@@ -222,17 +244,19 @@ func SaveConfig(store *config.Store, realm string, patch map[string]any) (Config
 
 func configValues(cfg Config) map[string]any {
 	return map[string]any{
-		"enabled":                cfg.Enabled,
-		"realm":                  cfg.Realm,
-		"timeout_seconds":        cfg.TimeoutSeconds,
-		"stream_timeout_seconds": cfg.StreamTimeoutSeconds,
-		"models_ttl_seconds":     cfg.ModelsTTLSeconds,
-		"max_concurrent":         cfg.MaxConcurrent,
-		"account_max_concurrent": cfg.AccountMaxConcurrent,
-		"auto_switch_product":    cfg.AutoSwitchProduct,
-		"auto_switch_products":   cfg.AutoSwitchProducts,
-		"identity_versions":      versionsValues(cfg.IdentityVersions),
-		"private_data":           cfg.PrivateData,
+		"enabled":                   cfg.Enabled,
+		"realm":                     cfg.Realm,
+		"timeout_seconds":           cfg.TimeoutSeconds,
+		"stream_timeout_seconds":    cfg.StreamTimeoutSeconds,
+		"models_ttl_seconds":        cfg.ModelsTTLSeconds,
+		"max_concurrent":            cfg.MaxConcurrent,
+		"account_max_concurrent":    cfg.AccountMaxConcurrent,
+		"auto_switch_product":       cfg.AutoSwitchProduct,
+		"realm_fallback_enabled":    cfg.RealmFallbackEnabled,
+		"restricted_403_rotate_max": cfg.Restricted403RotateMax,
+		"auto_switch_products":      cfg.AutoSwitchProducts,
+		"identity_versions":         versionsValues(cfg.IdentityVersions),
+		"private_data":              cfg.PrivateData,
 	}
 }
 
@@ -258,6 +282,8 @@ func normalizeConfig(raw map[string]any, realm string) Config {
 	)
 	cfg.AccountMaxConcurrent = accountMaxConcurrentValue(raw["account_max_concurrent"])
 	cfg.AutoSwitchProduct = isTrue(raw["auto_switch_product"])
+	cfg.RealmFallbackEnabled = isTrue(raw["realm_fallback_enabled"])
+	cfg.Restricted403RotateMax = boundedInt(raw["restricted_403_rotate_max"], 0, 0, 100)
 	cfg.AutoSwitchProducts = autoSwitchProductsValue(raw["auto_switch_products"])
 	if value, exists := raw["identity_versions"]; exists {
 		cfg.IdentityVersions = versionsFromAny(value)

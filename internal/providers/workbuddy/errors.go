@@ -38,8 +38,15 @@ const (
 	// may still work.
 	KindUpstream
 
-	// KindNetwork is a transport/DNS/TLS failure before a usable response.
+	// KindNetwork is a local DNS/route failure. It maps to 503 and must never
+	// charge an account: every credential would fail identically while the
+	// machine has no network.
 	KindNetwork
+
+	// KindTransport is any other transport failure (connection reset, TLS,
+	// proxy, or a response-header timeout). Another account/egress may work, so
+	// this maps to 502.
+	KindTransport
 
 	// KindUnavailable means the local pool has no usable account. The v1 wire
 	// status is 503 so the caller knows waiting or adding an account helps.
@@ -101,6 +108,8 @@ func (e *APIError) HTTPStatus() int {
 		return http.StatusForbidden
 	case KindNetwork:
 		return http.StatusServiceUnavailable
+	case KindTransport:
+		return http.StatusBadGateway
 	case KindUnavailable:
 		return http.StatusServiceUnavailable
 	case KindUpstream:
@@ -126,7 +135,7 @@ func (e *APIError) ErrorType() string {
 	switch e.Kind {
 	case KindRateLimited:
 		return "rate_limit_error"
-	case KindUpstream, KindNetwork, KindUnavailable:
+	case KindUpstream, KindNetwork, KindTransport, KindUnavailable:
 		return "server_error"
 	default:
 		return "invalid_request_error"
@@ -146,11 +155,29 @@ func IsTransientError(err error) bool {
 		return false
 	}
 	switch apiErr.Kind {
-	case KindRateLimited, KindUpstream, KindNetwork, KindUnavailable:
+	case KindRateLimited, KindUpstream, KindNetwork, KindTransport, KindUnavailable:
 		return true
 	default:
 		return false
 	}
+}
+
+// RetryDelay exposes the rate-limit wait through the optional provider retry
+// metadata contract without renaming the public RetryAfter field.
+func (e *APIError) RetryDelay() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}
+
+// RetryReset exposes the absolute recovery time through the optional provider
+// retry metadata contract.
+func (e *APIError) RetryReset() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	return e.ResetAt
 }
 
 func newAPIError(kind ErrorKind, status int, message string) *APIError {

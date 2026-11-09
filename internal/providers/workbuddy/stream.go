@@ -288,23 +288,38 @@ func (s *chatStream) trackFrame(frame []byte) {
 	if !ok || len(usage) == 0 {
 		return
 	}
-	prompt, _ := usageInt64(usage["prompt_tokens"])
-	completion, _ := usageInt64(usage["completion_tokens"])
-	total, _ := usageInt64(usage["total_tokens"])
-	if total == 0 {
-		total = prompt + completion
+	prompt, hasPrompt := usageInt64(usage["prompt_tokens"])
+	completion, hasCompletion := usageInt64(usage["completion_tokens"])
+	total, hasTotal := usageInt64(usage["total_tokens"])
+	hasTokens := hasPrompt || hasCompletion || hasTotal
+	candidateTotal := int64(0)
+	if hasTotal {
+		candidateTotal = total
+	} else if hasTokens {
+		candidateTotal = prompt + completion
 	}
-	if total < s.usage.TotalTokens {
-		return
+	if hasTokens && candidateTotal >= s.usage.TotalTokens {
+		if hasPrompt {
+			s.usage.PromptTokens = prompt
+		}
+		if hasCompletion {
+			s.usage.CompletionTokens = completion
+		}
+		if hasTotal {
+			s.usage.TotalTokens = total
+		} else {
+			s.usage.TotalTokens = s.usage.PromptTokens + s.usage.CompletionTokens
+		}
+		s.usage.Tokens = s.usage.TotalTokens
+		if cached, ok := bestChatCachedTokens(usage); ok {
+			s.usage.CachedTokens = cached
+		}
+		if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
+			if reasoning, ok := usageInt64(details["reasoning_tokens"]); ok {
+				s.usage.ReasoningTokens = reasoning
+			}
+		}
 	}
-	s.usage.PromptTokens = prompt
-	s.usage.CompletionTokens = completion
-	s.usage.TotalTokens = total
-	s.usage.Tokens = total
-	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
-		s.usage.ReasoningTokens, _ = usageInt64(details["reasoning_tokens"])
-	}
-	s.usage.CachedTokens = bestChatCachedTokens(usage)
 	if credit, ok := usageFloat64(usage["credit"]); ok {
 		s.usage.Credit = credit
 		s.usage.CreditKnown = true
@@ -331,8 +346,9 @@ func usageInt64(value any) (int64, bool) {
 	}
 }
 
-func bestChatCachedTokens(usage map[string]any) int64 {
+func bestChatCachedTokens(usage map[string]any) (int64, bool) {
 	best := int64(0)
+	found := false
 	candidates := []any{usage["cached_tokens"], usage["cache_read_input_tokens"], usage["prompt_cache_hit_tokens"]}
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
 		candidates = append(candidates, details["cached_tokens"])
@@ -341,11 +357,14 @@ func bestChatCachedTokens(usage map[string]any) int64 {
 		candidates = append(candidates, details["cached_tokens"])
 	}
 	for _, candidate := range candidates {
-		if value, ok := usageInt64(candidate); ok && value > best {
-			best = value
+		if value, ok := usageInt64(candidate); ok {
+			found = true
+			if value > best {
+				best = value
+			}
 		}
 	}
-	return best
+	return best, found
 }
 
 func usageFloat64(value any) (float64, bool) {

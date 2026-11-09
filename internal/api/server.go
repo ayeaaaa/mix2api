@@ -32,6 +32,12 @@ type ServerOptions struct {
 	// APIKeyAuth wraps the generic /v1 endpoints and provider routes declared
 	// AuthAPIKey. Nil fails closed with 401.
 	APIKeyAuth func(http.Handler) http.Handler
+
+	// APIKeyRealm optionally reports the realm bound to the request's API key.
+	// A non-empty result is an operator-written exit choice, so generic chat
+	// must not let a provider fall back across realms. Task 11 wires this to
+	// the key configuration; nil means keys do not bind a realm.
+	APIKeyRealm func(*http.Request) string
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}

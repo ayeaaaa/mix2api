@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
@@ -68,6 +69,20 @@ type HTTPError interface {
 	// SafeMessage returns the redacted message for the wire response without
 	// provider prefixes such as "raccoon: HTTP 400:".
 	SafeMessage() string
+}
+
+// RetryMetadata is an optional extension for rate-limit errors. Providers that
+// implement it let the generic API send v1-compatible Retry-After and absolute
+// reset headers without importing a concrete provider package.
+type RetryMetadata interface {
+	error
+
+	// RetryDelay is the recommended wait before retrying. Values <= 0 mean
+	// no usable relative delay.
+	RetryDelay() time.Duration
+
+	// RetryReset is the absolute recovery time. The zero time means unknown.
+	RetryReset() time.Time
 }
 
 // AuthClass tells the API layer what authentication a route requires.

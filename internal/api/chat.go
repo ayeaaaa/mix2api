@@ -21,13 +21,14 @@ const maxChatBodyBytes = 16 << 20
 
 // chatHTTPRequest is the parsed gateway view of one /v1/chat/completions call.
 type chatHTTPRequest struct {
-	payload    map[string]json.RawMessage
-	model      string
-	messages   []json.RawMessage
-	stream     bool
-	realm      string
-	sessionKey string
-	headers    http.Header
+	payload       map[string]json.RawMessage
+	model         string
+	messages      []json.RawMessage
+	stream        bool
+	realm         string
+	explicitRealm bool
+	sessionKey    string
+	headers       http.Header
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -74,12 +75,24 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		provider = resolved
 	}
 
+	var allowRealmFallback *bool
+	suppressRealmFallback := request.explicitRealm
+	if s.opts.APIKeyRealm != nil {
+		if realm := strings.TrimSpace(s.opts.APIKeyRealm(r)); realm != "" {
+			suppressRealmFallback = true
+		}
+	}
+	if suppressRealmFallback {
+		disabled := false
+		allowRealmFallback = &disabled
+	}
 	chatRequest := providers.ChatRequest{
-		Raw:        request.payload,
-		Headers:    request.headers,
-		Model:      request.model,
-		Messages:   request.messages,
-		SessionKey: request.sessionKey,
+		Raw:                request.payload,
+		Headers:            request.headers,
+		Model:              request.model,
+		Messages:           request.messages,
+		SessionKey:         request.sessionKey,
+		AllowRealmFallback: allowRealmFallback,
 	}
 	stream, err := provider.OpenChat(r.Context(), chatRequest)
 	if err != nil {
@@ -147,34 +160,39 @@ func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequ
 
 	// Realm precedence mirrors v1: X-Realm first, then ?realm, then the body
 	// extension. realm is a gateway extension; never forward it upstream.
-	realm := realmFromRequest(r)
+	realm, explicitRealm := realmFromRequest(r)
 	if realm == "" {
-		if bodyRealm, ok := decodeJSONString(payload["realm"]); ok {
+		if bodyRealm, ok := decodeJSONString(payload["realm"]); ok && bodyRealm != "" {
 			realm = bodyRealm
+			explicitRealm = true
 		}
 	}
 	delete(payload, "realm")
 
 	return &chatHTTPRequest{
-		payload:    payload,
-		model:      model,
-		messages:   messages,
-		stream:     stream,
-		realm:      realm,
-		sessionKey: chatSessionKey(r, payload),
-		headers:    r.Header.Clone(),
+		payload:       payload,
+		model:         model,
+		messages:      messages,
+		stream:        stream,
+		realm:         realm,
+		explicitRealm: explicitRealm,
+		sessionKey:    chatSessionKey(r, payload),
+		headers:       r.Header.Clone(),
 	}, nil
 }
 
-func realmFromRequest(r *http.Request) string {
+// realmFromRequest returns the explicit realm and whether it was supplied by
+// X-Realm, the query string, or the body extension. The boolean is the
+// operator-intent signal that suppresses provider-internal realm fallback.
+func realmFromRequest(r *http.Request) (string, bool) {
 	if r == nil {
-		return ""
+		return "", false
 	}
 	realm := strings.TrimSpace(r.Header.Get("X-Realm"))
 	if realm == "" {
 		realm = strings.TrimSpace(r.URL.Query().Get("realm"))
 	}
-	return realm
+	return realm, realm != ""
 }
 
 func decodeJSONString(raw json.RawMessage) (string, bool) {

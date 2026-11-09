@@ -1227,6 +1227,134 @@ func (p *Pool) NoteSuccess(a *Account, model ...string) error {
 	return nil
 }
 
+// AdmissionWait explains why Pick found no candidate and, when the reason is a
+// temporary local admission limit, returns the shortest wait until one could
+// become usable. Guard-blocked and concurrency-busy pools are rate-limited
+// (429) in the chat layer, not reported as an unavailable pool (503). A pool
+// with genuinely disabled/cooling/expired accounts returns 0 and stays 503.
+func (p *Pool) AdmissionWait(model string, exclude map[string]bool) (time.Duration, string) {
+	if p == nil {
+		return 0, ""
+	}
+	model = strings.TrimSpace(model)
+	lower := strings.ToLower(model)
+	p.mu.RLock()
+	proOnly := make(map[string]bool, len(p.proOnly))
+	for key, value := range p.proOnly {
+		proOnly[key] = value
+	}
+	p.mu.RUnlock()
+
+	now := p.nowTime()
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	candidates := 0
+	usable := false
+	var best time.Duration
+	reason := ""
+	consider := func(wait time.Duration, why string) {
+		if wait <= 0 || why == "" {
+			return
+		}
+		if wait < time.Second {
+			wait = time.Second
+		}
+		if best == 0 || wait < best {
+			best = wait
+			reason = why
+		}
+	}
+
+	for _, account := range p.Accounts() {
+		uid := strings.TrimSpace(account.UID())
+		if uid == "" || (exclude != nil && exclude[uid]) {
+			continue
+		}
+		account.mu.RLock()
+		eligible := !account.removed &&
+			account.Auth.Realm == p.realm &&
+			account.Auth.Enabled &&
+			!account.State.Disabled &&
+			!account.tokenExpired &&
+			!account.State.CoolUntil.After(now) &&
+			strings.TrimSpace(account.Auth.AccessToken) != ""
+		if eligible && model != "" && proOnly[lower] && !account.paidUserLocked() {
+			eligible = false
+		}
+		if eligible && model != "" {
+			if account.DisabledModels[lower] {
+				eligible = false
+			} else {
+				for blocked := range account.DisabledModels {
+					if strings.EqualFold(strings.TrimSpace(blocked), lower) {
+						eligible = false
+						break
+					}
+				}
+			}
+		}
+		if !eligible {
+			account.mu.RUnlock()
+			continue
+		}
+		candidates++
+		modelWait := time.Duration(0)
+		if model != "" && account.modelCoolingLocked(lower, now) {
+			if until, ok := account.modelCoolUntil[lower]; ok {
+				modelWait = until.Sub(now)
+			}
+		}
+		busy := account.maxConcurrent > 0 && account.State.ActiveConcurrent >= account.maxConcurrent
+		account.mu.RUnlock()
+
+		if modelWait > 0 {
+			consider(modelWait, "every usable WorkBuddy account is waiting for the upstream model window to reset")
+			continue
+		}
+		if busy {
+			consider(time.Second, "every usable WorkBuddy account is already serving its concurrency cap")
+			continue
+		}
+		if guard := account.GuardBlocked(model); guard != "" {
+			consider(guardAdmissionWait(guard, now, midnight), guardAdmissionReason(guard))
+			continue
+		}
+		usable = true
+	}
+	if usable || candidates == 0 {
+		return 0, ""
+	}
+	return best, reason
+}
+
+func guardAdmissionWait(guard string, now, midnight time.Time) time.Duration {
+	switch guard {
+	case "daily_token", "daily_credit", "model_daily_token":
+		if wait := midnight.Sub(now); wait > 0 {
+			return wait
+		}
+		return 24 * time.Hour
+	case "reserve":
+		return 60 * time.Second
+	default:
+		return 60 * time.Second
+	}
+}
+
+func guardAdmissionReason(guard string) string {
+	switch guard {
+	case "reserve":
+		return "every usable WorkBuddy account is below the reserve credit floor"
+	case "daily_token":
+		return "every usable WorkBuddy account reached today's token limit; the pool resumes after local midnight"
+	case "daily_credit":
+		return "every usable WorkBuddy account reached today's credit limit; the pool resumes after local midnight"
+	case "model_daily_token":
+		return "every usable WorkBuddy account reached today's model token limit; the pool resumes after local midnight"
+	default:
+		return "WorkBuddy account guards are blocking every usable account"
+	}
+}
+
 // ClearCooldown clears the account cooldown and consecutive-error count. The
 // credential file is untouched because these fields are runtime-only.
 func (p *Pool) ClearCooldown(uid string) error {

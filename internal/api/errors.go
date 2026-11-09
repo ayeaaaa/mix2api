@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -68,12 +70,26 @@ func writeFailure(w http.ResponseWriter, err error) {
 		return
 	}
 	mapped := providerFailure(err)
+	if mapped.Status == http.StatusTooManyRequests {
+		var retry providers.RetryMetadata
+		if errors.As(err, &retry) {
+			writeV1ErrorWithRetry(w, mapped.Status, mapped.Type, mapped.Message, retry.RetryDelay(), retry.RetryReset())
+			return
+		}
+	}
 	writeV1Error(w, mapped.Status, mapped.Type, mapped.Message)
 }
 
 // writeV1Error is the single v1 error envelope writer used by the generic API
 // and the provider-route adapter.
 func writeV1Error(w http.ResponseWriter, status int, errType, message string) {
+	writeV1ErrorWithRetry(w, status, errType, message, 0, time.Time{})
+}
+
+// writeV1ErrorWithRetry writes the v1 envelope plus the rate-limit metadata v1
+// clients consume: Retry-After, absolute reset headers, and the same fields in
+// the JSON body.
+func writeV1ErrorWithRetry(w http.ResponseWriter, status int, errType, message string, wait time.Duration, reset time.Time) {
 	if status < 400 || status > 599 {
 		status = http.StatusBadGateway
 	}
@@ -83,16 +99,39 @@ func writeV1Error(w http.ResponseWriter, status int, errType, message string) {
 	if strings.TrimSpace(message) == "" {
 		message = http.StatusText(status)
 	}
-	body, err := marshalJSON(map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errType,
-			"code":    status,
-		},
-	})
+	seconds := int64(0)
+	if wait > 0 {
+		seconds = int64(math.Ceil(wait.Seconds()))
+		if seconds < 1 {
+			seconds = 1
+		}
+	}
+	validReset := time.Time{}
+	if !reset.IsZero() && reset.After(time.Now()) {
+		validReset = reset.UTC()
+	}
+	payload := map[string]any{
+		"message": message,
+		"type":    errType,
+		"code":    status,
+	}
+	if seconds > 0 {
+		payload["retry_after"] = seconds
+	}
+	if !validReset.IsZero() {
+		payload["reset_at"] = validReset.Unix()
+	}
+	body, err := marshalJSON(map[string]any{"error": payload})
 	if err != nil {
 		body = []byte(`{"error":{"message":"response encoding failed","type":"server_error","code":500}}`)
 		status = http.StatusInternalServerError
+	}
+	if seconds > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	if !validReset.IsZero() {
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(validReset.Unix(), 10))
+		w.Header().Set("X-RateLimit-Reset-At", validReset.Format(time.RFC3339))
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))

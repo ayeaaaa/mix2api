@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -698,7 +699,7 @@ func TestChatErrorMapping(t *testing.T) {
 			}
 			srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
-				`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+				`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 			failure := requireErrorEnvelope(t, rec, tc.status, tc.errType)
 			if failure["message"] != tc.wantMessage {
 				t.Fatalf("message = %#v, want %q", failure["message"], tc.wantMessage)
@@ -799,7 +800,7 @@ func TestChatUnknownRealmAndModel(t *testing.T) {
 	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=missing",
-		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+		`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	requireErrorEnvelope(t, rec, http.StatusNotFound, "invalid_request_error")
 
 	// A model absent from a stale/empty catalog must reach the provider so the
@@ -842,7 +843,7 @@ func TestChatRealmAllLockedWithoutWorkBuddy(t *testing.T) {
 	}
 	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=all",
-		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+		`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
 	if !strings.Contains(failure["message"].(string), "WorkBuddy") {
 		t.Fatalf("message = %#v", failure["message"])
@@ -895,7 +896,7 @@ func TestChatUnknownProviderErrorDoesNotLeakLocalDetail(t *testing.T) {
 	}
 	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
-		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
+		`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
 
 	failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "invalid_request_error")
 	if failure["message"] != "upstream request failed" {
@@ -1345,5 +1346,119 @@ func TestRealmAllRequiresWorkBuddyIdentity(t *testing.T) {
 
 	if len(intl.opened()) != 0 || len(cn.opened()) != 0 {
 		t.Fatalf("realm=all opened a non-WorkBuddy provider")
+	}
+}
+
+func TestChatRealmFallbackSuppression(t *testing.T) {
+	cases := []struct {
+		name         string
+		path         string
+		headers      map[string]string
+		body         string
+		keyRealm     string
+		wantExplicit bool
+	}{
+		{
+			name:         "query realm",
+			path:         "/v1/chat/completions?realm=raccoon",
+			body:         `{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wantExplicit: true,
+		},
+		{
+			name:         "header realm",
+			path:         "/v1/chat/completions",
+			headers:      map[string]string{"X-Realm": "raccoon"},
+			body:         `{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wantExplicit: true,
+		},
+		{
+			name:         "body realm",
+			path:         "/v1/chat/completions",
+			body:         `{"model":"m1","realm":"raccoon","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wantExplicit: true,
+		},
+		{
+			name:         "api key realm binding",
+			path:         "/v1/chat/completions",
+			body:         `{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			keyRealm:     "raccoon",
+			wantExplicit: true,
+		},
+		{
+			name:         "no explicit intent",
+			path:         "/v1/chat/completions",
+			body:         `{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wantExplicit: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &stubProvider{
+				id: "raccoon", realm: "raccoon",
+				models:     []providers.Model{{"id": "m1"}},
+				openStream: newStubStream("data: [DONE]\n\n"),
+			}
+			opts := ServerOptions{Providers: []providers.Provider{provider}}
+			if tc.keyRealm != "" {
+				opts.APIKeyRealm = func(*http.Request) string { return tc.keyRealm }
+			}
+			srv := newTestHTTPServer(opts)
+			rec := serveRequest(srv.Handler, http.MethodPost, tc.path, tc.body, tc.headers)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			requests := provider.opened()
+			if len(requests) != 1 {
+				t.Fatalf("OpenChat calls = %d", len(requests))
+			}
+			flag := requests[0].AllowRealmFallback
+			if tc.wantExplicit {
+				if flag == nil || *flag {
+					t.Fatalf("AllowRealmFallback = %v, want explicit false", flag)
+				}
+			} else if flag != nil {
+				t.Fatalf("AllowRealmFallback = %v, want nil for unconstrained request", *flag)
+			}
+		})
+	}
+}
+
+type retryTestError struct {
+	status int
+	reset  time.Time
+}
+
+func (e *retryTestError) Error() string             { return "rate limited" }
+func (e *retryTestError) HTTPStatus() int           { return e.status }
+func (e *retryTestError) ErrorType() string         { return "rate_limit_error" }
+func (e *retryTestError) SafeMessage() string       { return "slow down" }
+func (e *retryTestError) RetryDelay() time.Duration { return 90 * time.Second }
+func (e *retryTestError) RetryReset() time.Time     { return e.reset }
+
+func TestChatRateLimitRetryMetadataHeaders(t *testing.T) {
+	reset := time.Now().Add(2 * time.Minute).Truncate(time.Second)
+	provider := &stubProvider{
+		id: "raccoon", realm: "raccoon",
+		models:  []providers.Model{{"id": "m1"}},
+		openErr: &retryTestError{status: http.StatusTooManyRequests, reset: reset},
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusTooManyRequests, "rate_limit_error")
+	if got := rec.Header().Get("Retry-After"); got != "90" {
+		t.Fatalf("Retry-After = %q, want 90", got)
+	}
+	if got := rec.Header().Get("X-RateLimit-Reset"); got != strconv.FormatInt(reset.Unix(), 10) {
+		t.Fatalf("X-RateLimit-Reset = %q", got)
+	}
+	if got := rec.Header().Get("X-RateLimit-Reset-At"); got != reset.Format(time.RFC3339) {
+		t.Fatalf("X-RateLimit-Reset-At = %q", got)
+	}
+	if got, _ := failure["retry_after"].(float64); got != 90 {
+		t.Fatalf("body retry_after = %#v", failure["retry_after"])
+	}
+	if got, _ := failure["reset_at"].(float64); int64(got) != reset.Unix() {
+		t.Fatalf("body reset_at = %#v", failure["reset_at"])
 	}
 }

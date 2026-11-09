@@ -99,9 +99,8 @@ type CreditSnapshot struct {
 	UpdatedISO       string            `json:"updated_iso"`
 }
 
-// ModelCooldownView is one active per-model cooldown in the public view. The
-// pool itself only exposes account-level cooldowns in this slice; the field
-// keeps the v1 payload shape and stays empty until Task 7 adds model windows.
+// ModelCooldownView is one active per-model upstream window in the public v1
+// payload. Account-level cooldowns remain separate (InCooldown/CooldownFor).
 type ModelCooldownView struct {
 	Model     string `json:"model"`
 	ExpiresAt int64  `json:"expiresAt"`
@@ -288,10 +287,9 @@ func (a *Account) setModelCooldownLocked(model string, until, started time.Time)
 	}
 	if existing, ok := a.modelCoolUntil[model]; !ok || until.After(existing) {
 		a.modelCoolUntil[model] = until
-		if _, exists := a.modelCoolStarted[model]; !exists {
-			a.modelCoolStarted[model] = started
-		}
 	}
+	// v1 refreshes the visible start stamp on every new model-window record.
+	a.modelCoolStarted[model] = started
 }
 
 // clearModelCooldownsLocked clears one model window, or every window when
@@ -308,16 +306,6 @@ func (a *Account) clearModelCooldownsLocked(model string) {
 	model = strings.ToLower(strings.TrimSpace(model))
 	delete(a.modelCoolUntil, model)
 	delete(a.modelCoolStarted, model)
-}
-
-// clearModelCooldowns is the lock-taking form used by NoteSuccess.
-func (a *Account) clearModelCooldowns() {
-	if a == nil {
-		return
-	}
-	a.mu.Lock()
-	a.clearModelCooldownsLocked("")
-	a.mu.Unlock()
 }
 
 // TaskActive reports whether scheduled/manual tasks may use this account. It
