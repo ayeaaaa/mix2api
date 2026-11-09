@@ -578,6 +578,31 @@ func (p *Provider) loginSlots() transport.Slots {
 	return transport.SlotsFromSettings(settings)
 }
 
+// SetLoginTakenSlots wires the cross-provider proxy-slot exclusion used by
+// browser-login "auto" selection. The callback is invoked on demand, so the
+// sibling provider may be constructed after WorkBuddy.
+func (p *Provider) SetLoginTakenSlots(taken func() []string) {
+	if p == nil {
+		return
+	}
+	p.oauthMu.Lock()
+	p.loginTakenSlots = taken
+	p.oauthMu.Unlock()
+}
+
+func (p *Provider) takenLoginSlots() []string {
+	if p == nil {
+		return nil
+	}
+	p.oauthMu.Lock()
+	callback := p.loginTakenSlots
+	p.oauthMu.Unlock()
+	if callback == nil {
+		return nil
+	}
+	return callback()
+}
+
 func (p *Provider) reserveLoginProxy(proxySlot string) (string, string, bool, error) {
 	wanted := strings.TrimSpace(proxySlot)
 	if wanted == "" {
@@ -597,11 +622,21 @@ func (p *Provider) reserveLoginProxy(proxySlot string) (string, string, bool, er
 		return "", "", false, fmt.Errorf("workbuddy: proxy slot %s does not exist", wanted)
 	}
 
+	external := map[string]bool{}
+	for _, slot := range p.takenLoginSlots() {
+		if slot = strings.TrimSpace(slot); slot != "" {
+			external[slot] = true
+		}
+	}
+
 	p.oauthMu.Lock()
 	defer p.oauthMu.Unlock()
 	now := p.oauthNowTime()
 	p.gcOAuthLocked(now)
 	used := map[string]bool{}
+	for slot := range external {
+		used[slot] = true
+	}
 	if accounts, err := LoadAccounts(p.AccountsDir()); err == nil {
 		for _, account := range accounts {
 			if account.ProxySlot != "" {

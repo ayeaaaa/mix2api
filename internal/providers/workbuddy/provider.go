@@ -61,6 +61,12 @@ type Provider struct {
 	oauthClient   oauthDoer
 	oauthBaseURL  string
 
+	// loginTakenSlots is an optional composition callback returning proxy slot
+	// ids that belong to another provider (for example CodeArts-bound slots).
+	// Auto login selection excludes them so one credential is not bound to two
+	// providers. It is called without the OAuth lock held.
+	loginTakenSlots func() []string
+
 	// OAuth request budgets. Zero uses the v1-compatible defaults (30s start
 	// and token polls, 15s profile lookup); tests can shorten them.
 	oauthStartTimeout   time.Duration
@@ -121,6 +127,10 @@ type Provider struct {
 	creditFlights  map[*Account]*creditRefreshFlight
 	creditJoinHook func()
 
+	// creditsSweepMu prevents a second multi-account panel sweep from piling
+	// onto the same accounts. A single-account refresh never takes this lock.
+	creditsSweepMu sync.Mutex
+
 	// Task 8 seams. tasksDoer/tasks*BaseURL/tasksTimeout/tasksNow/tasksSleep
 	// isolate the checkin, daily, growth, and fun paths from the shared chat and
 	// billing clients; tests point them at one httptest server. tasksGap,
@@ -139,6 +149,23 @@ type Provider struct {
 	tasksBudget         time.Duration
 	tasksTurnWait       time.Duration
 	tasksPollInterval   time.Duration
+
+	// Admin surface state. healthCache is a five-second /health cache; every
+	// mutating route invalidates it. desktopDirs is a test seam for desktop
+	// credential discovery; nil uses the platform defaults.
+	healthMu     sync.Mutex
+	healthCache  wbHealthCacheEntry
+	desktopDirs  []string
+	activityPath string
+
+	// Scheduler state. jobs are built lazily on the intl provider; CN exposes
+	// none so the core cannot schedule the same realm twice. schedulerEnabled
+	// is a pointer so an unset provider defaults to enabled.
+	jobsOnce         sync.Once
+	jobs             []*scheduledJob
+	jobsNow          func() time.Time
+	schedulerMu      sync.Mutex
+	schedulerEnabled *bool
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is

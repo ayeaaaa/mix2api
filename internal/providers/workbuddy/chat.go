@@ -86,6 +86,9 @@ var (
 // international→China fallback. app composition calls this after constructing
 // both realm instances (Task 11). The fallback remains disabled unless the
 // intl realm's live auto_switch_product setting is true.
+//
+// SetTwin is the admin-surface alias: the intl instance owns the unqualified
+// legacy routes and delegates realm=cn requests to this same peer.
 func (p *Provider) SetPeer(peer *Provider) {
 	if p == nil {
 		return
@@ -96,6 +99,13 @@ func (p *Provider) SetPeer(peer *Provider) {
 	p.mu.Lock()
 	p.peer = peer
 	p.mu.Unlock()
+}
+
+// SetTwin is the admin-route name for SetPeer. It wires the sibling realm used
+// by route/health/overview delegation and by scheduled jobs. Calling it is
+// idempotent and safe with a nil peer (which disconnects the sibling).
+func (p *Provider) SetTwin(peer *Provider) {
+	p.SetPeer(peer)
 }
 
 // Peer returns the provider wired by SetPeer, if any.
