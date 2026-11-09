@@ -214,6 +214,12 @@ type Account struct {
 	tokenExpired  bool
 	paidUser      bool
 	paidKnown     bool
+
+	// Per-model upstream window cooldowns. They are runtime-only: v1 persisted
+	// only the 6004 quota cap (Task 7 keeps the request-path window in memory),
+	// while manual account disable remains the only persisted control state.
+	modelCoolUntil   map[string]time.Time
+	modelCoolStarted map[string]time.Time
 }
 
 // UID returns the normalized account identifier.
@@ -246,6 +252,72 @@ func (a *Account) healthyLocked(now time.Time) bool {
 		return false
 	}
 	return strings.TrimSpace(a.Auth.AccessToken) != ""
+}
+
+// modelCooling reports whether model is parked by an upstream model window.
+// Callers must hold a.mu (read or write).
+func (a *Account) modelCoolingLocked(model string, now time.Time) bool {
+	if a == nil || model == "" || len(a.modelCoolUntil) == 0 {
+		return false
+	}
+	until, ok := a.modelCoolUntil[strings.ToLower(strings.TrimSpace(model))]
+	return ok && until.After(now)
+}
+
+// modelCooling is the lock-taking form used by tests and diagnostics.
+func (a *Account) modelCooling(model string, now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.modelCoolingLocked(model, now)
+}
+
+// setModelCooldownLocked records one model window. Callers hold a.mu.
+func (a *Account) setModelCooldownLocked(model string, until, started time.Time) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || !until.After(started) {
+		return
+	}
+	if a.modelCoolUntil == nil {
+		a.modelCoolUntil = make(map[string]time.Time)
+	}
+	if a.modelCoolStarted == nil {
+		a.modelCoolStarted = make(map[string]time.Time)
+	}
+	if existing, ok := a.modelCoolUntil[model]; !ok || until.After(existing) {
+		a.modelCoolUntil[model] = until
+		if _, exists := a.modelCoolStarted[model]; !exists {
+			a.modelCoolStarted[model] = started
+		}
+	}
+}
+
+// clearModelCooldownsLocked clears one model window, or every window when
+// model is empty. Callers hold a.mu.
+func (a *Account) clearModelCooldownsLocked(model string) {
+	if a == nil {
+		return
+	}
+	if model == "" {
+		a.modelCoolUntil = nil
+		a.modelCoolStarted = nil
+		return
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	delete(a.modelCoolUntil, model)
+	delete(a.modelCoolStarted, model)
+}
+
+// clearModelCooldowns is the lock-taking form used by NoteSuccess.
+func (a *Account) clearModelCooldowns() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.clearModelCooldownsLocked("")
+	a.mu.Unlock()
 }
 
 // TaskActive reports whether scheduled/manual tasks may use this account. It
@@ -537,6 +609,27 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		file = filepath.Base(a.Auth.Path)
 	}
 
+	modelCooldowns := make([]ModelCooldownView, 0, len(a.modelCoolUntil))
+	for model, until := range a.modelCoolUntil {
+		if !until.After(now) {
+			continue
+		}
+		entry := ModelCooldownView{
+			Model:     model,
+			ExpiresAt: until.Unix(),
+		}
+		if started, ok := a.modelCoolStarted[model]; ok && !started.IsZero() {
+			entry.StartedAt = started.Unix()
+		}
+		modelCooldowns = append(modelCooldowns, entry)
+	}
+	sort.Slice(modelCooldowns, func(i, j int) bool {
+		if modelCooldowns[i].ExpiresAt == modelCooldowns[j].ExpiresAt {
+			return modelCooldowns[i].Model < modelCooldowns[j].Model
+		}
+		return modelCooldowns[i].ExpiresAt < modelCooldowns[j].ExpiresAt
+	})
+
 	return AccountView{
 		UID:                  uid,
 		Nickname:             nickname,
@@ -566,7 +659,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		LastErrorDetail:      nil,
 		InCooldown:           cooling,
 		CooldownFor:          cooldownFor,
-		ModelCooldowns:       []ModelCooldownView{},
+		ModelCooldowns:       modelCooldowns,
 		ActiveConcurrent:     a.State.ActiveConcurrent,
 		MaxConcurrent:        a.maxConcurrent,
 		AddedAt:              unixSeconds(a.Auth.AddedAt),

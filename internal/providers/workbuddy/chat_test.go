@@ -1,0 +1,1578 @@
+package workbuddy
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+)
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+type chatTestCall struct {
+	Method      string
+	Path        string
+	Header      http.Header
+	RawBody     []byte
+	Body        []byte
+	ProxyTarget string
+}
+
+type chatTestFake struct {
+	mu      sync.Mutex
+	calls   []chatTestCall
+	respond func(*http.Request, []byte) (int, http.Header, []byte)
+	status  int
+	header  http.Header
+	body    string
+}
+
+func (f *chatTestFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	body := raw
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Content-Encoding")), "gzip") {
+		reader, err := gzip.NewReader(bytes.NewReader(raw))
+		if err == nil {
+			body, _ = io.ReadAll(reader)
+			_ = reader.Close()
+		}
+	}
+	call := chatTestCall{
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		Header:  r.Header.Clone(),
+		RawBody: append([]byte(nil), raw...),
+		Body:    append([]byte(nil), body...),
+	}
+	if r.URL.IsAbs() {
+		call.ProxyTarget = r.URL.String()
+	}
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
+	respond := f.respond
+	status := f.status
+	header := cloneTestHeader(f.header)
+	responseBody := f.body
+	f.mu.Unlock()
+
+	if respond != nil {
+		respondStatus, respondHeader, respondBody := respond(r, body)
+		status, header, responseBody = respondStatus, respondHeader, string(respondBody)
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	header = cloneTestHeader(header)
+	if header == nil {
+		header = make(http.Header)
+	}
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "text/event-stream")
+	}
+	for name, values := range header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, responseBody)
+}
+
+func cloneTestHeader(source http.Header) http.Header {
+	if source == nil {
+		return nil
+	}
+	return source.Clone()
+}
+
+func (f *chatTestFake) snapshot() []chatTestCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]chatTestCall, len(f.calls))
+	for i, call := range f.calls {
+		call.Header = call.Header.Clone()
+		call.RawBody = append([]byte(nil), call.RawBody...)
+		call.Body = append([]byte(nil), call.Body...)
+		out[i] = call
+	}
+	return out
+}
+
+func newChatTestServer(t *testing.T, fake *chatTestFake) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func chatRaw(t *testing.T, payload map[string]any) map[string]json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal chat payload: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal chat payload: %v", err)
+	}
+	return raw
+}
+
+func chatRequest(t *testing.T, model string, payload map[string]any) providers.ChatRequest {
+	t.Helper()
+	raw := chatRaw(t, payload)
+	messages := []json.RawMessage(nil)
+	if value, ok := raw["messages"]; ok {
+		_ = json.Unmarshal(value, &messages)
+	}
+	return providers.ChatRequest{
+		Raw:      raw,
+		Model:    model,
+		Messages: messages,
+	}
+}
+
+func ssePayload(events ...string) string {
+	var builder strings.Builder
+	for _, event := range events {
+		builder.WriteString("data: ")
+		builder.WriteString(event)
+		builder.WriteString("\n\n")
+	}
+	return builder.String()
+}
+
+func chatChunk(content, finish string) string {
+	choice := map[string]any{"index": 0, "delta": map[string]any{"content": content}}
+	if finish != "" {
+		choice["finish_reason"] = finish
+	} else {
+		choice["finish_reason"] = nil
+	}
+	payload := map[string]any{
+		"id":      "up-1",
+		"object":  "chat.completion.chunk",
+		"model":   "deepseek-v4.1-flash",
+		"choices": []any{choice},
+	}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func drainChatFrames(t *testing.T, stream providers.ChatStream) []string {
+	t.Helper()
+	var frames []string
+	for {
+		frame, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream Next: %v", err)
+		}
+		frames = append(frames, string(frame))
+	}
+	return frames
+}
+
+func decodeChatBody(t *testing.T, call chatTestCall) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(call.Body))
+	decoder.UseNumber()
+	var body map[string]any
+	if err := decoder.Decode(&body); err != nil {
+		t.Fatalf("decode chat body (%s): %v", call.Body, err)
+	}
+	return body
+}
+
+func setupChatProvider(t *testing.T, realm, dir string, settings map[string]any) *Provider {
+	t.Helper()
+	writePoolSettings(t, dir, settings)
+	provider, _ := newPoolProvider(t, realm, dir)
+	return provider
+}
+
+func writeChatAccount(t *testing.T, dir, uid, realm string, fields map[string]any) {
+	t.Helper()
+	writePoolAccount(t, dir, uid, realm, fields)
+}
+
+func accountByUID(t *testing.T, pool *Pool, uid string) *Account {
+	t.Helper()
+	account := pool.Get(uid)
+	if account == nil {
+		t.Fatalf("account %q not found", uid)
+	}
+	return account
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+// ---------------------------------------------------------------------------
+// Headers, identity, body
+// ---------------------------------------------------------------------------
+
+func TestChatIntlDesktopHeadersAndBody(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-1", realmIntl, map[string]any{
+		"product":  productDesktop,
+		"platform": "CLI",
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("hello", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	raw := map[string]any{
+		"model":                 "deepseek-v4.1-flash",
+		"messages":              []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream":                true,
+		"max_completion_tokens": 64,
+		"stop":                  "END",
+		"metadata":              map[string]any{"trace": "keep"},
+	}
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", raw))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	calls := fake.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("chat calls = %d, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.Method != http.MethodPost || call.Path != "/v2/chat/completions" {
+		t.Fatalf("request = %s %s, want POST /v2/chat/completions", call.Method, call.Path)
+	}
+	headers := call.Header
+	checks := map[string]string{
+		"Authorization":       "Bearer access-intl-1",
+		"X-Domain":            "www.workbuddy.ai",
+		"User-Agent":          "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+		"Origin":              "https://www.workbuddy.ai",
+		"Referer":             "https://www.workbuddy.ai/",
+		"X-CodeBuddy-Request": "1",
+		"Accept-Language":     "en-US",
+		"Content-Type":        "application/json",
+	}
+	for name, want := range checks {
+		if got := headers.Get(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	for _, forbidden := range []string{"X-Device-Token", "X-API-Key", "Content-Encoding", "X-Model-ID"} {
+		if got := headers.Get(forbidden); got != "" {
+			t.Fatalf("unexpected %s = %q", forbidden, got)
+		}
+	}
+	if headers.Get("X-Request-ID") != headers.Get("X-Conversation-Message-ID") {
+		t.Fatalf("desktop message/request ids differ: %q vs %q",
+			headers.Get("X-Request-ID"), headers.Get("X-Conversation-Message-ID"))
+	}
+	if len(headers.Get("X-Conversation-ID")) != 36 {
+		t.Fatalf("conversation id = %q, want dashed UUID", headers.Get("X-Conversation-ID"))
+	}
+
+	body := decodeChatBody(t, call)
+	if body["stream"] != true {
+		t.Fatalf("stream = %#v, want true", body["stream"])
+	}
+	options, _ := body["stream_options"].(map[string]any)
+	if options["include_usage"] != true {
+		t.Fatalf("stream_options = %#v", body["stream_options"])
+	}
+	if got, _ := body["max_tokens"].(json.Number).Int64(); got != 64 {
+		t.Fatalf("max_tokens = %#v, want 64", body["max_tokens"])
+	}
+	if _, exists := body["max_completion_tokens"]; exists {
+		t.Fatalf("max_completion_tokens was not translated: %#v", body)
+	}
+	stop, _ := body["stop"].([]any)
+	if len(stop) != 1 || stop[0] != "END" {
+		t.Fatalf("stop = %#v, want [END]", body["stop"])
+	}
+	if metadata, _ := body["metadata"].(map[string]any); metadata["trace"] != "keep" {
+		t.Fatalf("desktop metadata was not preserved: %#v", body["metadata"])
+	}
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want injected system + user", messages)
+	}
+	first, _ := messages[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != defaultChatSystemPrompt {
+		t.Fatalf("first message = %#v", first)
+	}
+}
+
+func TestChatCNHeadersDeviceTokenAPIKeyAndEnterprise(t *testing.T) {
+	dir := t.TempDir()
+	writePoolSettings(t, dir, map[string]any{
+		"upstream": map[string]any{"device_token": "cn-device-secret"},
+	})
+	writeChatAccount(t, dir, "cn-api", realmCN, map[string]any{
+		"accessToken":  "ck_public.secret-value",
+		"refreshToken": "",
+		"product":      productDesktop,
+		"apiKey":       true,
+		"enterpriseId": "ent-1",
+	})
+	provider, _ := newPoolProvider(t, realmCN, dir)
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "hy3", map[string]any{
+		"model":    "hy3",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	calls := fake.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("chat calls = %d, want 1", len(calls))
+	}
+	headers := calls[0].Header
+	if got := headers.Get("Origin"); got != "https://www.codebuddy.cn" {
+		t.Fatalf("Origin = %q", got)
+	}
+	if got := headers.Get("X-Domain"); got != "copilot.tencent.com" {
+		t.Fatalf("X-Domain = %q", got)
+	}
+	if got := headers.Get("X-Product"); got != "SaaS" {
+		t.Fatalf("X-Product = %q", got)
+	}
+	if got := headers.Get("X-Device-Token"); got != "cn-device-secret" {
+		t.Fatalf("X-Device-Token = %q", got)
+	}
+	if got := headers.Get("X-API-Key"); got != "ck_public.secret-value" {
+		t.Fatalf("X-API-Key = %q", got)
+	}
+	if got := headers.Get("Authorization"); got != "Bearer ck_public.secret-value" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := headers.Get("X-Enterprise-Id"); got != "ent-1" {
+		t.Fatalf("X-Enterprise-Id = %q", got)
+	}
+	if got := headers.Get("X-Tenant-Id"); got != "ent-1" {
+		t.Fatalf("X-Tenant-Id = %q", got)
+	}
+	if got := headers.Get("Accept-Language"); got != "zh-CN" {
+		t.Fatalf("Accept-Language = %q", got)
+	}
+}
+
+func TestChatCLIGzipBodyDropsAndCacheRetention(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-cli", realmIntl, map[string]any{
+		"product":  productCLI,
+		"platform": "CLI",
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":                "deepseek-v4.1-flash",
+		"messages":             []any{map[string]any{"role": "user", "content": "hi"}},
+		"metadata":             map[string]any{"trace": "drop"},
+		"conversation_id":      "drop-conv",
+		"previous_response_id": "drop-prev",
+		"extra_field":          "keep",
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	calls := fake.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("chat calls = %d, want 1", len(calls))
+	}
+	headers := calls[0].Header
+	if got := headers.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q", got)
+	}
+	for _, forbidden := range []string{"Origin", "Referer", "X-CodeBuddy-Request", "Accept-Language", "X-Requested-With"} {
+		if got := headers.Get(forbidden); got != "" {
+			t.Fatalf("CLI request sent %s = %q", forbidden, got)
+		}
+	}
+	if got := headers.Get("Accept"); got != "application/json" {
+		t.Fatalf("Accept = %q", got)
+	}
+	if !bytes.HasPrefix(calls[0].RawBody, []byte{0x1f, 0x8b}) {
+		t.Fatalf("request body is not gzip: %x", calls[0].RawBody[:minInt(len(calls[0].RawBody), 4)])
+	}
+	if bytes.Contains(calls[0].Body, []byte(`"stream": true`)) {
+		t.Fatalf("body is not compact JSON: %s", calls[0].Body)
+	}
+	body := decodeChatBody(t, calls[0])
+	for _, key := range []string{"metadata", "conversation_id", "previous_response_id"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("CLI body kept %s: %#v", key, body)
+		}
+	}
+	if body["cache_retention"] != "long" {
+		t.Fatalf("cache_retention = %#v", body["cache_retention"])
+	}
+	if body["extra_field"] != "keep" {
+		t.Fatalf("unknown field was dropped: %#v", body)
+	}
+	if body["stream"] != true {
+		t.Fatalf("stream = %#v", body["stream"])
+	}
+	if got, _ := body["max_tokens"].(json.Number).Int64(); got != 128000 {
+		t.Fatalf("default max_tokens = %#v", body["max_tokens"])
+	}
+}
+
+func TestChatVSCodeHeadersGzipDeviceToken(t *testing.T) {
+	t.Run("intl non-enterprise placeholder", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "intl-vsc", realmIntl, map[string]any{
+			"product":  productVSCode,
+			"platform": "VSCode",
+		})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+
+		calls := fake.snapshot()
+		if len(calls) != 1 {
+			t.Fatalf("chat calls = %d", len(calls))
+		}
+		headers := calls[0].Header
+		if got := headers.Get("X-Device-Token-Error"); got != "sdk_not_initialized" {
+			t.Fatalf("X-Device-Token-Error = %q", got)
+		}
+		if got := headers.Get("X-Device-Token"); got != "" {
+			t.Fatalf("unexpected X-Device-Token = %q", got)
+		}
+		if got := headers.Get("X-Model-ID"); got != "deepseek-v4.1-flash" {
+			t.Fatalf("X-Model-ID = %q", got)
+		}
+		if got := headers.Get("X-Product-Version"); got != "4.12.39997873" {
+			t.Fatalf("X-Product-Version = %q", got)
+		}
+		if got := headers.Get("X-CodeBuddy-Request"); got != "1" {
+			t.Fatalf("X-CodeBuddy-Request = %q", got)
+		}
+		if got := headers.Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("Content-Encoding = %q", got)
+		}
+		_ = decodeChatBody(t, calls[0])
+	})
+
+	t.Run("cn enterprise device token", func(t *testing.T) {
+		dir := t.TempDir()
+		writePoolSettings(t, dir, map[string]any{
+			"upstream": map[string]any{"device_token": "cn-device-vsc"},
+		})
+		writeChatAccount(t, dir, "cn-vsc", realmCN, map[string]any{
+			"product":      productVSCode,
+			"platform":     "VSCode",
+			"enterpriseId": "ent-vsc",
+		})
+		provider, _ := newPoolProvider(t, realmCN, dir)
+		fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "hy3", map[string]any{
+			"model":    "hy3",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+
+		headers := fake.snapshot()[0].Header
+		if got := headers.Get("X-Device-Token"); got != "cn-device-vsc" {
+			t.Fatalf("X-Device-Token = %q", got)
+		}
+		if got := headers.Get("X-Device-Token-Error"); got != "" {
+			t.Fatalf("unexpected X-Device-Token-Error = %q", got)
+		}
+	})
+}
+
+func TestChatPromptCacheKeyOptIn(t *testing.T) {
+	t.Setenv("WB_PROMPT_CACHE_KEY", "1")
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-cache", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":           "deepseek-v4.1-flash",
+		"messages":        []any{map[string]any{"role": "user", "content": "hi"}},
+		"conversation_id": "conv-cache",
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+	body := decodeChatBody(t, fake.snapshot()[0])
+	key, _ := body["prompt_cache_key"].(string)
+	if !strings.HasPrefix(key, "wb2a-intl-cac-") || len(key) != len("wb2a-intl-cac-")+32 {
+		t.Fatalf("prompt_cache_key = %q", key)
+	}
+
+	// An explicit client key wins.
+	stream.Close()
+	fake2 := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	provider.chatBaseURL = newChatTestServer(t, fake2).URL
+	stream, err = provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":            "deepseek-v4.1-flash",
+		"messages":         []any{map[string]any{"role": "user", "content": "hi"}},
+		"prompt_cache_key": "client-key",
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat explicit key: %v", err)
+	}
+	defer stream.Close()
+	if got := decodeChatBody(t, fake2.snapshot()[0])["prompt_cache_key"]; got != "client-key" {
+		t.Fatalf("explicit prompt_cache_key = %#v", got)
+	}
+}
+
+func TestChatToolsImagesAndReasoning(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-tools", realmIntl, map[string]any{
+		"product": productDesktop,
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	payload := map[string]any{
+		"model": "deepseek-v4.1-flash",
+		"messages": []any{
+			map[string]any{"role": "developer", "content": "be helpful"},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "what is this?"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
+			}},
+		},
+		"functions": []any{map[string]any{
+			"name":        "lookup",
+			"description": "look things up",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "str"},
+					"limit": map[string]any{"type": "int"},
+				},
+				"required": []any{"query", "", nil},
+			},
+		}},
+		"tool_choice": map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": "lookup"},
+		},
+		"max_completion_tokens": 32,
+		"stop":                  "",
+		"reasoning_effort":      "extreme",
+	}
+	// This payload exercises the legacy root-level functions alias, which the
+	// normalization must wrap into the modern tools shape.
+	raw := chatRaw(t, payload)
+	stream, err := provider.OpenChat(context.Background(), providers.ChatRequest{
+		Raw:   raw,
+		Model: "deepseek-v4.1-flash",
+	})
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	body := decodeChatBody(t, fake.snapshot()[0])
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "function" {
+		t.Fatalf("tool type = %#v", tool["type"])
+	}
+	function, _ := tool["function"].(map[string]any)
+	if function["name"] != "lookup" {
+		t.Fatalf("tool function = %#v", function)
+	}
+	parameters, _ := function["parameters"].(map[string]any)
+	if parameters["type"] != "object" {
+		t.Fatalf("parameters type = %#v", parameters["type"])
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	query, _ := properties["query"].(map[string]any)
+	limit, _ := properties["limit"].(map[string]any)
+	if query["type"] != "string" || limit["type"] != "integer" {
+		t.Fatalf("schema types were not normalized: %#v", properties)
+	}
+	required, _ := parameters["required"].([]any)
+	if len(required) != 1 || required[0] != "query" {
+		t.Fatalf("required = %#v", parameters["required"])
+	}
+	if body["tool_choice"] != "lookup" {
+		t.Fatalf("tool_choice = %#v", body["tool_choice"])
+	}
+	if _, exists := body["functions"]; exists {
+		t.Fatalf("legacy functions key survived: %#v", body)
+	}
+	if got, _ := body["max_tokens"].(json.Number).Int64(); got != 32 {
+		t.Fatalf("max_tokens = %#v", body["max_tokens"])
+	}
+	if _, exists := body["stop"]; exists {
+		t.Fatalf("empty stop was not removed: %#v", body["stop"])
+	}
+	messages, _ := body["messages"].([]any)
+	first, _ := messages[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != "be helpful" {
+		t.Fatalf("developer role was not mapped: %#v", first)
+	}
+	user, _ := messages[1].(map[string]any)
+	content, _ := user["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("image content was lost: %#v", user["content"])
+	}
+	if image, _ := content[1].(map[string]any); image["type"] != "image_url" {
+		t.Fatalf("image block = %#v", content[1])
+	}
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v", body["thinking"])
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want mapped high", body["reasoning_effort"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Retry, refresh, and failover
+// ---------------------------------------------------------------------------
+
+func TestChat401ForceRefreshRetriesSameAccount(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-401", realmIntl, map[string]any{
+		"product":      productDesktop,
+		"refreshToken": "refresh-old",
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+
+	tokenFake := &tokenTestFake{body: `{"data":{"accessToken":"access-new","refreshToken":"refresh-new","expiresAt":9999999999}}`}
+	tokenServer := httptest.NewServer(tokenFake)
+	defer tokenServer.Close()
+	provider.tokenBaseURL = tokenServer.URL
+
+	chatFake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+		if r.Header.Get("Authorization") == "Bearer access-new" {
+			return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+				[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+		}
+		return 401, http.Header{"Content-Type": []string{"application/json"}},
+			[]byte(`{"error":{"message":"expired"}}`)
+	}}
+	chatServer := newChatTestServer(t, chatFake)
+	provider.chatBaseURL = chatServer.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	chatCalls := chatFake.snapshot()
+	if len(chatCalls) != 2 {
+		t.Fatalf("chat calls = %d, want 2", len(chatCalls))
+	}
+	if got := chatCalls[1].Header.Get("Authorization"); got != "Bearer access-new" {
+		t.Fatalf("retry Authorization = %q", got)
+	}
+	tokenCalls := tokenFake.snapshot()
+	if len(tokenCalls) != 1 {
+		t.Fatalf("token refresh calls = %d, want 1", len(tokenCalls))
+	}
+	if got := tokenCalls[0].Header.Get("X-Refresh-Token"); got != "refresh-old" {
+		t.Fatalf("refresh header = %q", got)
+	}
+	account := accountByUID(t, provider.Pool(), "intl-401")
+	account.mu.RLock()
+	access := account.Auth.AccessToken
+	account.mu.RUnlock()
+	if access != "access-new" {
+		t.Fatalf("account access token = %q", access)
+	}
+}
+
+func TestChat401SecondTerminalNoLoop(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-401b", realmIntl, map[string]any{
+		"product":      productDesktop,
+		"refreshToken": "refresh-old",
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+
+	tokenFake := &tokenTestFake{body: `{"data":{"accessToken":"access-new","refreshToken":"refresh-new","expiresAt":9999999999}}`}
+	tokenServer := httptest.NewServer(tokenFake)
+	defer tokenServer.Close()
+	provider.tokenBaseURL = tokenServer.URL
+
+	chatFake := &chatTestFake{status: 401, body: `{"error":{"message":"expired"}}`}
+	chatServer := newChatTestServer(t, chatFake)
+	provider.chatBaseURL = chatServer.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if stream != nil {
+		stream.Close()
+	}
+	if err == nil {
+		t.Fatal("OpenChat unexpectedly succeeded")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v, want APIError", err, err)
+	}
+	if got := apiErr.HTTPStatus(); got != http.StatusBadGateway {
+		t.Fatalf("HTTPStatus = %d, want 502", got)
+	}
+	if calls := chatFake.snapshot(); len(calls) != 2 {
+		t.Fatalf("chat calls = %d, want exactly 2", len(calls))
+	}
+	account := accountByUID(t, provider.Pool(), "intl-401b")
+	account.mu.RLock()
+	disabled, manual, tokenExpired := account.State.Disabled, account.State.ManualDisabled, account.tokenExpired
+	account.mu.RUnlock()
+	if manual || !disabled || !tokenExpired {
+		t.Fatalf("second 401 state disabled=%v manual=%v tokenExpired=%v", disabled, manual, tokenExpired)
+	}
+}
+
+func TestChat429FailoverAndCooldowns(t *testing.T) {
+	t.Run("model scoped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "a-429", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "b-429", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+			if strings.Contains(r.Header.Get("Authorization"), "a-429") {
+				return 429, http.Header{"Content-Type": []string{"application/json"}},
+					[]byte(`{"code":6004,"msg":"usage exceeds frequency limit; reset at 2099-01-01 00:00:00 UTC+8"}`)
+			}
+			return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+				[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+		}}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+
+		if calls := fake.snapshot(); len(calls) != 2 {
+			t.Fatalf("chat calls = %d, want 2", len(calls))
+		}
+		account := accountByUID(t, provider.Pool(), "a-429")
+		now := time.Now()
+		if !account.modelCooling("deepseek-v4.1-flash", now) {
+			t.Fatal("model cooldown was not recorded")
+		}
+		if account.State.CoolUntil.After(now) {
+			t.Fatalf("model-scoped 429 parked the whole account until %v", account.State.CoolUntil)
+		}
+		if got := stream.(*chatStream).StreamUsage().Account; got != "b-429" {
+			t.Fatalf("serving account = %q", got)
+		}
+	})
+
+	t.Run("account scoped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "a-429", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "b-429", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+			if strings.Contains(r.Header.Get("Authorization"), "a-429") {
+				return 429, http.Header{"Content-Type": []string{"application/json"}},
+					[]byte(`{"error":{"message":"this account rate limit exceeded"}}`)
+			}
+			return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+				[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+		}}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+
+		account := accountByUID(t, provider.Pool(), "a-429")
+		if !account.State.CoolUntil.After(time.Now()) {
+			t.Fatalf("account cooldown = %v, want future", account.State.CoolUntil)
+		}
+	})
+}
+
+func TestChat400NoFailoverAndNoSecretLeak(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-400", realmIntl, map[string]any{"product": productDesktop})
+	writeChatAccount(t, dir, "b-400", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+		return 400, http.Header{"Content-Type": []string{"application/json"}},
+			[]byte(`{"error":{"message":"bad request echoed access-a-400 and Bearer access-a-400"}}`)
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if stream != nil {
+		stream.Close()
+	}
+	if err == nil {
+		t.Fatal("OpenChat unexpectedly succeeded")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if apiErr.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("HTTPStatus = %d, want 400", apiErr.HTTPStatus())
+	}
+	if calls := fake.snapshot(); len(calls) != 1 {
+		t.Fatalf("400 failover happened: %d calls", len(calls))
+	}
+	if strings.Contains(apiErr.SafeMessage(), "access-a-400") {
+		t.Fatalf("safe message leaks token: %q", apiErr.SafeMessage())
+	}
+	if strings.Contains(err.Error(), "access-a-400") {
+		t.Fatalf("error leaks token: %v", err)
+	}
+}
+
+func TestChat500RedactsAccountLastError(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-leak", realmIntl, map[string]any{
+		"product": productDesktop,
+	})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+		return 500, http.Header{"Content-Type": []string{"application/json"}},
+			[]byte(`{"error":{"message":"upstream received access-a-leak"}}`)
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	_, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err == nil {
+		t.Fatal("OpenChat unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), "access-a-leak") {
+		t.Fatalf("error leaks token: %v", err)
+	}
+	account := accountByUID(t, provider.Pool(), "a-leak")
+	account.mu.RLock()
+	lastError := account.State.LastError
+	account.mu.RUnlock()
+	if strings.Contains(lastError, "access-a-leak") {
+		t.Fatalf("account LastError leaks token: %q", lastError)
+	}
+}
+
+func TestChat5xxRetriesSameAccountOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-500", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	var mu sync.Mutex
+	calls := 0
+	fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			return 500, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"error":{"message":"upstream exploded"}}`)
+		}
+		return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+			[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("single-account 5xx attempts = %d, want 2", got)
+	}
+}
+
+func TestChat5xxFailoverAndErrorStatus(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-500", realmIntl, map[string]any{"product": productDesktop})
+	writeChatAccount(t, dir, "b-500", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+		if strings.Contains(r.Header.Get("Authorization"), "a-500") {
+			return 500, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"error":{"message":"upstream exploded"}}`)
+		}
+		return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+			[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	if calls := fake.snapshot(); len(calls) != 2 {
+		t.Fatalf("5xx failover calls = %d, want 2", len(calls))
+	}
+}
+
+func TestChatNetworkFailoverAnd503(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-net", realmIntl, map[string]any{"product": productDesktop})
+	writeChatAccount(t, dir, "b-net", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	server := newChatTestServer(t, &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")})
+	provider.chatBaseURL = server.URL
+
+	var mu sync.Mutex
+	failures := 0
+	provider.chatDoer = chatDoerFunc(func(ctx context.Context, req *http.Request, proxy string) (*http.Response, error) {
+		mu.Lock()
+		first := failures == 0
+		failures++
+		mu.Unlock()
+		if first {
+			return nil, errors.New("connection reset by peer")
+		}
+		return http.DefaultClient.Do(req)
+	})
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	defer stream.Close()
+
+	// A single-account pool with a network failure maps to 503.
+	dir2 := t.TempDir()
+	writeChatAccount(t, dir2, "only-net", realmIntl, map[string]any{"product": productDesktop})
+	provider2 := setupChatProvider(t, realmIntl, dir2, map[string]any{})
+	provider2.chatBaseURL = server.URL
+	provider2.chatDoer = chatDoerFunc(func(context.Context, *http.Request, string) (*http.Response, error) {
+		return nil, errors.New("dial tcp: connection refused")
+	})
+	_, err = provider2.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err == nil {
+		t.Fatal("OpenChat unexpectedly succeeded")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("HTTPStatus = %d, want 503", apiErr.HTTPStatus())
+	}
+}
+
+func TestChat403RestrictedRotatesButContentDoesNot(t *testing.T) {
+	t.Run("restricted rotates", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "a-403", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "b-403", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+			if strings.Contains(r.Header.Get("Authorization"), "a-403") {
+				return 403, http.Header{"Content-Type": []string{"application/json"}},
+					[]byte(`{"code":11140,"msg":"账号存在异常行为，已被限制使用"}`)
+			}
+			return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+				[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+		}}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+
+		if calls := fake.snapshot(); len(calls) != 2 {
+			t.Fatalf("restricted rotation calls = %d, want 2", len(calls))
+		}
+		account := accountByUID(t, provider.Pool(), "a-403")
+		if !account.State.CoolUntil.After(time.Now()) {
+			t.Fatalf("restricted cooldown = %v", account.State.CoolUntil)
+		}
+	})
+
+	t.Run("content rejected passes through", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "a-403", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "b-403", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+			return 403, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"error":{"message":"content policy rejected"}}`)
+		}}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+
+		_, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusForbidden {
+			t.Fatalf("error = %v, want 403", err)
+		}
+		if calls := fake.snapshot(); len(calls) != 1 {
+			t.Fatalf("content 403 rotated: %d calls", len(calls))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Cross-exit fallback
+// ---------------------------------------------------------------------------
+
+func TestChatCrossExitFallback(t *testing.T) {
+	setup := func(t *testing.T, enabled bool) (*Provider, *chatTestFake, *chatTestFake) {
+		dir := t.TempDir()
+		settings := map[string]any{
+			"workbuddy": map[string]any{
+				"intl": map[string]any{"auto_switch_product": enabled},
+				"cn":   map[string]any{"enabled": true},
+			},
+		}
+		writeChatAccount(t, dir, "intl-a", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "cn-a", realmCN, map[string]any{"product": productDesktop})
+		writePoolSettings(t, dir, settings)
+		intl, _ := newPoolProvider(t, realmIntl, dir)
+		cn, _ := newPoolProvider(t, realmCN, dir)
+		intl.SetPeer(cn)
+
+		intlFake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
+			return 429, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"error":{"message":"usage exceeds frequency limit"}}`)
+		}}
+		cnFake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		intlServer := newChatTestServer(t, intlFake)
+		cnServer := newChatTestServer(t, cnFake)
+		intl.chatBaseURL = intlServer.URL
+		cn.chatBaseURL = cnServer.URL
+		return intl, intlFake, cnFake
+	}
+
+	t.Run("enabled", func(t *testing.T) {
+		provider, intlFake, cnFake := setup(t, true)
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+		if calls := intlFake.snapshot(); len(calls) != 1 {
+			t.Fatalf("intl calls = %d", len(calls))
+		}
+		if calls := cnFake.snapshot(); len(calls) != 1 {
+			t.Fatalf("cn fallback calls = %d", len(calls))
+		}
+		usage := stream.(*chatStream).StreamUsage()
+		if usage.Realm != realmCN || usage.Account != "cn-a" {
+			t.Fatalf("usage realm/account = %q/%q", usage.Realm, usage.Account)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		provider, _, cnFake := setup(t, false)
+		_, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusTooManyRequests {
+			t.Fatalf("error = %v, want 429", err)
+		}
+		if calls := cnFake.snapshot(); len(calls) != 0 {
+			t.Fatalf("disabled fallback called cn %d times", len(calls))
+		}
+	})
+
+	t.Run("explicit request suppresses", func(t *testing.T) {
+		provider, _, cnFake := setup(t, true)
+		req := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		})
+		req.AllowRealmFallback = boolPointer(false)
+		_, err := provider.OpenChat(context.Background(), req)
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		if calls := cnFake.snapshot(); len(calls) != 0 {
+			t.Fatalf("explicit request fell back %d times", len(calls))
+		}
+	})
+
+	t.Run("X-Realm header suppresses", func(t *testing.T) {
+		provider, _, cnFake := setup(t, true)
+		req := chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		})
+		req.Headers = http.Header{"X-Realm": []string{"intl"}}
+		_, err := provider.OpenChat(context.Background(), req)
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		if calls := cnFake.snapshot(); len(calls) != 0 {
+			t.Fatalf("X-Realm request fell back %d times", len(calls))
+		}
+	})
+
+	t.Run("exclusive model does not fall back", func(t *testing.T) {
+		provider, _, cnFake := setup(t, true)
+		_, err := provider.OpenChat(context.Background(), chatRequest(t, "gpt-6-astra", map[string]any{
+			"model":    "gpt-6-astra",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		if calls := cnFake.snapshot(); len(calls) != 0 {
+			t.Fatalf("exclusive model fell back %d times", len(calls))
+		}
+	})
+
+	t.Run("live config enables fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "intl-a", realmIntl, map[string]any{"product": productDesktop})
+		writeChatAccount(t, dir, "cn-a", realmCN, map[string]any{"product": productDesktop})
+		intl, _ := newPoolProvider(t, realmIntl, dir)
+		cn, _ := newPoolProvider(t, realmCN, dir)
+		intl.SetPeer(cn)
+		intlFake := &chatTestFake{status: 429, body: `{"error":{"message":"too many requests"}}`}
+		cnFake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		intl.chatBaseURL = newChatTestServer(t, intlFake).URL
+		cn.chatBaseURL = newChatTestServer(t, cnFake).URL
+
+		if _, err := SaveConfig(intl.store, realmIntl, map[string]any{"auto_switch_product": true}); err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+		stream, err := intl.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat after live config: %v", err)
+		}
+		defer stream.Close()
+		if calls := cnFake.snapshot(); len(calls) != 1 {
+			t.Fatalf("cn calls = %d, want 1", len(calls))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// SSE, usage, close, cancel, timeouts, proxy
+// ---------------------------------------------------------------------------
+
+func TestChatSSEFramesGzipUsageAndCloseOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-sse", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+
+	usageFrame := `{"id":"up-2","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"credit":2,"completion_tokens_details":{"reasoning_tokens":3},"prompt_tokens_details":{"cached_tokens":4}}}`
+	payload := ssePayload(
+		chatChunk("hel", ""),
+		chatChunk("lo", ""),
+		`{"id":"up-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		usageFrame,
+		"[DONE]",
+	)
+	var compressed bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressed)
+	gzipWriter.Header.ModTime = time.Time{}
+	_, _ = gzipWriter.Write([]byte(payload))
+	_ = gzipWriter.Close()
+
+	fake := &chatTestFake{body: compressed.String(), header: http.Header{
+		"Content-Type":     []string{"text/event-stream"},
+		"Content-Encoding": []string{"gzip"},
+	}}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	account := accountByUID(t, provider.Pool(), "intl-sse")
+
+	frame1, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next 1: %v", err)
+	}
+	if !strings.Contains(string(frame1), `"hel"`) || !strings.HasSuffix(string(frame1), "\n\n") {
+		t.Fatalf("frame 1 = %q", frame1)
+	}
+	frames := drainChatFrames(t, stream)
+	if len(frames) < 3 {
+		t.Fatalf("frames after first = %#v", frames)
+	}
+	if !strings.Contains(frames[len(frames)-2], "usage") {
+		t.Fatalf("usage frame not preserved: %#v", frames)
+	}
+	if strings.TrimSpace(frames[len(frames)-1]) != "data: [DONE]" {
+		t.Fatalf("last frame = %q", frames[len(frames)-1])
+	}
+	usage := stream.(*chatStream).StreamUsage()
+	if usage.Realm != realmIntl || usage.Account != "intl-sse" || usage.Model != "deepseek-v4.1-flash" {
+		t.Fatalf("usage identity = %+v", usage)
+	}
+	if usage.PromptTokens != 10 || usage.CompletionTokens != 5 || usage.TotalTokens != 15 ||
+		usage.CachedTokens != 4 || usage.ReasoningTokens != 3 || usage.Credit != 2 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if usage.CostPolicy != "credits" {
+		t.Fatalf("cost policy = %q", usage.CostPolicy)
+	}
+
+	// Prove Close releases exactly once even with a second acquired slot.
+	if !provider.Pool().Acquire(account) {
+		t.Fatal("second Acquire failed")
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	account.mu.RLock()
+	active := account.State.ActiveConcurrent
+	account.mu.RUnlock()
+	if active != 1 {
+		t.Fatalf("active after double close = %d, want 1", active)
+	}
+	provider.Pool().Release(account)
+}
+
+func TestChatClientCancelReleasesOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-cancel", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ssePayload(chatChunk("ok", "")))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	provider.chatBaseURL = server.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := provider.OpenChat(ctx, chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	<-started
+	if _, err := stream.Next(); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	cancel()
+	if _, err := stream.Next(); err == nil {
+		t.Fatal("Next after cancel succeeded")
+	}
+	_ = stream.Close()
+	_ = stream.Close()
+	account := accountByUID(t, provider.Pool(), "intl-cancel")
+	account.mu.RLock()
+	active := account.State.ActiveConcurrent
+	account.mu.RUnlock()
+	if active != 0 {
+		t.Fatalf("active after cancel = %d", active)
+	}
+}
+
+func TestChatProxyAndTimeouts(t *testing.T) {
+	t.Run("account proxy is passed through", func(t *testing.T) {
+		dir := t.TempDir()
+		writePoolSettings(t, dir, map[string]any{
+			"proxy_slots": []any{map[string]any{
+				"id": "slot-1", "name": "p", "url": "http://proxy.example:8080", "enabled": true,
+			}},
+		})
+		writeChatAccount(t, dir, "intl-proxy", realmIntl, map[string]any{
+			"product":   productDesktop,
+			"proxySlot": "slot-1",
+		})
+		provider, _ := newPoolProvider(t, realmIntl, dir)
+		server := newChatTestServer(t, &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")})
+		provider.chatBaseURL = server.URL
+		var gotProxy string
+		provider.chatDoer = chatDoerFunc(func(ctx context.Context, req *http.Request, proxy string) (*http.Response, error) {
+			gotProxy = proxy
+			return http.DefaultClient.Do(req)
+		})
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		stream.Close()
+		if gotProxy != "http://proxy.example:8080" {
+			t.Fatalf("proxy = %q", gotProxy)
+		}
+	})
+
+	t.Run("header timeout", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "intl-timeout", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{
+			"workbuddy": map[string]any{"intl": map[string]any{"timeout_seconds": 0.05}},
+		})
+		provider.chatDoer = chatDoerFunc(func(ctx context.Context, _ *http.Request, _ string) (*http.Response, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		start := time.Now()
+		_, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err == nil {
+			t.Fatal("OpenChat unexpectedly succeeded")
+		}
+		if elapsed := time.Since(start); elapsed > 4*time.Second {
+			t.Fatalf("header timeout took %v", elapsed)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.HTTPStatus() != http.StatusServiceUnavailable {
+			t.Fatalf("error = %v, want 503", err)
+		}
+	})
+
+	t.Run("stream idle timeout", func(t *testing.T) {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "intl-idle", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{
+			"workbuddy": map[string]any{"intl": map[string]any{"stream_timeout_seconds": 0.05}},
+		})
+		release := make(chan struct{})
+		// Use a handler that holds the connection open after the first frame;
+		// the response body is written directly.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, ssePayload(chatChunk("ok", "")))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+		defer server.Close()
+		defer close(release)
+		provider.chatBaseURL = server.URL
+
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model":    "deepseek-v4.1-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		defer stream.Close()
+		if _, err := stream.Next(); err != nil {
+			t.Fatalf("first Next: %v", err)
+		}
+		if _, err := stream.Next(); err == nil {
+			t.Fatal("idle timeout did not fire")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Pool note helpers
+// ---------------------------------------------------------------------------
+
+func TestPoolNoteErrorAndSuccess(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "note-1", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	pool := provider.Pool()
+	account := accountByUID(t, pool, "note-1")
+
+	if err := pool.NoteError(account, "boom", false, false); err != nil {
+		t.Fatalf("NoteError: %v", err)
+	}
+	account.mu.RLock()
+	if account.State.ErrCount != 1 || account.State.LastError != "boom" || !account.State.CoolUntil.IsZero() {
+		t.Fatalf("ordinary error state = %+v", account.State)
+	}
+	account.mu.RUnlock()
+
+	if err := pool.NoteModelError(account, "deepseek-v4.1-flash", "throttled", 30*time.Second); err != nil {
+		t.Fatalf("NoteModelError: %v", err)
+	}
+	if !account.modelCooling("deepseek-v4.1-flash", time.Now()) {
+		t.Fatal("model cooldown not recorded")
+	}
+	if view := account.View(); len(view.ModelCooldowns) != 1 ||
+		view.ModelCooldowns[0].Model != "deepseek-v4.1-flash" {
+		t.Fatalf("model cooldown view = %#v", view.ModelCooldowns)
+	}
+	if got := pool.CountReady("deepseek-v4.1-flash"); got != 0 {
+		t.Fatalf("CountReady with model cooldown = %d", got)
+	}
+	if got := pool.CountReady("hy3"); got != 1 {
+		t.Fatalf("CountReady for sibling model = %d", got)
+	}
+
+	if err := pool.NoteError(account, "soft", true, false); err != nil {
+		t.Fatalf("NoteError soft: %v", err)
+	}
+	account.mu.RLock()
+	if !account.State.CoolUntil.After(time.Now()) {
+		t.Fatalf("soft cooldown = %v", account.State.CoolUntil)
+	}
+	account.mu.RUnlock()
+
+	if err := pool.NoteSuccess(account); err != nil {
+		t.Fatalf("NoteSuccess: %v", err)
+	}
+	account.mu.RLock()
+	cooling := account.State.CoolUntil
+	lastError := account.State.LastError
+	errCount := account.State.ErrCount
+	account.mu.RUnlock()
+	if !cooling.IsZero() || lastError != "" || errCount != 0 {
+		t.Fatalf("NoteSuccess did not clear state: cool=%v err=%q count=%d", cooling, lastError, errCount)
+	}
+	if account.modelCooling("deepseek-v4.1-flash", time.Now()) {
+		t.Fatal("NoteSuccess did not clear model cooldowns")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fakes / utility
+// ---------------------------------------------------------------------------
+
+type chatDoerFunc func(ctx context.Context, req *http.Request, proxy string) (*http.Response, error)
+
+func (f chatDoerFunc) Do(ctx context.Context, req *http.Request, proxy string) (*http.Response, error) {
+	return f(ctx, req, proxy)
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}

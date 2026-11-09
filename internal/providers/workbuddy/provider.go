@@ -37,6 +37,16 @@ type Provider struct {
 	mu  sync.RWMutex
 	cfg Config
 
+	// peer is the sibling WorkBuddy realm provider used only for the opt-in
+	// intl→cn fallback. SetPeer wires it from app composition (Task 11).
+	peer *Provider
+
+	// chatBaseURL and chatDoer are same-package test seams for the chat path.
+	// Their zero values use the account product endpoint and the provider
+	// transport respectively.
+	chatBaseURL string
+	chatDoer    ContextHTTPDoer
+
 	// transport is the shared core HTTP client wired in by the auth/chat
 	// slices. New creates it but performs no network I/O.
 	transport *transport.Client

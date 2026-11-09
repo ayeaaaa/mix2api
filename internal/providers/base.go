@@ -28,6 +28,12 @@ type ChatRequest struct {
 	Model      string
 	Messages   []json.RawMessage
 	SessionKey string
+
+	// AllowRealmFallback suppresses provider-internal cross-realm fallback
+	// when false. A nil value leaves the provider's configuration in control.
+	// The API layer sets false when a realm was explicitly requested or bound
+	// to an API key, because that is the operator's written intent.
+	AllowRealmFallback *bool
 }
 
 // ChatStream is a provider-owned stream of response bytes.

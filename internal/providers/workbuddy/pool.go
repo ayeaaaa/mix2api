@@ -607,7 +607,9 @@ func (p *Pool) accountUsable(account *Account, model string, exclude map[string]
 	}
 	if usable && model != "" {
 		lower := strings.ToLower(model)
-		if account.DisabledModels[lower] {
+		if account.modelCoolingLocked(lower, now) {
+			usable = false
+		} else if account.DisabledModels[lower] {
 			usable = false
 		} else {
 			for blocked := range account.DisabledModels {
@@ -1081,7 +1083,148 @@ func (p *Pool) Enable(uid string) error {
 		account.State.LastError = ""
 		account.State.ErrCount = 0
 		account.State.CoolUntil = time.Time{}
+		account.clearModelCooldownsLocked("")
 	})
+}
+
+const (
+	// softErrorCooldown mirrors v1's short single-account 429/ordinary-error
+	// park. The account breaker is deliberately simpler here: three ordinary
+	// failures in a row park it for ten minutes, then the count restarts.
+	softErrorCooldown = 60 * time.Second
+	errorThreshold    = 3
+	errorCooldown     = 10 * time.Minute
+
+	// restrictedCooldown mirrors v1 RESTRICTED_ACCOUNT_COOLDOWN (403/11140).
+	restrictedCooldown = 2 * time.Hour
+)
+
+// NoteError records a request failure with v1 runtime semantics: terminal
+// marks the credential expired and auto-disables the account unless the
+// operator already disabled it; soft starts a short account cooldown; an
+// ordinary error advances the consecutive-failure counter. Runtime state is
+// never persisted, matching v1; only a manual disable writes the credential
+// file.
+func (p *Pool) NoteError(a *Account, message string, soft, terminal bool) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	now := p.nowTime()
+	a.mu.Lock()
+	redacted := truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	a.State.LastError = redacted
+	switch {
+	case terminal:
+		a.tokenExpired = true
+		if !a.State.ManualDisabled {
+			a.State.Disabled = true
+			a.State.DisabledBy = "auth"
+			a.State.Reason = redacted
+		}
+	case soft:
+		if until := now.Add(softErrorCooldown); until.After(a.State.CoolUntil) {
+			a.State.CoolUntil = until
+		}
+	default:
+		a.State.ErrCount++
+		if a.State.ErrCount >= errorThreshold {
+			if until := now.Add(errorCooldown); until.After(a.State.CoolUntil) {
+				a.State.CoolUntil = until
+			}
+			a.State.ErrCount = 0
+		}
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+// NoteCooldown parks the whole account for wait with a redacted last error.
+// Rate-limit handling uses this for credential-scoped 429s so the v1 600s
+// first-tier window is kept instead of the generic 60s soft park.
+func (p *Pool) NoteCooldown(a *Account, message string, wait time.Duration) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	if wait <= 0 {
+		wait = softErrorCooldown
+	}
+	until := p.nowTime().Add(wait)
+	a.mu.Lock()
+	a.State.LastError = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	if until.After(a.State.CoolUntil) {
+		a.State.CoolUntil = until
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+// NoteModelError records a model-scoped upstream window without parking the
+// whole credential. Sibling models stay serviceable on the same account.
+func (p *Pool) NoteModelError(a *Account, model, message string, wait time.Duration) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return nil
+	}
+	if wait <= 0 {
+		wait = softErrorCooldown
+	}
+	started := p.nowTime()
+	until := started.Add(wait)
+	a.mu.Lock()
+	a.State.LastError = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	a.setModelCooldownLocked(model, until, started)
+	a.mu.Unlock()
+	return nil
+}
+
+// NoteRestricted records v1's account-level 403/11140 restriction. The
+// cooldown is runtime-only in this slice; the account stays out of rotation
+// until it expires or a later successful request proves the vendor lifted it.
+func (p *Pool) NoteRestricted(a *Account, message string) error {
+	return p.NoteCooldown(a, message, restrictedCooldown)
+}
+
+// NoteSuccess clears every account-level penalty and the named model window
+// (or all model windows when no model is supplied). A served response is v1's
+// evidence that a persisted upstream restriction is gone and that a locally
+// marked token still works.
+func (p *Pool) NoteSuccess(a *Account, model ...string) error {
+	if a == nil {
+		return nil
+	}
+	if p == nil {
+		return errors.New("workbuddy: pool is nil")
+	}
+	a.mu.Lock()
+	for _, item := range model {
+		a.clearModelCooldownsLocked(item)
+	}
+	if len(model) == 0 {
+		a.clearModelCooldownsLocked("")
+	}
+	a.State.ErrCount = 0
+	a.State.LastError = ""
+	a.State.CoolUntil = time.Time{}
+	a.tokenExpired = false
+	if !a.State.ManualDisabled {
+		a.State.Disabled = false
+		a.State.DisabledBy = ""
+		a.State.Reason = ""
+	}
+	a.mu.Unlock()
+	return nil
 }
 
 // ClearCooldown clears the account cooldown and consecutive-error count. The
@@ -1095,6 +1238,7 @@ func (p *Pool) ClearCooldown(uid string) error {
 	account.State.CoolUntil = time.Time{}
 	account.State.ErrCount = 0
 	account.State.LastError = ""
+	account.clearModelCooldownsLocked("")
 	account.mu.Unlock()
 	return nil
 }
