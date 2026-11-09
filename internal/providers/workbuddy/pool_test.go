@@ -485,6 +485,7 @@ func TestPoolExpiringCreditsPriority(t *testing.T) {
 	writePoolAccount(t, allDir, "a", realmIntl, map[string]any{"credits": poolCredits(1)})
 	writePoolAccount(t, allDir, "b", realmIntl, map[string]any{"credits": poolCredits(30)})
 	_, allPool := newPoolProvider(t, realmIntl, allDir)
+	setAccountWindow(t, allPool, 0)
 	if got := pickUIDs(t, allPool, "m", 12); len(countPicks(got)) != 2 {
 		t.Fatalf("window=0 should not prioritise: %v", got)
 	}

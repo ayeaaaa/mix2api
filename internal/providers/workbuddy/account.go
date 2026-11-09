@@ -35,29 +35,68 @@ const (
 	expiryWeightScale = 10.0
 )
 
-// CreditPackage is one v1 credit package as far as scheduling needs it. Task 6
-// extends this with the remaining refresh/display fields; keeping the shape
-// stable here lets the pool use loaded v1 credits for expiry preferences.
+// CreditPackage is one v1 credit package. The scheduling fields (Remain, Used,
+// Size, DaysLeft, NoExpiry, IsExpired) drive expiry preference and guards; the
+// display fields are the exact v1 `_parse_package_account` projection so the
+// panel can render a package detail without a second shape.
 type CreditPackage struct {
-	Name        string   `json:"name"`
-	PackageCode string   `json:"package_code"`
-	Remain      float64  `json:"remain"`
-	Used        float64  `json:"used"`
-	Size        float64  `json:"size"`
-	DaysLeft    *float64 `json:"days_left"`
-	NoExpiry    bool     `json:"no_expiry"`
-	IsExpired   bool     `json:"is_expired"`
+	Name           string   `json:"name"`
+	PackageCode    string   `json:"package_code"`
+	ProductName    string   `json:"product_name"`
+	SubProductName string   `json:"sub_product_name"`
+	GrantReason    string   `json:"grant_reason"`
+	ResourceID     string   `json:"resource_id"`
+	DealName       string   `json:"deal_name"`
+	CreateTime     string   `json:"create_time"`
+	Remain         float64  `json:"remain"`
+	Used           float64  `json:"used"`
+	Size           float64  `json:"size"`
+	Unit           string   `json:"unit"`
+	InUsage        bool     `json:"in_usage"`
+	AutoRenew      bool     `json:"auto_renew"`
+	CycleStartTime string   `json:"cycle_start_time"`
+	CycleEndTime   string   `json:"cycle_end_time"`
+	ExpireTime     string   `json:"expire_time"`
+	NoExpiry       bool     `json:"no_expiry"`
+	DaysLeft       *float64 `json:"days_left"`
+	IsExpired      bool     `json:"is_expired"`
+	Status         int      `json:"status"`
 }
 
-// CreditSnapshot is the provider-private balance snapshot. Task 6 extends it
-// with fetch timestamps and the full package history; scheduling only needs
-// the aggregate counters and the packages' remaining/expiry fields.
+// EarliestExpiring is v1's compact "spend these first" package summary.
+type EarliestExpiring struct {
+	Name         string  `json:"name"`
+	PackageCode  string  `json:"package_code"`
+	Remain       float64 `json:"remain"`
+	CycleEndTime string  `json:"cycle_end_time"`
+	DaysLeft     float64 `json:"days_left"`
+}
+
+// CheckinStatus is the CN daily-checkin state carried by a credits snapshot.
+type CheckinStatus struct {
+	TodayCheckedIn bool    `json:"today_checked_in"`
+	StreakDays     int     `json:"streak_days"`
+	DailyCredit    float64 `json:"daily_credit"`
+	TodayCredit    float64 `json:"today_credit"`
+	Active         bool    `json:"active"`
+}
+
+// CreditSnapshot is the full v1-compatible balance snapshot. The aggregate
+// counters and package expiry fields drive scheduling; the remainder is the
+// exact v1 panel payload persisted under the account's `credits` extra.
 type CreditSnapshot struct {
-	Remain     float64         `json:"remain"`
-	Used       float64         `json:"used"`
-	Size       float64         `json:"size"`
-	IsPaidUser bool            `json:"is_paid_user,omitempty"`
-	Packages   []CreditPackage `json:"packages,omitempty"`
+	Remain           float64           `json:"remain"`
+	Used             float64           `json:"used"`
+	Size             float64           `json:"size"`
+	UsedPercent      string            `json:"used_percent"`
+	RemainPercent    string            `json:"remain_percent"`
+	IsPaidUser       bool              `json:"is_paid_user"`
+	IsEnterprise     bool              `json:"is_enterprise,omitempty"`
+	Checkin          *CheckinStatus    `json:"checkin"`
+	EarliestExpiring *EarliestExpiring `json:"earliest_expiring"`
+	Packages         []CreditPackage   `json:"packages"`
+	UpdatedAt        float64           `json:"updated_at"`
+	UpdatedISO       string            `json:"updated_iso"`
 }
 
 // ModelCooldownView is one active per-model cooldown in the public view. The
@@ -73,47 +112,57 @@ type ModelCooldownView struct {
 // AccountView is the v1-compatible public account row. It intentionally has
 // no access/refresh token fields, no raw proxy URL, and no unredacted errors.
 type AccountView struct {
-	UID                string              `json:"uid"`
-	Nickname           string              `json:"nickname"`
-	Domain             string              `json:"domain"`
-	Realm              string              `json:"realm"`
-	Platform           string              `json:"platform"`
-	Product            string              `json:"product"`
-	EnterpriseID       string              `json:"enterpriseId"`
-	Enabled            bool                `json:"enabled"`
-	TasksEnabled       bool                `json:"tasksEnabled"`
-	Weight             int                 `json:"weight"`
-	Note               string              `json:"note"`
-	Group              string              `json:"group"`
-	DisabledModels     []string            `json:"disabledModels"`
-	Source             string              `json:"source"`
-	APIKey             bool                `json:"apiKey"`
-	CredentialMask     string              `json:"credentialMask"`
-	ProxySlot          string              `json:"proxySlot"`
-	Proxy              string              `json:"proxy"`
-	ExpiresAt          int64               `json:"expiresAt"`
-	ExpiresIn          any                 `json:"expiresIn"`
-	TokenExpired       bool                `json:"tokenExpired"`
-	NeedRelogin        bool                `json:"needRelogin"`
-	HasRefreshToken    bool                `json:"hasRefreshToken"`
-	Reason             string              `json:"reason"`
-	LastError          string              `json:"lastError"`
-	LastErrorDetail    any                 `json:"lastErrorDetail"`
-	InCooldown         bool                `json:"inCooldown"`
-	CooldownFor        any                 `json:"cooldownFor"`
-	ModelCooldowns     []ModelCooldownView `json:"modelCooldowns"`
-	ActiveConcurrent   int                 `json:"activeConcurrent"`
-	MaxConcurrent      int                 `json:"maxConcurrent"`
-	AddedAt            int64               `json:"addedAt"`
-	File               string              `json:"file"`
-	Credits            *CreditSnapshot     `json:"credits"`
-	Tier               any                 `json:"tier"`
-	LastCheckin        string              `json:"lastCheckin"`
-	LastDailyChat      string              `json:"lastDailyChat"`
-	LastActivityReport string              `json:"lastActivityReport"`
-	CanCheckin         bool                `json:"canCheckin"`
-	CanDailyChat       bool                `json:"canDailyChat"`
-	CanReportActivity  bool                `json:"canReportActivity"`
+	UID                  string              `json:"uid"`
+	Nickname             string              `json:"nickname"`
+	Domain               string              `json:"domain"`
+	Realm                string              `json:"realm"`
+	Platform             string              `json:"platform"`
+	Product              string              `json:"product"`
+	EnterpriseID         string              `json:"enterpriseId"`
+	Enabled              bool                `json:"enabled"`
+	TasksEnabled         bool                `json:"tasksEnabled"`
+	Weight               int                 `json:"weight"`
+	Note                 string              `json:"note"`
+	Group                string              `json:"group"`
+	DisabledModels       []string            `json:"disabledModels"`
+	Source               string              `json:"source"`
+	APIKey               bool                `json:"apiKey"`
+	CredentialMask       string              `json:"credentialMask"`
+	ProxySlot            string              `json:"proxySlot"`
+	Proxy                string              `json:"proxy"`
+	ExpiresAt            int64               `json:"expiresAt"`
+	ExpiresIn            any                 `json:"expiresIn"`
+	TokenExpired         bool                `json:"tokenExpired"`
+	NeedRelogin          bool                `json:"needRelogin"`
+	HasRefreshToken      bool                `json:"hasRefreshToken"`
+	Reason               string              `json:"reason"`
+	LastError            string              `json:"lastError"`
+	LastErrorDetail      any                 `json:"lastErrorDetail"`
+	InCooldown           bool                `json:"inCooldown"`
+	CooldownFor          any                 `json:"cooldownFor"`
+	ModelCooldowns       []ModelCooldownView `json:"modelCooldowns"`
+	ActiveConcurrent     int                 `json:"activeConcurrent"`
+	MaxConcurrent        int                 `json:"maxConcurrent"`
+	AddedAt              int64               `json:"addedAt"`
+	File                 string              `json:"file"`
+	Credits              *CreditSnapshot     `json:"credits"`
+	Tier                 any                 `json:"tier"`
+	ReserveCredits       int                 `json:"reserveCredits"`
+	ReserveBlocked       bool                `json:"reserveBlocked"`
+	DailyTokenLimit      int                 `json:"dailyTokenLimit"`
+	DailyTokensToday     *int64              `json:"dailyTokensToday"`
+	DailyLimitBlocked    bool                `json:"dailyLimitBlocked"`
+	DailyCreditLimit     int                 `json:"dailyCreditLimit"`
+	DailyCreditsToday    *float64            `json:"dailyCreditsToday"`
+	CreditLimitReached   bool                `json:"creditLimitReached"`
+	ModelDailyTokenLimit int                 `json:"modelDailyTokenLimit"`
+	ModelDailyTokens     map[string]int64    `json:"modelDailyTokens"`
+	LastCheckin          string              `json:"lastCheckin"`
+	LastDailyChat        string              `json:"lastDailyChat"`
+	LastActivityReport   string              `json:"lastActivityReport"`
+	CanCheckin           bool                `json:"canCheckin"`
+	CanDailyChat         bool                `json:"canDailyChat"`
+	CanReportActivity    bool                `json:"canReportActivity"`
 }
 
 // Account is one WorkBuddy account: its persisted v1 credential document,
@@ -137,6 +186,18 @@ type Account struct {
 	Weight             float64
 	Tier               string
 	ExpiringWindowDays int
+
+	// Guard limits and today's folded usage. Provider.ApplyLimits projects
+	// these from the shared settings; they are runtime-only and never written
+	// to the credential file, matching v1.
+	ReserveCredits       int
+	DailyTokenLimit      int
+	DailyTokensToday     *int64
+	DailyCreditLimit     int
+	DailyCreditsToday    *float64
+	ModelDailyTokenLimit int
+	ModelDailyTokens     map[string]int64
+	FreeModels           map[string]bool
 
 	// Models is the provider-owned per-account catalog discovered in Task 5.
 	Models []providers.Model
@@ -346,15 +407,17 @@ func (a *Account) SetCredits(snapshot *CreditSnapshot) {
 		return
 	}
 	a.mu.Lock()
+	a.setCreditsLocked(snapshot)
+	a.mu.Unlock()
+}
+
+func (a *Account) setCreditsLocked(snapshot *CreditSnapshot) {
 	a.Credits = cloneCreditSnapshot(snapshot)
-	if a.Credits != nil && a.Credits.IsPaidUser && !a.paidKnown {
+	if a.Credits != nil && a.Credits.IsPaidUser && !a.paidKnown && a.Tier == "" {
 		// Advisory fallback only while the tier is unknown; an explicit tier
 		// paid:false remains authoritative.
-		if a.Tier == "" {
-			a.Tier = "pro"
-		}
+		a.Tier = "pro"
 	}
-	a.mu.Unlock()
 }
 
 // SetModels replaces the per-account model list. Task 5 owns catalog refresh.
@@ -475,46 +538,56 @@ func (a *Account) viewAt(now time.Time) AccountView {
 	}
 
 	return AccountView{
-		UID:                uid,
-		Nickname:           nickname,
-		Domain:             a.Auth.Domain,
-		Realm:              a.Auth.Realm,
-		Platform:           a.Auth.Platform,
-		Product:            a.Auth.Product,
-		EnterpriseID:       a.Auth.EnterpriseID,
-		Enabled:            enabled,
-		TasksEnabled:       a.Auth.TasksEnabled,
-		Weight:             normalizedWeight(a.Weight),
-		Note:               note,
-		Group:              a.Group,
-		DisabledModels:     disabledModels,
-		Source:             a.Auth.Source,
-		APIKey:             a.Auth.APIKey,
-		CredentialMask:     credentialMask(a.Auth),
-		ProxySlot:          strings.TrimSpace(a.Auth.ProxySlot),
-		Proxy:              maskProxyURL(a.Auth.ProxyURL),
-		ExpiresAt:          expiryUnix,
-		ExpiresIn:          expiresIn,
-		TokenExpired:       expired,
-		NeedRelogin:        expired,
-		HasRefreshToken:    strings.TrimSpace(a.Auth.RefreshToken) != "",
-		Reason:             reason,
-		LastError:          lastError,
-		LastErrorDetail:    nil,
-		InCooldown:         cooling,
-		CooldownFor:        cooldownFor,
-		ModelCooldowns:     []ModelCooldownView{},
-		ActiveConcurrent:   a.State.ActiveConcurrent,
-		MaxConcurrent:      a.maxConcurrent,
-		AddedAt:            unixSeconds(a.Auth.AddedAt),
-		File:               file,
-		Credits:            cloneCreditSnapshot(a.Credits),
-		Tier:               tierJSONValue(a.Auth.Tier),
-		LastCheckin:        a.Auth.LastCheckin,
-		LastDailyChat:      a.Auth.LastDailyChat,
-		LastActivityReport: a.Auth.LastActivityReport,
-		CanCheckin:         !a.Auth.APIKey && a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
-		CanDailyChat:       !a.Auth.APIKey && a.Auth.Realm == realmIntl,
+		UID:                  uid,
+		Nickname:             nickname,
+		Domain:               a.Auth.Domain,
+		Realm:                a.Auth.Realm,
+		Platform:             a.Auth.Platform,
+		Product:              a.Auth.Product,
+		EnterpriseID:         a.Auth.EnterpriseID,
+		Enabled:              enabled,
+		TasksEnabled:         a.Auth.TasksEnabled,
+		Weight:               normalizedWeight(a.Weight),
+		Note:                 note,
+		Group:                a.Group,
+		DisabledModels:       disabledModels,
+		Source:               a.Auth.Source,
+		APIKey:               a.Auth.APIKey,
+		CredentialMask:       credentialMask(a.Auth),
+		ProxySlot:            strings.TrimSpace(a.Auth.ProxySlot),
+		Proxy:                maskProxyURL(a.Auth.ProxyURL),
+		ExpiresAt:            expiryUnix,
+		ExpiresIn:            expiresIn,
+		TokenExpired:         expired,
+		NeedRelogin:          expired,
+		HasRefreshToken:      strings.TrimSpace(a.Auth.RefreshToken) != "",
+		Reason:               reason,
+		LastError:            lastError,
+		LastErrorDetail:      nil,
+		InCooldown:           cooling,
+		CooldownFor:          cooldownFor,
+		ModelCooldowns:       []ModelCooldownView{},
+		ActiveConcurrent:     a.State.ActiveConcurrent,
+		MaxConcurrent:        a.maxConcurrent,
+		AddedAt:              unixSeconds(a.Auth.AddedAt),
+		File:                 file,
+		Credits:              cloneCreditSnapshot(a.Credits),
+		Tier:                 tierJSONValue(a.Auth.Tier),
+		ReserveCredits:       a.ReserveCredits,
+		ReserveBlocked:       a.reserveBlockedLocked(""),
+		DailyTokenLimit:      a.DailyTokenLimit,
+		DailyTokensToday:     cloneInt64Pointer(a.DailyTokensToday),
+		DailyLimitBlocked:    a.dailyLimitBlockedLocked(),
+		DailyCreditLimit:     a.DailyCreditLimit,
+		DailyCreditsToday:    roundedFloat64Pointer(a.DailyCreditsToday),
+		CreditLimitReached:   a.creditLimitReachedLocked(),
+		ModelDailyTokenLimit: a.ModelDailyTokenLimit,
+		ModelDailyTokens:     cloneModelTokenMap(a.ModelDailyTokens),
+		LastCheckin:          a.Auth.LastCheckin,
+		LastDailyChat:        a.Auth.LastDailyChat,
+		LastActivityReport:   a.Auth.LastActivityReport,
+		CanCheckin:           !a.Auth.APIKey && a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
+		CanDailyChat:         !a.Auth.APIKey && a.Auth.Realm == realmIntl,
 		CanReportActivity: !a.Auth.APIKey &&
 			(a.Auth.Realm == realmCN || a.Auth.Realm == realmIntl) &&
 			strings.TrimSpace(a.Auth.EnterpriseID) == "",
@@ -650,7 +723,22 @@ func cloneCreditSnapshot(snapshot *CreditSnapshot) *CreditSnapshot {
 	}
 	copied := *snapshot
 	if snapshot.Packages != nil {
-		copied.Packages = append([]CreditPackage(nil), snapshot.Packages...)
+		copied.Packages = make([]CreditPackage, len(snapshot.Packages))
+		for i, pkg := range snapshot.Packages {
+			if pkg.DaysLeft != nil {
+				value := *pkg.DaysLeft
+				pkg.DaysLeft = &value
+			}
+			copied.Packages[i] = pkg
+		}
+	}
+	if snapshot.Checkin != nil {
+		value := *snapshot.Checkin
+		copied.Checkin = &value
+	}
+	if snapshot.EarliestExpiring != nil {
+		value := *snapshot.EarliestExpiring
+		copied.EarliestExpiring = &value
 	}
 	return &copied
 }

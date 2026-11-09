@@ -92,6 +92,16 @@ type Provider struct {
 	catalogNow         func() time.Time
 	catalogTimeout     time.Duration
 	catalogCooldown    time.Duration
+
+	// creditsDoer, creditsBillingBaseURL, creditsCheckinBaseURL,
+	// creditsTimeout, and creditsNow are same-package test seams for the
+	// billing sweep. Their zero values use the provider transport, the realm's
+	// billing/chat endpoints, 15s, and time.Now respectively.
+	creditsDoer           ContextHTTPDoer
+	creditsBillingBaseURL string
+	creditsCheckinBaseURL string
+	creditsTimeout        time.Duration
+	creditsNow            func() time.Time
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is

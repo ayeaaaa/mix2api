@@ -80,6 +80,10 @@ type Pool struct {
 	remainingWeights   map[string]int
 	proOnly            map[string]bool
 	guardCheck         func(*Account, string) bool
+	freeModels         map[string]bool
+	limitsApplied      bool
+	limitValues        map[string]any
+	usageValues        map[string]any
 	expiringWindowDays int
 	loadErr            error
 
@@ -142,15 +146,23 @@ func newPool(provider *Provider) (*Pool, error) {
 		now:              time.Now,
 		remainingWeights: make(map[string]int),
 		proOnly:          make(map[string]bool),
+		freeModels:       staticFreeModelSet(realm),
 		weightStates:     make(map[string]map[string]int),
 		affinity:         newSessionAffinity(affinityTTL, maxAffinityKeys, affinityHistory),
 	}
+	p.guardCheck = defaultGuardCheck
 	p.affinity.now = p.nowTime
+	settings := map[string]any{}
 	if raw, err := p.loadSettings(); err == nil {
+		settings = raw
 		p.slots = transport.SlotsFromSettings(raw)
 	} else {
 		p.loadErr = err
 	}
+	// v1 reads the shared limits at startup. The expiring window is the one
+	// non-zero default (7 days); an explicit per-realm override wins. Applying
+	// before loading accounts also gives newAccount the stored projection.
+	p.ApplyLimits(limitsFromSettings(settings), nil)
 
 	auths, err := LoadAccounts(dir)
 	if err != nil {
@@ -233,6 +245,7 @@ func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 		Weight:             float64(auth.Weight),
 		Tier:               tier,
 		ExpiringWindowDays: p.expiringWindow(),
+		FreeModels:         p.freeModelSnapshot(),
 		Path:               auth.Path,
 		pool:               p,
 		maxConcurrent:      maxConcurrent,
@@ -243,6 +256,7 @@ func (p *Pool) newAccount(auth Auth, maxConcurrent int) *Account {
 		account.Weight = minWeight
 	}
 	account.Auth.ProxyURL = p.resolveProxySlot(auth.ProxySlot, auth.Extra)
+	p.applyStoredLimits(account)
 	return account
 }
 
@@ -822,6 +836,15 @@ func (p *Pool) expiringWindow() int {
 	return p.expiringWindowDays
 }
 
+func (p *Pool) freeModelSnapshot() map[string]bool {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return cloneBoolMap(p.freeModels)
+}
+
 func remainingWeightMap(table map[string]int) map[string]map[string]int {
 	out := make(map[string]map[string]int)
 	for key, weight := range table {
@@ -1131,16 +1154,20 @@ func (p *Pool) SetDisabledModels(uid string, models []string) error {
 // scheduling mirror and PRO flag are refreshed from the stored value.
 func (p *Pool) SetTier(uid string, tier any) error {
 	return p.mutateAccount(uid, func(account *Account) {
-		raw := rawTierValue(tier)
-		account.Auth.Tier = raw
-		label, paid, known := tierLabel(raw)
-		if !known && account.Credits != nil && account.Credits.IsPaidUser {
-			label, paid = "pro", true
-		}
-		account.Tier = label
-		account.paidUser = paid
-		account.paidKnown = known
+		applyTierLocked(account, tier)
 	})
+}
+
+func applyTierLocked(account *Account, tier any) {
+	raw := rawTierValue(tier)
+	account.Auth.Tier = raw
+	label, paid, known := tierLabel(raw)
+	if !known && account.Credits != nil && account.Credits.IsPaidUser {
+		label, paid = "pro", true
+	}
+	account.Tier = label
+	account.paidUser = paid
+	account.paidKnown = known
 }
 
 func rawTierValue(tier any) json.RawMessage {
@@ -1279,9 +1306,9 @@ func resolveProxyForSlots(slots transport.Slots, slotID string, extra map[string
 	return legacyProxy(extra)
 }
 
-// ApplyLimits is reserved for Task 6's reserve-credit, daily-token, and
-// daily-credit guards. This slice has no shared limit projection.
-func (p *Pool) ApplyLimits(values, usage map[string]any) {}
+// ApplyLimits projects the shared guard values and today's usage onto every
+// account. The implementation lives in credits.go with the rest of Task 6's
+// credit/guard logic.
 
 // Add imports or replaces one account in this realm's pool. Re-import keeps
 // the operator's stable choices (manual enable state, tasks, note, group,
