@@ -217,7 +217,9 @@ func (p *Provider) GrowthSnapshot(_ context.Context, uid string) (GrowthResult, 
 			if summary.StreakDays == 0 && snapshot.StreakDays != 0 {
 				summary.StreakDays = snapshot.StreakDays
 			}
-			result.Tasks = snapshot.Tasks
+			if snapshot.Tasks != nil {
+				result.Tasks = snapshot.Tasks
+			}
 			result.Summary = summary
 			result.StreakDays = snapshot.StreakDays
 			if result.StreakDays == 0 {

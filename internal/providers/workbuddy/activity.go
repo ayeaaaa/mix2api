@@ -17,14 +17,20 @@ const (
 	activityHistoryFile  = "activity_history.jsonl"
 	activityDefaultLimit = 100
 	activityMaxLimit     = 1000
+	activityMaxRecords   = 5000
+	activityMaxAgeDays   = 90
+	activityCompactBytes = 2_000_000
 )
 
 var activityLogMu sync.Mutex
 
 var (
 	activityBearerPattern   = regexp.MustCompile(`(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
-	activityKeyValuePattern = regexp.MustCompile(`(?i)\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token)\b\s*[:=]\s*\S+`)
+	activityKeyValuePattern = regexp.MustCompile(`(?i)\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|authorization|cookie|set-cookie|password|secret|token)\b\s*[:=]\s*\S+`)
 	activityJWTPattern      = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b`)
+	activitySKPattern       = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
+	activityHexPattern      = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+	activityBase64Pattern   = regexp.MustCompile(`\b[A-Za-z0-9+/]{40,}={0,2}\b`)
 )
 
 // safeActivityMessage applies the read-side projection's defensive redaction.
@@ -32,10 +38,32 @@ var (
 // inserted by an older build, a manual edit, or another writer.
 func safeActivityMessage(text string) string {
 	line := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-	line = activityBearerPattern.ReplaceAllString(line, "[redacted]")
-	line = activityKeyValuePattern.ReplaceAllString(line, "[redacted]")
-	line = activityJWTPattern.ReplaceAllString(line, "[redacted]")
+	for _, pattern := range []*regexp.Regexp{
+		activityBearerPattern, activityKeyValuePattern, activityJWTPattern,
+		activitySKPattern, activityHexPattern, activityBase64Pattern,
+	} {
+		line = pattern.ReplaceAllString(line, "[redacted]")
+	}
 	return truncateText(line, 200)
+}
+
+func projectActivityEvent(row ActivityEvent) ActivityEvent {
+	row.TS = truncateText(strings.TrimSpace(row.TS), 40)
+	row.UID = truncateText(strings.TrimSpace(row.UID), 80)
+	row.Nickname = truncateText(strings.TrimSpace(row.Nickname), 120)
+	if row.Realm != realmIntl && row.Realm != realmCN && row.Realm != "raccoon" {
+		row.Realm = ""
+	}
+	if row.Task != taskCheckinTask && row.Task != taskDailyChatTask {
+		row.Task = ""
+	}
+	switch row.Trigger {
+	case taskTriggerManual, taskTriggerScheduler, "account_add", "account_import":
+	default:
+		row.Trigger = "unknown"
+	}
+	row.Message = safeActivityMessage(row.Message)
+	return row
 }
 
 // SetActivityPath overrides the activity_history.jsonl path (by default it is
@@ -75,7 +103,8 @@ func (p *Provider) recordActivity(event *ActivityEvent) {
 	if path == "" {
 		return
 	}
-	data, err := json.Marshal(event)
+	projected := projectActivityEvent(*event)
+	data, err := json.Marshal(projected)
 	if err != nil {
 		return
 	}
@@ -90,6 +119,76 @@ func (p *Provider) recordActivity(event *ActivityEvent) {
 	}
 	_, _ = file.Write(append(data, '\n'))
 	_ = file.Close()
+	if info, err := os.Stat(path); err == nil && info.Size() > activityCompactBytes {
+		rows := readActivityRowsLocked(path)
+		rows, changed := retainedActivityRows(rows, time.Now())
+		if changed {
+			writeActivityRowsLocked(path, rows)
+		}
+	}
+}
+
+func readActivityRowsLocked(path string) []ActivityEvent {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	rows := make([]ActivityEvent, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row ActivityEvent
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		rows = append(rows, projectActivityEvent(row))
+	}
+	return rows
+}
+
+func retainedActivityRows(rows []ActivityEvent, now time.Time) ([]ActivityEvent, bool) {
+	cutoff := now.Add(-activityMaxAgeDays * 24 * time.Hour)
+	kept := make([]ActivityEvent, 0, len(rows))
+	changed := false
+	for _, row := range rows {
+		stamp, err := time.Parse(time.RFC3339, row.TS)
+		if err == nil && stamp.Before(cutoff) {
+			changed = true
+			continue
+		}
+		kept = append(kept, row)
+	}
+	if len(kept) > activityMaxRecords {
+		kept = kept[len(kept)-activityMaxRecords:]
+		changed = true
+	}
+	return kept, changed
+}
+
+func writeActivityRowsLocked(path string, rows []ActivityEvent) {
+	tmp := path + ".tmp"
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		data, err := json.Marshal(row)
+		if err != nil {
+			continue
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			_ = file.Close()
+			_ = os.Remove(tmp)
+			return
+		}
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (p *Provider) handleActivityHistory(w http.ResponseWriter, r *http.Request) {
@@ -150,21 +249,13 @@ func (p *Provider) queryActivity(query map[string][]string) (map[string]any, err
 	path := p.activityHistoryPath()
 	if path != "" {
 		activityLogMu.Lock()
-		data, readErr := os.ReadFile(path)
-		activityLogMu.Unlock()
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return nil, errors.New("activity history is unreadable")
+		allRows := readActivityRowsLocked(path)
+		retained, changed := retainedActivityRows(allRows, time.Now())
+		if changed {
+			writeActivityRowsLocked(path, retained)
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var row ActivityEvent
-			if err := json.Unmarshal([]byte(line), &row); err != nil {
-				continue
-			}
-			row.Message = safeActivityMessage(row.Message)
+		activityLogMu.Unlock()
+		for _, row := range retained {
 			if uid != "" && row.UID != uid {
 				continue
 			}

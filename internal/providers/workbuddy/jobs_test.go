@@ -3,8 +3,11 @@ package workbuddy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +134,7 @@ func TestJobsRegistrationTwinOwnershipAndNames(t *testing.T) {
 	names := []string{
 		"workbuddy-checkin",
 		"workbuddy-daily-activity",
+		"workbuddy-report-activity",
 		"workbuddy-growth",
 		"workbuddy-cat-travel",
 		"workbuddy-streak-bonus",
@@ -330,6 +334,95 @@ func TestJobsDailyActivityDisabledMasterSwitch(t *testing.T) {
 	}
 	if report.Ran || report.Checked != 0 {
 		t.Fatalf("daily job ignored the master switch: %+v", report)
+	}
+}
+
+func TestJobsReportActivityCN(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-report", true, true, false)
+	f.addTaskAccount(t, "cn-report-restricted", true, true, true)
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case "/v2/report":
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok"}
+		case tasksGrowthStreakPath, tasksGrowthV2StreakPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"streak": map[string]any{"days": 3},
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+	job := jobsByName(t, f.intl)["workbuddy-report-activity"]
+	report, err := job.RunForce(context.Background())
+	if err != nil {
+		t.Fatalf("report job: %v", err)
+	}
+	if report.Name != "workbuddy-report-activity" || report.Succeeded != 1 || report.Checked != 2 || report.Skipped != 1 {
+		t.Fatalf("report job result = %+v", report)
+	}
+	if got := f.fake.count(http.MethodPost, "/v2/report"); got != 1 {
+		t.Fatalf("activity report POSTs = %d, want 1", got)
+	}
+}
+
+func TestJobsPanicContained(t *testing.T) {
+	f := newJobsFixture(t)
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+	f.intl.jobsNow = func() time.Time { panic("job boom") }
+	report, err := job.RunForce(context.Background())
+	if err == nil {
+		t.Fatal("panicking job returned nil error")
+	}
+	if report.Name != "workbuddy-checkin" {
+		t.Fatalf("panic report = %+v", report)
+	}
+}
+
+func TestJobsRunLockAndSchedulerPayload(t *testing.T) {
+	f := newJobsFixture(t)
+	f.intl.schedulerRunMu.Lock()
+	_, err := f.intl.RunJobs(context.Background(), "workbuddy-checkin", true)
+	f.intl.schedulerRunMu.Unlock()
+	if !errors.Is(err, errSchedulerBusy) {
+		t.Fatalf("RunJobs during a cycle err = %v, want busy", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "model_windows.json"), []byte(`{"windows":[{"uid":"uid-window","model":"m1","reset_at":4102444800,"attempts":2,"last_result":"ok","cap":true,"cap_at":1}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "quota_scan.json"), []byte(`{"scans":[{"uid":"uid-scan","model":"m2","next_at":4102444800,"last_result":"ok","attempts":1}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := f.intl.SchedulerStatus()
+	for _, key := range []string{
+		"enabled", "mode", "mode_cn", "mode_intl", "last_run_time",
+		"next_run_time", "windows", "quota_scans", "daily_chat", "logs", "jobs",
+	} {
+		if _, exists := status[key]; !exists {
+			t.Fatalf("scheduler payload missing %q: %#v", key, status)
+		}
+	}
+	if !strings.Contains(wbRouteText(status["mode"]), "签到") || !strings.Contains(wbRouteText(status["mode_cn"]), "Token保活") {
+		t.Fatalf("scheduler modes = %#v", status)
+	}
+	if windows, ok := status["windows"].([]map[string]any); !ok || len(windows) != 1 || wbRouteText(windows[0]["uid"]) != "uid-window" {
+		t.Fatalf("scheduler windows = %#v", status["windows"])
+	}
+	if scans, ok := status["quota_scans"].([]map[string]any); !ok || len(scans) != 1 || wbRouteText(scans[0]["uid"]) != "uid-scan" {
+		t.Fatalf("scheduler quota scans = %#v", status["quota_scans"])
+	}
+	daily := status["daily_chat"].(map[string]any)
+	for _, key := range []string{"times", "random", "done_slots", "next_slot", "live", "budget_s", "abandoned"} {
+		if _, exists := daily[key]; !exists {
+			t.Fatalf("daily_chat missing %q: %#v", key, daily)
+		}
+	}
+	f.setNow(time.Date(2026, 11, 9, 9, 1, 0, 0, time.Local))
+	if _, err := f.intl.RunJobs(context.Background(), "workbuddy-checkin", true); err != nil {
+		t.Fatalf("RunJobs: %v", err)
+	}
+	if status := f.intl.SchedulerStatus(); status["last_run_time"] == "尚未运行" {
+		t.Fatalf("scheduler last_run_time not updated: %#v", status)
 	}
 }
 

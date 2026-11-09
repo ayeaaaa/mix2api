@@ -1,6 +1,8 @@
 package workbuddy
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,6 +141,14 @@ type AccountView struct {
 	LastErrorDetail      any                 `json:"lastErrorDetail"`
 	InCooldown           bool                `json:"inCooldown"`
 	CooldownFor          any                 `json:"cooldownFor"`
+	RestrictedFor        any                 `json:"restrictedFor"`
+	SoftStreak           int                 `json:"softStreak"`
+	UnscopedStreak       int                 `json:"unscopedStreak"`
+	BreakerFor           any                 `json:"breakerFor"`
+	DegradeFor           any                 `json:"degradeFor"`
+	Fails                int                 `json:"fails"`
+	FailWindow           int                 `json:"failWindow"`
+	LastFailFor          any                 `json:"lastFailFor"`
 	ModelCooldowns       []ModelCooldownView `json:"modelCooldowns"`
 	ActiveConcurrent     int                 `json:"activeConcurrent"`
 	MaxConcurrent        int                 `json:"maxConcurrent"`
@@ -162,6 +172,8 @@ type AccountView struct {
 	CanCheckin           bool                `json:"canCheckin"`
 	CanDailyChat         bool                `json:"canDailyChat"`
 	CanReportActivity    bool                `json:"canReportActivity"`
+	MachineID            string              `json:"machineId"`
+	SessionID            string              `json:"sessionId"`
 }
 
 // Account is one WorkBuddy account: its persisted v1 credential document,
@@ -550,6 +562,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 	if nickname == "" {
 		nickname = shortUID(uid)
 	}
+	nickname = truncateText(nickname, 120)
 	secretsToRedact := accountSecretValuesLocked(a)
 	reason := redactAccountText(a.State.Reason, secretsToRedact)
 	if reason == "" {
@@ -624,6 +637,13 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		return modelCooldowns[i].ExpiresAt < modelCooldowns[j].ExpiresAt
 	})
 
+	var restrictedFor any
+	if until := taskRestrictedUntil(a.Auth); until > float64(now.Unix()) {
+		if seconds := int(math.Round(until - float64(now.Unix()))); seconds > 0 {
+			restrictedFor = seconds
+		}
+	}
+
 	return AccountView{
 		UID:                  uid,
 		Nickname:             nickname,
@@ -653,6 +673,14 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		LastErrorDetail:      nil,
 		InCooldown:           cooling,
 		CooldownFor:          cooldownFor,
+		RestrictedFor:        restrictedFor,
+		SoftStreak:           0,
+		UnscopedStreak:       0,
+		BreakerFor:           nil,
+		DegradeFor:           nil,
+		Fails:                a.State.ErrCount,
+		FailWindow:           600,
+		LastFailFor:          nil,
 		ModelCooldowns:       modelCooldowns,
 		ActiveConcurrent:     a.State.ActiveConcurrent,
 		MaxConcurrent:        a.maxConcurrent,
@@ -678,7 +706,24 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		CanReportActivity: !a.Auth.APIKey &&
 			(a.Auth.Realm == realmCN || a.Auth.Realm == realmIntl) &&
 			strings.TrimSpace(a.Auth.EnterpriseID) == "",
+		MachineID: deriveViewID(uid, "machine"),
+		SessionID: deriveViewID(uid, "session"),
 	}
+}
+
+// deriveViewID mirrors v1's per-account UUID-shaped fingerprint ids. It is a
+// display/diagnostic field; routing never depends on it.
+func deriveViewID(uid, salt string) string {
+	if strings.TrimSpace(uid) == "" {
+		uid = "anonymous"
+	}
+	sum := md5.Sum([]byte(salt + ":" + uid))
+	h := hex.EncodeToString(sum[:])
+	if len(h) != 32 {
+		return ""
+	}
+	h = h[:12] + "4" + h[13:16] + "a" + h[17:]
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 func shortUID(uid string) string {

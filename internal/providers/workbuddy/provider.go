@@ -166,6 +166,11 @@ type Provider struct {
 	jobsNow          func() time.Time
 	schedulerMu      sync.Mutex
 	schedulerEnabled *bool
+	schedulerLastRun time.Time
+
+	// schedulerRunMu serializes manual full-sweep triggers. Per-job state is
+	// still idempotent, but v1 refuses overlapping panel triggers outright.
+	schedulerRunMu sync.Mutex
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is

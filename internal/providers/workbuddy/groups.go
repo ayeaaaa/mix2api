@@ -79,6 +79,21 @@ func (p *Pool) SetGroup(uid, group string) error {
 	})
 }
 
+// SetProduct switches one account's outbound identity. It reports whether the
+// value actually changed, matching v1's set_product() contract.
+func (p *Pool) SetProduct(uid, product string) (bool, error) {
+	changed := false
+	target := normalizeProduct(product)
+	err := p.mutateAccount(uid, func(account *Account) {
+		if account.Auth.Product == target {
+			return
+		}
+		account.Auth.Product = target
+		changed = true
+	})
+	return changed, err
+}
+
 // SetGroupEnabled enables or disables exactly the accounts carrying a
 // non-empty group, including task participation. It returns the changed UIDs
 // in account order. An empty group never matches every account.

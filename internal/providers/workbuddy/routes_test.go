@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,6 +243,7 @@ func TestRoutesWorkBuddyPanelMetadataAndTwinOwnership(t *testing.T) {
 		"GET /accounts/export",
 		"GET /accounts/credits",
 		"POST /accounts/credits",
+		"POST /accounts/credits/fetch",
 		"GET /accounts/credits/detail",
 		"GET /accounts/credits/grants",
 		"POST /accounts/import",
@@ -269,6 +271,9 @@ func TestRoutesWorkBuddyPanelMetadataAndTwinOwnership(t *testing.T) {
 		"POST /catalog/refresh",
 		"GET /scheduler",
 		"GET /settings",
+		"POST /settings/restriction/reset",
+		"GET /realm",
+		"POST /realm",
 	}
 	for _, key := range required {
 		if !seen[key] {
@@ -299,6 +304,14 @@ func TestRoutesWorkBuddyAccountsRealmAndNoTokenLeak(t *testing.T) {
 	rows := wbRouteObjects(t, body["accounts"])
 	if len(rows) != 1 || wbRouteText(rows[0]["uid"]) != "uid-intl" {
 		t.Fatalf("default intl accounts = %#v", rows)
+	}
+	for _, key := range []string{"restrictedFor", "softStreak", "unscopedStreak", "breakerFor", "degradeFor", "fails", "failWindow", "lastFailFor", "machineId", "sessionId"} {
+		if _, exists := rows[0][key]; !exists {
+			t.Fatalf("account view missing %q: %#v", key, rows[0])
+		}
+	}
+	if len(wbRouteText(rows[0]["machineId"])) != 36 || len(wbRouteText(rows[0]["sessionId"])) != 36 {
+		t.Fatalf("account fingerprint ids = %q/%q", rows[0]["machineId"], rows[0]["sessionId"])
 	}
 	assertWBNoSecret(t, "accounts", rec.Body.String(), "refresh-uid-intl", "refresh-uid-cn")
 
@@ -575,6 +588,390 @@ func TestRoutesWorkBuddyCheckinTasksAndActivity(t *testing.T) {
 	}
 }
 
+func TestRoutesAccountsTestPinnedAndMulti(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "uid-probe-a", realmIntl, nil)
+	wbRouteAddAccount(t, f.intl, "uid-probe-b", realmIntl, nil)
+	wbRouteAddAccount(t, f.cn, "uid-probe-cn", realmCN, nil)
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Header.Get("X-User-Id")
+		mu.Lock()
+		seen[uid]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	serverURL := server.URL
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		provider.chatBaseURL = serverURL
+		provider.chatDoer = catalogDoerFunc(func(ctx context.Context, req *http.Request, proxyURL string) (*http.Response, error) {
+			return server.Client().Do(req)
+		})
+	}
+
+	rec := f.do(http.MethodPost, "/accounts/test", map[string]any{"uid": "uid-probe-a"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("single probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	row := decodeWBRoutesJSON(t, rec)
+	if row["ok"] != true || wbRouteText(row["reply"]) != "hello world" ||
+		row["status"].(json.Number).String() != "200" || row["network"] != false {
+		t.Fatalf("single probe row = %#v", row)
+	}
+	mu.Lock()
+	if seen["uid-probe-a"] != 1 || seen["uid-probe-b"] != 0 || seen["uid-probe-cn"] != 0 {
+		t.Fatalf("single probe requests = %#v, want only uid-probe-a", seen)
+	}
+	mu.Unlock()
+
+	rec = f.do(http.MethodPost, "/accounts/test", map[string]any{"realm": "intl"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multi probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeWBRoutesJSON(t, rec)
+	rows := wbRouteObjects(t, body["results"])
+	if len(rows) != 2 {
+		t.Fatalf("multi probe rows = %#v", rows)
+	}
+	summary := body["summary"].(map[string]any)
+	if summary["tested"].(json.Number).String() != "2" || summary["passed"].(json.Number).String() != "2" ||
+		summary["failed"].(json.Number).String() != "0" || summary["networkDown"] != false {
+		t.Fatalf("multi probe summary = %#v", summary)
+	}
+	network := body["network"].(map[string]any)
+	if _, ok := network["ok"]; !ok {
+		t.Fatalf("multi probe network = %#v", network)
+	}
+	mu.Lock()
+	if seen["uid-probe-a"] != 2 || seen["uid-probe-b"] != 1 || seen["uid-probe-cn"] != 0 {
+		t.Fatalf("multi probe requests = %#v", seen)
+	}
+	mu.Unlock()
+}
+
+func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "uid-alias", realmIntl, nil)
+
+	rec := f.do(http.MethodPost, "/accounts/credits/fetch", map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credits/fetch status=%d body=%s", rec.Code, rec.Body)
+	}
+	if _, ok := decodeWBRoutesJSON(t, rec)["busy"]; !ok {
+		t.Fatalf("credits/fetch missing busy: %s", rec.Body)
+	}
+
+	rec = f.do(http.MethodGet, "/realm", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("realm get status=%d body=%s", rec.Code, rec.Body)
+	}
+	realm := decodeWBRoutesJSON(t, rec)
+	if wbRouteText(realm["current"]) != realmIntl || len(realm["options"].([]any)) != 2 {
+		t.Fatalf("realm get = %#v", realm)
+	}
+	rec = f.do(http.MethodPost, "/realm", map[string]any{"realm": "cn"})
+	if rec.Code != http.StatusOK || decodeWBRoutesJSON(t, rec)["current"] != realmCN {
+		t.Fatalf("realm post = %s", rec.Body)
+	}
+	if got := f.intl.activeRealm(); got != realmCN {
+		t.Fatalf("active realm = %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(f.dir, "active_realm.json"))
+	if err != nil || !strings.Contains(string(data), `"realm": "cn"`) {
+		t.Fatalf("active_realm.json = %q, err=%v", data, err)
+	}
+	rec = f.do(http.MethodPost, "/realm", map[string]any{"realm": "bogus"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad realm status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	rec = f.do(http.MethodPost, "/settings/restriction/reset", map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restriction reset status=%d body=%s", rec.Code, rec.Body)
+	}
+	reset := decodeWBRoutesJSON(t, rec)
+	if reset["ok"] != true {
+		t.Fatalf("restriction reset = %#v", reset)
+	}
+}
+
+func TestRoutesProductSemantics(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	account := wbRouteAddAccount(t, f.intl, "uid-product", realmIntl, nil)
+	account.mu.Lock()
+	account.State.CoolUntil = time.Now().Add(time.Hour)
+	account.State.ErrCount = 2
+	account.State.LastError = "rate limited"
+	if account.Auth.Extra == nil {
+		account.Auth.Extra = map[string]json.RawMessage{}
+	}
+	account.Auth.Extra["modelCaps"] = json.RawMessage(`{"free-model":{"at":1,"reset":9999999999}}`)
+	account.mu.Unlock()
+	cnAccount := wbRouteAddAccount(t, f.cn, "uid-product-cn", realmCN, nil)
+
+	rec := f.do(http.MethodPost, "/accounts/product", map[string]any{"uid": "uid-product", "product": "cli"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("product status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeWBRoutesJSON(t, rec)
+	changed := body["changed"].([]any)
+	if len(changed) != 1 || wbRouteText(changed[0]) != "uid-prod" {
+		t.Fatalf("product changed = %#v", changed)
+	}
+	account.mu.RLock()
+	product := account.Auth.Product
+	cooling := account.State.CoolUntil
+	fails := account.State.ErrCount
+	lastError := account.State.LastError
+	caps := string(account.Auth.Extra["modelCaps"])
+	account.mu.RUnlock()
+	if product != productCLI || !cooling.IsZero() || fails != 0 || lastError != "" {
+		t.Fatalf("product state product=%q cooling=%v fails=%d lastError=%q", product, cooling, fails, lastError)
+	}
+	if !strings.Contains(caps, "free-model") {
+		t.Fatalf("product cleared modelCaps: %q", caps)
+	}
+
+	rec = f.do(http.MethodPost, "/accounts/product", map[string]any{"uid": "uid-product", "product": "cli"})
+	if rec.Code != http.StatusOK || len(decodeWBRoutesJSON(t, rec)["changed"].([]any)) != 0 {
+		t.Fatalf("same product should not report a change: %s", rec.Body)
+	}
+	rec = f.do(http.MethodPost, "/accounts/product", map[string]any{"uid": "missing", "product": "cli"})
+	if rec.Code != http.StatusOK || len(decodeWBRoutesJSON(t, rec)["changed"].([]any)) != 0 {
+		t.Fatalf("unknown product uid = %d %s", rec.Code, rec.Body)
+	}
+	rec = f.do(http.MethodPost, "/accounts/product", map[string]any{"uid": "uid-product-cn", "product": "vscode"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cn product status=%d body=%s", rec.Code, rec.Body)
+	}
+	cnAccount.mu.RLock()
+	cnProduct := cnAccount.Auth.Product
+	cnAccount.mu.RUnlock()
+	if cnProduct != productVSCode {
+		t.Fatalf("cn product = %q by uid", cnProduct)
+	}
+}
+
+func TestRoutesExportMasksNamesAndStripsExtras(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	account := wbRouteAddAccount(t, f.intl, "uid-export", realmIntl, nil)
+	account.mu.Lock()
+	account.Auth.Nickname = "老王 13812345678"
+	if account.Auth.Extra == nil {
+		account.Auth.Extra = map[string]json.RawMessage{}
+	}
+	account.Auth.Extra["proxy"] = json.RawMessage(`"http://user:pass@proxy.local:8080"`)
+	account.Auth.Extra["deviceToken"] = json.RawMessage(`"device-secret"`)
+	account.Auth.Extra["nestedSecrets"] = json.RawMessage(`{"accessToken":"nested-hidden"}`)
+	account.mu.Unlock()
+
+	rec := f.do(http.MethodGet, "/accounts/export", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", rec.Code, rec.Body)
+	}
+	if cache := rec.Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("export Cache-Control = %q", cache)
+	}
+	rows := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	if wbRouteText(rows[0]["nickname"]) != "老王 138****5678" {
+		t.Fatalf("export nickname = %q", rows[0]["nickname"])
+	}
+	if wbRouteText(rows[0]["accessToken"]) == "" {
+		t.Fatal("export default should retain credentials")
+	}
+
+	rec = f.do(http.MethodGet, "/accounts/export?secrets=0", nil)
+	rows = wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	for _, key := range []string{"accessToken", "refreshToken", "proxy", "deviceToken"} {
+		if _, present := rows[0][key]; present {
+			t.Fatalf("secrets=0 export retained %q: %#v", key, rows[0])
+		}
+	}
+	if strings.Contains(rec.Body.String(), "nested-hidden") {
+		t.Fatalf("secrets=0 export retained a nested credential: %s", rec.Body)
+	}
+	rec = f.do(http.MethodGet, "/accounts", nil)
+	rows = wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	if wbRouteText(rows[0]["nickname"]) != "老王 138****5678" {
+		t.Fatalf("panel nickname = %q", rows[0]["nickname"])
+	}
+}
+
+func TestRoutesGrowthSnapshotInvalidatedAfterClaim(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	account := wbRouteAddAccount(t, f.cn, "uid-claim", realmCN, map[string]any{
+		"growthTasks": map[string]any{"tasks": []any{}, "summary": map[string]any{"energy": 1}},
+	})
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/claim") {
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"credit": 25}}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	}
+	rec := f.do(http.MethodPost, "/tasks/claim", map[string]any{"uid": "uid-claim", "code": "create_canvas"})
+	if rec.Code != http.StatusOK || decodeWBRoutesJSON(t, rec)["ok"] != true {
+		t.Fatalf("claim = %d %s", rec.Code, rec.Body)
+	}
+	account.mu.RLock()
+	_, cached := account.Auth.Extra["growthTasks"]
+	_, claims := account.Auth.Extra["growthClaims"]
+	account.mu.RUnlock()
+	if cached {
+		t.Fatal("claim left the stale growthTasks snapshot")
+	}
+	if !claims {
+		t.Fatal("claim did not persist growthClaims")
+	}
+}
+
+func TestRoutesActivityRetentionRedactionAndCaps(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	now := time.Now()
+	path := f.intl.activityHistoryPath()
+	var body strings.Builder
+	for i := 0; i < activityMaxRecords+5; i++ {
+		row := ActivityEvent{
+			TS: now.Format(time.RFC3339), UID: strings.Repeat("u", 120), Nickname: "13812345678",
+			Realm: realmCN, Task: taskCheckinTask, Trigger: taskTriggerScheduler, OK: true,
+			Message: "token=supersecret Bearer abcdefghijk sk-abcdefghijklmnop 0123456789abcdef0123456789abcdef",
+		}
+		raw, _ := json.Marshal(row)
+		body.Write(raw)
+		body.WriteByte('\n')
+	}
+	old := ActivityEvent{TS: now.Add(-100 * 24 * time.Hour).Format(time.RFC3339), UID: "old", Realm: realmCN, Task: taskCheckinTask, Trigger: taskTriggerScheduler, OK: true}
+	raw, _ := json.Marshal(old)
+	body.Write(raw)
+	body.WriteByte('\n')
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.do(http.MethodGet, "/activity/history?range=all&limit=1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activity status=%d body=%s", rec.Code, rec.Body)
+	}
+	result := decodeWBRoutesJSON(t, rec)
+	rows := wbRouteObjects(t, result["rows"])
+	if len(rows) != 1 {
+		t.Fatalf("activity rows = %#v", rows)
+	}
+	if len([]rune(wbRouteText(rows[0]["uid"]))) != 80 {
+		t.Fatalf("activity uid cap = %d", len([]rune(wbRouteText(rows[0]["uid"]))))
+	}
+	message := wbRouteText(rows[0]["message"])
+	for _, secret := range []string{"supersecret", "abcdefghijk", "sk-abcdefghijklmnop", "0123456789abcdef"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("activity retained secret %q: %s", secret, message)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > activityMaxRecords {
+		t.Fatalf("activity file retained %d rows, want <= %d", len(lines), activityMaxRecords)
+	}
+	if strings.Contains(string(data), `"uid":"old"`) || strings.Contains(string(data), `"uid": "old"`) {
+		t.Fatal("activity retention kept the >90d row")
+	}
+}
+
+func TestRoutesDailyChatRunsWebLeg(t *testing.T) {
+	fake, provider, _, _ := setupDailyWebFake(t, realmIntl, nil)
+	mux := http.NewServeMux()
+	api.RegisterProviderRoutes(mux, provider)
+	request := httptest.NewRequest(http.MethodPost, "/accounts/daily-chat", strings.NewReader(`{"uid":"web-daily"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("daily-chat status=%d body=%s", recorder.Code, recorder.Body)
+	}
+	body := decodeWBRoutesJSON(t, recorder)
+	rows := wbRouteObjects(t, body["results"])
+	if len(rows) != 1 || rows[0]["ok"] != true {
+		t.Fatalf("daily-chat rows = %#v", rows)
+	}
+	web, _ := rows[0]["web"].(map[string]any)
+	if web == nil || wbRouteText(web["conversation"]) == "" || web["ok"] != true {
+		t.Fatalf("daily-chat web leg = %#v", rows[0]["web"])
+	}
+	_ = fake
+}
+
+func TestRoutesCreditsBusyAggregate(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "uid-busy-a", realmIntl, nil)
+	wbRouteAddAccount(t, f.intl, "uid-busy-b", realmIntl, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == creditsSummaryPath {
+			once.Do(func() { close(started) })
+			<-release
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"remain": 10, "used": 0, "size": 10, "packages": []any{},
+			}}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	}
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- f.do(http.MethodPost, "/accounts/credits", map[string]any{"realm": "intl"})
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first credits sweep never reached upstream")
+	}
+	second := f.do(http.MethodPost, "/accounts/credits", map[string]any{"realm": "intl"})
+	if second.Code != http.StatusOK {
+		t.Fatalf("busy sweep status=%d body=%s", second.Code, second.Body)
+	}
+	if decodeWBRoutesJSON(t, second)["busy"] != true {
+		t.Fatalf("second sweep = %s, want busy", second.Body)
+	}
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first credits sweep did not finish")
+	}
+}
+
+func TestRoutesDailyChatSkipsWebOnDesktopRestriction(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskAccount(t, dir, "intl-restricted", realmIntl, nil)
+	fake, server := newTaskTestUpstream(t, func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		if r.URL.Path == chatPath {
+			return http.StatusForbidden, map[string]any{
+				"code": 11140, "msg": "账号存在异常行为，已被限制使用",
+			}
+		}
+		return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+	})
+	provider, pool := setupTaskProvider(t, realmIntl, dir, server.URL)
+	account := accountByUID(t, pool, "intl-restricted")
+	result, err := provider.runDailyActivity(context.Background(), account, taskTriggerManual)
+	if err != nil {
+		t.Fatalf("runDailyActivity: %v", err)
+	}
+	if !result.Restricted || result.OK || result.Web != nil {
+		t.Fatalf("restricted daily result = %+v", result)
+	}
+	if got := fake.count(http.MethodPost, "/console/as/conversations/"); got != 0 {
+		t.Fatalf("web conversation created after desktop restriction: %d", got)
+	}
+}
+
 func TestRoutesWorkBuddyCreditsGrantsCatalogSchedulerSettings(t *testing.T) {
 	f := newWBRoutesFixture(t)
 	wbRouteAddAccount(t, f.intl, "uid-intl", realmIntl, nil)
@@ -619,6 +1016,24 @@ func TestRoutesWorkBuddyCreditsGrantsCatalogSchedulerSettings(t *testing.T) {
 	if len(jobs) == 0 {
 		t.Fatalf("scheduler jobs = %#v", status)
 	}
+	for _, key := range []string{"mode", "mode_cn", "mode_intl", "last_run_time", "next_run_time", "windows", "quota_scans", "daily_chat", "logs"} {
+		if _, exists := status[key]; !exists {
+			t.Fatalf("scheduler missing %q: %#v", key, status)
+		}
+	}
+	if _, ok := status["daily_chat"].(map[string]any); !ok {
+		t.Fatalf("scheduler daily_chat = %#v", status["daily_chat"])
+	}
+	f.intl.schedulerRunMu.Lock()
+	rec = f.do(http.MethodPost, "/scheduler/trigger", map[string]any{"job": "workbuddy-checkin"})
+	f.intl.schedulerRunMu.Unlock()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("busy scheduler trigger status=%d body=%s", rec.Code, rec.Body)
+	}
+	busy := decodeWBRoutesJSON(t, rec)
+	if busy["ok"] != false || !strings.Contains(wbRouteText(busy["msg"]), "已有巡检") {
+		t.Fatalf("busy scheduler trigger = %#v", busy)
+	}
 	assertWBNoSecret(t, "scheduler", rec.Body.String(), "refresh-uid-intl")
 
 	if _, err := f.store.Merge(map[string]any{
@@ -646,6 +1061,33 @@ func TestRoutesWorkBuddyCreditsGrantsCatalogSchedulerSettings(t *testing.T) {
 	}
 	if got := f.intl.scheduleHours("checkin", []int{9, 21}); len(got) != 2 || got[0] != 7 || got[1] != 19 {
 		t.Fatalf("saved schedule = %v", got)
+	}
+	rec = f.do(http.MethodPost, "/settings/save", map[string]any{
+		"workbuddy": map[string]any{"intl": map[string]any{"timeout_seconds": 5, "max_concurrent": 3}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workbuddy settings save status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.do(http.MethodGet, "/settings", nil)
+	settings = decodeWBRoutesJSON(t, rec)
+	workbuddy := settings["workbuddy"].(map[string]any)
+	intlConfig := workbuddy["intl"].(map[string]any)
+	if intlConfig["timeout_seconds"].(json.Number).String() != "5" ||
+		intlConfig["max_concurrent"].(json.Number).String() != "3" {
+		t.Fatalf("saved workbuddy config = %#v", intlConfig)
+	}
+	rec = f.do(http.MethodPost, "/settings/save", map[string]any{
+		"auto_switch_product": true,
+		"upstream":            map[string]any{"header_timeout_seconds": 42},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("global settings save status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.do(http.MethodGet, "/settings", nil)
+	settings = decodeWBRoutesJSON(t, rec)
+	if settings["auto_switch_product"] != true ||
+		settings["upstream"].(map[string]any)["header_timeout_seconds"].(json.Number).String() != "42" {
+		t.Fatalf("global settings = %#v", settings)
 	}
 }
 
@@ -823,8 +1265,14 @@ func TestRoutesWorkBuddyAccountBulkActions(t *testing.T) {
 func TestRoutesWorkBuddyDesktopImportScanAndValidation(t *testing.T) {
 	f := newWBRoutesFixture(t)
 	desktopDir := filepath.Join(f.dir, "desktop-auth")
-	if err := os.MkdirAll(desktopDir, 0o700); err != nil {
-		t.Fatal(err)
+	secondDir := filepath.Join(f.dir, "desktop-auth-2")
+	encryptedDir := filepath.Join(f.dir, "desktop-encrypted")
+	symlinkDir := filepath.Join(f.dir, "desktop-symlink")
+	outsideDir := filepath.Join(f.dir, "outside")
+	for _, dir := range []string{desktopDir, secondDir, encryptedDir, symlinkDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	writeJSON(t, filepath.Join(desktopDir, "workbuddy-desktop-ai.info"), map[string]any{
 		"auth": map[string]any{"accessToken": wbRouteToken(t, "uid-desktop", realmIntl)},
@@ -832,8 +1280,24 @@ func TestRoutesWorkBuddyDesktopImportScanAndValidation(t *testing.T) {
 			"uid": "uid-desktop", "nickname": "Desktop User",
 		},
 	})
+	// Filename hints CN, the token says intl: the scan must report realmHint.
+	writeJSON(t, filepath.Join(secondDir, "workbuddy-desktop.info"), map[string]any{
+		"auth":    map[string]any{"accessToken": wbRouteToken(t, "uid-desktop-2", realmIntl)},
+		"account": map[string]any{"uid": "uid-desktop-2", "nickname": "Second Desk"},
+	})
+	writeJSON(t, filepath.Join(encryptedDir, "workbuddy-desktop-ai.info"), map[string]any{
+		"auth":    map[string]any{"accessToken": map[string]any{"$wbEncrypted": 1, "envelope": "ciphertext"}},
+		"account": map[string]any{"uid": "uid-encrypted"},
+	})
+	writeJSON(t, filepath.Join(outsideDir, "workbuddy-desktop-ai.info"), map[string]any{
+		"auth":    map[string]any{"accessToken": wbRouteToken(t, "uid-symlink", realmIntl)},
+		"account": map[string]any{"uid": "uid-symlink"},
+	})
+	if err := os.Symlink(filepath.Join(outsideDir, "workbuddy-desktop-ai.info"), filepath.Join(symlinkDir, "workbuddy-desktop-ai.info")); err != nil {
+		t.Fatal(err)
+	}
 	for _, provider := range []*Provider{f.intl, f.cn} {
-		provider.desktopDirs = []string{desktopDir}
+		provider.desktopDirs = []string{desktopDir, secondDir, encryptedDir, symlinkDir}
 	}
 
 	rec := f.do(http.MethodPost, "/accounts/import/desktop", map[string]any{})
@@ -841,11 +1305,36 @@ func TestRoutesWorkBuddyDesktopImportScanAndValidation(t *testing.T) {
 		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body)
 	}
 	scan := decodeWBRoutesJSON(t, rec)
-	if len(wbRouteObjects(t, scan["detected"])) != 1 {
-		t.Fatalf("desktop scan = %#v", scan)
+	detected := wbRouteObjects(t, scan["detected"])
+	if len(detected) != 3 {
+		t.Fatalf("desktop scan = %#v", detected)
 	}
-	assertWBNoSecret(t, "desktop scan", rec.Body.String(), "uid-desktop-secret")
+	byFile := map[string]map[string]any{}
+	for _, entry := range detected {
+		byFile[wbRouteText(entry["path"])] = entry
+	}
+	first := byFile[filepath.Join(desktopDir, "workbuddy-desktop-ai.info")]
+	if first == nil || first["realmName"] != "国际版 (Global)" || first["expiresIn"] == nil {
+		t.Fatalf("desktop metadata = %#v", first)
+	}
+	second := byFile[filepath.Join(secondDir, "workbuddy-desktop.info")]
+	if second == nil || wbRouteText(second["realm"]) != realmIntl || wbRouteText(second["realmHint"]) != realmCN {
+		t.Fatalf("desktop realm hint = %#v", second)
+	}
+	encrypted := byFile[filepath.Join(encryptedDir, "workbuddy-desktop-ai.info")]
+	if encrypted == nil || encrypted["needsKey"] != true || wbRouteText(encrypted["recoveryHint"]) == "" {
+		t.Fatalf("encrypted desktop metadata = %#v", encrypted)
+	}
+	assertWBNoSecret(t, "desktop scan", rec.Body.String(), "ciphertext")
 
+	rec = f.do(http.MethodPost, "/accounts/import/desktop", map[string]any{"path": filepath.Join(outsideDir, "workbuddy-desktop-ai.info")})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("outside desktop path status=%d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.do(http.MethodPost, "/accounts/import/desktop", map[string]any{"path": filepath.Join(symlinkDir, "workbuddy-desktop-ai.info")})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("symlink desktop path status=%d body=%s", rec.Code, rec.Body)
+	}
 	rec = f.do(http.MethodPost, "/accounts/import/desktop", map[string]any{"path": f.dir + "/not-a-credential.json"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad desktop path status=%d body=%s", rec.Code, rec.Body)
@@ -855,11 +1344,14 @@ func TestRoutesWorkBuddyDesktopImportScanAndValidation(t *testing.T) {
 		t.Fatalf("desktop all status=%d body=%s", rec.Code, rec.Body)
 	}
 	imported := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["imported"])
-	if len(imported) != 1 || wbRouteText(imported[0]["uid"]) != "uid-desktop" {
+	if len(imported) != 2 {
 		t.Fatalf("desktop imported = %#v", imported)
 	}
-	if f.intl.Pool().Get("uid-desktop") == nil {
+	if f.intl.Pool().Get("uid-desktop") == nil || f.intl.Pool().Get("uid-desktop-2") == nil {
 		t.Fatal("desktop import did not sync the pool")
+	}
+	if f.intl.Pool().Get("uid-symlink") != nil || f.intl.Pool().Get("uid-encrypted") != nil {
+		t.Fatal("desktop import accepted a symlink/encrypted credential")
 	}
 }
 

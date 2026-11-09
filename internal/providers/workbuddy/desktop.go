@@ -9,24 +9,29 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DesktopCredential is the read-only metadata for one desktop-client
 // credential file. It deliberately has no token fields, so routes can expose
 // it to the panel without leaking credentials.
 type DesktopCredential struct {
-	Path      string `json:"path"`
-	File      string `json:"file"`
-	Realm     string `json:"realm"`
-	Domain    string `json:"domain"`
-	UID       string `json:"uid"`
-	Nickname  string `json:"nickname"`
-	ExpiresAt int64  `json:"expiresAt"`
-	Readable  bool   `json:"readable"`
-	Valid     bool   `json:"valid"`
-	Encrypted bool   `json:"encrypted"`
-	NeedsKey  bool   `json:"needsKey"`
-	Error     string `json:"error"`
+	Path         string `json:"path"`
+	File         string `json:"file"`
+	Realm        string `json:"realm"`
+	RealmName    string `json:"realmName"`
+	RealmHint    string `json:"realmHint"`
+	Domain       string `json:"domain"`
+	UID          string `json:"uid"`
+	Nickname     string `json:"nickname"`
+	ExpiresAt    int64  `json:"expiresAt"`
+	ExpiresIn    any    `json:"expiresIn"`
+	Readable     bool   `json:"readable"`
+	Valid        bool   `json:"valid"`
+	Encrypted    bool   `json:"encrypted"`
+	NeedsKey     bool   `json:"needsKey"`
+	RecoveryHint string `json:"recoveryHint,omitempty"`
+	Error        string `json:"error"`
 }
 
 type desktopFileShape struct {
@@ -165,6 +170,17 @@ func desktopHintForPath(path, fallback string) string {
 	}
 }
 
+func realmDisplayName(realm string) string {
+	if realmOrDefault(realm) == realmCN {
+		return "国内版 (China)"
+	}
+	return "国际版 (Global)"
+}
+
+func desktopRecoveryHint() string {
+	return "凭据已加密：v2 不支持回收桌面客户端密钥，请改用 OAuth 添加账号"
+}
+
 // inspectDesktopFile reads one desktop credential without network access and
 // without attempting encrypted-envelope recovery.
 func inspectDesktopFile(candidate desktopCandidate, hintOverride string) (Auth, DesktopCredential) {
@@ -173,10 +189,12 @@ func inspectDesktopFile(candidate desktopCandidate, hintOverride string) (Auth, 
 		hint = desktopHintForPath(candidate.path, hintOverride)
 	}
 	entry := DesktopCredential{
-		Path:   candidate.path,
-		File:   candidate.file,
-		Realm:  hint,
-		Domain: defaultDomain(hint),
+		Path:      candidate.path,
+		File:      candidate.file,
+		Realm:     hint,
+		RealmName: realmDisplayName(hint),
+		Domain:    defaultDomain(hint),
+		ExpiresIn: nil,
 	}
 
 	data, err := os.ReadFile(candidate.path)
@@ -196,7 +214,8 @@ func inspectDesktopFile(candidate desktopCandidate, hintOverride string) (Auth, 
 	if encrypted {
 		entry.Encrypted = true
 		entry.NeedsKey = true
-		entry.Error = "credential is encrypted; recover the desktop key first"
+		entry.Error = desktopRecoveryHint()
+		entry.RecoveryHint = desktopRecoveryHint()
 		return Auth{}, entry
 	}
 	token := decodeAuthString(rawToken)
@@ -220,10 +239,17 @@ func inspectDesktopFile(candidate desktopCandidate, hintOverride string) (Auth, 
 		expires = epochTime(parseJWTClaims(token).ExpiresAt)
 	}
 	entry.Realm = realm
+	entry.RealmName = realmDisplayName(realm)
+	if realm != hint {
+		entry.RealmHint = hint
+	}
 	entry.Domain = domain
 	entry.UID = uid
 	entry.Nickname = nickname
 	entry.ExpiresAt = timeUnixSeconds(expires)
+	if !expires.IsZero() {
+		entry.ExpiresIn = humanDelta(expires.Sub(time.Now()))
+	}
 	entry.Valid = uid != ""
 
 	refresh := ""
@@ -323,6 +349,66 @@ func ImportDesktopCredential(accountsDir, path, hint string) (Auth, error) {
 
 // ImportDesktopCredentials imports every readable desktop credential under the
 // known default locations, filtered to realm when realm is intl/cn.
+// resolveKnownDesktopCredential validates a panel-supplied desktop path against
+// the known credential directories and resolves symlinks before import. A path
+// is accepted only when its symlink-resolved parent is one of those directories
+// and its file name is a known WorkBuddy desktop credential. This keeps a panel
+// request from turning an arbitrary local file into an import source.
+func resolveKnownDesktopCredential(dirs []string, target string) (string, string, bool) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", "", false
+	}
+	knownDirs := dirs
+	if knownDirs == nil {
+		knownDirs = DesktopAuthDirs()
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", "", false
+	}
+	info, err := os.Stat(resolvedTarget)
+	if err != nil || info.IsDir() {
+		return "", "", false
+	}
+	targetDir := filepath.Dir(resolvedTarget)
+	known := false
+	for _, dir := range knownDirs {
+		resolvedDir, err := filepath.EvalSymlinks(strings.TrimSpace(dir))
+		if err != nil {
+			continue
+		}
+		if filepath.Clean(resolvedDir) == filepath.Clean(targetDir) {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return "", "", false
+	}
+	switch strings.ToLower(filepath.Base(resolvedTarget)) {
+	case "workbuddy-desktop-ai.info":
+		return resolvedTarget, realmIntl, true
+	case "workbuddy-desktop.info":
+		return resolvedTarget, realmCN, true
+	default:
+		return "", "", false
+	}
+}
+
+func safeDesktopCandidates(dirs []string) []desktopCandidate {
+	raw := desktopCredentialCandidates(dirs)
+	out := make([]desktopCandidate, 0, len(raw))
+	for _, candidate := range raw {
+		resolved, hint, ok := resolveKnownDesktopCredential(dirs, candidate.path)
+		if !ok {
+			continue
+		}
+		out = append(out, desktopCandidate{path: resolved, hint: hint, file: filepath.Base(resolved)})
+	}
+	return out
+}
+
 func ImportDesktopCredentials(accountsDir, realm string) ([]Auth, error) {
 	accounts := []Auth{}
 	for _, candidate := range desktopCredentialCandidates(nil) {

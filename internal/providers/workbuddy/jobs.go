@@ -1,10 +1,13 @@
 package workbuddy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,13 +18,14 @@ import (
 )
 
 const (
-	jobNameCheckin       = "workbuddy-checkin"
-	jobNameDailyActivity = "workbuddy-daily-activity"
-	jobNameGrowth        = "workbuddy-growth"
-	jobNameCatTravel     = "workbuddy-cat-travel"
-	jobNameStreakBonus   = "workbuddy-streak-bonus"
-	jobNameKeepalive     = "workbuddy-keepalive"
-	jobNameCatalog       = "workbuddy-catalog-refresh"
+	jobNameCheckin        = "workbuddy-checkin"
+	jobNameDailyActivity  = "workbuddy-daily-activity"
+	jobNameReportActivity = "workbuddy-report-activity"
+	jobNameGrowth         = "workbuddy-growth"
+	jobNameCatTravel      = "workbuddy-cat-travel"
+	jobNameStreakBonus    = "workbuddy-streak-bonus"
+	jobNameKeepalive      = "workbuddy-keepalive"
+	jobNameCatalog        = "workbuddy-catalog-refresh"
 )
 
 type jobKind uint8
@@ -29,6 +33,7 @@ type jobKind uint8
 const (
 	jobKindCheckin jobKind = iota
 	jobKindDaily
+	jobKindReport
 	jobKindGrowth
 	jobKindCat
 	jobKindStreak
@@ -88,6 +93,8 @@ type scheduledJob struct {
 
 var _ scheduler.Job = (*scheduledJob)(nil)
 
+var errSchedulerBusy = errors.New("workbuddy: scheduler cycle already running")
+
 func (j *scheduledJob) Name() string {
 	if j == nil {
 		return ""
@@ -99,6 +106,14 @@ func (j *scheduledJob) Name() string {
 // core scheduler may call it on every tick; a missed slot is caught up once per
 // local day, and later ticks in the same slot are no-ops.
 func (j *scheduledJob) Run(ctx context.Context) error {
+	if j == nil || j.provider == nil {
+		_, err := j.run(ctx, false)
+		return err
+	}
+	if !j.provider.schedulerRunMu.TryLock() {
+		return errSchedulerBusy
+	}
+	defer j.provider.schedulerRunMu.Unlock()
 	_, err := j.run(ctx, false)
 	return err
 }
@@ -166,6 +181,8 @@ func (j *scheduledJob) schedule(now time.Time) []jobSlot {
 		if times := normalizeScheduleTimes(j.provider.scheduleRaw("daily_chat")); len(times) > 0 {
 			return jobSlotsFromTimes(times)
 		}
+		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
+	case jobKindReport:
 		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
 	case jobKindGrowth:
 		return jobSlotsFromHours(j.provider.scheduleHours("cat", defaultHours(1)))
@@ -235,8 +252,16 @@ func defaultHours(values ...int) []int {
 	return append([]int(nil), values...)
 }
 
-func (j *scheduledJob) run(ctx context.Context, force bool) (JobRunResult, error) {
-	result := JobRunResult{Name: j.name}
+func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult, err error) {
+	if j != nil {
+		result = JobRunResult{Name: j.name}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result.Ran = true
+			err = errors.New("workbuddy: job panicked")
+		}
+	}()
 	if j == nil || j.provider == nil {
 		return result, errors.New("workbuddy: job provider is nil")
 	}
@@ -267,6 +292,7 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (JobRunResult, error
 		j.state.lastRun = now
 		j.state.mu.Unlock()
 	}
+	j.provider.markSchedulerRun(now)
 
 	result.Ran = true
 	targets := j.realmProviders()
@@ -308,9 +334,12 @@ func (j *scheduledJob) realmProviders() []*Provider {
 }
 
 func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, result *JobRunResult) {
-	for _, account := range provider.jobTaskAccounts() {
+	for index, account := range provider.jobTaskAccounts() {
 		if err := ctx.Err(); err != nil {
 			return
+		}
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
 		}
 		auth := taskAuthSnapshot(account)
 		if auth.Realm != provider.realm {
@@ -347,40 +376,48 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				continue
 			}
 			daily, err := safeJobCall(func() (DailyResult, error) {
-				return provider.runDailyChat(ctx, account, taskTriggerScheduler)
+				return provider.runDailyActivity(ctx, account, taskTriggerScheduler)
 			})
 			if err != nil {
 				result.Failed++
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			provider.recordActivity(daily.Activity)
 			success := daily.OK
 			skipped := daily.Skipped
-			if provider.dailyChatWebEnabled() {
-				web, webErr := safeJobCall(func() (DailyResult, error) {
-					return provider.runDailyChatWeb(ctx, account, taskTriggerScheduler)
-				})
-				if webErr != nil {
-					success = false
-					result.Errors = append(result.Errors, auth.UID+": "+safeJobError(webErr))
-				} else {
-					provider.recordActivity(web.Activity)
-					if !web.OK {
-						success = false
-						if web.Error != "" {
-							result.Errors = append(result.Errors, auth.UID+": "+web.Error)
-						}
-					}
-					skipped = skipped && web.Skipped
-				}
-			}
 			if !success {
 				result.Failed++
+				if daily.Error != "" {
+					result.Errors = append(result.Errors, auth.UID+": "+daily.Error)
+				}
 			} else if skipped {
 				result.Skipped++
 			} else {
 				result.Succeeded++
+			}
+		case jobKindReport:
+			if auth.Realm != realmCN || taskEnterpriseID(auth) != "" {
+				result.Skipped++
+				continue
+			}
+			report, err := safeJobCall(func() (DailyResult, error) {
+				return provider.runReportActivity(ctx, account, taskTriggerScheduler)
+			})
+			if err != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
+				continue
+			}
+			provider.recordActivity(report.Activity)
+			if report.Error != "" && !report.OK {
+				result.Failed++
+				result.Errors = append(result.Errors, auth.UID+": "+report.Error)
+			} else if report.Skipped {
+				result.Skipped++
+			} else if report.OK {
+				result.Succeeded++
+			} else {
+				result.Failed++
 			}
 		case jobKindGrowth:
 			if !growthTaskEligible(auth) {
@@ -419,6 +456,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				continue
 			}
 			jobCountTaskResult(cat.OK, cat.Skipped, cat.Error, auth.UID, result)
+			provider.invalidateGrowthSnapshot(auth.UID)
 		case jobKindStreak:
 			if !growthTaskEligible(auth) {
 				result.Skipped++
@@ -433,6 +471,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				continue
 			}
 			jobCountTaskResult(streak.OK, streak.Skipped, streak.Error, auth.UID, result)
+			provider.invalidateGrowthSnapshot(auth.UID)
 		}
 	}
 }
@@ -582,6 +621,7 @@ func (p *Provider) Jobs() []scheduler.Job {
 		p.jobs = []*scheduledJob{
 			{provider: p, name: jobNameCheckin, kind: jobKindCheckin, realm: jobRealmCN},
 			{provider: p, name: jobNameDailyActivity, kind: jobKindDaily, realm: jobRealmIntl},
+			{provider: p, name: jobNameReportActivity, kind: jobKindReport, realm: jobRealmCN},
 			{provider: p, name: jobNameGrowth, kind: jobKindGrowth, realm: jobRealmCN},
 			{provider: p, name: jobNameCatTravel, kind: jobKindCat, realm: jobRealmCN},
 			{provider: p, name: jobNameStreakBonus, kind: jobKindStreak, realm: jobRealmCN},
@@ -606,6 +646,13 @@ func (p *Provider) workbuddyJobs() []*scheduledJob {
 
 // RunJobs runs one named job or every job. force is the manual trigger path.
 func (p *Provider) RunJobs(ctx context.Context, name string, force bool) ([]JobRunResult, error) {
+	if p == nil {
+		return nil, errors.New("workbuddy: provider is nil")
+	}
+	if !p.schedulerRunMu.TryLock() {
+		return nil, errSchedulerBusy
+	}
+	defer p.schedulerRunMu.Unlock()
 	name = strings.TrimSpace(name)
 	results := make([]JobRunResult, 0)
 	errs := make([]error, 0)
@@ -629,6 +676,24 @@ func (p *Provider) RunJobs(ctx context.Context, name string, force bool) ([]JobR
 		return results, fmt.Errorf("workbuddy: unknown job %q", name)
 	}
 	return results, errors.Join(errs...)
+}
+
+func (p *Provider) markSchedulerRun(at time.Time) {
+	if p == nil {
+		return
+	}
+	p.schedulerMu.Lock()
+	p.schedulerLastRun = at
+	p.schedulerMu.Unlock()
+}
+
+func (p *Provider) schedulerLastRunTime() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	p.schedulerMu.Lock()
+	defer p.schedulerMu.Unlock()
+	return p.schedulerLastRun
 }
 
 func (p *Provider) jobsNowTime() time.Time {
@@ -670,24 +735,202 @@ func (p *Provider) ToggleScheduler() bool {
 
 // SchedulerStatus is the read-only v1 /scheduler panel payload.
 func (p *Provider) SchedulerStatus() map[string]any {
-	jobs := make([]map[string]any, 0)
+	rawJobs := p.workbuddyJobs()
+	jobs := make([]map[string]any, 0, len(rawJobs))
 	now := p.jobsNowTime()
-	for _, job := range p.workbuddyJobs() {
-		row := map[string]any{
-			"name":     job.Name(),
-			"next_run": job.NextRun(now).Format("2006-01-02 15:04:05"),
+	next := time.Time{}
+	for _, job := range rawJobs {
+		row := map[string]any{"name": job.Name()}
+		if candidate := job.NextRun(now); !candidate.IsZero() {
+			row["next_run"] = candidate.Format("2006-01-02 15:04:05")
+			if next.IsZero() || candidate.Before(next) {
+				next = candidate
+			}
 		}
 		if last := job.LastRun(); !last.IsZero() {
 			row["last_run"] = last.Format("2006-01-02 15:04:05")
 		}
 		jobs = append(jobs, row)
 	}
-	return map[string]any{
-		"ok":      true,
-		"enabled": p.schedulerIsEnabled(),
-		"realm":   p.realm,
-		"jobs":    jobs,
+	lastRun := p.schedulerLastRunTime()
+	lastText := "尚未运行"
+	if !lastRun.IsZero() {
+		lastText = lastRun.Format("2006-01-02 15:04:05")
 	}
+	nextText := "待调度"
+	if !next.IsZero() {
+		nextText = next.Format("2006-01-02 15:04:05")
+	}
+	checkin := formatScheduleHours(p.scheduleHours("checkin", defaultHours(9, 21)))
+	travel := formatScheduleHours(p.scheduleHours("travel", defaultHours(9, 21)))
+	keepalive := formatScheduleHours(p.scheduleHours("keepalive", defaultHours(22)))
+	cat := formatScheduleHours(p.scheduleHours("cat", defaultHours(1)))
+	modeCN := fmt.Sprintf("整点排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · Token保活 %s · 夜猫 %s) + 模型额度窗口探针",
+		checkin, travel, keepalive, cat)
+	modeIntl := fmt.Sprintf("账号 Token 自动保活与凭证常驻 (每日 %s 集中巡检) + 模型额度窗口探针", keepalive)
+
+	times := normalizeScheduleTimes(p.scheduleRaw("daily_chat"))
+	randomSlots := len(times) == 0
+	if len(times) == 0 {
+		for _, hour := range p.scheduleHours("checkin", defaultHours(9, 21)) {
+			times = append(times, fmt.Sprintf("%02d:00", hour))
+		}
+	}
+	nextSlot := ""
+	if daily := p.workbuddyJobByName(jobNameDailyActivity); daily != nil {
+		if candidate := daily.NextRun(now); !candidate.IsZero() {
+			nextSlot = candidate.Format("15:04")
+		}
+	}
+	budgetSeconds := int(p.tasksBudget.Seconds())
+	if budgetSeconds <= 0 {
+		budgetSeconds = int(tasksBudgetDefault.Seconds())
+	}
+	dailyChat := map[string]any{
+		"times": times, "random": randomSlots, "done_slots": []string{},
+		"next_slot": nextSlot, "live": []any{},
+		"budget_s": budgetSeconds, "abandoned": 0,
+	}
+	return map[string]any{
+		"ok":            true,
+		"enabled":       p.schedulerIsEnabled(),
+		"realm":         p.realm,
+		"mode":          modeCN,
+		"mode_cn":       modeCN,
+		"mode_intl":     modeIntl,
+		"last_run_time": lastText,
+		"next_run_time": nextText,
+		"windows":       p.schedulerWindows(now),
+		"quota_scans":   p.schedulerQuotaScans(now),
+		"daily_chat":    dailyChat,
+		"jobs":          jobs,
+		"logs":          []string{},
+	}
+}
+
+func (p *Provider) schedulerWindows(now time.Time) []map[string]any {
+	path := filepath.Join(p.AccountsDir(), "model_windows.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []map[string]any{}
+	}
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+	rows := schedulerStateRows(data, "windows")
+	out := make([]map[string]any, 0, len(rows))
+	for _, item := range rows {
+		row := creditObject(item)
+		uid := creditText(row["uid"])
+		model := creditText(row["model"])
+		if uid == "" || model == "" {
+			continue
+		}
+		resetAt := creditNumber(row["reset_at"])
+		resetIn := int(resetAt - float64(now.Unix()))
+		if resetIn < 0 {
+			resetIn = 0
+		}
+		out = append(out, map[string]any{
+			"uid": uid, "uid8": shortUID(uid), "model": model,
+			"reset_at": resetAt, "reset_in": resetIn,
+			"attempts":    int(creditNumber(row["attempts"])),
+			"last_result": creditText(row["last_result"]),
+			"cap":         parseLooseBool(row["cap"]), "cap_at": creditNumber(row["cap_at"]),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["reset_at"].(float64) < out[j]["reset_at"].(float64)
+	})
+	if len(out) > 10 {
+		out = out[:10]
+	}
+	return out
+}
+
+func (p *Provider) schedulerQuotaScans(now time.Time) []map[string]any {
+	path := filepath.Join(p.AccountsDir(), "quota_scan.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []map[string]any{}
+	}
+	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+	rows := schedulerStateRows(data, "scans")
+	out := make([]map[string]any, 0, len(rows))
+	for _, item := range rows {
+		row := creditObject(item)
+		uid := creditText(row["uid"])
+		model := creditText(row["model"])
+		if uid == "" || model == "" {
+			continue
+		}
+		nextAt := creditNumber(row["next_at"])
+		dueIn := int(nextAt - float64(now.Unix()))
+		if dueIn < 0 {
+			dueIn = 0
+		}
+		out = append(out, map[string]any{
+			"uid": uid, "uid8": shortUID(uid), "model": model,
+			"watched": true, "pending": false,
+			"last_scan":   creditNumber(row["last_scan"]),
+			"last_result": creditText(row["last_result"]),
+			"last_detail": creditText(row["last_detail"]),
+			"due_in":      dueIn, "next_at": nextAt, "seen_at": creditNumber(row["seen_at"]),
+			"attempts": int(creditNumber(row["attempts"])),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["due_in"].(int) < out[j]["due_in"].(int)
+	})
+	if len(out) > 6 {
+		out = out[:6]
+	}
+	return out
+}
+
+func schedulerStateRows(data []byte, key string) []any {
+	var root any
+	if json.Unmarshal(data, &root) != nil {
+		return nil
+	}
+	switch typed := root.(type) {
+	case map[string]any:
+		rows, _ := anyList(typed[key])
+		return rows
+	case []any:
+		return typed
+	default:
+		return nil
+	}
+}
+
+func parseLooseBool(value any) bool {
+	if boolean, ok := value.(bool); ok {
+		return boolean
+	}
+	if number, ok := numericValue(value); ok {
+		return number != 0
+	}
+	switch strings.ToLower(strings.TrimSpace(creditText(value))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func formatScheduleHours(hours []int) string {
+	parts := make([]string, 0, len(hours))
+	for _, hour := range hours {
+		parts = append(parts, fmt.Sprintf("%02d:00", hour))
+	}
+	return strings.Join(parts, "/")
+}
+
+func (p *Provider) workbuddyJobByName(name string) *scheduledJob {
+	for _, job := range p.workbuddyJobs() {
+		if job.Name() == name {
+			return job
+		}
+	}
+	return nil
 }
 
 func (p *Provider) settingsSnapshot() map[string]any {
@@ -729,6 +972,17 @@ func (p *Provider) scheduleView() map[string]any {
 		times = []string{}
 	}
 	view["daily_chat"] = times
+	if len(times) == 0 {
+		effective := make([]string, 0)
+		for _, hour := range p.scheduleHours("checkin", defaultHours(9, 21)) {
+			effective = append(effective, fmt.Sprintf("%02d:00", hour))
+		}
+		view["daily_chat_effective"] = effective
+		view["daily_chat_random"] = true
+	} else {
+		view["daily_chat_effective"] = times
+		view["daily_chat_random"] = false
+	}
 	return view
 }
 

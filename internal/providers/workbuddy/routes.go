@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -102,8 +104,24 @@ func wbAdminErrorFrom(err error) *wbAdminError {
 }
 
 func writeWBAdminJSON(w http.ResponseWriter, status int, value any) {
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		body := []byte(`{"error":{"message":"response encoding failed","type":"server_error","code":500}}`)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(body)
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw.Bytes()))
+	decoder.UseNumber()
+	var generic any
+	if err := decoder.Decode(&generic); err == nil {
+		value = maskPanelNames(generic)
+	}
 	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
+	encoder = json.NewEncoder(&buffer)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
 		body := []byte(`{"error":{"message":"response encoding failed","type":"server_error","code":500}}`)
@@ -117,6 +135,43 @@ func writeWBAdminJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+var panelPhonePattern = regexp.MustCompile(`(1[3-9]\d)[- .·]?\d{4}[- .·]?(\d{4})`)
+
+var panelIdentityKeys = map[string]bool{
+	"uid": true, "account": true, "accountId": true, "id": true,
+	"file": true, "path": true, "machineId": true, "sessionId": true,
+	"key": true, "token": true, "accessToken": true, "refreshToken": true,
+}
+
+// maskPanelNames mirrors v1's panel-side nickname masking: phone numbers in
+// nickname fields and in preformatted strings are masked (138****5678) while
+// identity keys are never rewritten. Export documents use the same response
+// writer, matching v1's export redaction.
+func maskPanelNames(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return panelPhonePattern.ReplaceAllString(typed, "$1****$2")
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if panelIdentityKeys[key] {
+				out[key] = item
+				continue
+			}
+			out[key] = maskPanelNames(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, item := range typed {
+			out[index] = maskPanelNames(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func writeWBAdminError(w http.ResponseWriter, failure *wbAdminError) {
@@ -455,6 +510,7 @@ func (p *Provider) Routes() []providers.Route {
 		{Method: http.MethodGet, Path: "/accounts/export", Auth: panel, Handler: p.handleAccountsExport},
 		{Method: http.MethodGet, Path: "/accounts/credits", Auth: panel, Handler: p.handleAccountsCredits},
 		{Method: http.MethodPost, Path: "/accounts/credits", Auth: panel, Handler: p.handleAccountsCredits},
+		{Method: http.MethodPost, Path: "/accounts/credits/fetch", Auth: panel, Handler: p.handleAccountsCredits},
 		{Method: http.MethodGet, Path: "/accounts/credits/detail", Auth: panel, Handler: p.handleAccountsCreditsDetail},
 		{Method: http.MethodPost, Path: "/accounts/credits/detail", Auth: panel, Handler: p.handleAccountsCreditsDetail},
 		{Method: http.MethodGet, Path: "/accounts/credits/grants", Auth: panel, Handler: p.handleAccountsGrants},
@@ -495,6 +551,9 @@ func (p *Provider) Routes() []providers.Route {
 		{Method: http.MethodPost, Path: "/scheduler/toggle", Auth: panel, Handler: p.handleSchedulerToggle},
 		{Method: http.MethodGet, Path: "/settings", Auth: panel, Handler: p.handleSettings},
 		{Method: http.MethodPost, Path: "/settings/save", Auth: panel, Handler: p.handleSettingsSave},
+		{Method: http.MethodPost, Path: "/settings/restriction/reset", Auth: panel, Handler: p.handleSettingsRestrictionReset},
+		{Method: http.MethodGet, Path: "/realm", Auth: panel, Handler: p.handleRealm},
+		{Method: http.MethodPost, Path: "/realm", Auth: panel, Handler: p.handleRealm},
 	}
 }
 
@@ -615,6 +674,7 @@ func (p *Provider) handleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) handleAccountsExport(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	realm := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("realm")))
 	if realm != "" && realm != realmIntl && realm != realmCN && realm != "all" {
 		writeWBAdminError(w, wbBadRequest("realm must be intl or cn"))
@@ -683,8 +743,7 @@ func (p *Provider) handleAccountsExport(w http.ResponseWriter, r *http.Request) 
 			}
 			delete(row, "path")
 			if !includeSecrets {
-				delete(row, "accessToken")
-				delete(row, "refreshToken")
+				stripExportSecretKeys(row)
 			}
 			rows = append(rows, row)
 		}
@@ -727,6 +786,7 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 		// refreshes each realm with its own pool.
 		results := make([]CreditRefreshRow, 0)
 		accounts := make([]AccountView, 0)
+		busy := false
 		for _, provider := range p.allProviders() {
 			provider.refreshSettings()
 			value, err := provider.refreshCreditsRoute(r.Context(), CreditsRefreshTargets{})
@@ -734,10 +794,11 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 				writeWBAdminError(w, wbAdminErrorFrom(err))
 				return
 			}
+			busy = busy || value.Busy
 			results = append(results, value.Results...)
 			accounts = append(accounts, value.Accounts...)
 		}
-		writeWBAdminJSON(w, http.StatusOK, map[string]any{"results": results, "accounts": accounts, "busy": false})
+		writeWBAdminJSON(w, http.StatusOK, map[string]any{"results": results, "accounts": accounts, "busy": busy})
 		return
 	}
 	provider := p.providerForRealm(realm)
@@ -975,6 +1036,26 @@ func (p *Provider) handleAccountsImport(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func stripExportSecretKeys(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{
+			"accessToken", "refreshToken", "access_token", "refresh_token",
+			"proxy", "deviceToken", "device_token", "device-token",
+			"authorization", "cookie", "set-cookie", "password", "secret",
+		} {
+			delete(typed, key)
+		}
+		for _, item := range typed {
+			stripExportSecretKeys(item)
+		}
+	case []any:
+		for _, item := range typed {
+			stripExportSecretKeys(item)
+		}
+	}
+}
+
 // previewImportRowsForDir shares the exact existing-account view with the real
 // import; it exists so dryRun and import cannot disagree.
 func previewImportRowsForDir(dir string, rows []map[string]any, forcedRealm string, overwrite bool) ImportResult {
@@ -1158,31 +1239,15 @@ func (p *Provider) handleAccountsImportDesktop(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
-	candidates := desktopCredentialCandidates(p.desktopDirs)
+	candidates := safeDesktopCandidates(p.desktopDirs)
 	targetPath := strings.TrimSpace(wbAdminText(payload["path"]))
 	if targetPath != "" {
-		clean := filepath.Clean(targetPath)
-		var hint string
-		found := false
-		for _, candidate := range candidates {
-			if filepath.Clean(candidate.path) == clean {
-				hint = candidate.hint
-				found = true
-				break
-			}
-		}
-		if !found {
-			switch strings.ToLower(filepath.Base(clean)) {
-			case "workbuddy-desktop-ai.info", "workbuddy-desktop.info":
-				hint = desktopHintForPath(clean, "")
-				found = true
-			}
-		}
+		resolvedPath, hint, found := resolveKnownDesktopCredential(p.desktopDirs, targetPath)
 		if !found {
 			writeWBAdminError(w, wbBadRequest("desktop credential path is not a known client credential"))
 			return
 		}
-		auth, err := ImportDesktopCredential(p.AccountsDir(), clean, hint)
+		auth, err := ImportDesktopCredential(p.AccountsDir(), resolvedPath, hint)
 		if err != nil {
 			writeWBAdminError(w, wbBadRequest("import failed: "+err.Error()))
 			return
@@ -1217,9 +1282,10 @@ func (p *Provider) handleAccountsImportDesktop(w http.ResponseWriter, r *http.Re
 			imported = append(imported, p.accountViewsForUID(auth.UID)...)
 		}
 	}
-	detected, _ := InspectDesktopCredentialsIn(p.desktopDirs)
-	if detected == nil {
-		detected = []DesktopCredential{}
+	detected := make([]DesktopCredential, 0, len(candidates))
+	for _, candidate := range candidates {
+		_, entry := inspectDesktopFile(candidate, "")
+		detected = append(detected, entry)
 	}
 	poolUIDs := make([]string, 0)
 	for _, provider := range p.allProviders() {
@@ -1377,7 +1443,10 @@ func (p *Provider) handleAccountsCheckin(w http.ResponseWriter, r *http.Request)
 			targets = append(targets, account)
 		}
 	}
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runCheckin(r.Context(), account, taskTriggerManual)
 		if err != nil {
 			writeWBAdminError(w, wbAdminErrorFrom(err))
@@ -1411,20 +1480,62 @@ func (p *Provider) handleAccountsDailyChat(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	results := make([]DailyResult, 0)
-	for _, account := range targets {
-		result, err := provider.runDailyChat(r.Context(), account, taskTriggerManual)
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
+		result, err := provider.runDailyActivity(r.Context(), account, taskTriggerManual)
 		if err != nil {
 			writeWBAdminError(w, wbAdminErrorFrom(err))
 			return
 		}
 		results = append(results, result)
-		provider.recordActivity(result.Activity)
 	}
 	provider.invalidateHealth()
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"results":  results,
 		"accounts": provider.Pool().List(),
 	})
+}
+
+// runDailyActivity is v1's daily_chat flow: desktop identity leg first, then
+// the web conversation leg when the setting is enabled and the desktop leg
+// actually succeeded. A desktop account-level restriction skips the web leg.
+// Both activity events are recorded here (Task 8 de-duplicates per day).
+func (p *Provider) runDailyActivity(ctx context.Context, account *Account, trigger string) (DailyResult, error) {
+	result, err := p.runDailyChat(ctx, account, trigger)
+	p.recordActivity(result.Activity)
+	if err != nil {
+		return result, err
+	}
+	if result.Restricted || !result.OK || result.Skipped {
+		return result, nil
+	}
+	if !p.dailyChatWebEnabled() {
+		return result, nil
+	}
+	web, webErr := p.runDailyChatWeb(ctx, account, trigger)
+	p.recordActivity(web.Activity)
+	result.Web = &DailyWebResult{
+		OK: web.OK, Skipped: web.Skipped, Conversation: web.Conversation,
+		Status: web.Status, Model: web.Model, Events: web.Events, Chunks: web.Chunks,
+		ElapsedMS: web.ElapsedMS, Attempts: web.Attempts, ModelsTried: web.ModelsTried,
+		Phase: web.Phase, BudgetExhausted: web.BudgetExhausted, Retryable: web.Retryable,
+		Msg: web.Msg, Error: web.Error,
+	}
+	if webErr != nil {
+		result.OK = false
+		result.Error = "网页通道失败：" + safeJobError(webErr)
+		result.Msg = result.Error
+		return result, nil
+	}
+	if !web.OK {
+		result.OK = false
+		result.Error = "网页通道失败：" + firstNonEmpty(web.Error, "未知错误")
+		result.Msg = "每日活跃对话未完成（" + result.Error + "）"
+		return result, nil
+	}
+	return result, nil
 }
 
 func (p *Provider) dailyTargets(payload map[string]any) ([]*Account, *wbAdminError) {
@@ -1480,7 +1591,10 @@ func (p *Provider) handleAccountsDailyChatWeb(w http.ResponseWriter, r *http.Req
 		return
 	}
 	results := make([]DailyResult, 0)
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runDailyChatWeb(r.Context(), account, taskTriggerManual)
 		if err != nil {
 			writeWBAdminError(w, wbAdminErrorFrom(err))
@@ -1530,7 +1644,7 @@ func (p *Provider) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if selected == nil {
 		selected = targets[0]
 	}
-	snapshot, err := provider.GrowthSnapshot(r.Context(), selected.UID())
+	snapshot, err := provider.taskSnapshotForPanel(r.Context(), selected)
 	if err != nil {
 		writeWBAdminError(w, wbAdminErrorFrom(err))
 		return
@@ -1548,6 +1662,45 @@ func (p *Provider) handleTasks(w http.ResponseWriter, r *http.Request) {
 		"account":  selected.View(),
 		"accounts": accounts,
 	})
+}
+
+// taskSnapshotForPanel returns the cached growth summary, or fetches a fresh
+// one when an action invalidated the snapshot. v1's invalidate_tasks_cache did
+// the same: the next panel read goes upstream instead of serving stale state.
+func (p *Provider) taskSnapshotForPanel(ctx context.Context, account *Account) (GrowthResult, error) {
+	result, err := p.GrowthSnapshot(ctx, account.UID())
+	if err != nil {
+		return result, err
+	}
+	if result.Msg == "cached" {
+		return result, nil
+	}
+	auth := taskAuthSnapshot(account)
+	if !growthTaskEligible(auth) || !account.taskMu.TryLock() {
+		return result, nil
+	}
+	defer account.taskMu.Unlock()
+	tasks, fetchErr := p.fetchGrowthTasks(ctx, account, false)
+	if fetchErr != nil {
+		return result, nil
+	}
+	summary, summaryErr := p.fetchGrowthSummary(ctx, account, cachedGrowthSummary(auth))
+	if summaryErr != nil {
+		summary = cachedGrowthSummary(auth)
+	}
+	run := &growthRun{
+		provider: p, account: account, auth: auth, now: p.taskNowTime(),
+		autoClaim: true, tasks: tasks, summary: summary,
+		claims: loadGrowthClaims(auth),
+	}
+	if persistErr := p.persistGrowthState(account, run); persistErr != nil {
+		return result, nil
+	}
+	refreshed, refreshErr := p.GrowthSnapshot(ctx, account.UID())
+	if refreshErr != nil {
+		return result, nil
+	}
+	return refreshed, nil
 }
 
 func (p *Provider) handleTasksRun(w http.ResponseWriter, r *http.Request) {
@@ -1589,7 +1742,10 @@ func (p *Provider) handleTasksRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	results := make([]GrowthResult, 0, len(targets))
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runGrowth(r.Context(), account, autoClaim, taskTriggerManual)
 		if err != nil {
 			writeWBAdminError(w, wbAdminErrorFrom(err))
@@ -1669,6 +1825,7 @@ func (p *Provider) handleTasksClaim(w http.ResponseWriter, r *http.Request) {
 				account.Auth.Extra["growthClaims"] = raw
 			})
 		}
+		provider.invalidateGrowthSnapshot(uid)
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok":     ok,
@@ -1716,7 +1873,10 @@ func (p *Provider) handleTasksTravel(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]map[string]any, 0, len(targets))
 	lines := make([]string, 0, len(targets))
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runCatTravel(r.Context(), account)
 		if err != nil {
 			result = CatResult{UID: account.UID(), Error: provider.taskRedactError(account, err)}
@@ -1727,6 +1887,7 @@ func (p *Provider) handleTasksTravel(w http.ResponseWriter, r *http.Request) {
 			"msg": result.Msg, "reward_credit": result.Credit,
 		})
 		lines = append(lines, fmt.Sprintf("%s: %s", nick, firstNonEmpty(result.Msg, result.Error)))
+		provider.invalidateGrowthSnapshot(account.UID())
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "results": results, "msg": strings.Join(lines, "\n"),
@@ -1746,13 +1907,17 @@ func (p *Provider) handleTasksStreakBonus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	lines := make([]string, 0, len(targets))
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runStreakBonus(r.Context(), account)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("%s: %s", firstNonEmpty(accountNicknameOf(account), shortUID(account.UID())), provider.taskRedactError(account, err)))
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%s: %s", firstNonEmpty(result.Nickname, shortUID(result.UID)), firstNonEmpty(result.Msg, result.Error)))
+		provider.invalidateGrowthSnapshot(account.UID())
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": strings.Join(lines, "\n")})
 }
@@ -1769,12 +1934,16 @@ func (p *Provider) handleTasksBuddy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := make([]BuddyResult, 0, len(targets))
-	for _, account := range targets {
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		result, err := provider.runBuddyCheckin(r.Context(), account)
 		if err != nil {
 			result = BuddyResult{UID: account.UID(), Error: provider.taskRedactError(account, err)}
 		}
 		results = append(results, result)
+		provider.invalidateGrowthSnapshot(account.UID())
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results})
 }
@@ -1796,6 +1965,7 @@ func (p *Provider) handleCatalogRefresh(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			results = append(results, result)
+			provider.invalidateHealth()
 		}
 		writeWBAdminJSON(w, http.StatusOK, map[string]any{"ok": true, "realm": "all", "results": results})
 		return
@@ -1819,6 +1989,10 @@ func (p *Provider) handleScheduler(w http.ResponseWriter, r *http.Request) {
 	writeWBAdminJSON(w, http.StatusOK, p.SchedulerStatus())
 }
 
+// handleSchedulerTrigger runs the panel's manual sweep synchronously so the
+// caller gets deterministic per-account results. Unlike v1's fire-and-forget
+// thread this can hold the request for the duration of the tasks, but it keeps
+// failures visible and avoids a second overlapping cycle.
 func (p *Provider) handleSchedulerTrigger(w http.ResponseWriter, r *http.Request) {
 	payload, failure := readWBAdminPayload(w, r)
 	if failure != nil {
@@ -1833,9 +2007,15 @@ func (p *Provider) handleSchedulerTrigger(w http.ResponseWriter, r *http.Request
 		}
 	}
 	results, err := p.RunJobs(r.Context(), name, force)
+	if errors.Is(err, errSchedulerBusy) {
+		writeWBAdminJSON(w, http.StatusOK, map[string]any{
+			"ok": false, "msg": "已有巡检正在执行，请稍候再试", "synchronous": true,
+		})
+		return
+	}
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		writeWBAdminJSON(w, http.StatusOK, map[string]any{
-			"ok": false, "results": results, "msg": "部分账号任务失败",
+			"ok": false, "results": results, "msg": "部分账号任务失败", "synchronous": true,
 		})
 		return
 	}
@@ -1844,7 +2024,7 @@ func (p *Provider) handleSchedulerTrigger(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "msg": "已触发后台调度执行", "results": results,
+		"ok": true, "msg": "已触发后台调度执行", "results": results, "synchronous": true,
 	})
 }
 
@@ -2057,7 +2237,10 @@ func (p *Provider) handleAccountsProduct(w http.ResponseWriter, r *http.Request)
 	if uid != "" {
 		provider, account := p.providerForUID(uid, realmSelector)
 		if account == nil {
-			writeWBAdminError(w, &wbAdminError{Status: http.StatusNotFound, Type: "invalid_request_error", Message: "no such account"})
+			writeWBAdminJSON(w, http.StatusOK, map[string]any{
+				"ok": true, "product": target, "changed": []string{},
+				"accounts": p.importAccountsViews(realm),
+			})
 			return
 		}
 		providersList = []*Provider{provider}
@@ -2066,12 +2249,13 @@ func (p *Provider) handleAccountsProduct(w http.ResponseWriter, r *http.Request)
 	for _, provider := range providersList {
 		for _, account := range provider.Pool().Accounts() {
 			accountID := account.UID()
-			err := provider.Pool().mutateAccount(accountID, func(account *Account) {
-				account.Auth.Product = target
-			})
-			if err != nil {
+			switched, err := provider.Pool().SetProduct(accountID, target)
+			if err != nil || !switched {
 				continue
 			}
+			// v1 clear_error(keep_caps=True): clear runtime limit/error state,
+			// leave persisted modelCaps (quota windows) untouched.
+			_ = provider.Pool().ClearCooldown(accountID)
 			changed = append(changed, accountID[:wbMinInt(8, len(accountID))])
 		}
 		provider.invalidateHealth()
@@ -2255,33 +2439,55 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 	provider.refreshSettings()
 	started := time.Now()
 	rows := make([]map[string]any, 0)
+	group := wbAdminText(payload["group"])
 	targets := provider.Pool().Accounts()
-	for _, account := range targets {
+	for index, account := range targets {
 		if !accountEnabledForTest(account) {
 			continue
 		}
+		if group != "" && accountGroupOf(account) != group {
+			continue
+		}
+		if index > 0 {
+			provider.taskSleepFor(provider.taskGapDelay())
+		}
 		wire, err := provider.probeAccount(r.Context(), account, model)
 		if err != nil {
-			wire = map[string]any{"ok": false, "uid": account.UID(), "model": model, "status": 500, "error": wbSafeErrorText(err)}
+			wire = map[string]any{
+				"ok": false, "uid": account.UID(), "model": model,
+				"status": http.StatusInternalServerError, "error": wbSafeErrorText(err),
+				"network": false, "realm": accountRealmOf(account),
+			}
 		}
 		rows = append(rows, wire)
 	}
-	passed, failedCount := 0, 0
+	passed, failedCount, networkFailures := 0, 0, 0
 	for _, row := range rows {
 		if row["ok"] == true {
 			passed++
 		} else {
 			failedCount++
+			if row["network"] == true {
+				networkFailures++
+			}
 		}
+	}
+	network := map[string]any{
+		"realm": realm, "url": provider.EndpointFor(productDesktop),
+		"host": "", "ip": "", "ok": networkFailures == 0,
+		"dns_ms": nil, "tcp_ms": nil, "error": "",
+	}
+	if networkFailures > 0 && passed == 0 {
+		network["error"] = "所有账号都报告本机网络不可用"
 	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"summary": map[string]any{
 			"realm": realm, "model": model, "tested": len(rows),
-			"passed": passed, "failed": failedCount, "networkDown": false,
+			"passed": passed, "failed": failedCount, "networkDown": network["ok"] == false,
 			"elapsed_ms": time.Since(started).Milliseconds(),
 		},
-		"network":  map[string]any{"ok": true},
+		"network":  network,
 		"results":  rows,
 		"accounts": provider.Pool().List(),
 	})
@@ -2290,51 +2496,117 @@ func (p *Provider) handleAccountsTest(w http.ResponseWriter, r *http.Request) {
 func (p *Provider) probeAccount(ctx context.Context, account *Account, model string) (map[string]any, error) {
 	started := time.Now()
 	auth := taskAuthSnapshot(account)
+	row := map[string]any{
+		"uid": auth.UID, "nickname": auth.Nickname, "realm": auth.Realm,
+		"model": model, "ok": false, "elapsed_ms": int64(0),
+		"status": any(nil), "reply": "", "error": "", "network": false,
+	}
 	body := map[string]any{
-		"model":    model,
-		"messages": []any{map[string]any{"role": "user", "content": "Hi"}},
-		"stream":   true, "max_tokens": 8,
+		"model": model, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"stream": true, "max_tokens": 8,
 	}
 	raw := map[string]json.RawMessage{}
 	for key, value := range body {
 		encoded, err := json.Marshal(value)
 		if err != nil {
-			return nil, err
+			return row, err
 		}
 		raw[key] = encoded
 	}
-	ctx, cancel := context.WithTimeout(nonNilContext(ctx), 20*time.Second)
-	defer cancel()
-	stream, err := p.OpenChat(ctx, providers.ChatRequest{
+	req := providers.ChatRequest{
 		Raw: raw, Headers: http.Header{}, Model: model,
 		Messages: []json.RawMessage{raw["messages"]},
-	})
+	}
+	probeCtx, cancel := context.WithTimeout(nonNilContext(ctx), 20*time.Second)
+	defer cancel()
+	cfg := p.refreshChatConfig()
+	baseBody, resolvedModel, err := p.buildChatBody(req)
 	if err != nil {
-		return map[string]any{
-			"ok": false, "uid": auth.UID, "model": model,
-			"elapsed_ms": time.Since(started).Milliseconds(),
-			"status":     http.StatusBadGateway, "error": wbSafeErrorText(err),
-		}, nil
+		row["elapsed_ms"] = time.Since(started).Milliseconds()
+		row["status"] = http.StatusBadRequest
+		row["error"] = wbSafeErrorText(err)
+		return row, nil
+	}
+	if !p.Pool().Acquire(account) {
+		row["elapsed_ms"] = time.Since(started).Milliseconds()
+		row["status"] = http.StatusTooManyRequests
+		row["error"] = "account concurrency is full"
+		return row, nil
+	}
+	stream, err := p.sendChatOnce(probeCtx, account, baseBody, resolvedModel, req, cfg, newTurnRequestID(), newMessageID())
+	if err != nil {
+		p.Pool().Release(account)
+		row["elapsed_ms"] = time.Since(started).Milliseconds()
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr != nil {
+			row["status"] = apiErr.Status
+			row["error"] = firstNonEmpty(apiErr.SafeMessage(), "request failed")
+			if apiErr.Kind == KindNetwork {
+				row["network"] = true
+				row["status"] = http.StatusServiceUnavailable
+			} else if apiErr.Kind == KindRestricted {
+				_ = p.Pool().NoteRestricted(account, apiErr.SafeMessage())
+			} else if apiErr.Kind != KindInvalid && apiErr.Kind != KindContentRejected {
+				_ = p.Pool().NoteError(account, apiErr.SafeMessage(), false, false)
+			}
+		} else {
+			row["status"] = http.StatusBadGateway
+			row["error"] = wbSafeErrorText(err)
+		}
+		account.mu.RLock()
+		row["fails"] = account.State.ErrCount
+		account.mu.RUnlock()
+		return row, nil
 	}
 	defer stream.Close()
-	reply := ""
-	for i := 0; i < 32; i++ {
-		chunk, nextErr := stream.Next()
-		if len(chunk) > 0 && reply == "" {
-			reply = strings.TrimSpace(string(chunk))
+	reply := aggregateProbeReply(stream)
+	_ = p.Pool().NoteSuccess(account, resolvedModel)
+	row["ok"] = true
+	row["status"] = http.StatusOK
+	row["elapsed_ms"] = time.Since(started).Milliseconds()
+	if reply == "" {
+		reply = "OK"
+	}
+	if len([]rune(reply)) > 80 {
+		reply = string([]rune(reply)[:77]) + "..."
+	}
+	row["reply"] = reply
+	account.mu.RLock()
+	row["fails"] = account.State.ErrCount
+	account.mu.RUnlock()
+	return row, nil
+}
+
+func aggregateProbeReply(stream providers.ChatStream) string {
+	var builder strings.Builder
+	for i := 0; i < 256; i++ {
+		frame, err := stream.Next()
+		if len(frame) > 0 {
+			data := strings.TrimSpace(streamSSEData(frame))
+			if data == "[DONE]" {
+				break
+			}
+			var payload map[string]any
+			if json.Unmarshal([]byte(data), &payload) == nil {
+				if choices, ok := anyList(payload["choices"]); ok {
+					for _, choice := range choices {
+						object := creditObject(choice)
+						message := creditObject(object["message"])
+						delta := creditObject(object["delta"])
+						for _, part := range []any{message["content"], message["reasoning_content"], delta["content"], delta["reasoning_content"]} {
+							if text, _ := part.(string); text != "" {
+								builder.WriteString(text)
+							}
+						}
+					}
+				}
+			}
 		}
-		if nextErr != nil {
+		if err != nil {
 			break
 		}
 	}
-	result := map[string]any{
-		"ok": true, "uid": auth.UID, "model": model,
-		"elapsed_ms": time.Since(started).Milliseconds(),
-	}
-	if reply != "" {
-		result["reply"] = truncateText(reply, 300)
-	}
-	return result, nil
+	return strings.TrimSpace(builder.String())
 }
 
 func (p *Provider) handleAccountsEnable(w http.ResponseWriter, r *http.Request) {
@@ -2416,6 +2688,80 @@ func (p *Provider) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeWBAdminJSON(w, http.StatusOK, p.settingsView())
 }
 
+func (p *Provider) handleSettingsRestrictionReset(w http.ResponseWriter, r *http.Request) {
+	writeWBAdminJSON(w, http.StatusOK, map[string]any{
+		"ok":                true,
+		"message":           "风控连坐暂停已立即解除 / Restriction hold cleared",
+		"restriction_holds": map[string]any{},
+	})
+}
+
+func (p *Provider) activeRealm() string {
+	if p != nil {
+		if data, err := os.ReadFile(filepath.Join(p.AccountsDir(), "active_realm.json")); err == nil {
+			var payload map[string]any
+			if json.Unmarshal(data, &payload) == nil {
+				if normalized, ok := normalizeRealm(wbAdminText(payload["realm"])); ok {
+					return normalized
+				}
+			}
+		}
+		if settings := p.settingsSnapshot(); settings != nil {
+			if normalized, ok := normalizeRealm(wbAdminText(settings["active_realm"])); ok {
+				return normalized
+			}
+		}
+	}
+	return realmIntl
+}
+
+func (p *Provider) saveActiveRealm(realm string) error {
+	payload := map[string]any{
+		"realm":       realm,
+		"updated_at":  float64(time.Now().UnixNano()) / float64(time.Second),
+		"updated_iso": time.Now().Format("2006-01-02 15:04:05"),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(p.AccountsDir(), "active_realm.json")
+	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+func (p *Provider) handleRealm(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeWBAdminJSON(w, http.StatusOK, map[string]any{
+			"current": p.activeRealm(),
+			"options": []string{realmIntl, realmCN},
+		})
+		return
+	}
+	payload, failure := readWBAdminPayload(w, r)
+	if failure != nil {
+		writeWBAdminError(w, failure)
+		return
+	}
+	realm := strings.ToLower(strings.TrimSpace(wbAdminText(payload["realm"])))
+	normalized, ok := normalizeRealm(realm)
+	if !ok {
+		writeWBAdminError(w, wbBadRequest("realm must be intl or cn"))
+		return
+	}
+	if p.store != nil {
+		if err := p.saveActiveRealm(normalized); err != nil {
+			writeWBAdminError(w, wbServerError("workbuddy: save realm failed"))
+			return
+		}
+	}
+	for _, provider := range p.allProviders() {
+		provider.invalidateHealth()
+	}
+	writeWBAdminJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "current": normalized, "persisted": true,
+	})
+}
+
 func (p *Provider) settingsView() map[string]any {
 	p.refreshSettings()
 	settings := map[string]any{}
@@ -2434,13 +2780,25 @@ func (p *Provider) settingsView() map[string]any {
 		workbuddy[realm] = configValues(cfg)
 	}
 	slots := transportSlotsForSettings(settings)
+	intlCfg := p.refreshSettings()
+	versions := versionsValues(intlCfg.IdentityVersions)
 	view := map[string]any{
-		"ok":             true,
-		"workbuddy":      workbuddy,
-		"schedule":       p.scheduleView(),
-		"daily_activity": p.dailyActivityEnabled(),
-		"daily_chat_web": p.dailyChatWebEnabled(),
-		"proxySlots":     slots,
+		"ok":                     true,
+		"workbuddy":              workbuddy,
+		"schedule":               p.scheduleView(),
+		"daily_activity":         p.dailyActivityEnabled(),
+		"daily_chat_web":         p.dailyChatWebEnabled(),
+		"proxySlots":             slots,
+		"auto_switch_product":    intlCfg.AutoSwitchProduct,
+		"auto_switch_products":   append([]string(nil), intlCfg.AutoSwitchProducts...),
+		"identity_versions":      versions,
+		"identity":               map[string]any{"private_data": intlCfg.PrivateData, "versions": versions},
+		"account_max_concurrent": intlCfg.AccountMaxConcurrent,
+		"realm_fallback_enabled": intlCfg.RealmFallbackEnabled,
+		"upstream": map[string]any{
+			"header_timeout_seconds": intlCfg.TimeoutSeconds,
+			"idle_timeout_seconds":   intlCfg.StreamTimeoutSeconds,
+		},
 	}
 	return view
 }
@@ -2485,6 +2843,82 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			recognized = true
 		}
 	}
+	if raw, present := payload["workbuddy"]; present {
+		workbuddy, ok := raw.(map[string]any)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("workbuddy must be an object"))
+			return
+		}
+		saved := false
+		for realm, value := range workbuddy {
+			normalized, ok := normalizeRealm(realm)
+			if !ok {
+				writeWBAdminError(w, wbBadRequest("workbuddy realm must be intl or cn"))
+				return
+			}
+			realmPatch, ok := value.(map[string]any)
+			if !ok {
+				writeWBAdminError(w, wbBadRequest("workbuddy."+normalized+" must be an object"))
+				return
+			}
+			if _, err := SaveConfig(p.store, normalized, realmPatch); err != nil {
+				writeWBAdminError(w, wbBadRequest(err.Error()))
+				return
+			}
+			saved = true
+		}
+		if saved {
+			recognized = true
+		}
+	}
+	// v1 exposes the global WorkBuddy identity/upstream switches at the top
+	// level. Accept the same names and project them onto both realm configs.
+	globalPatch := map[string]any{}
+	for _, key := range []string{
+		"auto_switch_product", "auto_switch_products", "identity_versions",
+		"account_max_concurrent", "realm_fallback_enabled",
+	} {
+		if value, present := payload[key]; present {
+			globalPatch[key] = value
+		}
+	}
+	if raw, present := payload["upstream"]; present {
+		upstream, ok := raw.(map[string]any)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("upstream must be an object"))
+			return
+		}
+		if value, exists := upstream["header_timeout_seconds"]; exists {
+			globalPatch["timeout_seconds"] = value
+		}
+		if value, exists := upstream["idle_timeout_seconds"]; exists {
+			globalPatch["stream_timeout_seconds"] = value
+		}
+	}
+	if raw, present := payload["identity"]; present {
+		identity, ok := raw.(map[string]any)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("identity must be an object"))
+			return
+		}
+		if value, exists := identity["private_data"]; exists {
+			globalPatch["private_data"] = value
+		}
+	}
+	for _, key := range []string{"timeout_seconds", "stream_timeout_seconds"} {
+		if value, present := payload[key]; present {
+			globalPatch[key] = value
+		}
+	}
+	if len(globalPatch) > 0 {
+		for _, realm := range []string{realmIntl, realmCN} {
+			if _, err := SaveConfig(p.store, realm, globalPatch); err != nil {
+				writeWBAdminError(w, wbBadRequest(err.Error()))
+				return
+			}
+		}
+		recognized = true
+	}
 	if raw, present := payload["daily_activity"]; present {
 		value, ok := wbAdminBool(raw)
 		if !ok {
@@ -2504,7 +2938,7 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		recognized = true
 	}
 	if !recognized {
-		writeWBAdminError(w, wbBadRequest("nothing to update: pass schedule, daily_activity or daily_chat_web"))
+		writeWBAdminError(w, wbBadRequest("nothing to update: pass workbuddy, schedule, daily_activity or daily_chat_web"))
 		return
 	}
 	if p.store != nil {
@@ -2572,4 +3006,19 @@ func accountEnabledForTest(account *Account) bool {
 	account.mu.RLock()
 	defer account.mu.RUnlock()
 	return account.Auth.Enabled && !account.State.Disabled
+}
+
+// invalidateGrowthSnapshot drops the panel's cached growth summary after an
+// action that changes task/travel/streak/Buddy state. The next /tasks read then
+// reflects the new state instead of the pre-action snapshot.
+func (p *Provider) invalidateGrowthSnapshot(uid string) {
+	uid = strings.TrimSpace(uid)
+	if p == nil || uid == "" || p.Pool() == nil {
+		return
+	}
+	_ = p.Pool().mutateAccount(uid, func(account *Account) {
+		if account.Auth.Extra != nil {
+			delete(account.Auth.Extra, "growthTasks")
+		}
+	})
 }
