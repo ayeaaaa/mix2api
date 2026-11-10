@@ -96,10 +96,27 @@ type LogStore struct {
 
 var _ Store = (*LogStore)(nil)
 
+// openSQLiteStore is a test seam for fail-closed MaxID handling.
+var openSQLiteStore = NewSQLite
+
 // Open builds a store. Durable persistence is optional; when enabled is false
 // (or opening the database fails) the store stays a working memory ring and no
-// logs.sqlite3 is created.
+// logs.sqlite3 is created. An unset Caps value uses the v1 default seven-day
+// retention; use OpenUnlimited when the operator explicitly cleared every cap.
 func Open(path string, enabled bool, caps Caps, logger *log.Logger) *LogStore {
+	if caps == (Caps{}) {
+		caps = DefaultCaps()
+	}
+	return openStore(path, enabled, caps, logger)
+}
+
+// OpenUnlimited is Open without an implicit retention default. A zero Caps
+// value means every axis is unlimited.
+func OpenUnlimited(path string, enabled bool, logger *log.Logger) *LogStore {
+	return openStore(path, enabled, Caps{}, logger)
+}
+
+func openStore(path string, enabled bool, caps Caps, logger *log.Logger) *LogStore {
 	store := &LogStore{
 		ring:   NewRing(DefaultCapacity),
 		path:   path,
@@ -147,14 +164,24 @@ func (s *LogStore) Query(query Query) (Result, error) {
 		return Result{Logs: make([]Entry, 0)}, ErrClosed
 	}
 	if !s.enabled.Load() {
-		return s.ring.Query(query), nil
+		return redactResult(s.ring.Query(query)), nil
 	}
 	result, err := s.submitQuery(query)
 	if err == nil {
-		return result, nil
+		return redactResult(result), nil
 	}
 	s.logf("logs: query failed, falling back to memory: %v", err)
-	return s.ring.Query(query), nil
+	return redactResult(s.ring.Query(query)), nil
+}
+
+// redactResult protects readers from legacy database rows written before the
+// append-time redaction rules existed. Query results are copied; callers may
+// mutate them without touching ring state.
+func redactResult(result Result) Result {
+	for index := range result.Logs {
+		result.Logs[index].Msg = RedactText(RedactQuery(result.Logs[index].Msg))
+	}
+	return result
 }
 
 func (s *LogStore) submitQuery(query Query) (Result, error) {
@@ -327,19 +354,55 @@ func (s *LogStore) logf(format string, args ...any) {
 func (s *LogStore) run() {
 	ticker := time.NewTicker(trimInterval)
 	defer ticker.Stop()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.logf("logs: worker stopped after panic: %v", recovered)
+		}
+		s.closeDatabase()
+		close(s.done)
+	}()
 	for {
 		select {
 		case <-s.stop:
-			s.process(s.jobs.takeAll())
-			s.closeDatabase()
-			close(s.done)
+			s.processSafely(s.jobs.takeAll())
 			return
 		case <-s.jobs.wake:
-			s.process(s.jobs.takeAll())
+			s.processSafely(s.jobs.takeAll())
 		case now := <-ticker.C:
-			s.maybeTrim(now)
+			s.maybeTrimSafely(now)
 		}
 	}
+}
+
+// processSafely keeps one malformed job from killing the only database
+// worker. Pending waiters receive an error instead of blocking until their
+// timeout, and later jobs continue on the same worker.
+func (s *LogStore) processSafely(jobs []job) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.logf("logs: worker panic: %v", recovered)
+			err := fmt.Errorf("logs: worker panic: %v", recovered)
+			for _, item := range jobs {
+				if item.done == nil {
+					continue
+				}
+				select {
+				case item.done <- jobResult{err: err}:
+				default:
+				}
+			}
+		}
+	}()
+	s.process(jobs)
+}
+
+func (s *LogStore) maybeTrimSafely(now time.Time) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.logf("logs: trim panic: %v", recovered)
+		}
+	}()
+	s.maybeTrim(now)
 }
 
 func (s *LogStore) process(jobs []job) {
@@ -421,18 +484,19 @@ func (s *LogStore) applyConfigure(enabled bool, caps Caps) error {
 		return nil
 	}
 	if s.db == nil {
-		store, err := NewSQLite(s.path)
+		store, err := openSQLiteStore(s.path)
 		if err != nil {
 			s.enabled.Store(false)
 			return err
 		}
-		s.db = store
 		maxID, err := store.MaxID()
 		if err != nil {
-			s.logf("logs: read max id: %v", err)
-		} else {
-			s.ring.EnsureNextID(maxID)
+			_ = store.Close()
+			s.enabled.Store(false)
+			return fmt.Errorf("logs: read max id: %w", err)
 		}
+		s.db = store
+		s.ring.EnsureNextID(maxID)
 	}
 	s.enabled.Store(true)
 	now := s.now()

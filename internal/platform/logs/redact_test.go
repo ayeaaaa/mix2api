@@ -140,6 +140,18 @@ func TestRedactPanelJSONCopyOnWrite(t *testing.T) {
 		t.Fatal("changed object was returned by reference")
 	}
 
+	typed := map[string]string{"nickname": "13812345678", "uid": "u1", "msg": "call 138-1234-5678"}
+	typedRedacted := RedactPanelJSON(typed).(map[string]string)
+	if typedRedacted["nickname"] != "138****5678" {
+		t.Fatalf("typed nickname = %q", typedRedacted["nickname"])
+	}
+	if typedRedacted["uid"] != "u1" || !strings.Contains(typedRedacted["msg"], "138****5678") {
+		t.Fatalf("typed map = %#v", typedRedacted)
+	}
+	if typed["nickname"] != "13812345678" {
+		t.Fatal("typed map input was mutated")
+	}
+
 	noHit := map[string]any{"uid": "u1", "count": 2, "note": "hello"}
 	if got := RedactPanelJSON(noHit); !sameReference(got, noHit) {
 		t.Fatal("no-hit object was copied")

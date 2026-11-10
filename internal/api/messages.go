@@ -672,14 +672,6 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
-	if _, present := chat["max_tokens"]; !present {
-		if limit := s.modelDefaultMaxOutput(r.Context(), provider, model); limit > 0 {
-			chat["max_tokens"] = limit
-			if raw, rawErr := chatMapToRaw(chat); rawErr == nil {
-				rawChat = raw
-			}
-		}
-	}
 	var allowRealmFallback *bool
 	if explicitRealm || boundRealm != "" {
 		disabled := false
@@ -809,22 +801,64 @@ func writeAnthropicError(w http.ResponseWriter, status int, message, errType str
 	_, _ = w.Write(body)
 }
 
-// protectMessages translates auth middleware errors into the Anthropic
-// envelope without changing the middleware contract. Only error responses are
-// buffered; successful streams pass through with their Flusher intact.
+// protectMessages accepts either the panel session or an API key, matching
+// v1's _key_ok gate. The two middleware contracts are opaque, so each is tried
+// against a discard writer; a middleware that calls next authorizes the
+// request. Downstream errors are still rendered as the Anthropic envelope.
 func (s *Server) protectMessages(next http.Handler) http.Handler {
-	if s == nil || s.opts.APIKeyAuth == nil {
+	if s == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusUnauthorized, "invalid api key", "authentication_error", time.Time{})
 		})
 	}
-	protected := s.opts.APIKeyAuth(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writer := &anthropicErrorWriter{ResponseWriter: w}
-		defer writer.finish()
-		protected.ServeHTTP(writer, r)
+		handler := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			writer := &anthropicErrorWriter{ResponseWriter: w}
+			defer writer.finish()
+			next.ServeHTTP(writer, request)
+		})
+		if s.tryMessagesAuth(w, r, handler, s.opts.APIKeyAuth) {
+			return
+		}
+		if s.tryMessagesAuth(w, r, handler, s.opts.PanelAuth) {
+			return
+		}
+		writeAnthropicError(w, http.StatusUnauthorized, "invalid api key", "authentication_error", time.Time{})
 	})
 }
+
+func (s *Server) tryMessagesAuth(w http.ResponseWriter, r *http.Request, gate http.Handler, auth func(http.Handler) http.Handler) bool {
+	if auth == nil {
+		return false
+	}
+	passed := false
+	authorized := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		passed = true
+		// Auth middleware in this tree does not wrap writes; route the actual
+		// handler to the real response writer so SSE flushing still works.
+		gate.ServeHTTP(w, request)
+	})
+	probe := &discardResponseWriter{header: make(http.Header)}
+	auth(authorized).ServeHTTP(probe, r)
+	return passed
+}
+
+type discardResponseWriter struct {
+	header http.Header
+}
+
+func (w *discardResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *discardResponseWriter) WriteHeader(int) {}
+
+func (w *discardResponseWriter) Write(data []byte) (int, error) { return len(data), nil }
+
+func (w *discardResponseWriter) Flush() {}
 
 type anthropicErrorWriter struct {
 	http.ResponseWriter

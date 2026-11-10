@@ -15,7 +15,6 @@ import (
 // as a JSON object; invalid frames are retained so callers that forward
 // provider bytes verbatim can do so without reparsing them.
 type Chunk struct {
-	Raw    []byte
 	Data   string
 	Done   bool
 	Valid  bool
@@ -95,7 +94,7 @@ func Payload(frame []byte) string {
 // ParseFrame decodes one SSE frame. Parse never fails: malformed or non-data
 // frames return a zero Chunk with Valid=false.
 func ParseFrame(frame []byte) Chunk {
-	chunk := Chunk{Raw: append([]byte(nil), frame...)}
+	chunk := Chunk{}
 	data := Payload(frame)
 	chunk.Data = data
 	if strings.TrimSpace(data) == "" {
@@ -290,22 +289,4 @@ func Float(value any) (float64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// Text returns the first string value in value or an empty string.
-func Text(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-// Map returns value when it is an object.
-func Map(value any) (map[string]any, bool) {
-	object, ok := value.(map[string]any)
-	return object, ok
-}
-
-// Slice returns value when it is an array.
-func Slice(value any) ([]any, bool) {
-	array, ok := value.([]any)
-	return array, ok
 }

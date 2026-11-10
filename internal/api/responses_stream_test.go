@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -29,7 +30,7 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 	if !strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("content type = %q", rec.Header().Get("Content-Type"))
 	}
-	if strings.Contains(rec.Body.String(), "[DONE]") {
+	if strings.Contains(rec.Body.String(), "[DONE]") || strings.Contains(rec.Body.String(), "event: ping") {
 		t.Fatalf("Responses stream must not emit [DONE]: %s", rec.Body)
 	}
 	events := parseSSEBody(t, rec.Body.String())
@@ -100,6 +101,77 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 	}
 	if _, leaked := raw[0].Raw["_namespace_map"]; leaked {
 		t.Fatalf("gateway-only namespace map forwarded")
+	}
+}
+
+func TestResponsesStreamTruncatedToolDropped(t *testing.T) {
+	stream := newStubStream(chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{
+			map[string]any{"index": 0, "id": "call_1", "function": map[string]any{"name": "run", "arguments": `{"path":`}},
+		}}, "finish_reason": "length"}}},
+	)...)
+	server, _ := responseTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{"model":"m1","input":"hi","stream":true,"tools":[{"type":"function","name":"run"}]}`, nil)
+	events := parseSSEBody(t, rec.Body.String())
+	for _, event := range events {
+		switch event.Event {
+		case "response.function_call_arguments.done", "response.output_item.done":
+			if item, ok := event.Data["item"].(map[string]any); ok && item["type"] == "function_call" {
+				t.Fatalf("truncated call closed out: %#v", event)
+			}
+			if event.Event == "response.function_call_arguments.done" {
+				t.Fatalf("truncated call arguments.done emitted: %#v", event)
+			}
+		}
+	}
+	last := events[len(events)-1]
+	if last.Event != "response.completed" {
+		t.Fatalf("last event = %#v", last)
+	}
+	response := last.Data["response"].(map[string]any)
+	if response["status"] != "incomplete" {
+		t.Fatalf("status = %#v", response["status"])
+	}
+}
+
+func TestResponsesStreamEmptyReasoningWithTruncatedCall(t *testing.T) {
+	stream := newStubStream(chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"reasoning_content": "only thinking"}}}},
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{
+			map[string]any{"index": 0, "id": "call_1", "function": map[string]any{"name": "run", "arguments": `{"path":`}},
+		}}}}},
+	)...)
+	server, _ := responseTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{"model":"m1","input":"hi","stream":true,"tools":[{"type":"function","name":"run"}]}`, nil)
+	events := parseSSEBody(t, rec.Body.String())
+	if events[len(events)-1].Event != "response.completed" {
+		t.Fatalf("reasoning + dropped call was classified as a failed response: %#v", events[len(events)-1])
+	}
+	response := events[len(events)-1].Data["response"].(map[string]any)
+	if response["status"] != "incomplete" {
+		t.Fatalf("status = %#v", response["status"])
+	}
+}
+
+func TestResponsesStreamMidstreamCancel(t *testing.T) {
+	stream := newStubStream(chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "partial"}}}},
+	)...)
+	stream.terminal = context.Canceled
+	var observed []ProtocolObservation
+	server, _ := responseTestServer(t, stream, ServerOptions{
+		ProtocolObserver: func(observation ProtocolObservation) { observed = append(observed, observation) },
+	})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{"model":"m1","input":"hi","stream":true}`, nil)
+	body := rec.Body.String()
+	if strings.Contains(body, "response.completed") || strings.Contains(body, "response.failed") {
+		t.Fatalf("cancellation emitted a terminal event: %s", body)
+	}
+	if stream.closes() != 1 {
+		t.Fatalf("stream closes = %d", stream.closes())
+	}
+	if len(observed) != 1 || observed[0].Outcome != "client_aborted" {
+		t.Fatalf("observations = %#v", observed)
 	}
 }
 

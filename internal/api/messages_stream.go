@@ -76,6 +76,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		tools:       map[int]*messagesToolState{},
 	}
 	reader := protocol.NewReader(stream)
+	postDone := false
 	for {
 		if clientCanceled(r) {
 			return messagesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
@@ -99,7 +100,17 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 			return messagesStreamResult{usage: state.usage, outcome: "upstream_aborted", status: failure.Status}
 		}
 		if chunk.Done {
-			break
+			postDone = true
+			continue
+		}
+		if postDone {
+			// Providers may emit a credit/usage accounting frame after
+			// [DONE]. Keep reading until EOF, but never turn that frame into
+			// client-visible content.
+			if len(chunk.Usage) > 0 {
+				state.usage = chunk.Usage
+			}
+			continue
 		}
 		if chunk.ID != "" {
 			state.id = chunk.ID

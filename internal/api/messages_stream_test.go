@@ -29,6 +29,9 @@ func TestMessagesStreamEvents(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "[DONE]") {
 		t.Fatalf("Messages stream must not emit [DONE]")
 	}
+	if strings.Contains(rec.Body.String(), "event: ping") || strings.Contains(rec.Body.String(), ": ping") {
+		t.Fatalf("Messages stream emitted a ping: %s", rec.Body)
+	}
 	events := parseSSEBody(t, rec.Body.String())
 	if len(events) < 6 {
 		t.Fatalf("events = %#v", events)
@@ -153,6 +156,53 @@ func TestMessagesStreamAbort(t *testing.T) {
 		t.Fatalf("stream closes = %d", stream.closes())
 	}
 	if len(observed) != 1 || observed[0].Outcome != "client_aborted" || observed[0].Protocol != "messages" {
+		t.Fatalf("observations = %#v", observed)
+	}
+}
+
+func TestMessagesStreamPostDoneUsage(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	frames := chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hello"}, "finish_reason": "stop"}}},
+	)
+	frames = append(frames,
+		"data: [DONE]\n\n",
+		"data: {\"id\":\"u\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_cache_hit_tokens\":3,\"prompt_cache_write_tokens\":1}}\n\n",
+	)
+	stream := newStubStream(frames...)
+	server, _ := messagesTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages", `{"model":"m1","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	events := parseSSEBody(t, rec.Body.String())
+	delta := events[len(events)-2]
+	if delta.Event != "message_delta" {
+		t.Fatalf("last delta = %s", delta.Event)
+	}
+	usage := delta.Data["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(7) || usage["output_tokens"] != float64(2) ||
+		usage["cache_read_input_tokens"] != float64(3) || usage["cache_creation_input_tokens"] != float64(1) {
+		t.Fatalf("post-DONE usage = %#v", usage)
+	}
+}
+
+func TestMessagesStreamMidstreamCancel(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	stream := newStubStream(chatSSE(
+		map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "partial"}}}},
+	)...)
+	stream.terminal = context.Canceled
+	var observed []ProtocolObservation
+	server, _ := messagesTestServer(t, stream, ServerOptions{
+		ProtocolObserver: func(observation ProtocolObservation) { observed = append(observed, observation) },
+	})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages", `{"model":"m1","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	body := rec.Body.String()
+	if strings.Contains(body, "message_stop") || strings.Contains(body, "event: error") {
+		t.Fatalf("cancellation emitted a terminal event: %s", body)
+	}
+	if stream.closes() != 1 {
+		t.Fatalf("stream closes = %d", stream.closes())
+	}
+	if len(observed) != 1 || observed[0].Outcome != "client_aborted" {
 		t.Fatalf("observations = %#v", observed)
 	}
 }

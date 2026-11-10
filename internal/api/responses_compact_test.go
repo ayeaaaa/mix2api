@@ -148,14 +148,29 @@ func TestResponsesCompactionStream(t *testing.T) {
 }
 
 func TestResponsesCompactionEmptySummary(t *testing.T) {
-	stream := newStubStream(chatSSE(
-		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "   "}, "finish_reason": "stop"}}},
-	)...)
-	server, _ := responseTestServer(t, stream, ServerOptions{})
-	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses/compact", `{"model":"m1","input":"do work"}`, nil)
-	failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "server_error")
-	if !strings.Contains(stringValue(failure["message"]), "compaction produced no summary") {
-		t.Fatalf("failure = %#v", failure)
+	for _, streamRequest := range []bool{false, true} {
+		stream := newStubStream(chatSSE(
+			map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "   "}, "finish_reason": "stop"}}},
+		)...)
+		var observed []ProtocolObservation
+		server, _ := responseTestServer(t, stream, ServerOptions{
+			ProtocolObserver: func(observation ProtocolObservation) { observed = append(observed, observation) },
+		})
+		body := `{"model":"m1","input":"do work"}`
+		if streamRequest {
+			body = `{"model":"m1","input":"do work","stream":true}`
+		}
+		rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses/compact", body, nil)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("stream=%v status = %d body=%s", streamRequest, rec.Code, rec.Body)
+		}
+		failure := requireErrorEnvelope(t, rec, http.StatusBadGateway, "server_error")
+		if !strings.Contains(stringValue(failure["message"]), "compaction produced no summary") {
+			t.Fatalf("stream=%v failure = %#v", streamRequest, failure)
+		}
+		if len(observed) != 1 || observed[0].Stream != streamRequest {
+			t.Fatalf("stream=%v observations = %#v", streamRequest, observed)
+		}
 	}
 }
 

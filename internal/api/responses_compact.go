@@ -33,7 +33,7 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, upstream provid
 	summary := chatMessageText(chat)
 	if summary == "" {
 		s.observeProtocol(ProtocolObservation{
-			Protocol: "responses", Model: model, Stream: meta.Compaction, Outcome: "failed",
+			Protocol: "responses", Model: model, Stream: meta.Streaming, Outcome: "failed",
 			Status: http.StatusBadGateway, Usage: usageMap(chat["usage"]),
 		})
 		writeFailure(w, &apiFailure{

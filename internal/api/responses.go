@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,7 +30,6 @@ type responseMeta struct {
 	InputText         string
 	WebTools          bool
 	Sources           []map[string]any
-	Compaction        bool
 	Streaming         bool
 }
 
@@ -43,9 +41,8 @@ type responseTranslateOptions struct {
 }
 
 type responsesTranslation struct {
-	Chat       map[string]any
-	Meta       responseMeta
-	Compaction bool
+	Chat map[string]any
+	Meta responseMeta
 }
 
 // responsesToChat is the Responses-to-Chat translator used by tests and future
@@ -107,7 +104,6 @@ func translateResponsesObject(payload map[string]any, opts responseTranslateOpti
 		CustomToolNames:   customNames,
 		InputText:         responsesInputText(payload["input"]),
 		WebTools:          opts.WebTools,
-		Compaction:        compaction,
 	}
 	if meta.ToolChoice == nil {
 		meta.ToolChoice = "auto"
@@ -135,7 +131,7 @@ func translateResponsesObject(payload map[string]any, opts responseTranslateOpti
 	if value := payload["parallel_tool_calls"]; value != nil && !compaction {
 		chat["parallel_tool_calls"] = value
 	}
-	return &responsesTranslation{Chat: chat, Meta: meta, Compaction: compaction}
+	return &responsesTranslation{Chat: chat, Meta: meta}
 }
 
 func preserveRequestContract(opts responseTranslateOptions) bool {
@@ -253,7 +249,8 @@ func responsesInputToMessages(payload map[string]any) []any {
 		switch itemType {
 		case "", "message", "user":
 			body := flattenResponseContent(item["content"])
-			if contentText := contentAsText(body); contentText != "" {
+			if contentNonEmpty(body) {
+				contentText := contentAsText(body)
 				role, _ := item["role"].(string)
 				if role == "" {
 					role = "user"
@@ -571,6 +568,19 @@ func contentAsText(value any) string {
 		return strings.Join(parts, "")
 	default:
 		return stringValue(value)
+	}
+}
+
+func contentNonEmpty(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed != ""
+	case []any:
+		return len(typed) > 0
+	case nil:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -1058,7 +1068,7 @@ func reasoningOnlyResponse(response map[string]any) bool {
 			continue
 		}
 		switch item["type"] {
-		case "function_call", "web_search_call":
+		case "function_call", "custom_tool_call", "web_search_call":
 			hasCalls = true
 		case "reasoning":
 			hasReasoning = true
@@ -1191,7 +1201,11 @@ func buildCitations(text string, sources []map[string]any) []any {
 			continue
 		}
 		markdownSpans = append(markdownSpans, span{start: match[0], end: match[1]})
-		add(url, stringValue(source["title"]), match[0], match[1])
+		title := stringValue(source["title"])
+		if title == "" {
+			title = text[match[2]:match[3]]
+		}
+		add(url, title, match[0], match[1])
 	}
 	for _, match := range citationURLRE.FindAllStringIndex(text, -1) {
 		inside := false
@@ -1349,7 +1363,6 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, localFailure(http.StatusBadRequest, "invalid JSON body"))
 		return
 	}
-	translated.Meta.Compaction = compaction
 	translated.Meta.Streaming = stream
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
@@ -1373,12 +1386,6 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, resolveErr)
 		return
 	}
-	if _, present := translated.Chat["max_tokens"]; !present {
-		if limit := s.modelDefaultMaxOutput(r.Context(), provider, model); limit > 0 {
-			translated.Chat["max_tokens"] = limit
-		}
-	}
-
 	raw, err := chatMapToRaw(translated.Chat)
 	if err != nil {
 		writeFailure(w, localFailure(http.StatusBadRequest, "invalid request"))
@@ -1618,37 +1625,4 @@ func firstNonNil(values ...any) any {
 
 func envValue(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
-}
-
-// modelDefaultMaxOutput resolves the catalog maxOutputTokens through the
-// provider contract. v1 read its cached model table; a bounded lookup keeps a
-// cold catalog from stalling the request.
-func (s *Server) modelDefaultMaxOutput(ctx context.Context, provider providers.Provider, model string) int {
-	if s != nil && s.opts.DefaultMaxOutputTokens != nil {
-		if limit := s.opts.DefaultMaxOutputTokens(model); limit > 0 {
-			return limit
-		}
-	}
-	if provider == nil || strings.TrimSpace(model) == "" {
-		return 0
-	}
-	lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
-	defer cancel()
-	models, err := provider.Models(lookupCtx, false)
-	if err != nil {
-		return 0
-	}
-	want := strings.ToLower(strings.TrimSpace(model))
-	for _, item := range models {
-		id, _ := item["id"].(string)
-		if strings.ToLower(strings.TrimSpace(id)) != want {
-			continue
-		}
-		for _, key := range []string{"max_output_tokens", "maxOutputTokens", "max_tokens", "max_completion_tokens", "max_output"} {
-			if limit, ok := protocol.Int64(item[key]); ok && limit > 0 {
-				return int(limit)
-			}
-		}
-	}
-	return 0
 }

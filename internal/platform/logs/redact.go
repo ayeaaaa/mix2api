@@ -136,11 +136,16 @@ func redactPanelValue(value any) (any, bool) {
 		var out map[string]string
 		for key, child := range typed {
 			replacement, changed := child, false
-			if key != "nickname" {
-				if _, identity := identityKeys[key]; !identity {
-					replacement = RedactText(child)
-					changed = replacement != child
+			if key == "nickname" {
+				if redacted, ok := redactNickname(child); ok {
+					if text, isString := redacted.(string); isString {
+						replacement = text
+						changed = replacement != child
+					}
 				}
+			} else if _, identity := identityKeys[key]; !identity {
+				replacement = RedactText(child)
+				changed = replacement != child
 			}
 			if !changed {
 				continue

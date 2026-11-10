@@ -66,12 +66,20 @@ func TestMessagesCountTokens(t *testing.T) {
 	}
 }
 
-func TestMessagesDefaultMaxTokensFromCatalog(t *testing.T) {
+func TestMessagesDefaultMaxTokensFromConfig(t *testing.T) {
 	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
 	stream := newStubStream(chatSSE(textChunks("u", "hi")...)...)
 	provider := &stubProvider{id: "workbuddy", realm: "intl", openStream: stream,
-		models: []providers.Model{{"id": "m1", "max_output_tokens": json.Number("128000")}}}
-	server := newTestServer(ServerOptions{Providers: []providers.Provider{provider}})
+		models: []providers.Model{{"id": "m1"}}}
+	server := newTestServer(ServerOptions{
+		Providers: []providers.Provider{provider},
+		DefaultMaxOutputTokens: func(model string) int {
+			if model == "m1" {
+				return 128000
+			}
+			return 0
+		},
+	})
 	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
 		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`, nil)
 	if rec.Code != http.StatusOK {
@@ -82,7 +90,7 @@ func TestMessagesDefaultMaxTokensFromCatalog(t *testing.T) {
 		t.Fatalf("open requests = %d", len(requests))
 	}
 	if got := string(requests[0].Raw["max_tokens"]); got != "128000" {
-		t.Fatalf("catalog default max_tokens = %s", got)
+		t.Fatalf("configured default max_tokens = %s", got)
 	}
 }
 
@@ -215,13 +223,72 @@ func TestMessagesAuthUsesAnthropicEnvelope(t *testing.T) {
 	server := New(ServerOptions{
 		Providers:  []providers.Provider{provider},
 		APIKeyAuth: RequireAPIKeyAuth("secret"),
-		PanelAuth:  passThroughAuth,
+		PanelAuth:  RequirePanelAuth("panel-secret"),
 	})
 	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
 		`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	requireAnthropicError(t, rec, http.StatusUnauthorized, "authentication_error")
 	if len(provider.opened()) != 0 {
 		t.Fatalf("unauthenticated request reached provider")
+	}
+}
+
+func TestMessagesRateLimitResetMetadata(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	reset := time.Now().Add(45 * time.Second).Truncate(time.Second)
+	provider := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "m1"}},
+		openErr: &retryTestError{status: http.StatusTooManyRequests, reset: reset}}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireAnthropicError(t, rec, http.StatusTooManyRequests, "rate_limit_error")
+	if !strings.Contains(stringValue(failure["message"]), "(resets at ") {
+		t.Fatalf("message = %#v", failure)
+	}
+	if rec.Header().Get("Retry-After") == "" || rec.Header().Get("X-RateLimit-Reset") == "" ||
+		rec.Header().Get("X-RateLimit-Reset-At") == "" {
+		t.Fatalf("headers = %#v", rec.Header())
+	}
+}
+
+func TestMessagesPanelSessionAuth(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	provider := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "m1"}},
+		openStream: newStubStream(chatSSE(textChunks("u", "hi")...)...)}
+	server := New(ServerOptions{
+		Providers:  []providers.Provider{provider},
+		APIKeyAuth: RequireAPIKeyAuth("api-secret"),
+		PanelAuth:  RequirePanelAuth("panel-secret"),
+	})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"X-Panel-Token": "panel-secret"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("panel status = %d body=%s", rec.Code, rec.Body)
+	}
+	if len(provider.opened()) != 1 {
+		t.Fatalf("panel request did not reach provider")
+	}
+
+	rec = serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	requireAnthropicError(t, rec, http.StatusUnauthorized, "authentication_error")
+
+	apiProvider := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "m1"}},
+		openStream: newStubStream(chatSSE(textChunks("u2", "hi")...)...)}
+	apiServer := New(ServerOptions{
+		Providers:  []providers.Provider{apiProvider},
+		APIKeyAuth: RequireAPIKeyAuth("api-secret"),
+		PanelAuth:  RequirePanelAuth("panel-secret"),
+	})
+	rec = serveRequest(apiServer.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"X-API-Key": "api-secret"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("api key status = %d body=%s", rec.Code, rec.Body)
+	}
+	if len(apiProvider.opened()) != 1 {
+		t.Fatalf("api key request did not reach provider")
 	}
 }
 

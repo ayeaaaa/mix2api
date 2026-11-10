@@ -116,6 +116,7 @@ func (s *SQLiteStore) AppendBatch(entries []Entry) error {
 	if err != nil {
 		return fmt.Errorf("logs: begin append batch: %w", err)
 	}
+	defer func() { _ = transaction.Rollback() }()
 	statement, err := transaction.Prepare(
 		"INSERT OR REPLACE INTO logs (id, ts, time, level, tag, msg) VALUES (?, ?, ?, ?, ?, ?)",
 	)
@@ -196,6 +197,7 @@ func (s *SQLiteStore) Query(query Query) (Result, error) {
 		if err := rows.Scan(&entry.ID, &entry.TS, &entry.Time, &entry.Level, &entry.Tag, &entry.Msg); err != nil {
 			return result, fmt.Errorf("logs: scan row: %w", err)
 		}
+		entry.Msg = RedactText(RedactQuery(entry.Msg))
 		result.Logs = append(result.Logs, entry)
 	}
 	if err := rows.Err(); err != nil {
@@ -273,6 +275,9 @@ func (s *SQLiteStore) Trim(caps Caps) error {
 	if err != nil {
 		return fmt.Errorf("logs: begin trim: %w", err)
 	}
+	// A panic in a callback (for example an injected clock) must not leave the
+	// single-connection database holding an open transaction.
+	defer func() { _ = transaction.Rollback() }()
 	if caps.MaxDays > 0 {
 		cutoff := time.Unix(s.now().Unix()-caps.MaxDays*86400, 0).Format("2006-01-02 15:04:05")
 		if _, err := transaction.Exec("DELETE FROM logs WHERE ts < ?", cutoff); err != nil {

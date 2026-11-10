@@ -553,7 +553,7 @@ func (s *responsesStreamState) finalize(emitter *responsesEmitter) (string, int)
 		}
 	}
 	emptyReasoning := strings.TrimSpace(fullText) == "" && strings.TrimSpace(s.reason.String()) != "" &&
-		!hasStructuredCalls && len(s.dsmlCalls) == 0 && s.finish != "length"
+		!hasStructuredCalls && len(s.dsmlCalls) == 0 && s.finish != "length" && !s.droppedTruncated
 	status := "completed"
 	if s.finish == "length" || s.droppedTruncated {
 		status = "incomplete"

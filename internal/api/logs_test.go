@@ -99,6 +99,40 @@ func TestLogsRoutes(t *testing.T) {
 		}
 	})
 
+	t.Run("legacy database rows are redacted", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "logs.sqlite3")
+		seed, err := logs.NewSQLite(path)
+		if err != nil {
+			t.Fatalf("NewSQLite: %v", err)
+		}
+		now := time.Now()
+		if err := seed.AppendBatch([]logs.Entry{{
+			ID: 1, TS: now.Format("2006-01-02 15:04:05"), Time: now.Format("15:04:05"),
+			Level: "INFO", Tag: "auth", Msg: "legacy 13812345678 callback?code=secret&state=state",
+		}}); err != nil {
+			_ = seed.Close()
+			t.Fatalf("seed: %v", err)
+		}
+		if err := seed.Close(); err != nil {
+			t.Fatalf("close seed: %v", err)
+		}
+		store := logs.Open(path, true, logs.Caps{}, nil)
+		t.Cleanup(func() { _ = store.Close() })
+		handler := logsTestHandler(t, store, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/logs", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d body %s", response.Code, response.Body.String())
+		}
+		body := response.Body.String()
+		if strings.Contains(body, "13812345678") || strings.Contains(body, "code=secret") {
+			t.Fatalf("legacy row leaked plaintext: %s", body)
+		}
+		if !strings.Contains(body, "138****5678") || !strings.Contains(body, "code=<redacted>") {
+			t.Fatalf("legacy row was not redacted: %s", body)
+		}
+	})
+
 	t.Run("export", func(t *testing.T) {
 		store := logsTestStore(t, false)
 		if err := store.Append(logs.Entry{

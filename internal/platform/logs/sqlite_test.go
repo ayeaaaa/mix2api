@@ -181,7 +181,7 @@ func TestSQLiteV1FixtureCompatibility(t *testing.T) {
 	if result.Total != 2 || result.Logs[0].ID != 7 || result.Logs[1].ID != 9 {
 		t.Fatalf("fixture rows = %#v", result)
 	}
-	if result.Logs[0].Msg != "legacy 13812345678" {
+	if result.Logs[0].Msg != "legacy 138****5678" {
 		t.Fatalf("fixture message = %q", result.Logs[0].Msg)
 	}
 	maxID, err := store.MaxID()
@@ -529,5 +529,160 @@ func TestConcurrentAppendAndQuery(t *testing.T) {
 	}
 	if stats.Rows != 0 {
 		t.Fatalf("stats rows after clear = %d", stats.Rows)
+	}
+}
+
+func TestOpenDefaultsToSevenDayRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs.sqlite3")
+	seed, err := NewSQLite(path)
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	now := time.Now()
+	oldTS := now.Add(-30 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+	newTS := now.Format("2006-01-02 15:04:05")
+	if err := seed.AppendBatch([]Entry{
+		{ID: 1, TS: oldTS, Time: "00:00:00", Level: "INFO", Tag: "system", Msg: "old"},
+		{ID: 2, TS: newTS, Time: "00:00:01", Level: "INFO", Tag: "system", Msg: "new"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	store := Open(path, true, Caps{}, nil)
+	defer store.Close()
+	result, err := store.Query(Query{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if result.Total != 1 || len(result.Logs) != 1 || result.Logs[0].ID != 2 {
+		t.Fatalf("default retention did not drop the old row: %#v", result)
+	}
+
+	unlimitedPath := filepath.Join(t.TempDir(), "logs-unlimited.sqlite3")
+	unlimitedSeed, err := NewSQLite(unlimitedPath)
+	if err != nil {
+		t.Fatalf("NewSQLite unlimited: %v", err)
+	}
+	if err := unlimitedSeed.AppendBatch([]Entry{{
+		ID: 1, TS: oldTS, Time: "00:00:00", Level: "INFO", Tag: "system", Msg: "old",
+	}}); err != nil {
+		t.Fatalf("seed unlimited: %v", err)
+	}
+	if err := unlimitedSeed.Close(); err != nil {
+		t.Fatalf("close unlimited seed: %v", err)
+	}
+	unlimited := OpenUnlimited(unlimitedPath, true, nil)
+	defer unlimited.Close()
+	unlimitedResult, err := unlimited.Query(Query{})
+	if err != nil {
+		t.Fatalf("unlimited Query: %v", err)
+	}
+	if unlimitedResult.Total != 1 {
+		t.Fatalf("OpenUnlimited dropped caps: %#v", unlimitedResult)
+	}
+}
+
+func TestConfigureMaxIDFailureFailsClosed(t *testing.T) {
+	original := openSQLiteStore
+	t.Cleanup(func() { openSQLiteStore = original })
+	openSQLiteStore = func(path string) (*SQLiteStore, error) {
+		store, err := NewSQLite(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := store.db.Exec("DROP TABLE logs"); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		return store, nil
+	}
+
+	store := Open(filepath.Join(t.TempDir(), "logs.sqlite3"), false, Caps{}, nil)
+	defer store.Close()
+	if err := store.Configure(true, 0, 0, 0); err == nil {
+		t.Fatal("Configure succeeded after MaxID failure")
+	}
+	if store.Enabled() {
+		t.Fatal("store enabled after MaxID failure")
+	}
+}
+
+func TestWorkerRecoversFromPanic(t *testing.T) {
+	original := openSQLiteStore
+	t.Cleanup(func() { openSQLiteStore = original })
+	panicOnce := true
+	now := time.Now
+	openSQLiteStore = func(path string) (*SQLiteStore, error) {
+		store, err := NewSQLite(path)
+		if err != nil {
+			return nil, err
+		}
+		store.Now = func() time.Time {
+			if panicOnce {
+				panicOnce = false
+				panic("trim panic")
+			}
+			return now()
+		}
+		return store, nil
+	}
+
+	store := Open(filepath.Join(t.TempDir(), "logs.sqlite3"), false, Caps{}, nil)
+	defer store.Close()
+	if err := store.Configure(true, 0, 7, 0); err == nil {
+		t.Fatal("panicking configure unexpectedly succeeded")
+	}
+	if err := store.Configure(true, 0, 7, 0); err != nil {
+		t.Fatalf("worker did not recover after panic: %v", err)
+	}
+	if !store.Enabled() {
+		t.Fatal("store not enabled after recovered configure")
+	}
+	if _, err := store.Query(Query{}); err != nil {
+		t.Fatalf("query after recovered panic: %v", err)
+	}
+}
+
+func TestConcurrentAppendAndClear(t *testing.T) {
+	store := Open(filepath.Join(t.TempDir(), "logs.sqlite3"), true, Caps{}, nil)
+	defer store.Close()
+
+	const writers = 4
+	const perWriter = 75
+	var group sync.WaitGroup
+	group.Add(writers)
+	for writer := 0; writer < writers; writer++ {
+		go func(writer int) {
+			defer group.Done()
+			for index := 0; index < perWriter; index++ {
+				if err := store.Append(Entry{Level: "INFO", Tag: "concurrent", Msg: fmt.Sprintf("w%d-%d", writer, index)}); err != nil {
+					t.Errorf("Append: %v", err)
+					return
+				}
+			}
+		}(writer)
+	}
+	for clear := 0; clear < 100; clear++ {
+		if err := store.Clear(); err != nil {
+			t.Errorf("Clear: %v", err)
+			break
+		}
+	}
+	group.Wait()
+
+	result, err := store.Query(Query{})
+	if err != nil {
+		t.Fatalf("Query after concurrent clear: %v", err)
+	}
+	if result.Total < 0 || result.Total > writers*perWriter {
+		t.Fatalf("total = %d", result.Total)
+	}
+	for index := 1; index < len(result.Logs); index++ {
+		if result.Logs[index-1].ID >= result.Logs[index].ID {
+			t.Fatalf("ids not ascending: %d then %d", result.Logs[index-1].ID, result.Logs[index].ID)
+		}
 	}
 }

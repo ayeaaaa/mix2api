@@ -204,6 +204,27 @@ func TestResponsesOrphanToolOutputs(t *testing.T) {
 	}
 }
 
+func TestResponsesImageOnlyInput(t *testing.T) {
+	chat, err := responsesToChat(rawPayload(t, map[string]any{
+		"model": "m1",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_image", "image_url": "data:image/png;base64,aaa"},
+		}}},
+	}))
+	if err != nil {
+		t.Fatalf("responsesToChat: %v", err)
+	}
+	messages := chat["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("image-only input was dropped: %#v", messages)
+	}
+	message := messages[0].(map[string]any)
+	parts, ok := message["content"].([]any)
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("image-only content = %#v", message["content"])
+	}
+}
+
 func TestResponsesToolsCustomAndNamespace(t *testing.T) {
 	payload := rawPayload(t, map[string]any{
 		"model": "m1", "input": []any{
@@ -366,8 +387,16 @@ func TestResponsesReasoningAndMaxTokens(t *testing.T) {
 
 	stream := newStubStream(chatSSE(textChunks("u", "hi")...)...)
 	provider := &stubProvider{id: "workbuddy", realm: "intl", openStream: stream,
-		models: []providers.Model{{"id": "m1", "max_output_tokens": json.Number("128000")}}}
-	server := newTestServer(ServerOptions{Providers: []providers.Provider{provider}})
+		models: []providers.Model{{"id": "m1"}}}
+	server := newTestServer(ServerOptions{
+		Providers: []providers.Provider{provider},
+		DefaultMaxOutputTokens: func(model string) int {
+			if model == "m1" {
+				return 128000
+			}
+			return 0
+		},
+	})
 	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{"model":"m1","input":"hi"}`, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("handler default status = %d body=%s", rec.Code, rec.Body)
@@ -377,7 +406,7 @@ func TestResponsesReasoningAndMaxTokens(t *testing.T) {
 		t.Fatalf("open requests = %d", len(requests))
 	}
 	if got := string(requests[0].Raw["max_tokens"]); got != "128000" {
-		t.Fatalf("catalog default max_tokens = %s", got)
+		t.Fatalf("configured default max_tokens = %s", got)
 	}
 }
 
@@ -465,6 +494,48 @@ func TestResponsesPreviousResponseIDRejected(t *testing.T) {
 	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
 	if len(provider.opened()) != 0 {
 		t.Fatalf("provider called for rejected request")
+	}
+}
+
+func TestResponsesReasoningWithCustomToolIsNotReasoningOnly(t *testing.T) {
+	stream := newStubStream(chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"reasoning_content": "think"}}}},
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{
+			map[string]any{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "apply_patch", "arguments": `{"input":"patch"}`}},
+		}}, "finish_reason": "tool_calls"}}},
+	)...)
+	server, _ := responseTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{
+		"model":"m1","input":"hi",
+		"tools":[{"type":"custom","name":"apply_patch"}]
+	}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	found := false
+	for _, rawItem := range body["output"].([]any) {
+		item := rawItem.(map[string]any)
+		if item["type"] == "custom_tool_call" && item["name"] == "apply_patch" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("custom call missing from = %#v", body["output"])
+	}
+}
+
+func TestResponsesCitationTitleUsesMarkdownLabel(t *testing.T) {
+	annotations := buildCitations("[fixture label](https://example.test/a)",
+		[]map[string]any{{"url": "https://example.test/a"}})
+	if len(annotations) != 1 {
+		t.Fatalf("annotations = %#v", annotations)
+	}
+	if title := annotations[0].(map[string]any)["title"]; title != "fixture label" {
+		t.Fatalf("title = %#v", title)
 	}
 }
 
