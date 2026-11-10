@@ -41,6 +41,37 @@ type ServerOptions struct {
 	// per-key/multi-key realm configuration is out of scope for this slice.
 	// Nil means keys do not bind a realm.
 	APIKeyRealm func(*http.Request) string
+
+	// DefaultMaxOutputTokens supplies the catalog maxOutputTokens for a model.
+	// Responses and Messages use it when the client omits the limit; v1 read
+	// the same value from its model catalog. Nil leaves the limit unset so the
+	// provider's own default applies.
+	DefaultMaxOutputTokens func(model string) int
+
+	// AnthropicMessagesEnabled reports the panel opt-in for the Anthropic
+	// bridge. A true result enables it; env WB_ENABLE_ANTHROPIC_MESSAGES is
+	// also honored. Nil means only the environment controls it.
+	AnthropicMessagesEnabled func() bool
+
+	// PreserveRequestContract enables the opt-in responses.text.format mapping
+	// (v1 WB_PRESERVE_REQUEST_CONTRACT). The environment flag is also honored.
+	PreserveRequestContract bool
+
+	// ProtocolObserver is the provider-neutral seam for the usage recorder.
+	// Task 12 wires the real recorder here; tests use it to pin terminal
+	// outcomes such as client_aborted without touching upstream state.
+	ProtocolObserver func(ProtocolObservation)
+}
+
+// ProtocolObservation describes one completed Responses or Messages request.
+// Usage is the raw OpenAI usage block when the upstream supplied one.
+type ProtocolObservation struct {
+	Protocol string
+	Model    string
+	Stream   bool
+	Outcome  string
+	Status   int
+	Usage    map[string]any
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}
@@ -103,6 +134,15 @@ func (s *Server) mount() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.Handle("/v1/chat/completions", s.protectAPI(http.HandlerFunc(s.handleChat)))
 	s.mux.Handle("/v1/models", s.protectAPI(http.HandlerFunc(s.handleModels)))
+	for _, path := range []string{"/responses", "/v1/responses", "/responses/compact", "/v1/responses/compact"} {
+		s.mux.Handle(path, s.protectAPI(http.HandlerFunc(s.handleResponses)))
+	}
+	for _, path := range []string{"/messages", "/v1/messages"} {
+		s.mux.Handle(path, s.protectMessages(http.HandlerFunc(s.handleMessages)))
+	}
+	for _, path := range []string{"/messages/count_tokens", "/v1/messages/count_tokens"} {
+		s.mux.Handle(path, s.protectMessages(http.HandlerFunc(s.handleMessagesCountTokens)))
+	}
 	for _, provider := range s.providers {
 		registerProviderRoutes(s.mux, provider, s.decorateProviderRoute)
 	}
@@ -197,7 +237,11 @@ func recoveryHandler(next http.Handler) http.Handler {
 			if recovered := recover(); recovered != nil {
 				log.Printf("api: panic serving %s %s: %v", r.Method, r.URL.Path, recovered)
 				if !tracked.wrote {
-					writeV1Error(tracked, http.StatusInternalServerError, "server_error", "internal server error")
+					if isMessagesPath(r.URL.Path) {
+						writeAnthropicError(tracked, http.StatusInternalServerError, "internal server error", "api_error", time.Time{})
+					} else {
+						writeV1Error(tracked, http.StatusInternalServerError, "server_error", "internal server error")
+					}
 				}
 			}
 		}()
@@ -257,6 +301,11 @@ func providerRealm(provider providers.Provider) string {
 	return strings.TrimSpace(provider.Realm())
 }
 
+func isMessagesPath(path string) bool {
+	return path == "/messages" || strings.HasPrefix(path, "/messages/") ||
+		path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/")
+}
+
 func isNilProvider(provider providers.Provider) bool {
 	if provider == nil {
 		return true
@@ -268,4 +317,18 @@ func isNilProvider(provider providers.Provider) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Server) observeProtocol(observation ProtocolObservation) {
+	if s == nil || s.opts.ProtocolObserver == nil {
+		return
+	}
+	if observation.Usage != nil {
+		copied := make(map[string]any, len(observation.Usage))
+		for key, value := range observation.Usage {
+			copied[key] = value
+		}
+		observation.Usage = copied
+	}
+	s.opts.ProtocolObserver(observation)
 }

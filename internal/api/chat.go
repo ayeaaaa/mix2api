@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/api/protocol"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -489,24 +490,21 @@ func aggregateChatStream(stream providers.ChatStream, model string) (map[string]
 		return nil, localFailure(http.StatusBadGateway, "upstream returned no chat stream")
 	}
 	aggregate := &chatAggregate{tools: make(map[int]*chatToolCall)}
+	reader := protocol.NewReader(stream)
 	for {
-		frame, err := stream.Next()
+		chunk, err := reader.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err
 		}
-		data := ssePayload(frame)
-		if data == "" {
-			continue
-		}
-		if strings.TrimSpace(data) == "[DONE]" {
+		if chunk.Done {
 			// Keep reading: Raccoon emits its credit usage frame after [DONE].
 			aggregate.sawDone = true
 			continue
 		}
-		aggregate.addJSON([]byte(data))
+		aggregate.addChunk(chunk)
 	}
 	completion, ok := aggregate.completion(model)
 	if !ok {
@@ -590,59 +588,68 @@ type chatToolCall struct {
 	arguments string
 }
 
-func (a *chatAggregate) addJSON(data []byte) {
+func (a *chatAggregate) addChunk(chunk protocol.Chunk) {
 	if a == nil {
 		return
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var chunk map[string]any
-	if err := decoder.Decode(&chunk); err != nil || chunk == nil {
-		return
+	if strings.TrimSpace(chunk.ID) != "" {
+		a.id = chunk.ID
 	}
-
-	if id, ok := chunk["id"].(string); ok && strings.TrimSpace(id) != "" {
-		a.id = id
+	if strings.TrimSpace(chunk.Model) != "" {
+		a.model = chunk.Model
 	}
-	if model, ok := chunk["model"].(string); ok && strings.TrimSpace(model) != "" {
-		a.model = model
+	if chunk.Created > 0 && a.lastCreated == 0 {
+		a.lastCreated = chunk.Created
 	}
-	if created, ok := int64Value(chunk["created"]); ok && created > 0 && a.lastCreated == 0 {
-		a.lastCreated = created
+	if len(chunk.Usage) > 0 {
+		a.usage = chunk.Usage
 	}
-	if usage, ok := chunk["usage"].(map[string]any); ok && len(usage) > 0 {
-		a.usage = usage
-	}
-
-	choices, ok := chunk["choices"].([]any)
-	if !ok || len(choices) == 0 {
+	if chunk.ChoiceCount == 0 {
 		return
 	}
 	a.sawChoice = true
-	for _, rawChoice := range choices {
-		choice, ok := rawChoice.(map[string]any)
-		if !ok {
-			continue
+	for _, choice := range chunk.Choices {
+		delta := choice.Delta
+		if len(delta.Raw) == 0 {
+			delta = choice.Message
 		}
-		delta, _ := choice["delta"].(map[string]any)
-		if delta == nil {
-			delta, _ = choice["message"].(map[string]any)
+		if delta.Content != "" {
+			a.content = append(a.content, delta.Content)
 		}
-		if delta != nil {
-			if piece, ok := delta["content"].(string); ok && piece != "" {
-				a.content = append(a.content, piece)
-			}
-			if piece, ok := delta["reasoning_content"].(string); ok && piece != "" {
-				a.reasoning = append(a.reasoning, piece)
-			}
-			a.addToolCalls(delta["tool_calls"])
-			if functionCall, ok := delta["function_call"].(map[string]any); ok {
-				a.addLegacyFunctionCall(functionCall)
-			}
+		if delta.ReasoningContent != "" {
+			a.reasoning = append(a.reasoning, delta.ReasoningContent)
 		}
-		if finish, ok := choice["finish_reason"].(string); ok && strings.TrimSpace(finish) != "" {
-			a.finish = finish
+		a.addProtocolToolCalls(delta.ToolCalls)
+		if delta.FunctionCall != nil {
+			a.addLegacyFunctionCall(map[string]any{
+				"name": delta.FunctionCall.Name, "arguments": delta.FunctionCall.Arguments,
+			})
 		}
+		if strings.TrimSpace(choice.FinishReason) != "" {
+			a.finish = choice.FinishReason
+		}
+	}
+}
+
+func (a *chatAggregate) addProtocolToolCalls(calls []protocol.ToolCall) {
+	for _, call := range calls {
+		index := call.Index
+		if !call.HasIndex {
+			index = len(a.tools)
+		}
+		entry := a.tools[index]
+		if entry == nil {
+			entry = &chatToolCall{}
+			a.tools[index] = entry
+		}
+		if call.ID != "" {
+			entry.id = call.ID
+		}
+		if call.Type != "" {
+			entry.kind = call.Type
+		}
+		entry.name += call.Name
+		entry.arguments += call.Arguments
 	}
 }
 

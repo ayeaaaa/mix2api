@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -9,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/api/protocol"
 )
 
 // sseKeepaliveInterval is a variable so tests can shorten it. Production keeps
@@ -60,15 +61,7 @@ func (s *sseWriter) Write(frame []byte) error {
 	if s.closed {
 		return nil
 	}
-	if !s.started {
-		s.w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		s.w.Header().Set("Cache-Control", "no-cache")
-		s.w.Header().Set("X-Accel-Buffering", "no")
-		s.w.WriteHeader(http.StatusOK)
-		s.started = true
-		s.lastAt = time.Now()
-		go s.heartbeat()
-	}
+	s.startLocked()
 	if _, err := s.w.Write(frame); err != nil {
 		return err
 	}
@@ -77,6 +70,34 @@ func (s *sseWriter) Write(frame []byte) error {
 	}
 	s.lastAt = time.Now()
 	return nil
+}
+
+// Start commits the SSE status line and headers without writing a frame. v1
+// sends early 200 headers for Responses/Messages streams even while the
+// upstream is still silent.
+func (s *sseWriter) Start() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.startLocked()
+}
+
+func (s *sseWriter) startLocked() {
+	if s.started {
+		return
+	}
+	s.w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("X-Accel-Buffering", "no")
+	s.w.WriteHeader(http.StatusOK)
+	s.started = true
+	s.lastAt = time.Now()
+	go s.heartbeat()
 }
 
 func (s *sseWriter) heartbeat() {
@@ -174,13 +195,12 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 	if strings.TrimSpace(data) == "" {
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader([]byte(data)))
-	decoder.UseNumber()
-	var chunk map[string]any
-	if err := decoder.Decode(&chunk); err != nil || chunk == nil {
+	parsed := protocol.ParseFrame(frame)
+	if !parsed.Valid {
 		n.sawAny = true
 		return [][]byte{frame}
 	}
+	chunk := parsed.Fields
 	n.sawAny = true
 
 	if model, ok := chunk["model"].(string); ok && strings.TrimSpace(model) != "" {

@@ -99,6 +99,7 @@ type stubStream struct {
 	index       int
 	errReturned bool
 	closed      bool
+	closeCount  int
 }
 
 func newStubStream(frames ...string) *stubStream {
@@ -127,6 +128,7 @@ func (s *stubStream) Next() ([]byte, error) {
 func (s *stubStream) Close() error {
 	s.mu.Lock()
 	s.closed = true
+	s.closeCount++
 	s.mu.Unlock()
 	return nil
 }
@@ -135,6 +137,12 @@ func (s *stubStream) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
+}
+
+func (s *stubStream) closes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCount
 }
 
 // mappedTestError exercises the provider-neutral HTTP error contract.
