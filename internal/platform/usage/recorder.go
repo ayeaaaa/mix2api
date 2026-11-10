@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/pricing"
@@ -27,6 +28,19 @@ type RecordInput struct {
 	GenMS          int64
 	Effort         string
 	Media          map[string]any
+
+	// Error rows carry the v1 failure fields. Status is the HTTP status, not
+	// the terminal outcome; Message is the client-safe message, truncated to
+	// v1's 200-byte field cap.
+	Error   bool
+	Status  int
+	Message string
+
+	// Free and CostPolicy come from the provider usage snapshot. CostPolicy is
+	// only used when it names a real provider policy; WorkBuddy's generic
+	// "credits" marker keeps the pricing-table policy id v1 wrote.
+	Free       bool
+	CostPolicy string
 }
 
 // Recorder writes the v1 usage row shape.
@@ -55,16 +69,32 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 			at = time.Now()
 		}
 	}
+	outcome := defaultRecordOutcome(in.Outcome)
+	if strings.TrimSpace(in.Outcome) == "" && (in.Error || in.Status >= 400) {
+		outcome = "failed"
+	}
 	row := map[string]any{
 		"at":         float64(at.UnixNano()) / 1e9,
 		"iso":        at.Local().Format("2006-01-02T15:04:05"),
 		"model":      in.Model,
 		"stream":     in.Stream,
-		"outcome":    defaultRecordOutcome(in.Outcome),
+		"outcome":    outcome,
 		"kind":       defaultRecordKind(in.Kind),
 		"elapsed_ms": in.ElapsedMS,
 		"ttft_ms":    in.TTFTMS,
 		"gen_ms":     in.GenMS,
+	}
+	if in.Error || in.Status >= 400 {
+		row["error"] = true
+		if in.Status > 0 {
+			row["status"] = in.Status
+		}
+		if message := strings.TrimSpace(in.Message); message != "" {
+			row["message"] = truncateMessage(message)
+		}
+	}
+	if in.Free {
+		row["free"] = true
 	}
 	if in.RequestedModel != "" && in.RequestedModel != in.Model {
 		row["requested_model"] = in.RequestedModel
@@ -93,6 +123,9 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 	default:
 		row["cost_policy"] = pricing.CurrentPolicyID(in.Model)
 	}
+	if policy := strings.TrimSpace(in.CostPolicy); policy != "" && !strings.EqualFold(policy, "credits") {
+		row["cost_policy"] = policy
+	}
 	if in.Effort != "" {
 		row["reasoning_effort"] = in.Effort
 	}
@@ -116,6 +149,14 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 		r.AfterRecord(ctx, in)
 	}
 	return nil
+}
+
+func truncateMessage(message string) string {
+	runes := []rune(message)
+	if len(runes) <= 200 {
+		return message
+	}
+	return string(runes[:200])
 }
 
 func defaultRecordOutcome(outcome string) string {

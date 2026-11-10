@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "providers": {
+    "cn": {
+      "accounts": 1,
+      "ok": true
+    },
+    "intl": {
+      "accounts": 1,
+      "ok": true
+    }
+  },
+  "version": "2.0.0-contract"
+}

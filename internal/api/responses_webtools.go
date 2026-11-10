@@ -152,9 +152,10 @@ func (s *Server) serveResponsesWithWebTools(
 	response := chatToResponse(final, model, meta)
 	attachWebItems(response, meta.WebItems, meta.Sources)
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "responses", Model: model, Realm: provider.Realm(), Stream: false,
-		Outcome: "completed", Status: http.StatusOK, Usage: usageMap(final["usage"]),
-		ElapsedMS: time.Since(started).Milliseconds(),
+		Protocol: "responses", Model: model, RequestedModel: model,
+		Realm: provider.Realm(), Effort: translated.Meta.Effort,
+		Stream: false, Outcome: "completed", Status: http.StatusOK,
+		Usage: usageMap(final["usage"]), ElapsedMS: time.Since(started).Milliseconds(),
 	})
 	writeJSONResponse(w, http.StatusOK, response)
 	return true

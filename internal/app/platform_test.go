@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
@@ -65,6 +66,18 @@ func TestPlatformComposition(t *testing.T) {
 	}
 	if platform.Settings.Keys != platform.Keys {
 		t.Fatal("settings and API-key store are not shared")
+	}
+	if len(platform.Probes.Providers) != 2 {
+		t.Fatalf("probe providers = %d, want WorkBuddy intl and cn", len(platform.Probes.Providers))
+	}
+	realms := map[string]bool{}
+	for _, probe := range platform.Probes.Providers {
+		if typed, ok := probe.(interface{ Realm() string }); ok {
+			realms[typed.Realm()] = true
+		}
+	}
+	if !realms["intl"] || !realms["cn"] {
+		t.Fatalf("probe realms = %v, want intl and cn", realms)
 	}
 	if platform.LogStore.Path() != filepath.Join(setup.Paths.UsageDir, "logs.sqlite3") {
 		t.Fatalf("log path = %q", platform.LogStore.Path())
@@ -156,6 +169,7 @@ type appLimitProvider struct {
 	realm   string
 	applied int
 	usage   map[string]any
+	jobs    []scheduler.Job
 }
 
 func (p *appLimitProvider) ID() string    { return "app-limit" }
@@ -173,8 +187,67 @@ func (p *appLimitProvider) OpenChat(context.Context, providers.ChatRequest) (pro
 	return nil, errors.New("not implemented")
 }
 func (p *appLimitProvider) Routes() []providers.Route { return nil }
-func (p *appLimitProvider) Jobs() []scheduler.Job     { return nil }
+func (p *appLimitProvider) Jobs() []scheduler.Job     { return p.jobs }
 func (p *appLimitProvider) ApplyLimits(_ map[string]any, usage map[string]any) {
 	p.applied++
 	p.usage = usage
+}
+
+func TestPlatformCloseCancelsBackgroundLoops(t *testing.T) {
+	root := t.TempDir()
+	store := config.New(filepath.Join(root, "accounts", "settings.json"))
+	if err := os.MkdirAll(filepath.Join(root, "accounts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	stopped := make(chan struct{})
+	job := appBlockingJob{started: started, stopped: stopped}
+	provider := &appLimitProvider{realm: "intl", jobs: []scheduler.Job{job}}
+	registry := providers.NewRegistry()
+	if err := registry.Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	platform, err := BuildPlatform(&Setup{
+		Paths:     Paths{AccountsDir: filepath.Join(root, "accounts"), UsageDir: filepath.Join(root, "usage")},
+		Store:     store,
+		Registry:  registry,
+		Providers: []providers.Provider{provider},
+	}, PlatformOptions{
+		Paths:     Paths{AccountsDir: filepath.Join(root, "accounts"), UsageDir: filepath.Join(root, "usage")},
+		MediaDir:  filepath.Join(root, "media"),
+		UpdateDir: filepath.Join(root, "updates"),
+		Home:      root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.Scheduler.Interval = 5 * time.Millisecond
+	platform.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduler job did not start")
+	}
+	platform.Close()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduler job was not cancelled by Close")
+	}
+}
+
+type appBlockingJob struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (j appBlockingJob) Name() string { return "blocking" }
+func (j appBlockingJob) Run(ctx context.Context) error {
+	select {
+	case j.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	close(j.stopped)
+	return ctx.Err()
 }

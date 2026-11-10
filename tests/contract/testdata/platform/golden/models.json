@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "context_window": 1000,
+      "id": "contract-model",
+      "max_output": 123,
+      "object": "model",
+      "owned_by": "contract"
+    }
+  ],
+  "object": "list",
+  "realm": "intl"
+}

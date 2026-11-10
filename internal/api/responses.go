@@ -32,6 +32,7 @@ type responseMeta struct {
 	Sources           []map[string]any
 	WebItems          []any
 	Streaming         bool
+	Effort            string
 }
 
 type responseTranslateOptions struct {
@@ -90,7 +91,8 @@ func translateResponsesObject(payload map[string]any, opts responseTranslateOpti
 			}
 		}
 	}
-	if effort := responsesReasoningEffort(payload); effort != "" {
+	effort := responsesReasoningEffort(payload)
+	if effort != "" {
 		chat["reasoning_effort"] = effort
 	}
 
@@ -105,6 +107,7 @@ func translateResponsesObject(payload map[string]any, opts responseTranslateOpti
 		CustomToolNames:   customNames,
 		InputText:         responsesInputText(payload["input"]),
 		WebTools:          opts.WebTools,
+		Effort:            effort,
 	}
 	if meta.ToolChoice == nil {
 		meta.ToolChoice = "auto"
@@ -1388,7 +1391,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
-		s.observeResponseFailure(r, model, stream, providerFailure(resolveErr).Status)
+		s.observeResponseFailure(r, model, stream, failureFromError(resolveErr).Status)
 		writeFailure(w, resolveErr)
 		return
 	}
@@ -1425,7 +1428,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		if upstream != nil {
 			_ = upstream.Close()
 		}
-		s.observeResponseFailure(r, model, stream, providerFailure(openErr).Status, provider.Realm())
+		s.observeResponseFailure(r, model, stream, failureFromError(openErr).Status, provider.Realm())
 		writeFailure(w, openErr)
 		return
 	}
@@ -1447,9 +1450,12 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	chat, err := aggregateChatStream(tracked, model)
 	if err != nil {
+		failure := providerFailure(err)
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, Stream: false, Outcome: "failed",
-			Status: providerFailure(err).Status,
+			Protocol: "responses", Model: model, RequestedModel: model,
+			Realm: provider.Realm(), Effort: translated.Meta.Effort,
+			Stream: false, Outcome: "failed", Status: failure.Status,
+			Error: true, Message: failure.Message,
 		}
 		applyTracker(&observation, tracked)
 		s.observeProtocol(r, observation)
@@ -1459,7 +1465,10 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	response := chatToResponse(chat, model, translated.Meta)
 	if reasoningOnlyResponse(response) {
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, Stream: false, Outcome: "failed", Status: http.StatusBadGateway,
+			Protocol: "responses", Model: model, RequestedModel: model,
+			Realm: provider.Realm(), Effort: translated.Meta.Effort,
+			Stream: false, Outcome: "failed", Status: http.StatusBadGateway,
+			Error: true, Message: "upstream returned reasoning without output text; retry",
 			Usage: usageMap(chat["usage"]),
 		}
 		applyTracker(&observation, tracked)
@@ -1469,7 +1478,9 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	observation := ProtocolObservation{
-		Protocol: "responses", Model: model, Realm: provider.Realm(), Stream: false, Outcome: "completed", Status: http.StatusOK,
+		Protocol: "responses", Model: model, RequestedModel: model,
+		Realm: provider.Realm(), Effort: translated.Meta.Effort,
+		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(chat["usage"]),
 	}
 	applyTracker(&observation, tracked)
@@ -1483,8 +1494,8 @@ func (s *Server) observeResponseFailure(r *http.Request, model string, stream bo
 		realm = realms[0]
 	}
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "responses", Model: model, Realm: realm, Stream: stream,
-		Outcome: "failed", Status: status,
+		Protocol: "responses", Model: model, RequestedModel: model, Realm: realm,
+		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: "request failed",
 	})
 }
 

@@ -1,0 +1,38 @@
+{
+  "created_at": "\u003ctimestamp\u003e",
+  "id": "\u003cdynamic\u003e",
+  "metadata": {},
+  "model": "contract-model",
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "annotations": [],
+          "text": "hello",
+          "type": "output_text"
+        }
+      ],
+      "id": "\u003cdynamic\u003e",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    }
+  ],
+  "output_text": "hello",
+  "parallel_tool_calls": true,
+  "status": "completed",
+  "tool_choice": "auto",
+  "tools": [],
+  "usage": {
+    "input_tokens": 4,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 2,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 6
+  }
+}

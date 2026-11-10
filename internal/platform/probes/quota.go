@@ -14,6 +14,7 @@ import (
 type QuotaRow struct {
 	UID        string  `json:"uid"`
 	Model      string  `json:"model"`
+	Realm      string  `json:"realm,omitempty"`
 	LastScan   float64 `json:"last_scan"`
 	NextAt     float64 `json:"next_at"`
 	SeenAt     float64 `json:"seen_at"`
@@ -116,11 +117,17 @@ func decodeQuotaMap(value any) (QuotaRow, bool) {
 		SeenAt: probeFloat(item["seen_at"]), Attempts: probeInt(item["attempts"]),
 		LastTry: probeFloat(item["last_try"]), LastResult: probeString(item["last_result"]),
 		LastDetail: probeString(item["last_detail"]),
+		Realm:      probeString(item["realm"]),
 	}
 	return row, row.UID != "" && row.Model != ""
 }
 
 func (s *QuotaState) Ensure(uid, model string, now time.Time, delay time.Duration) bool {
+	return s.EnsureRealm(uid, model, "", now, delay)
+}
+
+// EnsureRealm seeds one quota line with its provider realm.
+func (s *QuotaState) EnsureRealm(uid, model, realm string, now time.Time, delay time.Duration) bool {
 	if s == nil || uid == "" || model == "" {
 		return false
 	}
@@ -130,7 +137,7 @@ func (s *QuotaState) Ensure(uid, model string, now time.Time, delay time.Duratio
 	if _, ok := s.scans[key]; ok {
 		return false
 	}
-	s.scans[key] = QuotaRow{UID: uid, Model: model, SeenAt: resetTime(now), NextAt: resetTime(now.Add(delay))}
+	s.scans[key] = QuotaRow{UID: uid, Model: model, Realm: realm, SeenAt: resetTime(now), NextAt: resetTime(now.Add(delay))}
 	s.saveLocked()
 	return true
 }

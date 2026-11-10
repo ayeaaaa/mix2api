@@ -49,7 +49,7 @@ func TestGateDDataRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mediaDir, "video-prices.json"), []byte(`{"video-model":3}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mediaDir, "video-prices.json"), []byte(`{"video-model|720p":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(mediaDir, "image-prices.json"), []byte(`{"image-model":2}`), 0o600); err != nil {
@@ -176,6 +176,32 @@ func TestGateDDataRoundTrip(t *testing.T) {
 	stateAfter, err := os.ReadFile(stateFixture)
 	if err != nil || !bytes.Equal(stateBefore, stateAfter) {
 		t.Fatalf("agent state changed by a read path: err=%v", err)
+	}
+	if err := platform.Agents.SetSelection([]string{"hy4-preview"}); err != nil {
+		t.Fatal(err)
+	}
+	if selection, configured := platform.Agents.Selection(); !configured || len(selection) != 1 || selection[0] != "hy4-preview" {
+		t.Fatalf("agent selection roundtrip = %v configured=%t", selection, configured)
+	}
+	settingsAfterAgent, err := platform.Store.Load()
+	if err != nil || settingsAfterAgent["unknown_v1_key"] == nil {
+		t.Fatalf("agent selection dropped unknown settings: %+v err=%v", settingsAfterAgent, err)
+	}
+
+	if platform.Pricing == nil {
+		t.Fatal("pricing snapshot missing")
+	}
+	cost := platform.Pricing.CostForRow(map[string]any{
+		"model": "deepseek-v4.1-flash-sg", "prompt_tokens": 1000, "completion_tokens": 100,
+	})
+	if !cost.Known || cost.CNY <= 0 {
+		t.Fatalf("embedded pricing roundtrip = %+v", cost)
+	}
+	if price := platform.Media.Pricing.ImagePrice("image-model"); price == nil || *price != 2 {
+		t.Fatalf("media image price = %v", price)
+	}
+	if price := platform.Media.Pricing.PricePerSecond("video-model", "720p", true, false); price == nil || *price != 3 {
+		t.Fatalf("media video price = %v", price)
 	}
 	executor := update.NewExecutor(updateDir)
 	status, ok := executor.ReadStatus()

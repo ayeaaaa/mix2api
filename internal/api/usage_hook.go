@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -144,6 +145,18 @@ func applyTracker(observation *ProtocolObservation, stream providers.ChatStream)
 func applySnapshot(observation *ProtocolObservation, snapshot providers.UsageSnapshot) {
 	if observation == nil {
 		return
+	}
+	if model := strings.TrimSpace(snapshot.Model); model != "" && model != observation.Model {
+		if observation.Model != "" {
+			observation.RequestedModel = observation.Model
+		}
+		observation.Model = model
+	}
+	if snapshot.Free {
+		observation.Free = true
+	}
+	if policy := strings.TrimSpace(snapshot.CostPolicy); policy != "" {
+		observation.CostPolicy = policy
 	}
 	if observation.Realm == "" {
 		observation.Realm = snapshot.Realm

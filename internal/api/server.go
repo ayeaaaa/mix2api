@@ -172,6 +172,11 @@ type ProtocolObservation struct {
 	ElapsedMS      int64
 	TTFTMS         int64
 	GenMS          int64
+	Effort         string
+	Error          bool
+	Message        string
+	Free           bool
+	CostPolicy     string
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}
@@ -547,7 +552,7 @@ var corsManagementPrefixes = []string{
 	"/pricing", "/activity", "/console",
 }
 
-var corsAPIPrefixes = []string{"/v1", "/chat", "/completions", "/models", "/responses"}
+var corsAPIPrefixes = []string{"/v1", "/chat", "/completions", "/models", "/responses", "/messages"}
 
 func corsOriginAllowed(path string) bool {
 	if path == "" {
@@ -754,6 +759,12 @@ func (s *Server) observeProtocol(r *http.Request, observation ProtocolObservatio
 			ElapsedMS:      observation.ElapsedMS,
 			TTFTMS:         observation.TTFTMS,
 			GenMS:          observation.GenMS,
+			Effort:         observation.Effort,
+			Error:          observation.Error,
+			Status:         observation.Status,
+			Message:        observation.Message,
+			Free:           observation.Free,
+			CostPolicy:     observation.CostPolicy,
 		}
 		if in.Kind == "" {
 			in.Kind = "chat"

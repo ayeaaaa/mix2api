@@ -16,9 +16,10 @@ single dispatch, auth class, and preserved shape.
 | Group | Routes |
 |---|---|
 | health/models | `GET /health`, `GET /models`, `GET /v1/models` |
-| chat | `POST /chat/completions`, `POST /v1/chat/completions` |
+| chat | `POST /chat/completions`, `/v1/chat/completions`, `/completions`, `/v1/completions` |
 | responses | `POST /responses`, `/v1/responses`, `/responses/compact`, `/v1/responses/compact` |
 | messages | `POST /messages`, `/v1/messages`, `/messages/count_tokens`, `/v1/messages/count_tokens` |
+| pricing | `GET /pricing`, `POST /pricing/refresh`, `POST /pricing/mapping` |
 | usage | `GET /usage`, `/v1/usage`, `/usage/recent`, `/usage/analytics`, `/usage/perf`, `/usage/timeseries`, `/usage/by-account`, `/usage/remaining` |
 | logs | `GET /logs`, `POST /logs/clear`, `GET /logs/export` |
 | settings/panel | `GET /settings`, `POST /settings/save`, `GET /settings/reveal`, `GET/POST /realm`, `GET /panel/status`, `POST /panel/login`, `POST /panel/logout`, `POST /panel/password` |
@@ -31,6 +32,8 @@ single dispatch, auth class, and preserved shape.
 
 ## Excluded routes
 
+- `/console/state` and `/console/toggle` are host-specific UI controls and are
+  not mounted by this plan (Plan 5 owns the dashboard surface).
 - `/usage/export` is not a v1.6.5 public route. Internal NDJSON export remains
   available to tooling/tests; the public exports are `/accounts/export`
   (provider-owned) and `/logs/export`.
@@ -79,3 +82,7 @@ CodeArts and Raccoon never receive WorkBuddy credit or token counters.
   or production usage row is committed.
 - The usage ledger and log export must never contain `MIX2API_API_KEY`,
   panel session tokens, authorization headers, or prompts.
+- The checked-in contract files are `tests/contract/platform_services_test.go`,
+  `tests/contract/platform_data_test.go`, `tests/contract/platform_golden_test.go`,
+  `tests/integration/platform_services_test.go`, and the fixture directory
+  `tests/contract/testdata/platform/`.

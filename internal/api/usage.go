@@ -70,7 +70,7 @@ func (h *UsageHandlers) realm(r *http.Request) string {
 		realm = strings.TrimSpace(r.Header.Get("X-Realm"))
 	}
 	if realm == "" && h.Service != nil {
-		realm = h.Service.DefaultRealm
+		realm = h.Service.DefaultRealmValue()
 	}
 	return realm
 }

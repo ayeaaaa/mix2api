@@ -274,3 +274,26 @@ func TestGuardLegacyFlatLimits(t *testing.T) {
 		t.Fatalf("legacy limits = %+v", workbuddy.values)
 	}
 }
+
+func TestGuardNoLimitHotPathTouchesNothing(t *testing.T) {
+	store := settingsStore(t, nil)
+	workbuddy := &limitProvider{fakeProvider: fakeProvider{id: "workbuddy", realm: "intl"}}
+	guard := NewGuard(store, []providers.Provider{workbuddy}, "")
+	scans := 0
+	guard.LoadRows = func(context.Context) ([]usage.Row, error) {
+		scans++
+		return nil, nil
+	}
+	if applied := guard.Apply(context.Background(), false); applied != 0 {
+		t.Fatalf("no-limit hot path applied = %d", applied)
+	}
+	if workbuddy.calls != 0 || scans != 0 {
+		t.Fatalf("no-limit hot path touched provider/scans: calls=%d scans=%d", workbuddy.calls, scans)
+	}
+	if applied := guard.Apply(context.Background(), true); applied != 1 {
+		t.Fatalf("refresh applied = %d", applied)
+	}
+	if scans != 0 {
+		t.Fatal("disabled refresh scanned the ledger")
+	}
+}

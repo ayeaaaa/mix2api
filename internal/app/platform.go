@@ -35,7 +35,6 @@ type PlatformOptions struct {
 	Version       string
 	ListenerPort  int
 	PanelPassword string
-	APIKey        string
 
 	// Home is the user home used by the agent configurator. Empty resolves
 	// os.UserHomeDir lazily.
@@ -92,6 +91,12 @@ type Platform struct {
 
 	closeOnce sync.Once
 	stopProbe chan struct{}
+
+	lifecycle sync.Mutex
+	started   bool
+	closed    bool
+	runCancel context.CancelFunc
+	runWG     sync.WaitGroup
 }
 
 // BuildPlatform composes every platform service over the already-built
@@ -201,11 +206,11 @@ func BuildPlatform(setup *Setup, opts PlatformOptions) (*Platform, error) {
 	webTools.Logger = opts.Logger
 	webTools.Enabled = func() bool { return settingsBool(setup.Store, "local_web_tools", false) }
 
-	probeProvider := firstProbeProvider(providerList)
+	probeProviders := allProbeProviders(providerList)
 	probesService := probes.NewService(probes.Service{
-		Provider: probeProvider,
-		Window:   probes.NewWindowState(paths.AccountsDir),
-		Quota:    probes.NewQuotaState(paths.AccountsDir),
+		Providers: probeProviders,
+		Window:    probes.NewWindowState(paths.AccountsDir),
+		Quota:     probes.NewQuotaState(paths.AccountsDir),
 		WatchModels: func() []string {
 			return stringListSetting(setup.Store, "quota_scan_models")
 		},
@@ -238,6 +243,7 @@ func BuildPlatform(setup *Setup, opts PlatformOptions) (*Platform, error) {
 	usageService.Now = opts.Now
 	usageService.StartedAt = opts.Now()
 	usageService.DefaultRealm = realm.Active(context.Background())
+	usageService.DefaultRealmFunc = func() string { return realm.Active(context.Background()) }
 	usageService.KeyName = func(id string) string {
 		entries, err := keyStore.List(false)
 		if err != nil {
@@ -406,18 +412,38 @@ func (p *Platform) Start(ctx context.Context) {
 	if p == nil {
 		return
 	}
+	p.lifecycle.Lock()
+	if p.started || p.closed {
+		p.lifecycle.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	p.started = true
+	p.runCancel = cancel
+	start := func(run func()) {
+		p.runWG.Add(1)
+		go func() {
+			defer p.runWG.Done()
+			run()
+		}()
+	}
 	if p.Refresher != nil {
-		go p.Refresher.Run(ctx)
+		start(func() { p.Refresher.Run(runCtx) })
 	}
 	if p.Updates != nil {
-		go p.Updates.Run()
+		start(func() { p.Updates.Run() })
+		start(func() {
+			<-runCtx.Done()
+			p.Updates.Stop()
+		})
 	}
 	if p.Scheduler != nil {
-		go p.Scheduler.Run(ctx)
+		start(func() { p.Scheduler.Run(runCtx) })
 	}
 	if p.Probes != nil {
-		go p.runProbes(ctx)
+		start(func() { p.runProbes(runCtx) })
 	}
+	p.lifecycle.Unlock()
 }
 
 func (p *Platform) runProbes(ctx context.Context) {
@@ -451,6 +477,13 @@ func (p *Platform) Close() {
 		return
 	}
 	p.closeOnce.Do(func() {
+		p.lifecycle.Lock()
+		p.closed = true
+		cancel := p.runCancel
+		p.lifecycle.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		if p.stopProbe != nil {
 			close(p.stopProbe)
 		}
@@ -459,6 +492,17 @@ func (p *Platform) Close() {
 		}
 		if p.Updates != nil {
 			p.Updates.Stop()
+		}
+		// Stop owns scheduler/probe/refresher loops before their stores close.
+		// A slow optional network fetch gets a bounded grace period.
+		done := make(chan struct{})
+		go func() {
+			p.runWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
 		}
 		if p.Media != nil && p.Media.Tasks != nil {
 			p.Media.Tasks.Stop()
@@ -483,13 +527,14 @@ func providerJobs(list []providers.Provider) []scheduler.Job {
 	return out
 }
 
-func firstProbeProvider(list []providers.Provider) providers.ProbeProvider {
+func allProbeProviders(list []providers.Provider) []providers.ProbeProvider {
+	out := make([]providers.ProbeProvider, 0)
 	for _, provider := range list {
 		if probe, ok := provider.(providers.ProbeProvider); ok {
-			return probe
+			out = append(out, probe)
 		}
 	}
-	return nil
+	return out
 }
 
 func settingsBool(store *config.Store, key string, fallback bool) bool {

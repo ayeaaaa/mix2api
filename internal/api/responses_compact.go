@@ -23,9 +23,11 @@ const compactionPrompt = "You are performing a CONTEXT CHECKPOINT COMPACTION. Cr
 func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request, upstream providers.ChatStream, model string, meta responseMeta) {
 	chat, err := aggregateChatStream(upstream, model)
 	if err != nil {
+		failure := providerFailure(err)
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, Stream: meta.Streaming, Outcome: "failed",
-			Status: providerFailure(err).Status,
+			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Stream: meta.Streaming, Outcome: "failed", Status: failure.Status,
+			Error: true, Message: failure.Message,
 		}
 		applyTracker(&observation, upstream)
 		s.observeProtocol(r, observation)
@@ -35,8 +37,11 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 	summary := chatMessageText(chat)
 	if summary == "" {
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, Stream: meta.Streaming, Outcome: "failed",
-			Status: http.StatusBadGateway, Usage: usageMap(chat["usage"]),
+			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Stream: meta.Streaming, Outcome: "failed",
+			Status: http.StatusBadGateway, Error: true,
+			Message: "compaction produced no summary (the model returned no text); retry",
+			Usage:   usageMap(chat["usage"]),
 		}
 		applyTracker(&observation, upstream)
 		s.observeProtocol(r, observation)
@@ -54,8 +59,9 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 		writeJSONResponse(w, http.StatusOK, response)
 	}
 	observation := ProtocolObservation{
-		Protocol: "responses", Model: model, Stream: meta.Streaming,
-		Outcome: "completed", Status: http.StatusOK, Usage: usageMap(chat["usage"]),
+		Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+		Stream: meta.Streaming, Outcome: "completed", Status: http.StatusOK,
+		Usage: usageMap(chat["usage"]),
 	}
 	applyTracker(&observation, upstream)
 	s.observeProtocol(r, observation)

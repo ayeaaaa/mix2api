@@ -52,11 +52,13 @@ func writeMessagesStream(w http.ResponseWriter, r *http.Request, stream provider
 	_ = runMessagesStream(w, r, stream, model)
 }
 
-func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) {
+func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model, effort string) {
 	result := runMessagesStream(w, r, stream, model)
 	observation := ProtocolObservation{
-		Protocol: "messages", Model: model, Stream: true,
-		Outcome: result.outcome, Status: result.status, Usage: result.usage,
+		Protocol: "messages", Model: model, RequestedModel: model, Effort: effort,
+		Stream: true, Outcome: result.outcome, Status: result.status, Usage: result.usage,
+		Error:   result.outcome == "failed" || result.outcome == "upstream_aborted",
+		Message: "upstream stream error",
 	}
 	applyTracker(&observation, stream)
 	s.observeProtocol(r, observation)

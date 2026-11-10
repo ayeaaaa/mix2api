@@ -35,6 +35,7 @@ func (s *chatStream) UsageSnapshot() providers.UsageSnapshot {
 		Credit:           credit,
 		CreditKnown:      creditKnown,
 		Kind:             "chat",
+		CostPolicy:       "raccoon:unpriced",
 	}
 	if snapshot.TotalTokens == 0 {
 		snapshot.TotalTokens = snapshot.PromptTokens + snapshot.CompletionTokens

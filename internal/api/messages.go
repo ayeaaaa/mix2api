@@ -673,7 +673,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	}
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
-		failure := providerFailure(resolveErr)
+		failure := failureFromError(resolveErr)
 		s.observeMessagesFailure(r, model, stream, failure.Status)
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
@@ -697,7 +697,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 		if upstream != nil {
 			_ = upstream.Close()
 		}
-		failure := providerFailure(openErr)
+		failure := failureFromError(openErr)
 		s.observeMessagesFailure(r, model, stream, failure.Status, provider.Realm())
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), retryReset(openErr))
 		return
@@ -711,15 +711,17 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	defer func() { _ = tracked.Close() }()
 
 	if stream {
-		s.serveMessagesStream(w, r, tracked, model)
+		s.serveMessagesStream(w, r, tracked, model, anthropicText(chat["reasoning_effort"]))
 		return
 	}
 	chatObject, aggregateErr := aggregateChatStream(tracked, model)
 	if aggregateErr != nil {
 		failure := providerFailure(aggregateErr)
 		observation := ProtocolObservation{
-			Protocol: "messages", Model: model, Stream: false,
-			Outcome: "failed", Status: failure.Status,
+			Protocol: "messages", Model: model, RequestedModel: model,
+			Realm: provider.Realm(), Effort: anthropicText(chat["reasoning_effort"]),
+			Stream: false, Outcome: "failed", Status: failure.Status,
+			Error: true, Message: failure.Message,
 		}
 		applyTracker(&observation, tracked)
 		s.observeProtocol(r, observation)
@@ -728,7 +730,9 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	}
 	result := chatToMessages(chatObject)
 	observation := ProtocolObservation{
-		Protocol: "messages", Model: model, Realm: provider.Realm(), Stream: false, Outcome: "completed", Status: http.StatusOK,
+		Protocol: "messages", Model: model, RequestedModel: model,
+		Realm: provider.Realm(), Effort: anthropicText(chat["reasoning_effort"]),
+		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(chatObject["usage"]),
 	}
 	applyTracker(&observation, tracked)
@@ -772,8 +776,8 @@ func (s *Server) observeMessagesFailure(r *http.Request, model string, stream bo
 		realm = realms[0]
 	}
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "messages", Model: model, Realm: realm, Stream: stream,
-		Outcome: "failed", Status: status,
+		Protocol: "messages", Model: model, RequestedModel: model, Realm: realm,
+		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: "request failed",
 	})
 }
 

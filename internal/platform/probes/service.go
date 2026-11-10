@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -14,7 +15,11 @@ var ErrNoProvider = errors.New("probes: provider probe hook unavailable")
 
 // Service drives both probe schedulers.
 type Service struct {
+	// Provider is the legacy single-provider hook. Providers is the composed
+	// multi-realm list; when set it wins and Provider remains a fallback for
+	// embedders/tests.
 	Provider    providers.ProbeProvider
+	Providers   []providers.ProbeProvider
 	Window      *WindowState
 	Quota       *QuotaState
 	WatchModels func() []string
@@ -89,16 +94,20 @@ func (s *Service) sleep(duration time.Duration) {
 
 // RunWindow fires due model-window probes. A missing provider is a no-op.
 func (s *Service) RunWindow(ctx context.Context) int {
-	if s == nil || s.Provider == nil || !s.enabled() {
+	if s == nil || len(s.providerList()) == 0 || !s.enabled() {
 		return 0
 	}
 	now := s.now()
 	due := s.Window.Due(now, WindowBatchLimit)
 	sent := 0
 	for _, window := range due {
-		target := providers.ProbeTarget{UID: window.UID, Model: window.Model, ResetAt: time.Unix(int64(window.ResetAt), 0)}
+		target := providers.ProbeTarget{UID: window.UID, Model: window.Model, Realm: window.Realm, ResetAt: time.Unix(int64(window.ResetAt), 0)}
+		provider := s.providerForTarget(ctx, providers.ProbeWindow, target)
+		if provider == nil {
+			continue
+		}
 		sent++
-		result, err := s.Provider.Probe(ctx, providers.ProbeWindow, target)
+		result, err := provider.Probe(ctx, providers.ProbeWindow, target)
 		if err != nil {
 			s.log("窗口探针执行失败: " + err.Error())
 			s.retryWindow(window, now, err.Error())
@@ -131,7 +140,7 @@ func (s *Service) retryWindow(window Window, now time.Time, detail string) {
 // RunQuota fires due quota-scan targets. force ignores the interval but never
 // bypasses an existing 429 window.
 func (s *Service) RunQuota(ctx context.Context, force bool) (int, error) {
-	if s == nil || s.Provider == nil {
+	if s == nil || len(s.providerList()) == 0 {
 		return 0, ErrNoProvider
 	}
 	if !s.enabled() {
@@ -145,33 +154,41 @@ func (s *Service) RunQuota(ctx context.Context, force bool) (int, error) {
 	for _, model := range watched {
 		watchedSet[model] = true
 	}
-	accounts, err := s.Provider.ProbeTargets(ctx, providers.ProbeQuota, s.now(), 64)
+	accounts, err := s.allTargets(ctx, providers.ProbeQuota, 0)
 	if err != nil {
 		return 0, err
 	}
 	now := s.now()
 	// Seed all watched account/model lines with the v1 staggered first delay.
-	wanted := []string{}
+	wanted := []struct{ uid, model, realm string }{}
 	for _, target := range accounts {
 		if target.UID == "" {
 			continue
+		}
+		realm := target.Realm
+		if realm == "" {
+			realm = s.realmOfProvider(s.providerForTarget(ctx, providers.ProbeQuota, target))
 		}
 		if target.Model != "" {
 			if !watchedSet[target.Model] {
 				continue
 			}
-			s.Quota.Ensure(target.UID, target.Model, now, QuotaFirstDelay)
+			s.Quota.EnsureRealm(target.UID, target.Model, realm, now, QuotaFirstDelay)
 			continue
 		}
 		for _, model := range watched {
-			wanted = append(wanted, target.UID+"\x00"+model)
+			wanted = append(wanted, struct{ uid, model, realm string }{target.UID, model, realm})
 		}
 	}
-	sort.Strings(wanted)
+	sort.Slice(wanted, func(i, j int) bool {
+		if wanted[i].uid != wanted[j].uid {
+			return wanted[i].uid < wanted[j].uid
+		}
+		return wanted[i].model < wanted[j].model
+	})
 	delay := QuotaFirstDelay
-	for _, key := range wanted {
-		parts := splitKey(key)
-		if s.Quota.Ensure(parts[0], parts[1], now, delay) {
+	for _, entry := range wanted {
+		if s.Quota.EnsureRealm(entry.uid, entry.model, entry.realm, now, delay) {
 			delay += QuotaFirstStagger
 			if delay > QuotaFirstDelayMax {
 				delay = QuotaFirstDelayMax
@@ -184,9 +201,13 @@ func (s *Service) RunQuota(ctx context.Context, force bool) (int, error) {
 		if s.Window.HasWindow(row.UID, row.Model) {
 			continue
 		}
+		target := providers.ProbeTarget{UID: row.UID, Model: row.Model, Realm: row.Realm}
+		provider := s.providerForTarget(ctx, providers.ProbeQuota, target)
+		if provider == nil {
+			continue
+		}
 		sent++
-		target := providers.ProbeTarget{UID: row.UID, Model: row.Model}
-		result, probeErr := s.Provider.Probe(ctx, providers.ProbeQuota, target)
+		result, probeErr := provider.Probe(ctx, providers.ProbeQuota, target)
 		if probeErr != nil {
 			s.quotaFailure(row, now, probeErr.Error(), false)
 			s.sleep(s.Gap)
@@ -284,4 +305,80 @@ func (s *Service) QuotaSnapshot() []map[string]any {
 		watched[model] = true
 	}
 	return s.Quota.Snapshot(watched, s.now(), 20)
+}
+
+func (s *Service) providerList() []providers.ProbeProvider {
+	if s == nil {
+		return nil
+	}
+	if len(s.Providers) > 0 {
+		return s.Providers
+	}
+	if s.Provider != nil {
+		return []providers.ProbeProvider{s.Provider}
+	}
+	return nil
+}
+
+func probeProviderRealm(provider providers.ProbeProvider) string {
+	if realmProvider, ok := provider.(interface{ Realm() string }); ok {
+		return strings.TrimSpace(realmProvider.Realm())
+	}
+	return ""
+}
+
+func (s *Service) realmOfProvider(provider providers.ProbeProvider) string {
+	return probeProviderRealm(provider)
+}
+
+func (s *Service) providerForTarget(ctx context.Context, kind providers.ProbeKind, target providers.ProbeTarget) providers.ProbeProvider {
+	if realm := strings.TrimSpace(target.Realm); realm != "" {
+		for _, provider := range s.providerList() {
+			if strings.EqualFold(probeProviderRealm(provider), realm) {
+				return provider
+			}
+		}
+	}
+	for _, provider := range s.providerList() {
+		targets, err := provider.ProbeTargets(ctx, kind, s.now(), 0)
+		if err != nil {
+			continue
+		}
+		for _, candidate := range targets {
+			if candidate.UID == target.UID {
+				return provider
+			}
+		}
+	}
+	if providers := s.providerList(); len(providers) == 1 {
+		return providers[0]
+	}
+	return nil
+}
+
+func (s *Service) allTargets(ctx context.Context, kind providers.ProbeKind, limit int) ([]providers.ProbeTarget, error) {
+	out := []providers.ProbeTarget{}
+	seen := map[string]bool{}
+	for _, provider := range s.providerList() {
+		realm := probeProviderRealm(provider)
+		targets, err := provider.ProbeTargets(ctx, kind, s.now(), limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range targets {
+			if target.Realm == "" {
+				target.Realm = realm
+			}
+			key := target.Realm + "\x00" + target.UID + "\x00" + target.Model
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, target)
+			if limit > 0 && len(out) >= limit {
+				return out, nil
+			}
+		}
+	}
+	return out, nil
 }

@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+func readLastRow(t *testing.T, store *Store) Row {
+	t.Helper()
+	data, err := os.ReadFile(store.Paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	row, ok := decodeUsageLine([]byte(lines[len(lines)-1]))
+	if !ok {
+		t.Fatal("last row does not parse")
+	}
+	return row
+}
+
 func TestRecorderShape(t *testing.T) {
 	env := newTestEnv(t, nil)
 	recorder := &Recorder{Store: env.Store}
@@ -90,6 +104,28 @@ func TestRecorderShape(t *testing.T) {
 	providerRow, _ := decodeUsageLine([]byte(lines[len(lines)-1]))
 	if providerRow["cost_policy"] != "codearts:unpriced" {
 		t.Fatalf("provider row = %+v", providerRow)
+	}
+
+	if err := media.Record(context.Background(), RecordInput{
+		At: at, Model: "billed", RequestedModel: "alias", Realm: "intl", KeyID: "k",
+		Outcome: "failed", Error: true, Status: 429,
+		Message: "usage will reset at 2026-01-05 12:00:00 UTC", CostPolicy: "codearts:unpriced",
+		Free: true, Effort: "high",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	errorRow := readLastRow(t, env.Store)
+	if errorRow["error"] != true || mustNumber(t, errorRow["status"]) != 429 {
+		t.Fatalf("error row = %+v", errorRow)
+	}
+	if !strings.Contains(stringValue(errorRow, "message"), "usage will reset") {
+		t.Fatalf("error message = %+v", errorRow)
+	}
+	if errorRow["cost_policy"] != "codearts:unpriced" || errorRow["free"] != true {
+		t.Fatalf("snapshot attribution = %+v", errorRow)
+	}
+	if errorRow["requested_model"] != "alias" || errorRow["reasoning_effort"] != "high" {
+		t.Fatalf("request attribution = %+v", errorRow)
 	}
 
 	broken := &Recorder{Store: &Store{Paths: Paths{Log: ""}}}

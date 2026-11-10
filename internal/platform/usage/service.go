@@ -107,7 +107,10 @@ type Service struct {
 	Accounts       map[string]AccountInfo
 	CurrentAccount AccountInfo
 	DefaultRealm   string
-	StartedAt      time.Time
+	// DefaultRealmFunc makes the panel's active realm live: usage views read
+	// the current realm without rebuilding the service.
+	DefaultRealmFunc func() string
+	StartedAt        time.Time
 
 	RemainingAccounts []RemainingAccount
 
@@ -348,6 +351,20 @@ func (s *Service) pricingFingerprint() string {
 	return s.Pricing.Fingerprint()
 }
 
+// DefaultRealmValue returns the live default realm, falling back to the
+// startup value when no callback is configured.
+func (s *Service) DefaultRealmValue() string {
+	if s == nil {
+		return ""
+	}
+	if s.DefaultRealmFunc != nil {
+		if realm := strings.TrimSpace(s.DefaultRealmFunc()); realm != "" {
+			return realm
+		}
+	}
+	return s.DefaultRealm
+}
+
 func (s *Service) realmFingerprint() string {
 	if s == nil {
 		return ""
@@ -359,7 +376,7 @@ func (s *Service) realmFingerprint() string {
 	sort.Strings(uids)
 	var builder strings.Builder
 	builder.WriteString("default=")
-	builder.WriteString(s.DefaultRealm)
+	builder.WriteString(s.DefaultRealmValue())
 	for _, uid := range uids {
 		builder.WriteString("|")
 		builder.WriteString(uid)

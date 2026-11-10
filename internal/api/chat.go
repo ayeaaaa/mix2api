@@ -49,6 +49,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	started := time.Now()
 	request, failure := parseChatHTTPRequest(w, r)
 	if failure != nil {
+		s.observeChatFailure(r, "", "", false, failure)
 		writeFailure(w, failure)
 		return
 	}
@@ -58,22 +59,28 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		request.model = override
 		encoded, err := json.Marshal(override)
 		if err != nil {
-			writeFailure(w, localFailure(http.StatusBadRequest, "model is required"))
+			failure := localFailure(http.StatusBadRequest, "model is required")
+			s.observeChatFailure(r, "", "", false, failure)
+			writeFailure(w, failure)
 			return
 		}
 		request.payload["model"] = encoded
 	}
 	if strings.TrimSpace(request.model) == "" {
-		writeFailure(w, localFailure(http.StatusBadRequest, "model is required"))
+		failure := localFailure(http.StatusBadRequest, "model is required")
+		s.observeChatFailure(r, "", "", request.stream, failure)
+		writeFailure(w, failure)
 		return
 	}
 	if failure := s.keyModelFailure(r, request.model); failure != nil {
+		s.observeChatFailure(r, request.model, "", request.stream, failure)
 		writeFailure(w, failure)
 		return
 	}
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
+		s.observeChatFailure(r, request.model, "", request.stream, boundFailure)
 		writeFailure(w, boundFailure)
 		return
 	}
@@ -81,6 +88,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	if provider == nil {
 		resolved, err := s.resolveChatProvider(r.Context(), request, boundRealm)
 		if err != nil {
+			s.observeChatFailure(r, request.model, boundRealm, request.stream, failureFromError(err))
 			writeFailure(w, err)
 			return
 		}
@@ -116,21 +124,15 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		if stream != nil {
 			_ = stream.Close()
 		}
-		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-			Kind: "chat", Stream: request.stream, Outcome: "failed",
-			Status: providerFailure(err).Status,
-		})
+		failure := failureFromError(err)
+		s.observeChatFailure(r, request.model, provider.Realm(), request.stream, failure)
 		writeFailure(w, err)
 		return
 	}
 	if stream == nil {
-		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-			Kind: "chat", Stream: request.stream, Outcome: "failed",
-			Status: http.StatusBadGateway,
-		})
-		writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned no chat stream"))
+		failure := localFailure(http.StatusBadGateway, "upstream returned no chat stream")
+		s.observeChatFailure(r, request.model, provider.Realm(), request.stream, failure)
+		writeFailure(w, failure)
 		return
 	}
 	tracked := newUsageTracker(withAttribution(stream, provider.Realm()), started)
@@ -143,9 +145,10 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		result = writeChatCompletion(w, tracked, request.model)
 	}
 	observation := ProtocolObservation{
-		Protocol: "chat", Model: request.model, Realm: provider.Realm(), Kind: "chat",
+		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 		Stream: request.stream, Outcome: result.Outcome, Status: result.Status,
-		Usage: result.Usage,
+		Usage: result.Usage, Error: result.Error, Message: result.Message,
 	}
 	applyTracker(&observation, tracked)
 	s.observeProtocol(r, observation)
@@ -157,6 +160,46 @@ type chatStreamResult struct {
 	Outcome string
 	Status  int
 	Usage   map[string]any
+	Error   bool
+	Message string
+}
+
+// observeChatFailure records one failed Chat row before any upstream stream
+// exists. It keeps v1's error/status/message fields so key/model/realm and
+// parse failures are attributable and 429 rows remain usable by the remaining
+// estimate.
+func (s *Server) observeChatFailure(r *http.Request, model, realm string, stream bool, failure *apiFailure) {
+	status := http.StatusBadRequest
+	message := "request failed"
+	if failure != nil {
+		if failure.Status > 0 {
+			status = failure.Status
+		}
+		if strings.TrimSpace(failure.Message) != "" {
+			message = failure.Message
+		}
+	}
+	s.observeProtocol(r, ProtocolObservation{
+		Protocol: "chat", Model: model, RequestedModel: model, Realm: realm, Kind: "chat",
+		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: message,
+	})
+}
+
+func failureFromError(err error) *apiFailure {
+	var failure *apiFailure
+	if errors.As(err, &failure) && failure != nil {
+		return failure
+	}
+	return providerFailure(err)
+}
+
+func chatReasoningEffort(payload map[string]json.RawMessage) string {
+	for _, key := range []string{"reasoning_effort", "reasoningEffort"} {
+		if value, ok := decodeJSONString(payload[key]); ok && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequest, *apiFailure) {
@@ -429,7 +472,9 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 				if !writer.WroteHeaders() && len(final) == 0 && !normalizer.sawAny {
 					result.Outcome = "failed"
 					result.Status = http.StatusBadGateway
-					writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned an empty stream"))
+					result.Error = true
+					result.Message = "upstream returned an empty stream"
+					writeFailure(w, localFailure(http.StatusBadGateway, result.Message))
 					return result
 				}
 				if err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
@@ -445,8 +490,14 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 				result.Outcome = "client_aborted"
 				return result
 			}
+			failure := providerFailure(err)
 			result.Outcome = "upstream_aborted"
-			result.Status = providerFailure(err).Status
+			result.Status = failure.Status
+			result.Error = true
+			result.Message = failure.Message
+			if result.Message == "" {
+				result.Message = "upstream stream error"
+			}
 			if !writer.WroteHeaders() {
 				result.Outcome = "failed"
 				writeFailure(w, err)
@@ -540,7 +591,11 @@ func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, mod
 			status = http.StatusBadGateway
 		}
 		writeFailure(w, err)
-		return chatStreamResult{Outcome: "failed", Status: status}
+		message := providerFailure(err).Message
+		if message == "" {
+			message = "upstream request failed"
+		}
+		return chatStreamResult{Outcome: "failed", Status: status, Error: true, Message: message}
 	}
 	usage, _ := completion["usage"].(map[string]any)
 	writeJSONResponse(w, http.StatusOK, completion)

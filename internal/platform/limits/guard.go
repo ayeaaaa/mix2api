@@ -243,8 +243,11 @@ func guardValues(data map[string]any) (map[string]any, bool, bool) {
 				}
 			}
 		} else {
+			// expiring_window_days already defaults to 7 in the provider
+			// pool. Only an explicit non-default value needs a publish; a
+			// no-limit install therefore does no pool walk on the hot path.
 			for _, realm := range []string{"global", "intl", "cn"} {
-				if number, _ := limitNumber(realmValues[realm]); number > 0 {
+				if number, _ := limitNumber(realmValues[realm]); number > 0 && number != defaultExpiringWindowDays {
 					active = true
 				}
 			}

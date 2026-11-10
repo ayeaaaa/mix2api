@@ -119,18 +119,20 @@ func (s *Server) handleChatWithWebTools(
 		return false
 	}
 	if err != nil {
+		failure := providerFailure(err)
 		s.observeProtocol(r, ProtocolObservation{
 			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
 			Kind: "chat", Stream: false, Outcome: "failed",
-			Status: providerFailure(err).Status,
+			Status: failure.Status, Error: true, Message: failure.Message,
 		})
 		writeFailure(w, err)
 		return true
 	}
 	usage, _ := final["usage"].(map[string]any)
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-		Kind: "chat", Stream: false, Outcome: "completed", Status: http.StatusOK,
+		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
+		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usage, ElapsedMS: time.Since(started).Milliseconds(),
 	})
 	writeJSONResponse(w, http.StatusOK, final)
@@ -150,10 +152,11 @@ func (s *Server) handleChatWithWebToolsStream(
 		return false
 	}
 	if err != nil {
+		failure := providerFailure(err)
 		s.observeProtocol(r, ProtocolObservation{
 			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
 			Kind: "chat", Stream: true, Outcome: "failed",
-			Status: providerFailure(err).Status,
+			Status: failure.Status, Error: true, Message: failure.Message,
 		})
 		writeFailure(w, err)
 		return true
@@ -163,9 +166,10 @@ func (s *Server) handleChatWithWebToolsStream(
 	result := writeChatStream(w, r, stream, request.model)
 	usage, _ := final["usage"].(map[string]any)
 	observation := ProtocolObservation{
-		Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-		Kind: "chat", Stream: true, Outcome: result.Outcome, Status: result.Status,
-		Usage: usage,
+		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
+		Stream: true, Outcome: result.Outcome, Status: result.Status,
+		Usage: usage, Error: result.Error, Message: result.Message,
 	}
 	applyTracker(&observation, stream)
 	s.observeProtocol(r, observation)

@@ -15,6 +15,7 @@ import (
 type Window struct {
 	UID        string  `json:"uid"`
 	Model      string  `json:"model"`
+	Realm      string  `json:"realm,omitempty"`
 	ResetAt    float64 `json:"reset_at"`
 	Attempts   int     `json:"attempts"`
 	LastTry    float64 `json:"last_try"`
@@ -136,6 +137,13 @@ func (s *WindowState) enabled() bool {
 // Schedule registers a reset window. Duplicate identical instants are a no-op
 // except for upgrading the cap marker.
 func (s *WindowState) Schedule(uid, model string, resetAt time.Time, cap bool, capAt time.Time, now time.Time) bool {
+	return s.ScheduleRealm(uid, model, "", resetAt, cap, capAt, now)
+}
+
+// ScheduleRealm registers a window with the provider realm that owns the
+// account. The platform uses it to route the probe back to the intl or cn
+// WorkBuddy provider instead of guessing from a shared uid map.
+func (s *WindowState) ScheduleRealm(uid, model, realm string, resetAt time.Time, cap bool, capAt time.Time, now time.Time) bool {
 	if s == nil || !s.enabled() || uid == "" || model == "" || !resetAt.After(now) {
 		return false
 	}
@@ -154,7 +162,7 @@ func (s *WindowState) Schedule(uid, model string, resetAt time.Time, cap bool, c
 		}
 		return false
 	}
-	entry := Window{UID: uid, Model: model, ResetAt: resetTime(resetAt)}
+	entry := Window{UID: uid, Model: model, Realm: realm, ResetAt: resetTime(resetAt)}
 	if cap {
 		entry.Cap = true
 		entry.CapAt = float64(capAt.Unix())

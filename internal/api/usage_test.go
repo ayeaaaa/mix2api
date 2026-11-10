@@ -276,3 +276,22 @@ func TestUsageETagsCrossQueryAnalyticsPerfAndSeries(t *testing.T) {
 		t.Fatalf("bucket alias should return 304, got %d", recorder.Code)
 	}
 }
+
+func TestUsageDefaultRealmIsLive(t *testing.T) {
+	service := usageTestService(t)
+	live := "intl"
+	service.DefaultRealm = "intl"
+	service.DefaultRealmFunc = func() string { return live }
+	mux := http.NewServeMux()
+	NewUsageHandlers(service, nil).Register(mux)
+
+	rec := perform(t, mux, "/usage")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"realm":"intl"`) {
+		t.Fatalf("intl snapshot = %d %s", rec.Code, rec.Body)
+	}
+	live = "cn"
+	rec = perform(t, mux, "/usage")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"realm":"cn"`) {
+		t.Fatalf("live cn snapshot = %d %s", rec.Code, rec.Body)
+	}
+}

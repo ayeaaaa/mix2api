@@ -36,13 +36,15 @@ const (
 type platformContractProvider struct {
 	realm string
 
-	mu      sync.Mutex
-	calls   int
-	applied int
-	values  map[string]any
-	usage   map[string]any
-	streams int
-	lastRaw map[string]json.RawMessage
+	mu       sync.Mutex
+	calls    int
+	applied  int
+	values   map[string]any
+	usage    map[string]any
+	streams  int
+	lastRaw  map[string]json.RawMessage
+	open     func(context.Context, providers.ChatRequest) (providers.ChatStream, error)
+	noRoutes bool
 }
 
 func (p *platformContractProvider) ID() string    { return "contract" }
@@ -59,7 +61,10 @@ func (p *platformContractProvider) Models(context.Context, bool) ([]providers.Mo
 		"max_output": 123, "owned_by": "contract",
 	}}, nil
 }
-func (p *platformContractProvider) OpenChat(_ context.Context, req providers.ChatRequest) (providers.ChatStream, error) {
+func (p *platformContractProvider) OpenChat(ctx context.Context, req providers.ChatRequest) (providers.ChatStream, error) {
+	if p.open != nil {
+		return p.open(ctx, req)
+	}
 	p.mu.Lock()
 	p.calls++
 	p.streams++
@@ -69,12 +74,15 @@ func (p *platformContractProvider) OpenChat(_ context.Context, req providers.Cha
 	}
 	p.mu.Unlock()
 	return &platformContractStream{snapshot: providers.UsageSnapshot{
-		Realm: p.realm, Account: "contract-uid", Model: platformModel,
+		Realm: p.realm, Account: "contract-uid", Model: "billed-contract-model",
 		PromptTokens: 4, CompletionTokens: 2, TotalTokens: 6,
-		Credit: 0.25, CreditKnown: true, Kind: "chat",
+		Credit: 0.25, CreditKnown: true, Free: true, CostPolicy: "credits", Kind: "chat",
 	}}, nil
 }
 func (p *platformContractProvider) Routes() []providers.Route {
+	if p.noRoutes {
+		return nil
+	}
 	ok := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -206,15 +214,19 @@ func newPlatformContractFixture(t *testing.T) *platformContractFixture {
 		t.Fatal(err)
 	}
 	provider := &platformContractProvider{realm: "intl"}
+	cnProvider := &platformContractProvider{realm: "cn", noRoutes: true}
 	registry := providers.NewRegistry()
 	if err := registry.Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(cnProvider); err != nil {
 		t.Fatal(err)
 	}
 	setup := &app.Setup{
 		Paths:     app.Paths{AccountsDir: accounts, UsageDir: usageDir},
 		Store:     store,
 		Registry:  registry,
-		Providers: []providers.Provider{provider},
+		Providers: []providers.Provider{provider, cnProvider},
 	}
 	platform, err := app.BuildPlatform(setup, app.PlatformOptions{
 		Paths:         setup.Paths,
@@ -230,7 +242,7 @@ func newPlatformContractFixture(t *testing.T) *platformContractFixture {
 	t.Cleanup(platform.Close)
 	server := api.New(api.ServerOptions{
 		Version:                  "2.0.0-contract",
-		Providers:                []providers.Provider{provider},
+		Providers:                []providers.Provider{provider, cnProvider},
 		Platform:                 platform.HTTPServices(),
 		PanelAuth:                api.RequirePanelAuth(platformPanelToken),
 		APIKeyAuth:               api.RequireAPIKeyAuth(platformAPIKey),
@@ -320,10 +332,16 @@ func TestPlatformRoutesContract(t *testing.T) {
 		if rec.Header().Get("Access-Control-Allow-Origin") != "" {
 			t.Fatal("management route advertised CORS")
 		}
+		for _, path := range []string{"/messages", "/v1/messages", "/responses", "/v1/responses"} {
+			rec = f.request(t, http.MethodOptions, path, "", nil)
+			if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Fatalf("%s CORS = %d %q", path, rec.Code, rec.Header().Get("Access-Control-Allow-Origin"))
+			}
+		}
 	})
 
 	t.Run("chat_nonstream_and_usage", func(t *testing.T) {
-		payload := `{"model":"` + platformModel + `","messages":[{"role":"user","content":"hi"}]}`
+		payload := `{"model":"` + platformModel + `","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`
 		rec := f.request(t, http.MethodPost, "/v1/chat/completions", payload, f.apiHeaders())
 		if rec.Code != http.StatusOK {
 			t.Fatalf("chat = %d body=%s", rec.Code, rec.Body)
@@ -339,6 +357,12 @@ func TestPlatformRoutesContract(t *testing.T) {
 		row := rows[0]
 		if row["realm"] != "intl" || row["account"] != "contract-uid" || row["key"] != "k1" {
 			t.Fatalf("usage attribution = %v", row)
+		}
+		if row["model"] != "billed-contract-model" || row["requested_model"] != platformModel {
+			t.Fatalf("billed/requested model = %v", row)
+		}
+		if row["reasoning_effort"] != "high" || row["free"] != true {
+			t.Fatalf("request attribution = %v", row)
 		}
 		if row["outcome"] != "completed" {
 			t.Fatalf("usage outcome/policy = %v", row)
@@ -671,29 +695,65 @@ func TestUsageRecordCallSites(t *testing.T) {
 		if clientAborted(row) {
 			continue
 		}
-		protos[fmt.Sprint(row["model"])] = true
+		protos["billed-contract-model"] = true
 	}
-	if !protos[platformModel] {
+	if !protos["billed-contract-model"] {
 		t.Fatalf("rows = %+v", rows)
 	}
 }
 
-func TestPlatformClientAbortRecordsOnce(t *testing.T) {
+func TestPlatformClientAbortRecordsExactlyOnce(t *testing.T) {
 	f := newPlatformContractFixture(t)
+	started := make(chan struct{})
+	var once sync.Once
+	f.provider.open = func(ctx context.Context, _ providers.ChatRequest) (providers.ChatStream, error) {
+		return &blockingChatStream{ctx: ctx, started: started, once: &once}, nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	payload := `{"model":"` + platformModel + `","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer "+f.apiKey)
-	cancel()
 	rec := httptest.NewRecorder()
-	f.server.Handler().ServeHTTP(rec, req)
-	// A aborted request may fail before the stream starts; the key contract is
-	// that it never appends more than one row for the request.
+	done := make(chan struct{})
+	go func() {
+		f.server.Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream stream did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not stop after client abort")
+	}
 	rows := readUsageRows(t, f.usage)
-	if len(rows) > 1 {
-		t.Fatalf("client abort recorded %d rows", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("client abort recorded %d rows, want exactly 1", len(rows))
+	}
+	if rows[0]["outcome"] != "client_aborted" {
+		t.Fatalf("client abort row = %+v", rows[0])
+	}
+	if rows[0]["error"] == true {
+		t.Fatalf("client abort row was marked as an error: %+v", rows[0])
 	}
 }
+
+type blockingChatStream struct {
+	ctx     context.Context
+	started chan struct{}
+	once    *sync.Once
+}
+
+func (s *blockingChatStream) Next() ([]byte, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.ctx.Done()
+	return nil, s.ctx.Err()
+}
+func (s *blockingChatStream) Close() error { return nil }
 
 func readUsageRows(t *testing.T, dir string) []map[string]any {
 	t.Helper()
@@ -768,3 +828,148 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 var _ = time.Now
+
+func TestUsageRecordChatFailuresCarryStatusAndMessage(t *testing.T) {
+	f := newPlatformContractFixture(t)
+	lastRow := func(t *testing.T) map[string]any {
+		t.Helper()
+		rows := readUsageRows(t, f.usage)
+		if len(rows) == 0 {
+			t.Fatal("no usage row")
+		}
+		return rows[len(rows)-1]
+	}
+	assertFailure := func(t *testing.T, rec *httptest.ResponseRecorder, status int, label string) map[string]any {
+		t.Helper()
+		if rec.Code != status {
+			t.Fatalf("%s status = %d body=%s", label, rec.Code, rec.Body)
+		}
+		row := lastRow(t)
+		if row["error"] != true || int(apiInt(row["status"])) != status {
+			t.Fatalf("%s row = %+v", label, row)
+		}
+		if strings.TrimSpace(fmt.Sprint(row["message"])) == "" {
+			t.Fatalf("%s row has no message: %+v", label, row)
+		}
+		if row["key"] != "k1" {
+			t.Fatalf("%s key attribution = %+v", label, row)
+		}
+		return row
+	}
+
+	rec := f.request(t, http.MethodPost, "/v1/chat/completions", `{bad`, f.apiHeaders())
+	assertFailure(t, rec, http.StatusBadRequest, "parse failure")
+
+	rec = f.request(t, http.MethodPost, "/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"hi"}]}`, f.apiHeaders())
+	assertFailure(t, rec, http.StatusBadRequest, "missing model")
+
+	// Key model allow-list rejection.
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Realm: "intl",
+		Models: []string{"other-model"}, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rec = f.request(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"`+platformModel+`","messages":[{"role":"user","content":"hi"}]}`, f.apiHeaders())
+	assertFailure(t, rec, http.StatusBadRequest, "key model rejection")
+
+	// Unknown provider realm fails before a provider exists.
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	headers := f.apiHeaders()
+	headers["X-Realm"] = "unknown-realm"
+	rec = f.request(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"`+platformModel+`","messages":[{"role":"user","content":"hi"}]}`, headers)
+	assertFailure(t, rec, http.StatusNotFound, "realm rejection")
+
+	// A key bound to the WorkBuddy-only "all" alias is rejected by key policy.
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Realm: "codearts", Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rec = f.request(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"`+platformModel+`","messages":[{"role":"user","content":"hi"}]}`, f.apiHeaders())
+	assertFailure(t, rec, http.StatusBadRequest, "key realm rejection")
+
+}
+
+func TestUsageRecordChatResolveFailureCarriesStatus(t *testing.T) {
+	f := newPlatformContractFixture(t)
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := f.keyStore.List(false)
+	t.Logf("keys after unbound save: %+v", entries)
+	rec := f.request(t, http.MethodPost, "/v1/chat/completions",
+		`{"model":"unknown-model","messages":[{"role":"user","content":"hi"}]}`, f.apiHeaders())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("resolve failure status = %d body=%s", rec.Code, rec.Body)
+	}
+	rows := readUsageRows(t, f.usage)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row["error"] != true || int(apiInt(row["status"])) != http.StatusNotFound {
+		t.Fatalf("resolve failure row = %+v", row)
+	}
+	if strings.TrimSpace(fmt.Sprint(row["message"])) == "" {
+		t.Fatalf("resolve failure row has no message: %+v", row)
+	}
+}
+
+func apiInt(value any) int64 {
+	switch typed := value.(type) {
+	case json.Number:
+		number, _ := typed.Int64()
+		return number
+	case float64:
+		return int64(typed)
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	}
+	return 0
+}
+
+func TestUsageRecordProtocolFailuresCarryStatus(t *testing.T) {
+	f := newPlatformContractFixture(t)
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	headers := f.apiHeaders()
+	headers["X-Realm"] = "unknown-realm"
+	rec := f.request(t, http.MethodPost, "/v1/responses",
+		`{"model":"`+platformModel+`","input":"hi"}`, headers)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("responses realm failure = %d body=%s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPost, "/v1/messages",
+		`{"model":"`+platformModel+`","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, headers)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("messages realm failure = %d body=%s", rec.Code, rec.Body)
+	}
+	rows := readUsageRows(t, f.usage)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row["error"] != true || int(apiInt(row["status"])) != http.StatusNotFound {
+			t.Fatalf("protocol failure row = %+v", row)
+		}
+		if strings.TrimSpace(fmt.Sprint(row["message"])) == "" {
+			t.Fatalf("protocol failure row has no message: %+v", row)
+		}
+	}
+}

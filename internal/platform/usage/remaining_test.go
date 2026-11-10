@@ -23,11 +23,14 @@ func TestRemainingUsage(t *testing.T) {
 	env := newTestEnv(t, rows)
 	zone := time.FixedZone("UTC+8", 8*3600)
 	resetText := time.Unix(int64(nowEpoch+3600), 0).In(zone).Format("2006-01-02 15:04:05")
-	rows = append(rows, row(nowEpoch-4*3600, "m", "intl", "b", 0, 0, map[string]any{
-		"error": true, "outcome": "failed", "status": 429,
-		"message": fmt.Sprintf("usage will reset at %s UTC+8", resetText),
-	}))
-	if err := env.Store.Append(rows[len(rows)-1]); err != nil {
+	recorder := &Recorder{Store: env.Store, Now: func() time.Time {
+		return time.Unix(int64(nowEpoch-4*3600), 0)
+	}}
+	if err := recorder.Record(context.Background(), RecordInput{
+		Model: "m", Realm: "intl", Account: "b", KeyID: "k",
+		Outcome: "failed", Error: true, Status: 429,
+		Message: fmt.Sprintf("usage will reset at %s UTC+8", resetText),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	events := []map[string]any{

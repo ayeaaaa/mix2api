@@ -164,3 +164,75 @@ func TestQuotaProbeLegacyStatesAndDisabled(t *testing.T) {
 		t.Fatalf("disabled quota = sent %d err=%v calls=%d", sent, err, provider.calls)
 	}
 }
+
+type realmProbeProvider struct {
+	realm string
+	uid   string
+	calls []string
+}
+
+func (p *realmProbeProvider) Realm() string { return p.realm }
+func (p *realmProbeProvider) ProbeTargets(context.Context, providers.ProbeKind, time.Time, int) ([]providers.ProbeTarget, error) {
+	return []providers.ProbeTarget{{UID: p.uid, Realm: p.realm}}, nil
+}
+func (p *realmProbeProvider) Probe(_ context.Context, _ providers.ProbeKind, target providers.ProbeTarget) (providers.ProbeResult, error) {
+	p.calls = append(p.calls, target.UID)
+	return providers.ProbeResult{OK: true, Status: 200}, nil
+}
+
+func TestRunQuotaDispatchesBothRealmProviders(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	intl := &realmProbeProvider{realm: "intl", uid: "u-intl"}
+	cn := &realmProbeProvider{realm: "cn", uid: "u-cn"}
+	service := NewService(Service{
+		Providers: []providers.ProbeProvider{intl, cn},
+		Window:    NewWindowState(t.TempDir()),
+		Quota:     NewQuotaState(t.TempDir()),
+		WatchModels: func() []string {
+			return []string{"m1"}
+		},
+		Now:   func() time.Time { return now },
+		Sleep: func(time.Duration) {},
+	})
+	sent, err := service.RunQuota(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent != 2 {
+		t.Fatalf("sent = %d, want 2", sent)
+	}
+	if len(intl.calls) != 1 || intl.calls[0] != "u-intl" {
+		t.Fatalf("intl calls = %v", intl.calls)
+	}
+	if len(cn.calls) != 1 || cn.calls[0] != "u-cn" {
+		t.Fatalf("cn calls = %v", cn.calls)
+	}
+}
+
+func TestRunWindowDispatchesBothRealmProviders(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	intl := &realmProbeProvider{realm: "intl", uid: "u-intl"}
+	cn := &realmProbeProvider{realm: "cn", uid: "u-cn"}
+	current := now
+	window := NewWindowState(t.TempDir())
+	window.Now = func() time.Time { return current }
+	window.ScheduleRealm("u-intl", "m1", "intl", now.Add(time.Second), false, now, now)
+	window.ScheduleRealm("u-cn", "m1", "cn", now.Add(time.Second), false, now, now)
+	current = now.Add(2 * time.Second)
+	service := NewService(Service{
+		Providers: []providers.ProbeProvider{intl, cn},
+		Window:    window,
+		Quota:     NewQuotaState(t.TempDir()),
+		Now:       func() time.Time { return current },
+		Sleep:     func(time.Duration) {},
+	})
+	if sent := service.RunWindow(context.Background()); sent != 2 {
+		t.Fatalf("sent = %d, want 2", sent)
+	}
+	if len(intl.calls) != 1 || intl.calls[0] != "u-intl" {
+		t.Fatalf("intl window calls = %v", intl.calls)
+	}
+	if len(cn.calls) != 1 || cn.calls[0] != "u-cn" {
+		t.Fatalf("cn window calls = %v", cn.calls)
+	}
+}

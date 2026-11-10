@@ -145,7 +145,6 @@ func main() {
 		Version:       version.Version,
 		ListenerPort:  listenerPort,
 		PanelPassword: cfg.PanelPassword,
-		APIKey:        cfg.APIKey,
 		LAN:           !isLoopbackHost(cfg.Host),
 		Logger:        func(message string) { log.Print(message) },
 	})
