@@ -105,7 +105,7 @@ func TestRealmEndpointAPI(t *testing.T) {
 		AccountsDir: dir, Version: "2.0.0-test",
 	})
 	server := New(ServerOptions{
-		Settings: service, Realm: realmService, PanelAuth: passThroughAuth,
+		Settings: service, Realm: realmService, PanelAuth: passThroughAuth, APIKeyAuth: passThroughAuth,
 		Providers: []providers.Provider{provider, selector},
 	})
 	rec := doRequest(server, http.MethodGet, "/realm", "", nil)

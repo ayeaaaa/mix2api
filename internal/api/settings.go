@@ -108,15 +108,25 @@ func (h *SettingsHandlers) handleReveal(w http.ResponseWriter, r *http.Request) 
 	writeJSONResponse(w, http.StatusOK, map[string]any{"id": id, "key": key})
 }
 
-// RealmHandlers owns GET/POST /realm.
+// RealmHandlers owns GET/POST /realm. GET follows v1 and is reachable with an
+// API key or panel session; POST changes the global exit and requires panel.
 type RealmHandlers struct {
-	Service *settings.RealmService
-	Gate    func(http.Handler) http.Handler
+	Service  *settings.RealmService
+	Gate     func(http.Handler) http.Handler
+	ReadGate func(http.Handler) http.Handler
 }
 
-// NewRealmHandlers builds the realm route group.
-func NewRealmHandlers(service *settings.RealmService, gate func(http.Handler) http.Handler) *RealmHandlers {
-	return &RealmHandlers{Service: service, Gate: gate}
+// NewRealmHandlers builds the realm route group. The optional read gate is the
+// API-key gate; omitting it keeps the panel gate for both methods.
+func NewRealmHandlers(service *settings.RealmService, gate func(http.Handler) http.Handler, readGates ...func(http.Handler) http.Handler) *RealmHandlers {
+	var readGate func(http.Handler) http.Handler
+	if len(readGates) > 0 {
+		readGate = readGates[0]
+	}
+	if readGate == nil {
+		readGate = gate
+	}
+	return &RealmHandlers{Service: service, Gate: gate, ReadGate: readGate}
 }
 
 // Register mounts the realm routes.
@@ -124,23 +134,27 @@ func (h *RealmHandlers) Register(mux *http.ServeMux) {
 	if h == nil || mux == nil || h.Service == nil {
 		return
 	}
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			h.handleGet(w, r)
-			return
-		}
-		if r.Method == http.MethodPost {
-			h.handlePost(w, r)
-			return
-		}
-		w.Header().Set("Allow", "GET, POST")
-		writeV1Error(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	get := http.Handler(http.HandlerFunc(h.handleGet))
+	if h.ReadGate != nil {
+		get = h.ReadGate(get)
 	}
-	var wrapped http.Handler = http.HandlerFunc(handler)
+	get = methodGET(get)
+	post := http.Handler(http.HandlerFunc(h.handlePost))
 	if h.Gate != nil {
-		wrapped = h.Gate(wrapped)
+		post = h.Gate(post)
 	}
-	mux.Handle("/realm", wrapped)
+	post = methodPOST(post)
+	mux.Handle("/realm", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			get.ServeHTTP(w, r)
+		case http.MethodPost:
+			post.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			writeV1Error(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		}
+	}))
 }
 
 func (h *RealmHandlers) handleGet(w http.ResponseWriter, r *http.Request) {

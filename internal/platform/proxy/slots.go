@@ -217,6 +217,25 @@ func (s *Slots) Bindings() map[string]int {
 	return out
 }
 
+// Views returns the panel slot maps for settings composition.
+func (s *Slots) Views() []map[string]any {
+	slots, err := s.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(slots))
+	for _, slot := range slots {
+		out = append(out, map[string]any{
+			"id": slot.ID, "name": slot.Name, "url": slot.URL,
+			"enabled": slot.Enabled, "ip": slot.IP, "country": slot.Country,
+			"country_code": slot.CountryCode, "ip_type": slot.IPType,
+			"isp": slot.ISP, "asn": slot.ASN, "probed_at": slot.ProbedAt,
+			"bound": slot.Bound, "label": slot.Label,
+		})
+	}
+	return out
+}
+
 // LastUnbound returns the number of accounts unbound by the most recent
 // Replace.
 func (s *Slots) LastUnbound() int {
@@ -412,21 +431,24 @@ func transportSlots(slots []Slot) transport.Slots {
 	return out
 }
 
-// Label mirrors v1's auto-label: the operator's name wins, otherwise the exit
-// country/type, otherwise the stable id.
+// Label mirrors v1's auto-label: the operator's name wins, otherwise country
+// plus the known residential/datacenter kind, otherwise the stable id. An
+// unknown kind or a missing country falls back to the id rather than showing a
+// label that cannot tell two slots apart.
 func Label(slot Slot) string {
 	if strings.TrimSpace(slot.Name) != "" {
 		return strings.TrimSpace(slot.Name)
 	}
-	parts := make([]string, 0, 2)
-	if slot.Country != "" {
-		parts = append(parts, slot.Country)
+	country := strings.TrimSpace(slot.Country)
+	if country == "" {
+		return slot.ID
 	}
-	if slot.IPType != "" {
-		parts = append(parts, slot.IPType)
+	switch strings.ToLower(strings.TrimSpace(slot.IPType)) {
+	case "residential":
+		return country + " 住宅"
+	case "datacenter":
+		return country + " 机房"
+	default:
+		return country
 	}
-	if len(parts) > 0 {
-		return strings.Join(parts, " · ")
-	}
-	return slot.ID
 }

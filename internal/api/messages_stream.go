@@ -82,6 +82,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 	}
 	reader := protocol.NewReader(stream)
 	postDone := false
+	var postDoneDeadline time.Time
 	for {
 		if clientCanceled(r) {
 			return messagesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
@@ -89,7 +90,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		var chunk protocol.Chunk
 		var err error
 		if postDone {
-			chunk, err = readPostDoneChunk(reader, stream)
+			chunk, err = readPostDoneChunk(reader, stream, postDoneDeadline)
 		} else {
 			chunk, err = reader.Next()
 		}
@@ -115,6 +116,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		}
 		if chunk.Done {
 			postDone = true
+			postDoneDeadline = time.Now().Add(messagesPostDoneTimeout)
 			continue
 		}
 		if postDone {
@@ -200,7 +202,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 	return messagesStreamResult{usage: state.usage, outcome: "completed", status: http.StatusOK}
 }
 
-func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream) (protocol.Chunk, error) {
+func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream, deadline time.Time) (protocol.Chunk, error) {
 	type result struct {
 		chunk protocol.Chunk
 		err   error
@@ -210,7 +212,12 @@ func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream) (pr
 		chunk, err := reader.Next()
 		done <- result{chunk: chunk, err: err}
 	}()
-	timer := time.NewTimer(messagesPostDoneTimeout)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		_ = stream.Close()
+		return protocol.Chunk{}, errMessagesPostDoneTimeout
+	}
+	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	select {
 	case outcome := <-done:

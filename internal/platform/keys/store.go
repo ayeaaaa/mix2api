@@ -164,6 +164,10 @@ func cleanEntry(raw map[string]any, now time.Time) (Entry, bool) {
 	if createdAt == "" {
 		createdAt = now.Format("2006/01/02 15:04")
 	}
+	name := strings.TrimSpace(stringValue(raw["name"]))
+	if name == "" {
+		name = "未命名"
+	}
 	enabled := true
 	if deletedAt != "" {
 		enabled = false
@@ -172,7 +176,7 @@ func cleanEntry(raw map[string]any, now time.Time) (Entry, bool) {
 	}
 	return Entry{
 		ID:               strings.TrimSpace(stringValue(raw["id"])),
-		Name:             strings.TrimSpace(stringValue(raw["name"])),
+		Name:             name,
 		Key:              key,
 		Realm:            realm,
 		Models:           normalizeModelPatterns(raw["models"]),
@@ -450,13 +454,10 @@ func (s *Store) AuthRequired() bool {
 	if disabled, ok := data["auth_disabled"].(bool); ok && disabled {
 		return false
 	}
-	entries := entriesFromSettings(data, s.now(), false)
-	for _, entry := range entries {
-		if entry.Enabled && entry.DeletedAt == "" {
-			return true
-		}
-	}
-	return false
+	// A configured key store with no usable rows still fails closed: an empty
+	// credential set must not silently turn /v1 into an open endpoint. Legacy
+	// launcher keys are accepted by the API composition alongside this.
+	return true
 }
 
 // SetAuthDisabled persists the API-key bypass switch.

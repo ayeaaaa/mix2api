@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,6 +172,29 @@ func TestPanelStatus(t *testing.T) {
 	}
 }
 
+func TestPanelCryptoUnavailableStatusAndLogin(t *testing.T) {
+	_, keyStore, password, sessions, _ := platformFixture(t)
+	if err := password.Set("secret123"); err != nil {
+		t.Fatal(err)
+	}
+	password.PBKDF2 = func([]byte, []byte, int, int) ([]byte, error) {
+		return nil, errors.New("module 'hashlib' has no attribute 'pbkdf2_hmac'")
+	}
+	server := New(ServerOptions{KeyStore: keyStore, PanelPassword: password, PanelSessions: sessions})
+	rec := doRequest(server, http.MethodGet, "/panel/status", "", nil)
+	body := decodeBody(t, rec)
+	if body["crypto_ok"] != false || body["crypto_error"] == nil {
+		t.Fatalf("crypto status = %#v", body)
+	}
+	rec = doRequest(server, http.MethodPost, "/panel/login", `{"password":"secret123"}`, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("crypto login status = %d body=%s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "pbkdf2") {
+		t.Fatalf("crypto login body = %s", rec.Body)
+	}
+}
+
 func TestPanelLoginRateLimitAPI(t *testing.T) {
 	_, _, password, sessions, _ := platformFixture(t)
 	server := New(ServerOptions{PanelPassword: password, PanelSessions: sessions})
@@ -190,5 +215,33 @@ func TestPanelLoginRateLimitAPI(t *testing.T) {
 	errBody, _ := body["error"].(map[string]any)
 	if errBody["type"] != "rate_limit_error" || errBody["reset_at"] == nil {
 		t.Fatalf("rate limit body = %#v", body)
+	}
+}
+
+func TestPanelHandlersLimiterInitConcurrent(t *testing.T) {
+	handler := &PanelHandlers{}
+	const workers = 32
+	results := make(chan *panelplatform.LoginLimiter, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- handler.limiter()
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var first *panelplatform.LoginLimiter
+	for limiter := range results {
+		if limiter == nil {
+			t.Fatal("nil limiter")
+		}
+		if first == nil {
+			first = limiter
+		}
+		if limiter != first {
+			t.Fatal("concurrent init created multiple limiters")
+		}
 	}
 }

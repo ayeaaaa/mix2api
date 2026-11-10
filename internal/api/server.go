@@ -138,6 +138,9 @@ type Server struct {
 	keyLimiter *keys.Limiter
 	sessions   *panelplatform.Sessions
 	password   *panelplatform.Password
+	settings   *settings.Service
+	realm      *settings.RealmService
+	proxySlots *proxy.Slots
 
 	defaultTokens func(string) int
 }
@@ -156,12 +159,38 @@ func New(opts ServerOptions) *Server {
 		mux:       http.NewServeMux(),
 	}
 	s.keyStore = firstKeyStore(opts.KeyStore, opts.Keys)
+	s.settings = opts.Settings
+	if s.settings == nil {
+		s.settings = opts.SettingsService
+	}
+	if s.keyStore == nil && s.settings != nil {
+		s.keyStore = s.settings.Keys
+	}
+	s.proxySlots = opts.ProxySlots
+	if s.proxySlots == nil {
+		s.proxySlots = opts.Proxy
+	}
+	s.realm = opts.Realm
 	s.keyLimiter = opts.KeyLimiter
 	if s.keyLimiter == nil && s.keyStore != nil {
 		s.keyLimiter = keys.NewLimiter()
 	}
 	s.sessions = opts.PanelSessions
 	s.password = firstPassword(opts.PanelPassword, opts.PanelPasswords)
+	if s.settings != nil {
+		if s.settings.Keys == nil && s.keyStore != nil {
+			s.settings.Keys = s.keyStore
+		}
+		if s.settings.PanelPasswordIsDefault == nil && s.password != nil {
+			s.settings.PanelPasswordIsDefault = func() bool { return s.password.IsDefault() }
+		}
+		if s.settings.SlotViews == nil && s.proxySlots != nil {
+			s.settings.SlotViews = func() []map[string]any { return s.proxySlots.Views() }
+		}
+		if s.settings.Store != nil && strings.TrimSpace(s.settings.SettingsFile) == "" {
+			s.settings.SettingsFile = s.settings.Store.Path
+		}
+	}
 	if opts.DefaultMaxOutputTokens != nil {
 		s.defaultTokens = cachedModelTokens(opts.DefaultMaxOutputTokens)
 	}
@@ -209,9 +238,13 @@ func cachedModelTokens(lookup func(string) int) func(string) int {
 		}
 		mu.Unlock()
 		value := lookup(model)
-		mu.Lock()
-		cache[model] = value
-		mu.Unlock()
+		if value > 0 {
+			// A zero is usually a transient catalog miss; do not freeze it for
+			// the lifetime of the process.
+			mu.Lock()
+			cache[model] = value
+			mu.Unlock()
+		}
 		return value
 	}
 }
@@ -275,20 +308,14 @@ func (s *Server) mountPlatformRoutes() {
 	if logStore != nil {
 		NewLogsHandlers(logStore, nil).Register(s.mux)
 	}
-	settingsService := s.opts.Settings
-	if settingsService == nil {
-		settingsService = s.opts.SettingsService
-	}
+	settingsService := s.settings
 	if settingsService != nil {
 		NewSettingsHandlers(settingsService, s.keyStore, s.panelGate()).Register(s.mux)
-		if s.opts.Realm != nil {
-			NewRealmHandlers(s.opts.Realm, s.panelGate()).Register(s.mux)
+		if s.realm != nil {
+			NewRealmHandlers(s.realm, s.panelGate(), s.apiGate()).Register(s.mux)
 		}
 	}
-	slots := s.opts.ProxySlots
-	if slots == nil {
-		slots = s.opts.Proxy
-	}
+	slots := s.proxySlots
 	if slots != nil {
 		NewProxyHandlers(slots, s.panelGate(), s.opts.ProxyProbe, s.opts.ProxyDiscover).Register(s.mux)
 	}

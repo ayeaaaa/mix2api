@@ -169,3 +169,18 @@ func TestProxySlots(t *testing.T) {
 		t.Fatalf("bindings = %#v", all)
 	}
 }
+
+func TestProxySlotLabelMatchesV1(t *testing.T) {
+	if got := Label(Slot{ID: "slot-1", Country: "美国", IPType: "residential"}); got != "美国 住宅" {
+		t.Fatalf("residential label = %q", got)
+	}
+	if got := Label(Slot{ID: "slot-2", Country: "美国", IPType: "datacenter"}); got != "美国 机房" {
+		t.Fatalf("datacenter label = %q", got)
+	}
+	if got := Label(Slot{ID: "slot-3", IPType: "residential"}); got != "slot-3" {
+		t.Fatalf("country-less label = %q", got)
+	}
+	if got := Label(Slot{ID: "slot-4", Name: "named", Country: "美国"}); got != "named" {
+		t.Fatalf("operator label = %q", got)
+	}
+}

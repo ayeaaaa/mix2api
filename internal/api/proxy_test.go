@@ -99,6 +99,9 @@ func TestProxySlotsAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second save status=%d body=%s", rec.Code, rec.Body)
 	}
+	if body := decodeBody(t, rec); textField(body["unbound"]) != "1" {
+		t.Fatalf("unbound response = %#v", body)
+	}
 	if slots.LastUnbound() != 1 || binder.bindings["u2"] != "" {
 		t.Fatalf("unbound = %d bindings=%#v", slots.LastUnbound(), binder.bindings)
 	}

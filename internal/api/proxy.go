@@ -96,7 +96,9 @@ func (h *ProxyHandlers) handleSave(w http.ResponseWriter, r *http.Request) {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "proxy slots save failed")
 		return
 	}
-	writeJSONResponse(w, http.StatusOK, map[string]any{"slots": slots})
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"slots": slots, "unbound": h.Service.LastUnbound(),
+	})
 }
 
 func (h *ProxyHandlers) handleTest(w http.ResponseWriter, r *http.Request) {

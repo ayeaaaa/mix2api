@@ -30,8 +30,9 @@ const (
 )
 
 // CryptoUnavailableReason is returned when the PBKDF2 primitive cannot run.
-// v1 returned a diagnostic rather than silently accepting a bad password.
-const CryptoUnavailableReason = "PBKDF2-HMAC-SHA256 is unavailable in this build; panel password hashing cannot run"
+// v1 returned a hashlib.pbkdf2_hmac diagnostic rather than silently accepting a
+// bad password; keep that wording recognizable for old clients.
+const CryptoUnavailableReason = "module 'hashlib' has no attribute 'pbkdf2_hmac': PBKDF2-HMAC-SHA256 is unavailable; panel password hashing cannot run"
 
 // Password stores and verifies the panel password in the shared settings file.
 type Password struct {
@@ -302,17 +303,27 @@ func (l *LoginLimiter) Check(key string) (bool, time.Time) {
 	if l.attempts == nil {
 		l.attempts = map[string][]time.Time{}
 	}
-	kept := l.attempts[key][:0]
-	for _, at := range l.attempts[key] {
-		if now.Sub(at) < window {
-			kept = append(kept, at)
-		}
-	}
-	l.attempts[key] = kept
-	if len(kept) >= max {
-		return false, kept[0].Add(window)
+	l.pruneLocked(now, window)
+	if len(l.attempts[key]) >= max {
+		return false, l.attempts[key][0].Add(window)
 	}
 	return true, time.Time{}
+}
+
+func (l *LoginLimiter) pruneLocked(now time.Time, window time.Duration) {
+	for candidate, attempts := range l.attempts {
+		kept := attempts[:0]
+		for _, at := range attempts {
+			if now.Sub(at) < window {
+				kept = append(kept, at)
+			}
+		}
+		if len(kept) == 0 {
+			delete(l.attempts, candidate)
+			continue
+		}
+		l.attempts[candidate] = kept
+	}
 }
 
 // Fail records one failed login.
@@ -320,11 +331,17 @@ func (l *LoginLimiter) Fail(key string) {
 	if l == nil {
 		return
 	}
+	window := l.Window
+	if window <= 0 {
+		window = time.Minute
+	}
+	now := l.now()
 	l.mu.Lock()
 	if l.attempts == nil {
 		l.attempts = map[string][]time.Time{}
 	}
-	l.attempts[key] = append(l.attempts[key], l.now())
+	l.pruneLocked(now, window)
+	l.attempts[key] = append(l.attempts[key], now)
 	l.mu.Unlock()
 }
 

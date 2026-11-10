@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -247,5 +248,24 @@ func TestPanelStatus(t *testing.T) {
 	}
 	if _, ok := view["crypto_error"].(string); !ok {
 		t.Fatalf("crypto_error = %#v", view["crypto_error"])
+	}
+}
+
+func TestLoginLimiterPrunesAllIPKeys(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	limiter := NewLoginLimiter()
+	limiter.Now = func() time.Time { return now }
+	for i := 0; i < 50; i++ {
+		limiter.Fail("client-" + strconv.Itoa(i))
+	}
+	now = now.Add(2 * time.Minute)
+	if ok, _ := limiter.Check("fresh"); !ok {
+		t.Fatal("fresh client blocked")
+	}
+	limiter.mu.Lock()
+	remaining := len(limiter.attempts)
+	limiter.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("stale IP keys not pruned: %d", remaining)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
@@ -24,6 +25,8 @@ type PanelHandlers struct {
 	Limiter      *panelplatform.LoginLimiter
 	FailureDelay time.Duration
 	Now          func() time.Time
+
+	limiterMu sync.Mutex
 }
 
 // NewPanelHandlers builds the panel route group. raccoon supplies the masked
@@ -176,6 +179,8 @@ func (h *PanelHandlers) handlePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PanelHandlers) limiter() *panelplatform.LoginLimiter {
+	h.limiterMu.Lock()
+	defer h.limiterMu.Unlock()
 	if h.Limiter == nil {
 		h.Limiter = panelplatform.NewLoginLimiter()
 		if h.Now != nil {

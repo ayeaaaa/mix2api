@@ -66,6 +66,14 @@ func (s *Server) requireKeyAuth(next http.Handler) http.Handler {
 		supplied := apiKeyFromRequest(r)
 		entry, ok := keys.Match(entries, supplied)
 		if !ok {
+			if !hasEnabledKeys(entries) && s.staticAPIKeyPasses(r) {
+				launcher := &keys.Entry{
+					ID: "launcher", Name: "启动参数", Key: supplied,
+					Enabled: true,
+				}
+				next.ServeHTTP(w, r.WithContext(withKeyEntry(r.Context(), launcher)))
+				return
+			}
 			if !s.keyStore.AuthRequired() {
 				next.ServeHTTP(w, r)
 				return
@@ -96,6 +104,31 @@ func panelSessionToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(r.Header.Get("X-Panel-Token"))
+}
+
+func hasEnabledKeys(entries []keys.Entry) bool {
+	for _, entry := range entries {
+		if entry.Enabled && entry.DeletedAt == "" && entry.Key != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// staticAPIKeyPasses probes the legacy opaque middleware without writing its
+// rejection to the real response. v1 accepts the launcher key alongside the
+// panel-managed key list, so a configured static key stays usable.
+func (s *Server) staticAPIKeyPasses(r *http.Request) bool {
+	if s == nil || s.opts.APIKeyAuth == nil {
+		return false
+	}
+	passed := false
+	authorized := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		passed = true
+	})
+	probe := &authProbe{header: make(http.Header)}
+	s.opts.APIKeyAuth(authorized).ServeHTTP(probe, r)
+	return passed
 }
 
 // keyModelFailure enforces a key's model allow-list before the request reaches

@@ -73,6 +73,7 @@ func (s *Service) View(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("settings: load: %w", err)
 	}
+	data, _ = s.migrateLegacyLimits(data)
 	view := s.baseView(data)
 
 	for _, provider := range s.Providers {
@@ -196,7 +197,7 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"account_max_concurrent":      accountMaxConcurrent(data),
 		"account_max_concurrent_max":  maxAccountMaxConcurrent,
 		"account_inflight":            map[string]any{},
-		"affinity_stable_key_enabled": boolTrue(data["affinity_stable_key_enabled"]),
+		"affinity_stable_key_enabled": boolDefaultTrue(data["affinity_stable_key_enabled"]),
 		"accounts_collapsed":          boolTrue(data["accounts_collapsed"]),
 		"accounts_separate_tab":       boolTrue(data["accounts_separate_tab"]),
 		"key_before_hidden":           boolTrue(data["key_before_hidden"]),
@@ -206,7 +207,7 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"max_payload_mb":              maxPayloadMB(data),
 		"enable_anthropic_messages":   boolTrue(data["enable_anthropic_messages"]),
 		"filter_models_by_key":        boolTrue(data["filter_models_by_key"]),
-		"reasoning_effort_map":        boolTrue(data["reasoning_effort_map"]),
+		"reasoning_effort_map":        boolDefaultTrue(data["reasoning_effort_map"]),
 		"models_only_available":       boolTrue(data["models_only_available"]),
 		"free_model_credit_fallback":  boolTrue(data["free_model_credit_fallback"]),
 		"accounts_dir":                s.AccountsDir,
@@ -236,10 +237,7 @@ func (s *Service) settingsFile() string {
 }
 
 func (s *Service) updateSlotOptions() []map[string]any {
-	views := []map[string]any{}
-	if s != nil && s.SlotViews != nil {
-		views = s.SlotViews()
-	}
+	views := s.currentSlotViews()
 	out := make([]map[string]any, 0, len(views))
 	for _, slot := range views {
 		id := textValue(slot["id"])
@@ -257,6 +255,23 @@ func (s *Service) updateSlotOptions() []map[string]any {
 		out = append(out, map[string]any{"id": id, "label": label, "enabled": enabled})
 	}
 	return out
+}
+
+func (s *Service) currentSlotViews() []map[string]any {
+	if s == nil {
+		return nil
+	}
+	if s.SlotViews != nil {
+		return s.SlotViews()
+	}
+	if s.Store == nil {
+		return nil
+	}
+	data, err := s.Store.Load()
+	if err != nil {
+		return nil
+	}
+	return rawSlotViews(data)
 }
 
 // Save applies a panel settings patch. It dispatches API keys to the key store,
@@ -397,43 +412,15 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		}
 		reply["auth_disabled"] = disabled
 	}
-	if raw, present := patch["limits"]; present {
-		limits, ok := raw.(map[string]any)
-		if !ok {
-			return nil, errors.New("limits must be an object")
-		}
-		normalized, touched, err := validateLimits(limits, patch)
-		if err != nil {
-			return nil, err
-		}
-		platformPatch["limits"] = normalized
-		for _, key := range touched {
-			reply[key] = limitValue(normalized, key)
-		}
-		reply["limits"] = normalized
+	limitsPatch, touchedLimits, err := validateLimitsPatch(patch)
+	if err != nil {
+		return nil, err
 	}
-	for _, key := range limitKeys {
-		if _, grouped := patch["limits"]; grouped {
-			continue
-		}
-		if _, present := patch[key]; !present {
-			continue
-		}
-		normalized, _, err := validateLimits(map[string]any{key: map[string]any{"global": patch[key]}}, patch)
-		if err != nil {
-			return nil, err
-		}
-		existing := limitsViewFromPatch(platformPatch["limits"])
-		if existing == nil {
-			loaded, _ := s.Store.Load()
-			existing = limitsView(loaded)
-		}
-		merged := mergeMaps(existing, normalized)
-		platformPatch["limits"] = merged
-		reply[key] = limitValue(merged, key)
-	}
-	if _, present := platformPatch["limits"]; present {
-		reply["limits"] = platformPatch["limits"]
+	if len(limitsPatch) > 0 {
+		// Fold a pre-grouping file first so the scoped patch cannot overwrite
+		// the legacy global value with a partial grouped map.
+		_ = s.migrateLegacyLimitsData()
+		platformPatch["limits"] = limitsPatch
 	}
 
 	boolFields := []string{
@@ -501,12 +488,15 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		reply["section_max_height"] = value
 	}
 	if raw, present := patch["keep_backups"]; present {
-		value, err := wholeNumber(raw, "keep_backups")
-		if err != nil {
-			return nil, err
+		value, ok := strictInt(raw)
+		if !ok {
+			return nil, errors.New("keep_backups must be an integer 0-3")
 		}
-		if value < 0 || value > maxKeepBackups {
-			return nil, fmt.Errorf("keep_backups must be between 0 and %d", maxKeepBackups)
+		if value < 0 {
+			value = 0
+		}
+		if value > maxKeepBackups {
+			value = maxKeepBackups
 		}
 		platformPatch["keep_backups"] = value
 		reply["keep_backups"] = value
@@ -545,14 +535,34 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		reply["ui_language"] = value
 	}
 	if raw, present := patch["hidden_pages"]; present {
-		pages := cleanHiddenPages(raw)
+		values, ok := stringList(raw)
+		if !ok {
+			return nil, errors.New("hidden_pages must be a list of page keys")
+		}
+		pages := cleanHiddenPages(values)
 		platformPatch["hidden_pages"] = pages
 		reply["hidden_pages"] = pages
 	}
 	if raw, present := patch["update_check_proxy_slot"]; present {
-		value := strings.TrimSpace(textValue(raw))
+		text, ok := raw.(string)
+		if !ok {
+			return nil, errors.New("update_check_proxy_slot must be a string")
+		}
+		value := strings.TrimSpace(text)
 		if len(value) > 64 {
 			value = value[:64]
+		}
+		if value != "" {
+			found := false
+			for _, slot := range s.currentSlotViews() {
+				if textValue(slot["id"]) == value {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, errors.New("update_check_proxy_slot does not exist")
+			}
 		}
 		platformPatch["update_check_proxy_slot"] = value
 		reply["update_check_proxy_slot"] = value
@@ -631,6 +641,13 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 	}
 	if _, ok := reply["limits"]; ok {
 		reply["limits"] = view["limits"]
+	}
+	if len(touchedLimits) > 0 {
+		full, _ := view["limits"].(map[string]any)
+		reply["limits"] = full
+		for _, key := range touchedLimits {
+			reply[key] = limitValue(full, key)
+		}
 	}
 	for key, value := range reply {
 		view[key] = value
@@ -760,6 +777,23 @@ func intValue(value any) int {
 	return 0
 }
 
+func strictInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case json.Number:
+		number, err := typed.Int64()
+		return int(number), err == nil
+	case float64:
+		if typed == float64(int(typed)) {
+			return int(typed), true
+		}
+	}
+	return 0, false
+}
+
 func wholeNumber(value any, name string) (int, error) {
 	switch typed := value.(type) {
 	case bool, nil:
@@ -823,6 +857,25 @@ func nonNegativeFloat(value any, allowBool bool, name string) (float64, error) {
 	return number, nil
 }
 
+func stringList(value any) ([]string, bool) {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...), true
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 func stringSlice(value any) []string {
 	var raw []string
 	switch typed := value.(type) {
@@ -881,7 +934,7 @@ func hiddenPages(value any) []string {
 }
 
 func limitsView(data map[string]any) map[string]any {
-	raw, _ := data["limits"].(map[string]any)
+	raw, grouped := data["limits"].(map[string]any)
 	out := map[string]any{}
 	for _, key := range limitKeys {
 		def := 0
@@ -889,19 +942,61 @@ func limitsView(data map[string]any) map[string]any {
 			def = 7
 		}
 		entry := map[string]any{"global": def, "intl": nil, "cn": nil}
-		if stored, ok := raw[key].(map[string]any); ok {
-			if value, ok := stored["global"]; ok && value != nil {
-				entry["global"] = nonNegativeInt(value, def)
-			}
-			for _, realm := range limitRealms {
-				if value, ok := stored[realm]; ok && value != nil && textValue(value) != "" {
-					entry[realm] = nonNegativeInt(value, 0)
+		if grouped {
+			if stored, ok := raw[key].(map[string]any); ok {
+				if value, ok := stored["global"]; ok && value != nil {
+					entry["global"] = nonNegativeInt(value, def)
+				}
+				for _, realm := range limitRealms {
+					if value, ok := stored[realm]; ok && value != nil && textValue(value) != "" {
+						entry[realm] = nonNegativeInt(value, 0)
+					}
 				}
 			}
+		} else if flat, present := data[key]; present {
+			// Legacy pre-grouping install: the top-level value is the global
+			// default and there are no realm overrides yet.
+			entry["global"] = nonNegativeInt(flat, def)
 		}
 		out[key] = entry
 	}
 	return out
+}
+
+// migrateLegacyLimits folds v1 pre-grouping top-level guards into `limits`,
+// drops the flat keys, and returns the updated document. Read-only accounts
+// directories fall back to the in-memory shape.
+func (s *Service) migrateLegacyLimits(data map[string]any) (map[string]any, error) {
+	if s == nil || s.Store == nil {
+		return data, nil
+	}
+	if _, grouped := data["limits"].(map[string]any); grouped {
+		return data, nil
+	}
+	hasFlat := false
+	for _, key := range limitKeys {
+		if _, present := data[key]; present {
+			hasFlat = true
+			break
+		}
+	}
+	if !hasFlat {
+		return data, nil
+	}
+	updated, err := s.Store.Update(func(current map[string]any) error {
+		if _, grouped := current["limits"].(map[string]any); grouped {
+			return nil
+		}
+		current["limits"] = limitsView(current)
+		for _, key := range limitKeys {
+			delete(current, key)
+		}
+		return nil
+	})
+	if err != nil {
+		return data, err
+	}
+	return updated, nil
 }
 
 func nonNegativeInt(value any, fallback int) int {
@@ -920,30 +1015,64 @@ func limitValue(limits map[string]any, key string) int {
 	return intValue(entry["global"])
 }
 
-func limitsViewFromPatch(value any) map[string]any {
-	result, _ := value.(map[string]any)
-	return result
+func (s *Service) migrateLegacyLimitsData() error {
+	if s == nil || s.Store == nil {
+		return nil
+	}
+	data, err := s.Store.Load()
+	if err != nil {
+		return err
+	}
+	_, err = s.migrateLegacyLimits(data)
+	return err
 }
 
-func validateLimits(raw map[string]any, patch map[string]any) (map[string]any, []string, error) {
+// validateLimitsPatch returns only the scopes the request actually names. A
+// later deep merge then preserves the untouched global value and realm
+// overrides, matching v1 set_limit semantics.
+func validateLimitsPatch(patch map[string]any) (map[string]any, []string, error) {
 	out := map[string]any{}
 	touched := []string{}
+	rawLimits, hasLimits := patch["limits"]
+	if hasLimits {
+		if _, ok := rawLimits.(map[string]any); !ok {
+			return nil, nil, errors.New("limits must be an object")
+		}
+	}
+	raw, _ := rawLimits.(map[string]any)
 	for _, key := range limitKeys {
-		grouped, ok := raw[key].(map[string]any)
-		if !ok {
-			if flat, present := patch[key]; present {
-				grouped = map[string]any{"global": flat}
-			} else {
-				continue
+		entry := map[string]any{}
+		if grouped, ok := raw[key].(map[string]any); ok {
+			if value, present := grouped["global"]; present {
+				number, err := wholeNumber(value, key)
+				if err != nil {
+					return nil, nil, err
+				}
+				if number < 0 {
+					return nil, nil, fmt.Errorf("%s cannot be negative", key)
+				}
+				entry["global"] = number
 			}
-		}
-		def := 0
-		if key == "expiring_window_days" {
-			def = 7
-		}
-		entry := map[string]any{"global": def, "intl": nil, "cn": nil}
-		if value, present := grouped["global"]; present {
-			number, err := wholeNumber(value, key)
+			for _, realm := range limitRealms {
+				value, present := grouped[realm]
+				if !present {
+					continue
+				}
+				if value == nil || textValue(value) == "" {
+					entry[realm] = nil
+					continue
+				}
+				number, err := wholeNumber(value, key)
+				if err != nil {
+					return nil, nil, err
+				}
+				if number < 0 {
+					return nil, nil, fmt.Errorf("%s cannot be negative", key)
+				}
+				entry[realm] = number
+			}
+		} else if flat, present := patch[key]; present {
+			number, err := wholeNumber(flat, key)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -952,29 +1081,11 @@ func validateLimits(raw map[string]any, patch map[string]any) (map[string]any, [
 			}
 			entry["global"] = number
 		}
-		for _, realm := range limitRealms {
-			value, present := grouped[realm]
-			if !present {
-				continue
-			}
-			if value == nil || textValue(value) == "" {
-				entry[realm] = nil
-				continue
-			}
-			number, err := wholeNumber(value, key)
-			if err != nil {
-				return nil, nil, err
-			}
-			if number < 0 {
-				return nil, nil, fmt.Errorf("%s cannot be negative", key)
-			}
-			entry[realm] = number
+		if len(entry) == 0 {
+			continue
 		}
 		out[key] = entry
 		touched = append(touched, key)
-	}
-	if len(touched) == 0 {
-		return nil, nil, errors.New("limits must contain a known guard")
 	}
 	return out, touched, nil
 }
@@ -1149,15 +1260,31 @@ func logMaxBytes(data map[string]any) any {
 }
 
 func clearableCap(value any, name string) (any, error) {
-	if value == nil || value == "" {
+	if value == nil {
+		return nil, nil
+	}
+	if _, isBool := value.(bool); isBool {
+		return nil, nil
+	}
+	if text, isText := value.(string); isText && strings.TrimSpace(text) == "" {
 		return nil, nil
 	}
 	number, err := wholeNumber(value, name)
 	if err != nil {
-		return nil, err
+		number = intValue(value)
 	}
 	if number <= 0 {
 		return nil, nil
+	}
+	limit := maxLogMaxRows
+	switch name {
+	case "log_db_max_days":
+		limit = maxLogMaxDays
+	case "log_db_max_bytes":
+		limit = maxLogMaxBytes
+	}
+	if number > limit {
+		number = limit
 	}
 	return number, nil
 }

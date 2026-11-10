@@ -50,6 +50,25 @@ func TestPlatformUsageLogsMount(t *testing.T) {
 	}
 }
 
+func TestDefaultMaxOutputTokensZeroNotCached(t *testing.T) {
+	value := 0
+	calls := 0
+	server := New(ServerOptions{DefaultMaxOutputTokens: func(string) int {
+		calls++
+		return value
+	}})
+	if got := server.defaultMaxOutputTokens("m2"); got != 0 {
+		t.Fatalf("first = %d", got)
+	}
+	value = 5
+	if got := server.defaultMaxOutputTokens("m2"); got != 5 {
+		t.Fatalf("zero was cached: %d", got)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d", calls)
+	}
+}
+
 func TestDefaultMaxOutputTokensCached(t *testing.T) {
 	calls := 0
 	server := New(ServerOptions{DefaultMaxOutputTokens: func(model string) int {

@@ -264,3 +264,167 @@ func contains(value, needle string) bool {
 		return false
 	})()
 }
+
+func TestLimitsScopedMerge(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{"limits": map[string]any{
+		"daily_token_limit": map[string]any{"global": 100, "intl": 50, "cn": 70},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Service{Store: store, AccountsDir: dir})
+	if _, err := service.Save(context.Background(), map[string]any{
+		"limits": map[string]any{"daily_token_limit": map[string]any{"cn": 40}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view, _ := service.View(context.Background())
+	entry := view["limits"].(map[string]any)["daily_token_limit"].(map[string]any)
+	if entry["global"] != 100 || entry["intl"] != 50 || entry["cn"] != 40 {
+		t.Fatalf("scoped patch lost siblings: %#v", entry)
+	}
+
+	// Flat global updates preserve realm overrides.
+	if _, err := service.Save(context.Background(), map[string]any{"daily_token_limit": 200}); err != nil {
+		t.Fatal(err)
+	}
+	view, _ = service.View(context.Background())
+	entry = view["limits"].(map[string]any)["daily_token_limit"].(map[string]any)
+	if entry["global"] != 200 || entry["intl"] != 50 || entry["cn"] != 40 {
+		t.Fatalf("flat patch lost overrides: %#v", entry)
+	}
+
+	// Clearing a realm override returns it to inherit, not zero.
+	if _, err := service.Save(context.Background(), map[string]any{
+		"limits": map[string]any{"daily_token_limit": map[string]any{"cn": nil}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	view, _ = service.View(context.Background())
+	entry = view["limits"].(map[string]any)["daily_token_limit"].(map[string]any)
+	if entry["cn"] != nil || entry["intl"] != 50 {
+		t.Fatalf("override clear = %#v", entry)
+	}
+}
+
+func TestLegacyLimitsMigration(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{
+		"daily_token_limit": 123,
+		"reserve_credits":   5,
+		"future":            map[string]any{"keep": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Service{Store: store, AccountsDir: dir})
+	view, err := service.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := view["limits"].(map[string]any)
+	daily := limits["daily_token_limit"].(map[string]any)
+	if daily["global"] != 123 || view["reserve_credits"] != 5 {
+		t.Fatalf("legacy limits not read: %#v", view)
+	}
+	if limits["expiring_window_days"].(map[string]any)["global"] != 7 {
+		t.Fatalf("expiring default = %#v", limits["expiring_window_days"])
+	}
+	data, _ := store.Load()
+	if _, exists := data["daily_token_limit"]; exists {
+		t.Fatalf("legacy flat key not migrated: %#v", data)
+	}
+	if _, exists := data["reserve_credits"]; exists {
+		t.Fatalf("legacy reserve_credits not migrated: %#v", data)
+	}
+	if _, exists := data["limits"]; !exists {
+		t.Fatalf("limits group missing after migration: %#v", data)
+	}
+	if future, _ := data["future"].(map[string]any); future["keep"] != true {
+		t.Fatalf("unknown key lost during migration: %#v", data)
+	}
+
+	// A flat update after migration keeps the legacy global as the base while
+	// applying only the named guard.
+	if _, err := service.Save(context.Background(), map[string]any{"daily_credit_limit": 9}); err != nil {
+		t.Fatal(err)
+	}
+	view, _ = service.View(context.Background())
+	limits = view["limits"].(map[string]any)
+	if limits["daily_token_limit"].(map[string]any)["global"] != 123 ||
+		limits["daily_credit_limit"].(map[string]any)["global"] != 9 {
+		t.Fatalf("post-migration patch = %#v", limits)
+	}
+}
+
+func TestRuntimeSettingsDefaultsAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{"proxy_slots": []any{
+		map[string]any{"id": "slot-1", "url": "http://127.0.0.1:7890"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	service := New(Service{Store: store, AccountsDir: dir})
+	view, err := service.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["affinity_stable_key_enabled"] != true || view["reasoning_effort_map"] != true {
+		t.Fatalf("new defaults = %#v / %#v", view["affinity_stable_key_enabled"], view["reasoning_effort_map"])
+	}
+	if got := view["proxySlots"].([]map[string]any); len(got) != 1 || got[0]["id"] != "slot-1" {
+		t.Fatalf("proxy slot fallback = %#v", got)
+	}
+	if got := view["update_check_proxy_slots"].([]map[string]any); len(got) != 1 {
+		t.Fatalf("update slot fallback = %#v", got)
+	}
+	for _, tc := range []struct {
+		name  string
+		patch map[string]any
+		want  string
+	}{
+		{"hidden string", map[string]any{"hidden_pages": "tasks"}, "hidden_pages must be a list of page keys"},
+		{"hidden non-string", map[string]any{"hidden_pages": []any{1}}, "hidden_pages must be a list of page keys"},
+		{"slot non-string", map[string]any{"update_check_proxy_slot": 1}, "update_check_proxy_slot must be a string"},
+		{"slot missing", map[string]any{"update_check_proxy_slot": "slot-9"}, "update_check_proxy_slot does not exist"},
+		{"keep bool", map[string]any{"keep_backups": true}, "keep_backups must be an integer 0-3"},
+		{"keep string", map[string]any{"keep_backups": "2"}, "keep_backups must be an integer 0-3"},
+		{"keep fraction", map[string]any{"keep_backups": 1.5}, "keep_backups must be an integer 0-3"},
+	} {
+		if _, err := service.Save(context.Background(), tc.patch); err == nil || !contains(err.Error(), tc.want) {
+			t.Fatalf("%s error = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	if _, err := service.Save(context.Background(), map[string]any{"update_check_proxy_slot": "slot-1"}); err != nil {
+		t.Fatalf("valid slot rejected: %v", err)
+	}
+	if _, err := service.Save(context.Background(), map[string]any{"hidden_pages": []any{"tasks", "settings", "bad key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Save(context.Background(), map[string]any{"keep_backups": 99}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Save(context.Background(), map[string]any{
+		"log_db_max_rows": true, "log_db_max_days": -1, "log_db_max_bytes": "nonsense",
+	}); err != nil {
+		t.Fatalf("unparseable caps should normalize to unlimited: %v", err)
+	}
+	view, _ = service.View(context.Background())
+	if view["keep_backups"] != maxKeepBackups {
+		t.Fatalf("keep_backups clamp = %#v", view["keep_backups"])
+	}
+	if view["hidden_pages"].([]string)[0] != "tasks" {
+		t.Fatalf("hidden pages = %#v", view["hidden_pages"])
+	}
+	for _, key := range []string{"log_db_max_rows", "log_db_max_days", "log_db_max_bytes"} {
+		if view[key] != nil {
+			t.Fatalf("%s = %#v, want unlimited", key, view[key])
+		}
+	}
+	enabled, rows, days, bytes := service.LogCaps()
+	if enabled || rows != 0 || days != 0 || bytes != 0 {
+		t.Fatalf("LogCaps after clear = %v %d %d %d", enabled, rows, days, bytes)
+	}
+}
