@@ -24,6 +24,10 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
+	case "migrate":
+		return runMigrateCommand(args[1:], stdout, stderr)
+	case "rollback":
+		return runRollbackCommand(args[1:], stdout, stderr)
 	case "update":
 		return runUpdateCommand(args[1:], stdout, stderr)
 	default:
@@ -39,6 +43,8 @@ func printUsage(w io.Writer) {
 Usage:
   mix2api                     start the server (HOST/PORT env)
   mix2api version [--json]    print build version, commit, and date
+  mix2api migrate [flags]     copy a v1.6.5 data tree to v2 (copy-only)
+  mix2api rollback [flags]    copy a v2 data tree back to a v1-compatible tree
   mix2api update <action>     run the privileged update executor
 
 Run "mix2api <command> -h" for command flags.
