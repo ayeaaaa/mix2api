@@ -30,8 +30,9 @@ type stubProvider struct {
 	health    providers.Health
 	healthErr error
 
-	openStream providers.ChatStream
-	openErr    error
+	openStream  providers.ChatStream
+	openStreams []providers.ChatStream
+	openErr     error
 
 	routes []providers.Route
 
@@ -73,6 +74,11 @@ func (p *stubProvider) OpenChat(_ context.Context, req providers.ChatRequest) (p
 	p.mu.Unlock()
 	if p.openErr != nil {
 		return nil, p.openErr
+	}
+	if len(p.openStreams) > 0 {
+		stream := p.openStreams[0]
+		p.openStreams = p.openStreams[1:]
+		return stream, nil
 	}
 	if p.openStream == nil {
 		return nil, errors.New("stub provider has no stream")

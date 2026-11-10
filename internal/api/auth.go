@@ -355,6 +355,12 @@ func wrapPanelAuth(base http.Handler, prefixes []string, middleware func(http.Ha
 	}
 	protected := guarded(base)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The standalone agent configurator is public source code by design:
+		// the remote machines that need it cannot pass the loopback gate.
+		if r.URL.Path == "/agents/cli" {
+			base.ServeHTTP(w, r)
+			return
+		}
 		if matchesPanelPrefix(r.URL.Path, prefixes) {
 			protected.ServeHTTP(w, r)
 			return

@@ -10,12 +10,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/agents"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/logs"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/media"
 	panelplatform "github.com/ayeaaaa/mix2api-v2/internal/platform/panel"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/probes"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/proxy"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/settings"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/update"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/usage"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -68,6 +73,25 @@ type ServerOptions struct {
 	UsageSvc *usage.Service
 	LogStore *logs.LogStore
 	Logs     *logs.LogStore
+
+	// Media mounts the OpenAI-compatible image/video task surface. Nil keeps the
+	// routes absent (404), matching a build without the media service.
+	Media *media.Service
+
+	// WebTools enables gateway-local web_search/web_fetch rounds in Responses
+	// and Chat. Nil means the client tools pass through untouched.
+	WebTools *webtools.Service
+
+	// Agents mounts the local agent configurator panel routes.
+	Agents *agents.Service
+
+	// Probes mounts the panel quota-scan trigger.
+	Probes *probes.Service
+
+	// Updates and UpdateRequests mount the read-only update status plus the
+	// validated install/rollback request bridge.
+	Updates        *update.Checker
+	UpdateRequests *update.RequestManager
 
 	// PanelAuth wraps every AuthPanel route and its top-level provider subtree.
 	// Nil fails closed for panel routes; it never leaves them open.
@@ -321,6 +345,33 @@ func (s *Server) mountPlatformRoutes() {
 	}
 	if s.password != nil || s.sessions != nil || s.keyStore != nil {
 		NewPanelHandlers(s.password, s.sessions, s.keyStore, s.raccoonStatus, s.panelGate()).Register(s.mux)
+	}
+	if s.opts.Media != nil {
+		NewMediaHandlers(s.opts.Media, s).Register(s.mux)
+	}
+	if s.opts.Agents != nil {
+		NewAgentHandlers(s.opts.Agents, s.panelGate()).Register(s.mux)
+	}
+	if s.opts.Probes != nil {
+		NewQuotaHandlers(s.opts.Probes, s.panelGate()).Register(s.mux)
+	}
+	if s.opts.Updates != nil || s.opts.UpdateRequests != nil {
+		updates := NewUpdateHandlers(s.opts.Updates, s.opts.UpdateRequests, s.opts.Version, s.panelGate())
+		updates.Addr = s.opts.Addr
+		updates.Port = s.opts.ListenerPort
+		if s.settings != nil && s.settings.Store != nil {
+			updates.KeepBackups = func() int {
+				data, err := s.settings.Store.Load()
+				if err != nil {
+					return 1
+				}
+				if value, ok := data["keep_backups"].(float64); ok {
+					return int(value)
+				}
+				return 1
+			}
+		}
+		updates.Register(s.mux)
 	}
 }
 

@@ -101,6 +101,11 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
 	}
+	if !request.stream && s.opts.WebTools != nil {
+		if handled := s.handleChatWithWebTools(w, r, provider, chatRequest, request); handled {
+			return
+		}
+	}
 	stream, err := provider.OpenChat(r.Context(), chatRequest)
 	if err != nil {
 		if stream != nil {

@@ -30,6 +30,7 @@ type responseMeta struct {
 	InputText         string
 	WebTools          bool
 	Sources           []map[string]any
+	WebItems          []any
 	Streaming         bool
 }
 
@@ -1408,6 +1409,11 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		SessionKey:         request.sessionKey,
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
+	}
+	if !compaction && !stream && s.opts.WebTools != nil {
+		if handled := s.serveResponsesWithWebTools(w, r, provider, chatRequest, translated, model); handled {
+			return
+		}
 	}
 	upstream, openErr := provider.OpenChat(r.Context(), chatRequest)
 	if openErr != nil {

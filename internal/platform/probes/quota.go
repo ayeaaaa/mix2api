@@ -1,0 +1,241 @@
+package probes
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"time"
+)
+
+// QuotaRow is one watched account/model line.
+type QuotaRow struct {
+	UID        string  `json:"uid"`
+	Model      string  `json:"model"`
+	LastScan   float64 `json:"last_scan"`
+	NextAt     float64 `json:"next_at"`
+	SeenAt     float64 `json:"seen_at"`
+	Attempts   int     `json:"attempts"`
+	LastTry    float64 `json:"last_try"`
+	LastResult string  `json:"last_result"`
+	LastDetail string  `json:"last_detail"`
+}
+
+// QuotaState persists accounts/quota_scan.json.
+type QuotaState struct {
+	Dir string
+	Now func() time.Time
+
+	mu    sync.Mutex
+	scans map[string]QuotaRow
+}
+
+// NewQuotaState loads the state file, ignoring corruption.
+func NewQuotaState(dir string) *QuotaState {
+	state := &QuotaState{Dir: dir, Now: time.Now, scans: map[string]QuotaRow{}}
+	state.load()
+	return state
+}
+
+func (s *QuotaState) now() time.Time {
+	if s != nil && s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+func (s *QuotaState) load() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.Dir, QuotaStateFile))
+	if err != nil {
+		return
+	}
+	var payload struct {
+		Version int        `json:"version"`
+		Scans   []QuotaRow `json:"scans"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return
+	}
+	now := resetTime(s.now())
+	for _, row := range payload.Scans {
+		if row.UID == "" || row.Model == "" {
+			continue
+		}
+		stamp := row.LastTry
+		if stamp == 0 {
+			stamp = row.SeenAt
+		}
+		if stamp > 0 && stamp < now-float64(QuotaMaxAge/time.Second) {
+			continue
+		}
+		s.scans[windowKey(row.UID, row.Model)] = row
+	}
+}
+
+func (s *QuotaState) Ensure(uid, model string, now time.Time, delay time.Duration) bool {
+	if s == nil || uid == "" || model == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := windowKey(uid, model)
+	if _, ok := s.scans[key]; ok {
+		return false
+	}
+	s.scans[key] = QuotaRow{UID: uid, Model: model, SeenAt: resetTime(now), NextAt: resetTime(now.Add(delay))}
+	s.saveLocked()
+	return true
+}
+
+func (s *QuotaState) Get(uid, model string) (QuotaRow, bool) {
+	if s == nil {
+		return QuotaRow{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, ok := s.scans[windowKey(uid, model)]
+	return row, ok
+}
+
+// DueAt is max(last_scan+interval, next_at).
+func (s *QuotaState) DueAt(row QuotaRow) time.Time {
+	if row.LastScan > 0 {
+		return time.Unix(int64(row.LastScan+float64(QuotaInterval/time.Second)), 0)
+	}
+	return time.Unix(int64(row.NextAt), 0)
+}
+
+// Due returns due rows filtered by the watched set.
+func (s *QuotaState) Due(watched map[string]bool, now time.Time, limit int, force bool) []QuotaRow {
+	if s == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = QuotaBatchLimit
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []QuotaRow{}
+	for _, row := range s.scans {
+		if len(watched) > 0 && !watched[row.Model] {
+			continue
+		}
+		if !force && now.Before(s.DueAt(row)) {
+			continue
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := s.DueAt(out[i]), s.DueAt(out[j])
+		if left.Equal(right) {
+			if out[i].Model != out[j].Model {
+				return out[i].Model < out[j].Model
+			}
+			return out[i].UID < out[j].UID
+		}
+		return left.Before(right)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// Record writes one scan outcome. lastScan zero means "not really scanned".
+func (s *QuotaState) Record(uid, model string, now time.Time, lastScan bool, nextAt time.Time, attempts int, result, detail string) QuotaRow {
+	if s == nil {
+		return QuotaRow{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := windowKey(uid, model)
+	row, ok := s.scans[key]
+	if !ok {
+		row = QuotaRow{UID: uid, Model: model, SeenAt: resetTime(now)}
+	}
+	if lastScan {
+		row.LastScan = resetTime(now)
+	}
+	row.NextAt = resetTime(nextAt)
+	row.Attempts = attempts
+	row.LastTry = resetTime(now)
+	row.LastResult = truncate(result, 40)
+	row.LastDetail = truncate(detail, 200)
+	s.scans[key] = row
+	s.saveLocked()
+	return row
+}
+
+// Drop removes one row.
+func (s *QuotaState) Drop(uid, model string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := windowKey(uid, model)
+	if _, ok := s.scans[key]; !ok {
+		return false
+	}
+	delete(s.scans, key)
+	s.saveLocked()
+	return true
+}
+
+// Snapshot returns panel rows sorted by due time.
+func (s *QuotaState) Snapshot(watched map[string]bool, now time.Time, limit int) []map[string]any {
+	if s == nil {
+		return []map[string]any{}
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	s.mu.Lock()
+	rows := make([]QuotaRow, 0, len(s.scans))
+	for _, row := range s.scans {
+		rows = append(rows, row)
+	}
+	s.mu.Unlock()
+	sort.Slice(rows, func(i, j int) bool { return s.DueAt(rows[i]).Before(s.DueAt(rows[j])) })
+	out := []map[string]any{}
+	for _, row := range rows {
+		if len(out) >= limit {
+			break
+		}
+		due := s.DueAt(row)
+		dueIn := int(due.Sub(now).Seconds())
+		if dueIn < 0 {
+			dueIn = 0
+		}
+		out = append(out, map[string]any{
+			"uid": row.UID, "uid8": first8(row.UID), "model": row.Model,
+			"watched": watched[row.Model], "last_scan": row.LastScan,
+			"last_result": row.LastResult, "last_detail": row.LastDetail,
+			"due_in": dueIn,
+		})
+	}
+	return out
+}
+
+func (s *QuotaState) saveLocked() {
+	rows := make([]QuotaRow, 0, len(s.scans))
+	for _, row := range s.scans {
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Model != rows[j].Model {
+			return rows[i].Model < rows[j].Model
+		}
+		return rows[i].UID < rows[j].UID
+	})
+	payload := struct {
+		Version      int        `json:"version"`
+		SavedAt      string     `json:"saved_at"`
+		IntervalHour float64    `json:"interval_hours"`
+		Scans        []QuotaRow `json:"scans"`
+	}{Version: StateVersion, SavedAt: s.now().Format("2006-01-02 15:04:05"), IntervalHour: 6, Scans: rows}
+	_ = atomicWriteJSON(filepath.Join(s.Dir, QuotaStateFile), payload)
+}

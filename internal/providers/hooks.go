@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 )
@@ -28,4 +30,146 @@ type RealmSelector interface {
 type ProxySlotBinder interface {
 	ApplyProxySlots(slots transport.Slots) int
 	ProxySlotBindings() map[string]int
+}
+
+// Capabilities describes the optional provider features compiled into an
+// implementation. The platform checks these flags before dispatching an
+// optional request, so an absent hook never causes a provider call.
+type Capabilities struct {
+	MediaGeneration  bool
+	MediaImages      bool
+	MediaVideos      bool
+	ImageInputInChat bool
+	AgentModelSpecs  bool
+	WindowProbe      bool
+	QuotaScan        bool
+	UsageLimits      bool
+}
+
+// CapabilityProvider is implemented by every provider that participates in
+// optional platform surfaces. Providers without it are treated as all-false.
+type CapabilityProvider interface {
+	Capabilities() Capabilities
+}
+
+// AgentModelSpec is the provider-neutral model metadata used by the agent
+// configurator. Explicit panel payload fields override these values.
+type AgentModelSpec struct {
+	ID               string
+	Name             string
+	ContextWindow    int64
+	MaxOutputTokens  int64
+	ReasoningEfforts []string
+	SupportsVision   bool
+}
+
+// AgentModelSpecProvider optionally exposes richer model specs without making
+// the platform scan a provider's chat catalog.
+type AgentModelSpecProvider interface {
+	AgentModelSpecs(ctx context.Context) ([]AgentModelSpec, error)
+}
+
+// MediaRequest carries one normalized media operation. Body is the provider-
+// shaped upstream body when the platform already built one; Params retains the
+// semantic values used for pricing, validation and task rows.
+type MediaRequest struct {
+	Realm  string
+	Model  string
+	Prompt string
+	Params map[string]any
+	Body   map[string]any
+	Raw    map[string]json.RawMessage
+	KeyID  string
+}
+
+// MediaImageResult is one generated or edited image.
+type MediaImageResult struct {
+	URL           string
+	B64JSON       string
+	RevisedPrompt string
+	Credit        *float64
+	Created       int64
+	Account       string
+	Kind          string
+	Warnings      []string
+}
+
+// MediaVideoSubmit is the result of submitting an asynchronous video task.
+type MediaVideoSubmit struct {
+	UpstreamID string
+	Account    string
+	Credit     *float64
+	Warnings   []string
+}
+
+// MediaVideoState is one poll result. Status uses the upstream vocabulary
+// queued|running|completed|failed|cancelled.
+type MediaVideoState struct {
+	Status string
+	Credit *float64
+	Videos []string
+	Error  string
+}
+
+// MediaProvider is the optional provider hook for image and video generation.
+// The platform never type-asserts a provider without first checking this hook.
+type MediaProvider interface {
+	Capabilities() Capabilities
+	MediaModels(ctx context.Context, realm string) ([]Model, error)
+	GenerateImage(ctx context.Context, req MediaRequest) (MediaImageResult, error)
+	EditImage(ctx context.Context, req MediaRequest) (MediaImageResult, error)
+	SubmitVideo(ctx context.Context, req MediaRequest) (MediaVideoSubmit, error)
+	PollVideo(ctx context.Context, account, upstreamID string) (MediaVideoState, error)
+	DownloadVideo(ctx context.Context, account, url, dest string) error
+	CancelVideo(ctx context.Context, account, upstreamID string) error
+}
+
+// ProbeKind selects the probe state machine that owns a target.
+type ProbeKind string
+
+const (
+	ProbeWindow ProbeKind = "window"
+	ProbeQuota  ProbeKind = "quota"
+)
+
+// ProbeTarget identifies one account/model quota line.
+type ProbeTarget struct {
+	UID     string
+	Realm   string
+	Model   string
+	ResetAt time.Time
+}
+
+// ProbeResult reports one minimal probe request.
+type ProbeResult struct {
+	OK      bool
+	Status  int
+	ResetAt time.Time
+	Detail  string
+}
+
+// ProbeProvider is the optional provider hook for window and quota probes.
+// The provider owns authentication and account selection; the platform owns
+// due state, retry budgets and scheduling.
+type ProbeProvider interface {
+	ProbeTargets(ctx context.Context, kind ProbeKind, now time.Time, limit int) ([]ProbeTarget, error)
+	Probe(ctx context.Context, kind ProbeKind, target ProbeTarget) (ProbeResult, error)
+}
+
+// MediaError is an optional provider media failure. Code uses the v1 stable
+// vocabulary (invalid_request, no_media_model, no_route, auth, no_credit,
+// rate_limit, rejected, upstream, empty_result) and is safe to map to HTTP
+// status by the platform without parsing messages.
+type MediaError struct {
+	Code    string
+	Message string
+	Status  int
+	Detail  string
+}
+
+func (e *MediaError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
 }

@@ -204,6 +204,18 @@ type Provider struct {
 	// schedulerRunMu serializes manual full-sweep triggers. Per-job state is
 	// still idempotent, but v1 refuses overlapping panel triggers outright.
 	schedulerRunMu sync.Mutex
+
+	// Media and probe seams. Their zero values use the provider transport and
+	// task chat base URL; tests point them at one fake server.
+	mediaDoer    ContextHTTPDoer
+	mediaBaseURL string
+	mediaTimeout time.Duration
+	mediaNow     func() time.Time
+	mediaLookup  func(context.Context, string) ([]string, error)
+	probeDoer    ContextHTTPDoer
+	probeBaseURL string
+	probeTimeout time.Duration
+	probeNow     func() time.Time
 }
 
 // New returns the WorkBuddy provider for realm. The shared settings file is
