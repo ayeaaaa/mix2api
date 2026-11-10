@@ -80,7 +80,7 @@ func TestHelpListsCommands(t *testing.T) {
 	if code := runCLI([]string{"help"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	for _, want := range []string{"mix2api version"} {
+	for _, want := range []string{"mix2api version", "mix2api update"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("help missing %q: %s", want, out.String())
 		}
