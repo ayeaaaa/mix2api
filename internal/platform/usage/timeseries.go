@@ -51,6 +51,12 @@ type seriesState struct {
 	HoursFloor    string                  `json:"hours_floor,omitempty"`
 	HoursMaxAt    float64                 `json:"hours_max_at,omitempty"`
 	HoursComplete bool                    `json:"hours_complete"`
+	// Hits / HitsOverflow are v1's closed-window edge account: exact integer
+	// seconds that had a row. A closed window can only cut buckets when no row
+	// lands exactly on its upper bound.
+	Hits         []int64 `json:"hits,omitempty"`
+	HitsOverflow bool    `json:"hits_overflow,omitempty"`
+	HitsTracked  bool    `json:"hits_tracked"`
 }
 
 func newSeriesState() seriesState {
@@ -356,9 +362,28 @@ func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
 	if state.HoursFloor == "" {
 		state.HoursComplete = false
 	}
-	if maxAt, ok := numericValue(entry["max_at"]); ok {
-		state.MaxAt = maxAt
-		state.HoursMaxAt = maxAt
+	maxAt, hasMaxAt := numericValue(entry["max_at"])
+	if !hasMaxAt {
+		return seriesState{}, false
+	}
+	state.MaxAt = maxAt
+	state.HoursMaxAt = maxAt
+	if rawHits, ok := entry["hits"].([]any); ok {
+		state.HitsTracked = true
+		for _, raw := range rawHits {
+			value, valid := numericValue(raw)
+			if !valid {
+				return seriesState{}, false
+			}
+			state.Hits = append(state.Hits, int64(value))
+		}
+	}
+	if rawOverflow, ok := entry["hits_overflow"]; ok {
+		overflow, valid := rawOverflow.(bool)
+		if !valid {
+			return seriesState{}, false
+		}
+		state.HitsOverflow = overflow
 	}
 	credits, _ := entry["credits"].([]any)
 	if !minutesPresent && len(state.Hours) == 0 && len(credits) == 0 {
@@ -399,6 +424,21 @@ func seriesBucketFromMap(raw map[string]any) (*SeriesBucket, bool) {
 	return bucket, true
 }
 
+func seriesClosedCutOK(state seriesState, hi int64) bool {
+	if state.MaxAt <= 0 || float64(hi) >= state.MaxAt {
+		return true
+	}
+	if !state.HitsTracked || state.HitsOverflow {
+		return false
+	}
+	for _, hit := range state.Hits {
+		if hit == hi {
+			return false
+		}
+	}
+	return true
+}
+
 // seriesSlice turns minute buckets into the requested grid. It reports false
 // when the window/bucket does not align, so the caller falls back to a raw
 // scan with the exact v1 origin rule.
@@ -406,6 +446,10 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 	// Minute buckets cannot apply a sub-minute upper bound; the raw scan is
 	// the only path that can keep `at <= hi` exact.
 	if hi.Second() != 0 || hi.Nanosecond() != 0 {
+		return nil, nil, false
+	}
+	closed := state.MaxAt > 0 && float64(hi.Unix()) < state.MaxAt
+	if closed && !seriesClosedCutOK(state, hi.Unix()) {
 		return nil, nil, false
 	}
 	if step == 60 {
@@ -435,7 +479,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 			if !state.HoursComplete || hi.Unix() != localHourStart(hi).Unix() {
 				return nil, nil, false
 			}
-			return seriesHoursSlice(state, lo, hi, step)
+			return seriesHoursSlice(state, lo, hi, step, closed)
 		}
 	} else if step == 86400 {
 		if lo.Unix() != localMidnight(lo).Unix() {
@@ -445,7 +489,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 			if !state.HoursComplete || hi.Unix() != localMidnight(hi).Unix() {
 				return nil, nil, false
 			}
-			return seriesHoursSlice(state, lo, hi, step)
+			return seriesHoursSlice(state, lo, hi, step, closed)
 		}
 	} else {
 		return nil, nil, false
@@ -454,7 +498,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 	hiUnix := hi.Unix()
 	grouped := map[int64]*SeriesBucket{}
 	for minute, bucket := range state.Minutes {
-		if minute < loUnix || minute > hiUnix {
+		if minute < loUnix || (closed && minute >= hiUnix) || (!closed && minute > hiUnix) {
 			continue
 		}
 		var key int64
@@ -499,7 +543,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 	return buckets, credits, true
 }
 
-func seriesHoursSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket, []SeriesCredit, bool) {
+func seriesHoursSlice(state seriesState, lo, hi time.Time, step int, closed bool) ([]SeriesBucket, []SeriesCredit, bool) {
 	if state.HoursFloor == "" {
 		return nil, nil, false
 	}
@@ -512,7 +556,7 @@ func seriesHoursSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBu
 	}
 	grouped := map[int64]*SeriesBucket{}
 	for at, bucket := range state.Hours {
-		if at < lo.Unix() || at > hi.Unix() {
+		if at < lo.Unix() || (closed && at >= hi.Unix()) || (!closed && at > hi.Unix()) {
 			continue
 		}
 		var key int64

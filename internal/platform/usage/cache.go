@@ -442,6 +442,7 @@ func CacheFingerprint(value string) string {
 // richer v1 records (a pricing dependency object plus realm_inputs). A string
 // mismatch rejects; a v1 object is accepted after shape validation.
 func (s *Service) cacheFingerprintOK(entry map[string]any) bool {
+	v1Record := false
 	if value, ok := entry["pricing"]; ok {
 		switch typed := value.(type) {
 		case nil:
@@ -453,18 +454,22 @@ func (s *Service) cacheFingerprintOK(entry map[string]any) bool {
 				return false
 			}
 		case map[string]any:
+			v1Record = true
 			if !validV1PricingRecord(typed) {
 				return false
 			}
 		case []any:
-			if len(typed) == 0 {
-				return false
-			}
-			first, ok := typed[0].(string)
-			if !ok || (first != "on" && first != "off") {
+			v1Record = true
+			if !validV1PricingList(typed) {
 				return false
 			}
 		default:
+			return false
+		}
+	}
+	if v1Record {
+		inputs, ok := entry["realm_inputs"]
+		if !ok || inputs == nil || !validV1RealmInputs(inputs) {
 			return false
 		}
 	}
@@ -509,7 +514,34 @@ func validV1RealmInputs(value any) bool {
 	return true
 }
 
+func validV1PricingList(value []any) bool {
+	if len(value) == 1 {
+		flag, ok := value[0].(string)
+		return ok && flag == "off"
+	}
+	if len(value) != 4 {
+		return false
+	}
+	if flag, ok := value[0].(string); !ok || flag != "on" {
+		return false
+	}
+	for _, raw := range value[1:] {
+		if raw == nil {
+			continue
+		}
+		if _, ok := raw.(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func validV1PricingRecord(record map[string]any) bool {
+	for _, field := range []string{"refs", "timeline", "timeline_at", "timeline_models", "unresolved", "backfilled", "builtin"} {
+		if _, ok := record[field]; !ok {
+			return false
+		}
+	}
 	refs, ok := record["refs"].(map[string]any)
 	if !ok {
 		return false

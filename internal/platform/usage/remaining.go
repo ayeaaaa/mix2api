@@ -394,11 +394,14 @@ func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
 		if !okAts || !okCums || len(ats) != len(cums) {
 			return remainingState{}, false
 		}
-		head, _ := cacheInt(pair["head"])
-		if head < 0 || head > int64(len(ats)) {
+		head, headOK := integerField(pair, "head")
+		if !headOK || head < 0 || head > int64(len(ats)) {
 			return remainingState{}, false
 		}
-		base, _ := cacheInt(pair["base"])
+		base, baseOK := integerField(pair, "base")
+		if !baseOK || base < 0 {
+			return remainingState{}, false
+		}
 		previous := float64(base)
 		if head > 0 {
 			value, ok := numericValue(cums[head-1])
@@ -435,6 +438,14 @@ func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
 		state.Usage[key] = buffer
 	}
 	return state, true
+}
+
+func integerField(row map[string]any, key string) (int64, bool) {
+	value, ok := numericValue(row[key])
+	if !ok || value != math.Trunc(value) {
+		return 0, false
+	}
+	return int64(value), true
 }
 
 func limitEventFromRow(row Row) *limitEvent {
