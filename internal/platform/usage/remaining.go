@@ -253,7 +253,7 @@ func (s *Service) Remaining(ctx context.Context) (map[string]any, error) {
 	s.remainingData = payload
 	s.remainingAt = now
 	s.remainingMu.Unlock()
-	s.resultPut("remaining", "all", payload, s.remainingTTL())
+	s.resultPutQuery("remaining", "all", RemainingETagKey(), payload, s.remainingTTL())
 	return payload, nil
 }
 
@@ -426,6 +426,13 @@ func (s *Service) remainingPayload(state *remainingState, now time.Time) map[str
 			active[realm+"\x1f"+event.Model] = true
 		}
 	}
+	for _, account := range accounts {
+		for model, cap := range account.ModelCaps {
+			if math.Max(cap.At, cap.Reset) >= floor {
+				active[account.Realm+"\x1f"+model] = true
+			}
+		}
+	}
 
 	rows := make([]map[string]any, 0)
 	totals := map[string]map[string]any{}
@@ -443,6 +450,19 @@ func (s *Service) remainingPayload(state *remainingState, now time.Time) map[str
 			parts := strings.SplitN(key, "\x1f", 2)
 			if len(parts) == 2 && parts[0] == uid && active[realm+"\x1f"+parts[1]] {
 				models[parts[1]] = true
+			}
+		}
+		// Credential model_caps and limit events are cap anchors too. A pair
+		// cooling only because its credential remembers the reset must remain
+		// visible even when the journal row and usage buffer were pruned.
+		for model := range account.ModelCaps {
+			if active[realm+"\x1f"+model] {
+				models[model] = true
+			}
+		}
+		for _, event := range state.Events {
+			if event.Account == uid && active[realm+"\x1f"+event.Model] {
+				models[event.Model] = true
 			}
 		}
 		names := make([]string, 0, len(models))
@@ -1041,14 +1061,19 @@ func (s *Service) archiveRemaining(state *remainingState, now time.Time) map[str
 	if day == "" || day >= today {
 		day = localDayKey(float64(localMidnight(now).AddDate(0, 0, -1).Unix()))
 	}
-	record := s.archiveRemainingDay(state, day)
+	accounts := s.remainingAccounts(state)
+	realmOf := map[string]string{}
+	for _, account := range accounts {
+		realmOf[account.UID] = account.Realm
+	}
+	record := s.archiveRemainingDay(state, day, realmOf)
 	if record == nil {
 		return nil
 	}
 	return map[string]map[string]any{day: record}
 }
 
-func (s *Service) archiveRemainingDay(state *remainingState, day string) map[string]any {
+func (s *Service) archiveRemainingDay(state *remainingState, day string, realmOf map[string]string) map[string]any {
 	start, ok := dayKeyStart(day)
 	if !ok {
 		return nil
@@ -1065,7 +1090,11 @@ func (s *Service) archiveRemainingDay(state *remainingState, day string) map[str
 		if event.Sample <= 0 {
 			continue
 		}
-		key := event.Realm + "\x1f" + event.Model
+		realm := event.Realm
+		if realm == "" {
+			realm = realmOf[event.Account]
+		}
+		key := realm + "\x1f" + event.Model
 		if samples[key] == nil {
 			samples[key] = map[string][]int64{}
 		}

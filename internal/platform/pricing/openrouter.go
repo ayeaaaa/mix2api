@@ -224,7 +224,11 @@ func bandsFrom(price OpenRouterPrice) []Band {
 		})}
 		if item.MinPromptTokens != nil {
 			band.MinPromptTokens = *item.MinPromptTokens
+			band.minSet = true
 		} else if item.UTCStart != nil || item.UTCEnd != nil || len(item.UTCDays) > 0 {
+			band.daysSet = true
+			band.startSet = true
+			band.endSet = true
 			for _, raw := range item.UTCDays {
 				name := strings.ToLower(strings.TrimSpace(raw))
 				if short, ok := weekdayLongNames[name]; ok {

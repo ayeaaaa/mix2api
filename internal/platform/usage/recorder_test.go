@@ -97,3 +97,35 @@ func TestRecorderShape(t *testing.T) {
 		t.Fatal("append failure should be returned to the caller")
 	}
 }
+
+func TestRecorderCachedTokenAliases(t *testing.T) {
+	env := newTestEnv(t, nil)
+	recorder := &Recorder{Store: env.Store}
+	at := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	if err := recorder.Record(context.Background(), RecordInput{
+		At: at, Model: "m", Realm: "intl",
+		Usage: map[string]any{
+			"prompt_tokens": 100, "completion_tokens": 10,
+			"cached_tokens": 0, "cache_read_input_tokens": 0,
+			"prompt_tokens_details":     map[string]any{"cached_tokens": 40},
+			"completion_tokens_details": map[string]any{"reasoning_tokens": 7},
+		},
+		GenMS: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(env.Paths.Log)
+	row, ok := decodeUsageLine([]byte(strings.TrimSpace(string(data))))
+	if !ok {
+		t.Fatal("row does not parse")
+	}
+	if mustNumber(t, row["cached_tokens"]) != 40 {
+		t.Fatalf("cached alias not normalized: %+v", row)
+	}
+	if mustNumber(t, row["reasoning_tokens"]) != 7 {
+		t.Fatalf("reasoning detail not normalized: %+v", row)
+	}
+	if mustNumber(t, row["cache_hit_pct"]) != 40 {
+		t.Fatalf("cache hit pct = %v", row["cache_hit_pct"])
+	}
+}

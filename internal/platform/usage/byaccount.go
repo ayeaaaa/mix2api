@@ -82,7 +82,7 @@ func (s *Service) ByAccount(ctx context.Context) (map[string]any, error) {
 		})
 	}
 	payload := map[string]any{"accounts": accounts}
-	s.resultPut("by_account", cacheKey, payload, s.statsTTL())
+	s.resultPutQuery("by_account", cacheKey, ByAccountETagKey(), payload, s.statsTTL())
 	return payload, nil
 }
 
@@ -91,13 +91,14 @@ func (s *Service) byAccountBuckets(ctx context.Context) (map[string]*ByAccountBu
 		return buckets, nil
 	}
 	buckets := map[string]*ByAccountBucket{}
-	if err := s.scanAll(ctx, func(row Row) error {
+	offset, err := s.scanAll(ctx, func(row Row) error {
 		s.foldByAccount(buckets, row)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
-	s.saveByAccount(buckets, s.logSize())
+	s.saveByAccount(buckets, offset)
 	return buckets, nil
 }
 

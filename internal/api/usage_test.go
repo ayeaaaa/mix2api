@@ -152,3 +152,81 @@ func TestUsageRoutesETag(t *testing.T) {
 func containsText(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
+
+func TestUsageRoutesETagIsQuerySpecific(t *testing.T) {
+	service := usageTestService(t)
+	mux := http.NewServeMux()
+	NewUsageHandlers(service, nil).Register(mux)
+	intl := perform(t, mux, "/usage?realm=intl")
+	cn := perform(t, mux, "/usage?realm=cn")
+	intlETag := intl.Header().Get("ETag")
+	cnETag := cn.Header().Get("ETag")
+	if intlETag == "" || cnETag == "" || intlETag == cnETag {
+		t.Fatalf("query-specific ETags not distinct: intl=%q cn=%q", intlETag, cnETag)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/usage?realm=intl", nil)
+	request.Header.Set("If-None-Match", cnETag)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cross-query ETag incorrectly returned %d", recorder.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/usage?realm=intl", nil)
+	request.Header.Set("If-None-Match", intlETag)
+	recorder = httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotModified {
+		t.Fatalf("same-query ETag should return 304, got %d", recorder.Code)
+	}
+}
+
+func TestUsageAnalyticsDefaultsToAllRealms(t *testing.T) {
+	service := usageTestService(t)
+	if err := service.Store.Append(map[string]any{
+		"at": float64(time.Now().Unix() - 30), "model": "m", "realm": "cn",
+		"account": "b", "key": "k1", "outcome": "completed", "kind": "chat",
+		"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.DefaultRealm = "intl"
+	mux := http.NewServeMux()
+	NewUsageHandlers(service, nil).Register(mux)
+	analytics := perform(t, mux, "/usage/analytics")
+	var payload map[string]any
+	if err := json.NewDecoder(strings.NewReader(analytics.Body.String())).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	summary := payload["summary"].(map[string]any)
+	all := summary["all_time"].(map[string]any)
+	if numberOf(t, all["requests"]) != 4 {
+		t.Fatalf("analytics should default to both realms: %+v", all)
+	}
+	snapshot := perform(t, mux, "/usage")
+	var snap map[string]any
+	decoder := json.NewDecoder(strings.NewReader(snapshot.Body.String()))
+	decoder.UseNumber()
+	if err := decoder.Decode(&snap); err != nil {
+		t.Fatal(err)
+	}
+	if numberOf(t, snap["requests"]) != 3 {
+		t.Fatalf("snapshot should default to intl: %+v", snap)
+	}
+}
+
+func numberOf(t *testing.T, value any) float64 {
+	t.Helper()
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return number
+	case float64:
+		return typed
+	default:
+		t.Fatalf("not numeric: %T", value)
+		return 0
+	}
+}

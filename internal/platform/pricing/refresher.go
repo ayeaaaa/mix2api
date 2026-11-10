@@ -186,6 +186,11 @@ type RefresherOptions struct {
 	// ExtraIDs supplies live catalogue ids the bundled snapshot does not know.
 	// It is optional and must never block or perform network I/O.
 	ExtraIDs func() []string
+
+	// RetryMin and RetryMax bound the failure backoff. Zero selects the v1-like
+	// defaults (30s and 15m); tests may shrink them.
+	RetryMin time.Duration
+	RetryMax time.Duration
 }
 
 // Refresher periodically appends a fresh OpenRouter version to the policy
@@ -199,16 +204,21 @@ type Refresher struct {
 	now      func() time.Time
 	extraIDs func() []string
 
-	runMu    sync.Mutex
-	mu       sync.Mutex
-	stop     chan struct{}
-	stopped  bool
-	lastRun  time.Time
-	lastErr  string
-	models   int
-	extra    int
-	unpriced []string
-	logs     []string
+	runMu       sync.Mutex
+	mu          sync.Mutex
+	stop        chan struct{}
+	stopped     bool
+	lastRun     time.Time
+	lastAttempt time.Time
+	nextAttempt time.Time
+	failures    int64
+	retryMin    time.Duration
+	retryMax    time.Duration
+	lastErr     string
+	models      int
+	extra       int
+	unpriced    []string
+	logs        []string
 }
 
 // NewRefresher builds a refresher. It does not start until Run is called.
@@ -220,7 +230,18 @@ func NewRefresher(opts RefresherOptions) *Refresher {
 		logger:   opts.Logger,
 		now:      opts.Now,
 		extraIDs: opts.ExtraIDs,
+		retryMin: opts.RetryMin,
+		retryMax: opts.RetryMax,
 		stop:     make(chan struct{}),
+	}
+	if refresher.retryMin <= 0 {
+		refresher.retryMin = 30 * time.Second
+	}
+	if refresher.retryMax <= 0 {
+		refresher.retryMax = 15 * time.Minute
+	}
+	if refresher.retryMax < refresher.retryMin {
+		refresher.retryMax = refresher.retryMin
 	}
 	if refresher.snapshot == nil {
 		refresher.snapshot = Active()
@@ -274,7 +295,8 @@ func (r *Refresher) intervalMinutes() float64 {
 
 // Run blocks until the context is cancelled or Stop is called. The first
 // cycle waits one interval before fetching, so a hot restart does not hammer
-// OpenRouter.
+// OpenRouter. Failures back off exponentially: the loop never retries in a
+// tight cycle just because a fetch failed or the switch is off.
 func (r *Refresher) Run(ctx context.Context) {
 	if r == nil {
 		return
@@ -284,12 +306,7 @@ func (r *Refresher) Run(ctx context.Context) {
 			return
 		}
 		interval := r.intervalMinutes()
-		wait := NextRefreshWait(r.clock(), r.lastRunTime(), interval)
-		if interval <= 0 {
-			// Disabled: poll the setting occasionally so a panel change is
-			// picked up without a wake-up channel.
-			wait = 30 * time.Second
-		}
+		wait := r.nextWait(r.clock(), interval)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -301,6 +318,10 @@ func (r *Refresher) Run(ctx context.Context) {
 		case <-timer.C:
 		}
 		if interval <= 0 {
+			r.mu.Lock()
+			r.lastAttempt = r.clock()
+			r.lastRun = r.lastAttempt
+			r.mu.Unlock()
 			continue
 		}
 		if err := r.RunOnce(ctx); err != nil {
@@ -309,10 +330,47 @@ func (r *Refresher) Run(ctx context.Context) {
 	}
 }
 
-func (r *Refresher) lastRunTime() time.Time {
+func (r *Refresher) nextWait(now time.Time, intervalMinutes float64) time.Duration {
+	r.mu.Lock()
+	nextAttempt := r.nextAttempt
+	lastAttempt := r.lastAttempt
+	r.mu.Unlock()
+	if nextAttempt.After(now) {
+		return nextAttempt.Sub(now)
+	}
+	wait := NextRefreshWait(now, lastAttempt, intervalMinutes)
+	if intervalMinutes <= 0 {
+		// Disabled: poll the setting occasionally so a panel change is picked
+		// up without a wake-up channel.
+		if wait <= 0 {
+			wait = 30 * time.Second
+		}
+	}
+	return wait
+}
+
+func (r *Refresher) noteAttempt(at time.Time, success bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.lastRun
+	r.lastAttempt = at
+	// lastRun is the scheduling clock: a failed attempt still advances it so
+	// the next wait is measured from when the attempt happened, not from the
+	// previous success (or from zero on a freshly started process).
+	r.lastRun = at
+	if success {
+		r.failures = 0
+		r.nextAttempt = time.Time{}
+		return
+	}
+	r.failures++
+	backoff := r.retryMin
+	for count := int64(1); count < r.failures && backoff < r.retryMax; count++ {
+		backoff *= 2
+		if backoff > r.retryMax {
+			backoff = r.retryMax
+		}
+	}
+	r.nextAttempt = at.Add(backoff)
 }
 
 // RunOnce performs one non-overlapping refresh.
@@ -326,11 +384,13 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 	defer r.runMu.Unlock()
 
 	if r.snapshot == nil || !r.snapshot.Enabled() {
+		r.noteAttempt(r.clock(), false)
 		return errors.New("pricing disabled")
 	}
 	models, err := r.fetch(ctx)
 	if err != nil {
 		r.recordFailure("fetch error")
+		r.noteAttempt(r.clock(), false)
 		return errors.New("fetch error")
 	}
 	extra := []string{}
@@ -340,6 +400,7 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 	doc, unpriced, _ := r.snapshot.BuildSnapshot(models, r.snapshot, extra, r.snapshot.VariantInherit())
 	if len(doc.Models) == 0 {
 		r.recordFailure("no models matched")
+		r.noteAttempt(r.clock(), false)
 		return errors.New("no models matched")
 	}
 	at := float64(r.clock().UnixNano()) / 1e9
@@ -352,14 +413,15 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 		r.snapshot.PrunePolicies(protect)
 	}
 	r.snapshot.RememberOpenRouter(models)
+	now := r.clock()
 	r.mu.Lock()
-	r.lastRun = r.clock()
 	r.lastErr = ""
 	r.models = len(doc.Models)
 	r.extra = len(extra)
 	r.unpriced = append([]string(nil), unpriced...)
 	r.logs = appendCapped(r.logs, "已取价：模型 "+fmt.Sprint(len(doc.Models))+" 个，新增策略 "+fmt.Sprint(added)+" 条")
 	r.mu.Unlock()
+	r.noteAttempt(now, true)
 	return nil
 }
 
@@ -400,11 +462,18 @@ func (r *Refresher) Status() map[string]any {
 	defer r.mu.Unlock()
 	interval := r.intervalMinutes()
 	master := r.snapshot != nil && r.snapshot.Enabled()
+	nextRun := r.nextAttempt
+	if nextRun.IsZero() && interval > 0 && !r.lastAttempt.IsZero() {
+		nextRun = r.lastAttempt.Add(time.Duration(interval * float64(time.Minute)))
+	}
 	return map[string]any{
 		"interval_minutes": interval,
 		"enabled":          master && interval > 0,
 		"master_enabled":   master,
 		"last_run":         r.lastRun.Unix(),
+		"last_attempt":     r.lastAttempt.Unix(),
+		"next_run":         nextRun.Unix(),
+		"failures":         r.failures,
 		"last_error":       r.lastErr,
 		"last_models":      r.models,
 		"last_extra":       r.extra,

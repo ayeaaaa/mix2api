@@ -73,6 +73,7 @@ type AccountInfo struct {
 	ExpiresAt      float64
 	Accounts       int
 	AccountsReady  int
+	Credits        map[string]any
 }
 
 // CapAnchor is one persisted model-cap reset instant.
@@ -110,8 +111,14 @@ type Service struct {
 
 	RemainingAccounts []RemainingAccount
 
+	// AfterScan is a test/benchmark seam invoked between a full scan and the
+	// checkpoint write. Production leaves it nil; a test can append a row here
+	// to prove the checkpoint offset is the scanned prefix, not a later size.
+	AfterScan func()
+
 	resultMu    sync.Mutex
 	resultCache map[string]cachedResult
+	queryETags  map[string]string
 
 	remainingMu   sync.Mutex
 	remainingData map[string]any
@@ -185,6 +192,10 @@ func (s *Service) resultGet(kind, key string) (any, string, bool) {
 }
 
 func (s *Service) resultPut(kind, key string, value any, ttl time.Duration) string {
+	return s.resultPutQuery(kind, key, "", value, ttl)
+}
+
+func (s *Service) resultPutQuery(kind, key, signature string, value any, ttl time.Duration) string {
 	if s == nil {
 		return ""
 	}
@@ -198,12 +209,58 @@ func (s *Service) resultPut(kind, key string, value any, ttl time.Duration) stri
 	s.resultCache[kind+"\x1f"+key] = cachedResult{
 		data: value, builtAt: builtAt, etag: etag, expires: now.Add(ttl),
 	}
+	if signature != "" {
+		if s.queryETags == nil {
+			s.queryETags = map[string]string{}
+		}
+		s.queryETags[kind+"\x1f"+signature] = etag
+	}
 	s.resultMu.Unlock()
 	if s.Cache != nil {
 		s.Cache.SetETag(kind, key, builtAt)
 	}
 	return etag
 }
+
+// QueryETag returns the validator recorded for one exact query signature.
+func (s *Service) QueryETag(kind, signature string) string {
+	if s == nil {
+		return ""
+	}
+	s.resultMu.Lock()
+	defer s.resultMu.Unlock()
+	return s.queryETags[kind+"\x1f"+signature]
+}
+
+// ETag signatures deliberately contain every query dimension that changes the
+// payload. They are built by the same helpers on the service and HTTP sides so
+// one query can never be served another query's validator.
+
+// SnapshotETagKey identifies a snapshot query.
+func SnapshotETagKey(realm string, window Range) string {
+	return strings.Join([]string{"snapshot", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until)}, "\x1f")
+}
+
+// AnalyticsETagKey identifies an analytics query.
+func AnalyticsETagKey(realm string, window Range) string {
+	return strings.Join([]string{"analytics", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until)}, "\x1f")
+}
+
+// PerfETagKey identifies a perf query.
+func PerfETagKey(realm string, window Range, sample int) string {
+	return strings.Join([]string{"perf", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until), fmt.Sprint(sample)}, "\x1f")
+}
+
+// SeriesETagKey identifies a timeseries query.
+func SeriesETagKey(realm string, window Range, bucketSeconds int) string {
+	return strings.Join([]string{"series", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until), fmt.Sprint(bucketSeconds)}, "\x1f")
+}
+
+// ByAccountETagKey is constant: this view has no query dimensions.
+func ByAccountETagKey() string { return "by_account" }
+
+// RemainingETagKey is constant: this view has no query dimensions.
+func RemainingETagKey() string { return "remaining" }
 
 // ETag returns the validator for the last result of kind/key.
 func (s *Service) ETag(kind, key string) string {
@@ -213,28 +270,6 @@ func (s *Service) ETag(kind, key string) string {
 	s.resultMu.Lock()
 	defer s.resultMu.Unlock()
 	return s.resultCache[kind+"\x1f"+key].etag
-}
-
-// LatestETag returns the newest validator recorded for a kind. HTTP handlers
-// use it because the cache key embeds resolved window bounds the caller does
-// not need to reproduce.
-func (s *Service) LatestETag(kind string) string {
-	if s == nil {
-		return ""
-	}
-	s.resultMu.Lock()
-	defer s.resultMu.Unlock()
-	prefix := kind + "\x1f"
-	best := ""
-	bestAt := float64(-1)
-	for key, entry := range s.resultCache {
-		if !strings.HasPrefix(key, prefix) || entry.builtAt < bestAt {
-			continue
-		}
-		bestAt = entry.builtAt
-		best = entry.etag
-	}
-	return best
 }
 
 func (s *Service) pricingFingerprint() string {
@@ -365,9 +400,12 @@ func (s *Service) scan(ctx context.Context, path string, offset int64, fold func
 	}
 }
 
-func (s *Service) scanAll(ctx context.Context, fold func(Row) error) error {
-	_, err := s.scan(ctx, s.Store.Paths.Log, 0, fold)
-	return err
+func (s *Service) scanAll(ctx context.Context, fold func(Row) error) (int64, error) {
+	offset, err := s.scan(ctx, s.Store.Paths.Log, 0, fold)
+	if err == nil && s.AfterScan != nil {
+		s.AfterScan()
+	}
+	return offset, err
 }
 
 func number(row Row, key string) float64 {

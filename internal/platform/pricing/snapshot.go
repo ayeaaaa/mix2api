@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,11 +57,15 @@ func (r *Rates) UnmarshalJSON(data []byte) error {
 	r.InputCacheHit = 0
 	r.InputCacheMiss = 0
 	r.Output = 0
+	// An absent cache-hit key behaves like null in v1: _pick falls back to the
+	// cache-miss rate. An explicit 0 is a real price and must stay 0.
+	r.NullInputCacheHit = true
 	if value, ok := raw["input_cache_hit"]; ok {
 		if value == nil {
 			r.NullInputCacheHit = true
 		} else {
 			r.InputCacheHit = *value
+			r.NullInputCacheHit = false
 		}
 	}
 	if value, ok := raw["input_cache_miss"]; ok && value != nil {
@@ -96,6 +101,76 @@ type Band struct {
 	End             int      `json:"end,omitempty"`
 	MinPromptTokens int64    `json:"min_prompt_tokens,omitempty"`
 	Flat            Rates    `json:"flat"`
+
+	// Presence flags preserve the source object's exact key set. v1's policy
+	// id hashes the band dictionaries as written (for example a time band has
+	// an explicit "start": 0 and "days": null), and omitting a zero-valued key
+	// would produce a different id.
+	daysSet  bool
+	startSet bool
+	endSet   bool
+	minSet   bool
+}
+
+// UnmarshalJSON records which optional band keys the source carried.
+func (b *Band) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if value, ok := raw["days"]; ok {
+		b.daysSet = true
+		if string(bytes.TrimSpace(value)) != "null" {
+			if err := json.Unmarshal(value, &b.Days); err != nil {
+				return err
+			}
+		}
+	}
+	if value, ok := raw["start"]; ok {
+		b.startSet = true
+		if err := json.Unmarshal(value, &b.Start); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["end"]; ok {
+		b.endSet = true
+		if err := json.Unmarshal(value, &b.End); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["min_prompt_tokens"]; ok {
+		b.minSet = true
+		if err := json.Unmarshal(value, &b.MinPromptTokens); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["flat"]; ok {
+		if err := json.Unmarshal(value, &b.Flat); err != nil {
+			return err
+		}
+	} else {
+		b.Flat = Rates{}
+	}
+	return nil
+}
+
+// MarshalJSON preserves the source key set, including explicit zero/null
+// fields that omitempty would otherwise drop.
+func (b Band) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"flat": b.Flat}
+	if b.daysSet || b.Days != nil {
+		out["days"] = b.Days
+	}
+	if b.minSet || b.MinPromptTokens != 0 {
+		out["min_prompt_tokens"] = b.MinPromptTokens
+	}
+	if b.startSet || b.Start != 0 {
+		out["start"] = b.Start
+	}
+	if b.endSet || b.End != 0 {
+		out["end"] = b.End
+	}
+	return json.Marshal(out)
 }
 
 // Entry is one hub model's price declaration.
@@ -844,26 +919,118 @@ func commaInt(value int64) string {
 // part of the hash because it decides the CNY figure just as much as the
 // dollar prices do.
 func policyID(model string, flat Rates, bands []Band, usdCNY float64) string {
-	payload := map[string]any{
-		"model":   model,
-		"flat":    flat,
-		"bands":   bandsOrNil(bands),
-		"usd_cny": round6(usdCNY),
+	var builder strings.Builder
+	builder.WriteString(`{"bands": `)
+	if len(bands) == 0 {
+		builder.WriteString("null")
+	} else {
+		builder.WriteByte('[')
+		for index, band := range bands {
+			if index > 0 {
+				builder.WriteString(", ")
+			}
+			writePolicyBand(&builder, band)
+		}
+		builder.WriteByte(']')
 	}
-	data, _ := json.Marshal(payload)
-	sum := sha1.Sum(data)
+	builder.WriteString(`, "flat": `)
+	writePolicyRates(&builder, flat)
+	builder.WriteString(`, "model": `)
+	builder.WriteString(pyQuote(model))
+	builder.WriteString(`, "usd_cny": `)
+	builder.WriteString(pyFloat(math.RoundToEven(usdCNY*1_000_000) / 1_000_000))
+	builder.WriteByte('}')
+	sum := sha1.Sum([]byte(builder.String()))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func bandsOrNil(bands []Band) any {
-	if len(bands) == 0 {
-		return nil
+// writePolicyBand mirrors Python json.dumps(sort_keys=True) for one band.
+func writePolicyBand(builder *strings.Builder, band Band) {
+	builder.WriteByte('{')
+	first := true
+	field := func(name string) {
+		if !first {
+			builder.WriteString(", ")
+		}
+		first = false
+		builder.WriteString(pyQuote(name))
+		builder.WriteString(": ")
 	}
-	return bands
+	if band.daysSet || band.Days != nil {
+		field("days")
+		if band.Days == nil {
+			builder.WriteString("null")
+		} else {
+			builder.WriteByte('[')
+			for index, day := range band.Days {
+				if index > 0 {
+					builder.WriteString(", ")
+				}
+				builder.WriteString(pyQuote(day))
+			}
+			builder.WriteByte(']')
+		}
+	}
+	if band.endSet || band.End != 0 {
+		field("end")
+		builder.WriteString(strconv.Itoa(band.End))
+	}
+	field("flat")
+	writePolicyRates(builder, band.Flat)
+	if band.minSet || band.MinPromptTokens != 0 {
+		field("min_prompt_tokens")
+		builder.WriteString(strconv.FormatInt(band.MinPromptTokens, 10))
+	}
+	if band.startSet || band.Start != 0 {
+		field("start")
+		builder.WriteString(strconv.Itoa(band.Start))
+	}
+	builder.WriteByte('}')
 }
 
-func round6(value float64) float64 {
-	return float64(int64(value*1_000_000+0.5)) / 1_000_000
+func writePolicyRates(builder *strings.Builder, rates Rates) {
+	builder.WriteString(`{"input_cache_hit": `)
+	if rates.NullInputCacheHit {
+		builder.WriteString("null")
+	} else {
+		builder.WriteString(pyFloat(rates.InputCacheHit))
+	}
+	builder.WriteString(`, "input_cache_miss": `)
+	builder.WriteString(pyFloat(rates.InputCacheMiss))
+	builder.WriteString(`, "output": `)
+	builder.WriteString(pyFloat(rates.Output))
+	builder.WriteByte('}')
+}
+
+func pyQuote(value string) string {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+	return strings.TrimSuffix(buffer.String(), "\n")
+}
+
+// pyFloat formats a float the way Python's repr/json.dumps does: a decimal
+// point for ordinary values, scientific notation below 1e-4 or at 1e16+.
+func pyFloat(value float64) string {
+	if value == 0 {
+		if math.Signbit(value) {
+			return "-0.0"
+		}
+		return "0.0"
+	}
+	absolute := math.Abs(value)
+	exponent := int(math.Floor(math.Log10(absolute)))
+	if exponent >= -4 && exponent < 16 {
+		text := strconv.FormatFloat(value, 'f', -1, 64)
+		if !strings.Contains(text, ".") {
+			text += ".0"
+		}
+		return text
+	}
+	text := strconv.FormatFloat(value, 'e', -1, 64)
+	// Go renders e-05/e+16 exactly like Python's repr for these magnitudes.
+	return text
 }
 
 func formatEpoch(value float64) string {

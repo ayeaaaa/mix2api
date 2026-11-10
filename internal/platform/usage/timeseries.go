@@ -153,7 +153,7 @@ func (s *Service) Timeseries(ctx context.Context, opts SeriesOptions) (map[strin
 		"series":         buckets,
 		"credits":        credits,
 	}
-	s.resultPut("series", cacheKey, payload, s.statsTTL())
+	s.resultPutQuery("series", cacheKey, SeriesETagKey(opts.Realm, window, opts.BucketSeconds), payload, s.statsTTL())
 	return payload, nil
 }
 
@@ -162,16 +162,17 @@ func (s *Service) seriesState(ctx context.Context, realm string) (seriesState, e
 		return state, nil
 	}
 	state := newSeriesState()
-	if err := s.scanAll(ctx, func(row Row) error {
+	offset, err := s.scanAll(ctx, func(row Row) error {
 		if !s.matchesRealm(row, realm) {
 			return nil
 		}
 		state.fold(row)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return seriesState{}, err
 	}
-	s.saveSeries(realm, state, s.logSize())
+	s.saveSeries(realm, state, offset)
 	return state, nil
 }
 
@@ -326,7 +327,7 @@ func (s *Service) seriesScan(ctx context.Context, realm string, lo, hi time.Time
 	}
 	buckets := map[int64]*SeriesBucket{}
 	credits := make([]SeriesCredit, 0)
-	err := s.scanAll(ctx, func(row Row) error {
+	_, err := s.scanAll(ctx, func(row Row) error {
 		if !s.matchesRealm(row, realm) {
 			return nil
 		}

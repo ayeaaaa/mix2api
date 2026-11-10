@@ -213,7 +213,7 @@ func (s *Service) Snapshot(ctx context.Context, opts SnapshotOptions) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	s.resultPut("snapshot", cacheKey, stats, s.statsTTL())
+	s.resultPutQuery("snapshot", cacheKey, SnapshotETagKey(opts.Realm, window), stats, s.statsTTL())
 	return stats, nil
 }
 
@@ -224,17 +224,18 @@ func (s *Service) snapshotStats(ctx context.Context, realm string, window Range)
 		}
 	}
 	stats := newUsageStats()
-	if err := s.scanAll(ctx, func(row Row) error {
+	offset, err := s.scanAll(ctx, func(row Row) error {
 		if !inRange(number(row, "at"), window) {
 			return nil
 		}
 		s.foldSnapshotRow(&stats, row, realm)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	if window.Since == nil && window.Until == nil {
-		s.saveSnapshot(realm, stats)
+		s.saveSnapshotAt(realm, stats, offset)
 	}
 	return s.snapshotMap(stats, realm), nil
 }
@@ -297,14 +298,6 @@ func (s *Service) adoptSnapshot(ctx context.Context, realm string) (map[string]a
 		return s.snapshotMap(stats, realm), true
 	}
 	return nil, false
-}
-
-func (s *Service) saveSnapshot(realm string, stats UsageStats) {
-	offset := int64(0)
-	if info, err := statFile(s.Store.Paths.Log); err == nil {
-		offset = info.Size()
-	}
-	s.saveSnapshotAt(realm, stats, offset)
 }
 
 func (s *Service) saveSnapshotAt(realm string, stats UsageStats, offset int64) {

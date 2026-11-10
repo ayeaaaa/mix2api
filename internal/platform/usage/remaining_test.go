@@ -132,3 +132,63 @@ func TestRemainingUsage(t *testing.T) {
 		t.Fatalf("rows should sort zero-remaining first: %+v", rowsOut)
 	}
 }
+
+func TestRemainingCapOnlyPairAndArchiveRealm(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	env := newTestEnv(t, nil)
+	service := env.service()
+	service.Now = func() time.Time { return now }
+	service.RemainingAccounts = []RemainingAccount{{
+		UID: "a", Nickname: "A", Realm: "intl", Enabled: true,
+		ModelCaps: map[string]CapAnchor{
+			"m": {At: float64(now.Unix()) - 3600, Reset: float64(now.Unix()) + 3600},
+		},
+	}}
+	payload, err := service.Remaining(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := payload["rows"].([]map[string]any)
+	if len(rows) != 1 || rows[0]["model"] != "m" || rows[0]["cooling"] != true {
+		t.Fatalf("cap-only pair missing: %+v", rows)
+	}
+	if rows[0]["remaining"] != int64(0) {
+		t.Fatalf("cap-only pair remaining = %v", rows[0]["remaining"])
+	}
+
+	// An archived event without a realm field inherits the account's realm.
+	env2 := newTestEnv(t, nil)
+	yesterday := now.Add(-24 * time.Hour)
+	raw := map[string]any{
+		"at": float64(yesterday.Unix()), "reset": float64(yesterday.Unix() + 3600),
+		"uid": "a", "model": "m", "sample": 1234,
+	}
+	data, _ := json.Marshal(raw)
+	if err := os.WriteFile(env2.Paths.LimitEvents, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service2 := env2.service()
+	service2.Now = func() time.Time { return now }
+	service2.RemainingAccounts = []RemainingAccount{{UID: "a", Nickname: "A", Realm: "intl", Enabled: true}}
+	if _, err := service2.Remaining(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(env2.Paths.EstimateDaily)
+	if err != nil {
+		t.Fatalf("estimate-daily not written: %v", err)
+	}
+	var document struct {
+		Days map[string]map[string]any `json:"days"`
+	}
+	if err := json.Unmarshal(stored, &document); err != nil {
+		t.Fatal(err)
+	}
+	day := localDayKey(float64(yesterday.Unix()))
+	if document.Days[day] == nil {
+		t.Fatalf("yesterday not archived: %s", stored)
+	}
+	budgets, _ := document.Days[day]["budgets"].(map[string]any)
+	if budgets["intl\x1fm"] == nil {
+		t.Fatalf("archive did not apply account realm: %+v", budgets)
+	}
+}

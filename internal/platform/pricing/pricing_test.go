@@ -3,6 +3,7 @@ package pricing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -457,4 +458,138 @@ func mustOpen(t *testing.T, path string) *os.File {
 func mustFloat(value any) float64 {
 	number, _ := asFloat(value)
 	return number
+}
+
+func TestPolicyIDsMatchV1(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	t.Setenv("WB_PRICING_FILE", "")
+	snapshot, err := Load(accounts, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"deepseek-v4.1-flash-sg": "b5d87bff661b",
+		"hy4-preview":            "8928d1d8713f",
+		"gpt-6-astra":            "7014b582a4ad",
+		"hunyuan-chat":           "4d1762405f48",
+		"minimax-m3.1-flash":     "7c35f27434aa",
+	}
+	for model, want := range cases {
+		entry, ok := snapshot.Models[model]
+		if !ok {
+			t.Fatalf("missing model %s", model)
+		}
+		if got := policyID(model, entry.Flat, entry.Bands, snapshot.Meta.USDCNY); got != want {
+			t.Fatalf("%s policy id = %s, want %s", model, got, want)
+		}
+	}
+}
+
+func TestInputCacheHitExplicitZeroAndMissingFallback(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot := &Snapshot{
+		Meta: Meta{USDCNY: 1}, Models: map[string]Entry{
+			"zero": {Currency: "USD", Unit: 1_000_000, Flat: Rates{InputCacheHit: 0, InputCacheMiss: 1, Output: 2}},
+		}, accountsDir: accounts, usageDir: usage,
+	}
+	row := map[string]any{"model": "zero", "prompt_tokens": 1000, "cached_tokens": 400}
+	cost := snapshot.CostForRow(row)
+	if !cost.Known || cost.CNY != 0.0006 {
+		t.Fatalf("explicit zero cache-hit was billed as miss: %+v", cost)
+	}
+	if err := os.WriteFile(filepath.Join(usage, "pricing-policies.jsonl"), []byte(`{"id":"p1","model":"m","currency":"USD","unit":1000000,"usd_cny":1,"flat":{"input_cache_miss":1,"output":2},"first_seen":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(usage, "pricing-timeline.jsonl"), []byte(`{"at":1,"policies":{"m":"p1"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := snapshot.CostForRow(map[string]any{"model": "m", "prompt_tokens": 1000, "cached_tokens": 400})
+	if !missing.Known || missing.CNY != 0.001 {
+		t.Fatalf("missing cache-hit should fall back to miss: %+v", missing)
+	}
+}
+
+func TestEnsurePolicyMintsAndIsIdempotent(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot := &Snapshot{Meta: Meta{USDCNY: 7.1}, Models: map[string]Entry{}, accountsDir: accounts, usageDir: usage}
+	snapshot.RememberOpenRouter(map[string]OpenRouterPrice{
+		"vendor/m": {Prompt: 0.000001, Completion: 0.000002, InputCacheReadPresent: true, InputCacheRead: 0.0000005},
+	})
+	first, err := snapshot.EnsurePolicy("m")
+	if err != nil || first == "" {
+		t.Fatalf("EnsurePolicy = %q %v", first, err)
+	}
+	second, err := snapshot.EnsurePolicy("m")
+	if err != nil || second != first {
+		t.Fatalf("EnsurePolicy not idempotent: %q -> %q (%v)", first, second, err)
+	}
+	policies, _ := os.ReadFile(filepath.Join(usage, policiesName))
+	timeline, _ := os.ReadFile(filepath.Join(usage, timelineName))
+	if len(policies) == 0 || len(timeline) == 0 {
+		t.Fatalf("policy files were not minted: policies=%q timeline=%q", policies, timeline)
+	}
+	cost := snapshot.CostForRow(map[string]any{"model": "m", "prompt_tokens": 1_000_000})
+	if !cost.Known || cost.CNY <= 0 || cost.Policy != first {
+		t.Fatalf("minted policy is not usable: %+v", cost)
+	}
+}
+
+func TestRefresherFailureBacksOff(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot, err := Load(accounts, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	refresher := NewRefresher(RefresherOptions{
+		Snapshot: snapshot,
+		Interval: func() float64 { return 0.001 },
+		RetryMin: 20 * time.Millisecond,
+		RetryMax: 40 * time.Millisecond,
+		Fetch: func(context.Context) (map[string]OpenRouterPrice, error) {
+			calls++
+			return nil, errors.New("offline")
+		},
+	})
+	done := make(chan struct{})
+	go func() { refresher.Run(context.Background()); close(done) }()
+	time.Sleep(120 * time.Millisecond)
+	refresher.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher did not stop")
+	}
+	if calls == 0 {
+		t.Fatal("refresher never attempted a fetch")
+	}
+	if calls > 8 {
+		t.Fatalf("failure hot loop: %d calls", calls)
+	}
+	if failures := refresher.Status()["failures"].(int64); failures == 0 {
+		t.Fatalf("failure count not recorded: %+v", refresher.Status())
+	}
+}
+
+func TestRefresherDisabledDoesNotFetch(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot, err := Load(accounts, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	refresher := NewRefresher(RefresherOptions{
+		Snapshot: snapshot,
+		Interval: func() float64 { return 0 },
+		Fetch: func(context.Context) (map[string]OpenRouterPrice, error) {
+			calls++
+			return nil, nil
+		},
+	})
+	go refresher.Run(context.Background())
+	time.Sleep(80 * time.Millisecond)
+	refresher.Stop()
+	if calls != 0 {
+		t.Fatalf("disabled refresher fetched %d times", calls)
+	}
 }

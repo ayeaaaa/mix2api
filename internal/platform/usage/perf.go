@@ -224,7 +224,7 @@ func (s *Service) Perf(ctx context.Context, opts PerfOptions) (map[string]any, e
 		"by_model_realm":   perfByRealm(agg.byRealm),
 		"by_model_acct":    perfByAccount(agg.byAcct),
 	}
-	s.resultPut("perf", cacheKey, payload, s.statsTTL())
+	s.resultPutQuery("perf", cacheKey, PerfETagKey(opts.Realm, window, sample), payload, s.statsTTL())
 	return payload, nil
 }
 

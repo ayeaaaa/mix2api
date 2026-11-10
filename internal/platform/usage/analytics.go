@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 )
 
@@ -317,7 +316,7 @@ func (s *Service) Analytics(ctx context.Context, opts AnalyticsOptions) (map[str
 		mirrorAllTimeToWindow(&winMaps)
 	} else {
 		winMaps = newAnalyticsMaps()
-		if err := s.scanAll(ctx, func(row Row) error {
+		if _, err := s.scanAll(ctx, func(row Row) error {
 			if !s.matchesRealm(row, realm) || !inRange(number(row, "at"), window) {
 				return nil
 			}
@@ -336,7 +335,7 @@ func (s *Service) Analytics(ctx context.Context, opts AnalyticsOptions) (map[str
 	finalizeAnalyticsMaps(&allCopy)
 	finalizeAnalyticsMaps(&winMaps)
 	payload := s.analyticsPayload(allCopy, winMaps, realm, window)
-	s.resultPut("analytics", cacheKey, payload, s.statsTTL())
+	s.resultPutQuery("analytics", cacheKey, AnalyticsETagKey(opts.Realm, window), payload, s.statsTTL())
 	return payload, nil
 }
 
@@ -345,7 +344,7 @@ func (s *Service) analyticsAllTime(ctx context.Context, realm string) (analytics
 		return maps, nil
 	}
 	maps := newAnalyticsMaps()
-	if err := s.scanAll(ctx, func(row Row) error {
+	offset, err := s.scanAll(ctx, func(row Row) error {
 		if !s.matchesRealm(row, realm) {
 			return nil
 		}
@@ -356,10 +355,11 @@ func (s *Service) analyticsAllTime(ctx context.Context, realm string) (analytics
 		}
 		s.foldAnalyticsRow(row, realm, &maps, false, cny)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return analyticsMaps{}, err
 	}
-	s.saveAnalytics(realm, maps, s.logSize())
+	s.saveAnalytics(realm, maps, offset)
 	return maps, nil
 }
 
@@ -497,22 +497,52 @@ func finalizeAnalyticsMaps(maps *analyticsMaps) {
 }
 
 func (s *Service) analyticsPayload(allMaps, winMaps analyticsMaps, realm string, window Range) map[string]any {
-	accounts := make([]map[string]any, 0, len(allMaps.Accts))
-	for uid, entry := range allMaps.Accts {
-		win := winMaps.Accts[uid]
-		if win == nil {
-			win = &AnalyticsAccount{UID: uid, WindowModels: map[string]AnalyticsModel{}}
+	accountRows := map[string]*AnalyticsAccount{}
+	for uid, info := range s.Accounts {
+		if realm != "" && info.Realm != realm {
+			continue
 		}
-		accounts = append(accounts, map[string]any{
-			"uid":           uid,
-			"nickname":      entry.Nickname,
-			"realm":         entry.Realm,
-			"domain":        entry.Domain,
-			"window":        win.Window,
-			"all_time":      entry.AllTime,
-			"window_models": win.WindowModels,
-			"all_models":    entry.AllModels,
-		})
+		accountRows[uid] = &AnalyticsAccount{
+			UID: uid, Nickname: info.Nickname, Realm: info.Realm, Domain: info.Domain,
+			WindowModels: map[string]AnalyticsModel{}, AllModels: map[string]AnalyticsModel{},
+		}
+	}
+	for uid, entry := range allMaps.Accts {
+		row := accountRows[uid]
+		if row == nil {
+			row = &AnalyticsAccount{UID: uid, Nickname: entry.Nickname, Realm: entry.Realm, Domain: entry.Domain,
+				WindowModels: map[string]AnalyticsModel{}, AllModels: map[string]AnalyticsModel{}}
+			accountRows[uid] = row
+		}
+		if info, ok := s.Accounts[uid]; ok {
+			if info.Nickname != "" {
+				row.Nickname = info.Nickname
+			}
+			if info.Realm != "" {
+				row.Realm = info.Realm
+			}
+			row.Domain = info.Domain
+		}
+		row.AllTime = entry.AllTime
+		row.AllModels = entry.AllModels
+		row.WindowModels = map[string]AnalyticsModel{}
+		if win := winMaps.Accts[uid]; win != nil {
+			row.Window = win.Window
+			row.WindowModels = win.WindowModels
+		}
+	}
+	accounts := make([]map[string]any, 0, len(accountRows))
+	for uid, entry := range accountRows {
+		item := map[string]any{
+			"uid": uid, "nickname": entry.Nickname, "realm": entry.Realm,
+			"domain": entry.Domain,
+			"window": entry.Window, "all_time": entry.AllTime,
+			"window_models": entry.WindowModels, "all_models": entry.AllModels,
+		}
+		if info, ok := s.Accounts[uid]; ok && info.Credits != nil {
+			item["credits"] = info.Credits
+		}
+		accounts = append(accounts, item)
 	}
 	sort.SliceStable(accounts, func(i, j int) bool {
 		left := accounts[i]["window"].(AnalyticsStat)
@@ -790,29 +820,4 @@ func round0(value float64) float64 {
 		return float64(int64(value + 0.5))
 	}
 	return float64(int64(value - 0.5))
-}
-
-func (s *Service) logSize() int64 {
-	if s == nil || s.Store == nil {
-		return 0
-	}
-	file, err := os.Open(s.Store.Paths.Log)
-	if err != nil {
-		return 0
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.Size() == 0 {
-		return 0
-	}
-	buffer := make([]byte, 1)
-	for position := info.Size() - 1; position >= 0; position-- {
-		if _, err := file.ReadAt(buffer, position); err != nil {
-			return 0
-		}
-		if buffer[0] == '\n' {
-			return position + 1
-		}
-	}
-	return 0
 }

@@ -102,8 +102,7 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 	}
 	prompt := fieldFloat(in.Usage, "prompt_tokens")
 	if prompt > 0 {
-		cached := fieldFloat(in.Usage, "cached_tokens")
-		row["cache_hit_pct"] = math.Round(cached*100/prompt*10) / 10
+		row["cache_hit_pct"] = math.Round(bestCachedUsageTokens(in.Usage)*100/prompt*10) / 10
 	}
 	return r.Store.Append(row)
 }
@@ -123,14 +122,56 @@ func defaultRecordKind(kind string) string {
 }
 
 func copyUsageFields(row map[string]any, usage map[string]any) {
+	// _extract_usage in v1 always emits the full six-field block, with zero
+	// defaults, even when an upstream omitted some keys.
 	for _, field := range []string{
 		"prompt_tokens", "completion_tokens", "reasoning_tokens",
 		"cached_tokens", "total_tokens", "credit",
 	} {
-		if value, ok := usage[field]; ok && value != nil {
-			row[field] = value
+		row[field] = int64(0)
+	}
+	for _, field := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
+		if value, ok := numericValue(usage[field]); ok {
+			row[field] = int64(value)
 		}
 	}
+	reasoning := usage["reasoning_tokens"]
+	if reasoning == nil {
+		reasoning = nestedUsageValue(usage, "completion_tokens_details", "reasoning_tokens")
+	}
+	if value, ok := numericValue(reasoning); ok {
+		row["reasoning_tokens"] = int64(value)
+	}
+	if value, ok := numericValue(usage["credit"]); ok {
+		row["credit"] = value
+	}
+	row["cached_tokens"] = int64(bestCachedUsageTokens(usage))
+}
+
+func nestedUsageValue(usage map[string]any, key, nested string) any {
+	value, ok := usage[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return value[nested]
+}
+
+// bestCachedUsageTokens mirrors v1 _best_cached_tokens: first positive alias
+// wins, and zero aliases never shadow a real hit.
+func bestCachedUsageTokens(usage map[string]any) float64 {
+	for _, value := range []any{
+		nestedUsageValue(usage, "prompt_tokens_details", "cached_tokens"),
+		usage["prompt_cache_hit_tokens"],
+		usage["cache_read_input_tokens"],
+		usage["cached_tokens"],
+		nestedUsageValue(usage, "input_tokens_details", "cached_tokens"),
+		nestedUsageValue(usage, "completion_tokens_details", "cached_tokens"),
+	} {
+		if number, ok := numericValue(value); ok && number > 0 {
+			return number
+		}
+	}
+	return 0
 }
 
 func fieldFloat(usage map[string]any, field string) float64 {

@@ -346,12 +346,14 @@ func ValidateCachePosition(entry map[string]any, path string) (int64, bool) {
 			return 0, false
 		}
 	}
-	storedMTime, okMTime := cacheInt(entry["mtime"])
-	if !okMTime {
-		return 0, false
-	}
-	if info.ModTime().UnixNano() < storedMTime {
-		return 0, false
+	// v1/v3 checkpoints predate the explicit mtime field; when it is present
+	// it must not claim a future write, but its absence is not invalid. Store
+	// whole seconds: nanosecond values do not round-trip through json.Number
+	// (float64) without occasionally rounding up and looking "future".
+	if storedMTime, okMTime := cacheInt(entry["mtime"]); okMTime {
+		if info.ModTime().Unix() < storedMTime {
+			return 0, false
+		}
 	}
 	tailHex, _ := entry["tail"].(string)
 	tail, err := hex.DecodeString(tailHex)
@@ -386,7 +388,7 @@ func CachePosition(path string, offset int64) (map[string]any, bool) {
 		"size":   size,
 		"device": device,
 		"inode":  inode,
-		"mtime":  info.ModTime().UnixNano(),
+		"mtime":  info.ModTime().Unix(),
 		"key":    []int64{size, int64(device), int64(inode)},
 		"tail":   hex.EncodeToString(tail),
 	}, true
