@@ -145,7 +145,7 @@ func (s *Server) serveResponsesWithWebTools(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
 	if err != nil {
-		s.observeResponseFailure(r, model, false, providerFailure(err).Status, provider.Realm())
+		s.observeResponseFailureDetail(r, model, false, failureFromError(err), provider.Realm())
 		writeFailure(w, err)
 		return true
 	}
@@ -176,7 +176,7 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
 	if err != nil {
-		s.observeResponseFailure(r, model, true, providerFailure(err).Status, provider.Realm())
+		s.observeResponseFailureDetail(r, model, true, failureFromError(err), provider.Realm())
 		writeFailure(w, err)
 		return true
 	}

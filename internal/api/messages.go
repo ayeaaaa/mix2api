@@ -605,21 +605,27 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.anthropicMessagesEnabled() {
-		writeAnthropicError(w, http.StatusBadRequest, anthropicDisabledMessage, "invalid_request_error", time.Time{})
+		failure := &apiFailure{Status: http.StatusBadRequest, Message: anthropicDisabledMessage}
+		s.observeMessagesFailureDetail(r, "", false, failure, "")
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
 	payload, failure := s.parseMessagesPayload(w, r)
 	if failure != nil {
+		s.observeMessagesFailureDetail(r, "", false, failure, "")
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
 	chat, err := messagesToChatWithDefault(payload, s.defaultMaxOutputTokens)
 	if err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", time.Time{})
+		failure := &apiFailure{Status: http.StatusBadRequest, Message: err.Error()}
+		s.observeMessagesFailureDetail(r, "", false, failure, "")
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
 	model := strings.TrimSpace(anthropicText(chat["model"]))
 	if failure := s.keyModelFailure(r, model); failure != nil {
+		s.observeMessagesFailureDetail(r, model, boolValue(chat["stream"]), failure, "")
 		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
@@ -651,15 +657,16 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	}
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
-		s.observeMessagesFailure(r, model, stream, boundFailure.Status)
+		s.observeMessagesFailureDetail(r, model, stream, boundFailure, "")
 		writeAnthropicError(w, boundFailure.Status, boundFailure.Message, protocol.AnthropicErrorType(boundFailure.Status), time.Time{})
 		return
 	}
 
 	rawChat, err := chatMapToRaw(chat)
 	if err != nil {
-		s.observeMessagesFailure(r, model, stream, http.StatusBadRequest)
-		writeAnthropicError(w, http.StatusBadRequest, "invalid request", "invalid_request_error", time.Time{})
+		failure := localFailure(http.StatusBadRequest, "invalid request")
+		s.observeMessagesFailureDetail(r, model, stream, failure, realm)
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
 	request := &chatHTTPRequest{
@@ -674,7 +681,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
 		failure := failureFromError(resolveErr)
-		s.observeMessagesFailure(r, model, stream, failure.Status)
+		s.observeMessagesFailureDetail(r, model, stream, failure, boundRealm)
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
@@ -698,13 +705,14 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 			_ = upstream.Close()
 		}
 		failure := failureFromError(openErr)
-		s.observeMessagesFailure(r, model, stream, failure.Status, provider.Realm())
+		s.observeMessagesFailureDetail(r, model, stream, failure, provider.Realm())
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), retryReset(openErr))
 		return
 	}
 	if upstream == nil {
-		s.observeMessagesFailure(r, model, stream, http.StatusBadGateway, provider.Realm())
-		writeAnthropicError(w, http.StatusBadGateway, "upstream returned no chat stream", "api_error", time.Time{})
+		failure := localFailure(http.StatusBadGateway, "upstream returned no chat stream")
+		s.observeMessagesFailureDetail(r, model, stream, failure, provider.Realm())
+		writeAnthropicError(w, failure.Status, failure.Message, "api_error", time.Time{})
 		return
 	}
 	tracked := newUsageTracker(withAttribution(upstream, provider.Realm()), started)
@@ -716,7 +724,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	}
 	chatObject, aggregateErr := aggregateChatStream(tracked, model)
 	if aggregateErr != nil {
-		failure := providerFailure(aggregateErr)
+		failure := failureFromError(aggregateErr)
 		observation := ProtocolObservation{
 			Protocol: "messages", Model: model, RequestedModel: model,
 			Realm: provider.Realm(), Effort: anthropicText(chat["reasoning_effort"]),
@@ -771,13 +779,23 @@ func boolValue(value any) bool {
 }
 
 func (s *Server) observeMessagesFailure(r *http.Request, model string, stream bool, status int, realms ...string) {
-	realm := ""
-	if len(realms) > 0 {
-		realm = realms[0]
+	s.observeMessagesFailureDetail(r, model, stream, &apiFailure{Status: status, Message: "request failed"}, firstRealm(realms))
+}
+
+func (s *Server) observeMessagesFailureDetail(r *http.Request, model string, stream bool, failure *apiFailure, realm string) {
+	status := http.StatusBadGateway
+	message := "request failed"
+	if failure != nil {
+		if failure.Status > 0 {
+			status = failure.Status
+		}
+		if strings.TrimSpace(failure.Message) != "" {
+			message = failure.Message
+		}
 	}
 	s.observeProtocol(r, ProtocolObservation{
 		Protocol: "messages", Model: model, RequestedModel: model, Realm: realm,
-		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: "request failed",
+		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: message,
 	})
 }
 

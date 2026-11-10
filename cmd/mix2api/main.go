@@ -153,19 +153,7 @@ func main() {
 	}
 	defer platform.Close()
 
-	srv := api.NewServer(api.ServerOptions{
-		Addr:                     cfg.Addr(),
-		ListenerPort:             listenerPort,
-		Version:                  version.Version,
-		Providers:                setup.Providers,
-		Platform:                 platform.HTTPServices(),
-		PanelAuth:                api.RequirePanelAuth(cfg.PanelPassword),
-		APIKeyAuth:               api.RequireAPIKeyAuth(cfg.APIKey),
-		StaticAPIKey:             cfg.APIKey,
-		APIKeyRealm:              apiKeyRealmResolver(cfg.APIKeyRealm),
-		AnthropicMessagesEnabled: platform.AnthropicMessagesEnabled,
-		PreserveRequestContract:  envBool("WB_PRESERVE_REQUEST_CONTRACT"),
-	})
+	srv := api.NewServer(buildServerOptions(cfg, setup, platform, listenerPort))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -84,5 +84,6 @@ CodeArts and Raccoon never receive WorkBuddy credit or token counters.
   panel session tokens, authorization headers, or prompts.
 - The checked-in contract files are `tests/contract/platform_services_test.go`,
   `tests/contract/platform_data_test.go`, `tests/contract/platform_golden_test.go`,
-  `tests/integration/platform_services_test.go`, and the fixture directory
+  `tests/integration/platform_services_test.go`, `cmd/mix2api/options_test.go`
+  (production composition), and the fixture directory
   `tests/contract/testdata/platform/`.

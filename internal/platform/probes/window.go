@@ -41,7 +41,11 @@ func NewWindowState(dir string) *WindowState {
 	return state
 }
 
-func windowKey(uid, model string) string { return uid + "\x00" + model }
+func windowKey(uid, model string) string { return realmWindowKey("", uid, model) }
+
+func realmWindowKey(realm, uid, model string) string {
+	return strings.TrimSpace(realm) + "\x00" + uid + "\x00" + model
+}
 
 func (s *WindowState) load() {
 	s.mu.Lock()
@@ -62,7 +66,7 @@ func (s *WindowState) loadLocked() {
 		if int64(window.ResetAt) < now-int64(WindowMaxAge/time.Second) {
 			continue
 		}
-		s.windows[windowKey(window.UID, window.Model)] = window
+		s.windows[realmWindowKey(window.Realm, window.UID, window.Model)] = window
 	}
 }
 
@@ -110,6 +114,7 @@ func decodeWindowMap(value any) (Window, bool) {
 	window := Window{
 		UID:        strings.TrimSpace(probeString(item["uid"])),
 		Model:      strings.TrimSpace(probeString(item["model"])),
+		Realm:      strings.TrimSpace(probeString(item["realm"])),
 		ResetAt:    probeFloat(item["reset_at"]),
 		Attempts:   probeInt(item["attempts"]),
 		LastTry:    probeFloat(item["last_try"]),
@@ -150,7 +155,7 @@ func (s *WindowState) ScheduleRealm(uid, model, realm string, resetAt time.Time,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.maybeReloadLocked()
-	key := windowKey(uid, model)
+	key := realmWindowKey(realm, uid, model)
 	existing, ok := s.windows[key]
 	if ok && absFloat(existing.ResetAt-resetTime(resetAt)) < 1.0 {
 		if cap && !existing.Cap {
@@ -181,14 +186,17 @@ func absFloat(value float64) float64 {
 	return value
 }
 
-// Drop removes one window.
-func (s *WindowState) Drop(uid, model string) bool {
+// Drop removes one realm-less window.
+func (s *WindowState) Drop(uid, model string) bool { return s.DropRealm("", uid, model) }
+
+// DropRealm removes one window owned by a provider realm.
+func (s *WindowState) DropRealm(realm, uid, model string) bool {
 	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := windowKey(uid, model)
+	key := realmWindowKey(realm, uid, model)
 	if _, ok := s.windows[key]; !ok {
 		return false
 	}
@@ -197,28 +205,61 @@ func (s *WindowState) Drop(uid, model string) bool {
 	return true
 }
 
-// HasWindow reports whether quota scan must defer to the window probe.
+// HasWindow reports whether a realm-less quota scan must defer to the window
+// probe. Composition uses HasWindowRealm so intl and cn never shadow each
+// other when they share a uid/model pair.
 func (s *WindowState) HasWindow(uid, model string) bool {
+	return s.HasWindowRealm("", uid, model)
+}
+
+// HasWindowRealm reports whether one realm's quota scan must defer.
+func (s *WindowState) HasWindowRealm(realm, uid, model string) bool {
 	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.maybeReloadLocked()
-	_, ok := s.windows[windowKey(uid, model)]
-	return ok
+	if _, ok := s.windows[realmWindowKey(realm, uid, model)]; ok {
+		return true
+	}
+	if strings.TrimSpace(realm) != "" {
+		// Legacy v1 state has no realm; a single realm-less window still
+		// blocks the same uid/model until the next probe clears it.
+		_, ok := s.windows[realmWindowKey("", uid, model)]
+		return ok
+	}
+	for _, window := range s.windows {
+		if window.UID == uid && window.Model == model {
+			return true
+		}
+	}
+	return false
 }
 
-// Get returns a copy of one window.
-func (s *WindowState) Get(uid, model string) (Window, bool) {
+// Get returns a copy of one realm-less window.
+func (s *WindowState) Get(uid, model string) (Window, bool) { return s.GetRealm("", uid, model) }
+
+// GetRealm returns a copy of one realm-owned window.
+func (s *WindowState) GetRealm(realm, uid, model string) (Window, bool) {
 	if s == nil {
 		return Window{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.maybeReloadLocked()
-	window, ok := s.windows[windowKey(uid, model)]
-	return window, ok
+	if window, ok := s.windows[realmWindowKey(realm, uid, model)]; ok {
+		return window, true
+	}
+	if strings.TrimSpace(realm) != "" {
+		return Window{}, false
+	}
+	for _, window := range s.windows {
+		if window.UID == uid && window.Model == model {
+			return window, true
+		}
+	}
+	return Window{}, false
 }
 
 // Due returns due windows in reset order.
@@ -261,7 +302,7 @@ func (s *WindowState) Snapshot(now time.Time) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, map[string]any{
-			"uid": row.UID, "uid8": first8(row.UID), "model": row.Model,
+			"uid": row.UID, "uid8": first8(row.UID), "model": row.Model, "realm": row.Realm,
 			"reset_at": row.ResetAt, "reset_in": maxInt(0, int(row.ResetAt-resetTime(now))),
 			"attempts": row.Attempts, "last_result": row.LastResult,
 			"cap": row.Cap, "cap_at": row.CapAt,
@@ -301,7 +342,7 @@ func (s *WindowState) Update(window Window, resetAt time.Time, attempts int, res
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := windowKey(window.UID, window.Model)
+	key := realmWindowKey(window.Realm, window.UID, window.Model)
 	current, ok := s.windows[key]
 	if !ok {
 		return false

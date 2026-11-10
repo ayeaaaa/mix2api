@@ -1331,16 +1331,20 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	payload, failure := parseProtocolObject(w, r)
 	if failure != nil {
+		s.observeResponseFailureDetail(r, "", false, failure, "")
 		writeFailure(w, failure)
 		return
 	}
 	model, _ := decodeJSONString(payload["model"])
 	model = strings.TrimSpace(model)
 	if model == "" {
-		writeFailure(w, localFailure(http.StatusBadRequest, "model is required"))
+		failure := localFailure(http.StatusBadRequest, "model is required")
+		s.observeResponseFailureDetail(r, "", false, failure, "")
+		writeFailure(w, failure)
 		return
 	}
 	if failure := s.keyModelFailure(r, model); failure != nil {
+		s.observeResponseFailureDetail(r, model, false, failure, "")
 		writeFailure(w, failure)
 		return
 	}
@@ -1358,8 +1362,10 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 
 	compaction := isCompactPath || rawObjectHasCompactionTrigger(payload)
 	if rawPrevious, ok := decodeJSONString(payload["previous_response_id"]); ok && strings.TrimSpace(rawPrevious) != "" && !compaction {
-		writeFailure(w, localFailure(http.StatusBadRequest,
-			"previous_response_id is not supported: this gateway does not store response state. Send the full conversation in 'input' instead, or use a stateless client."))
+		failure := localFailure(http.StatusBadRequest,
+			"previous_response_id is not supported: this gateway does not store response state. Send the full conversation in 'input' instead, or use a stateless client.")
+		s.observeResponseFailureDetail(r, model, stream, failure, "")
+		writeFailure(w, failure)
 		return
 	}
 
@@ -1369,14 +1375,16 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		PreserveRequestContract: s.opts.PreserveRequestContract,
 	})
 	if err != nil {
-		writeFailure(w, localFailure(http.StatusBadRequest, "invalid JSON body"))
+		failure := localFailure(http.StatusBadRequest, "invalid JSON body")
+		s.observeResponseFailureDetail(r, model, stream, failure, "")
+		writeFailure(w, failure)
 		return
 	}
 	translated.Meta.Streaming = stream
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
-		s.observeResponseFailure(r, model, stream, boundFailure.Status)
+		s.observeResponseFailureDetail(r, model, stream, boundFailure, "")
 		writeFailure(w, boundFailure)
 		return
 	}
@@ -1391,13 +1399,15 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
-		s.observeResponseFailure(r, model, stream, failureFromError(resolveErr).Status)
+		s.observeResponseFailureDetail(r, model, stream, failureFromError(resolveErr), boundRealm)
 		writeFailure(w, resolveErr)
 		return
 	}
 	raw, err := chatMapToRaw(translated.Chat)
 	if err != nil {
-		writeFailure(w, localFailure(http.StatusBadRequest, "invalid request"))
+		failure := localFailure(http.StatusBadRequest, "invalid request")
+		s.observeResponseFailureDetail(r, model, stream, failure, providerRealm(provider))
+		writeFailure(w, failure)
 		return
 	}
 	var allowRealmFallback *bool
@@ -1428,13 +1438,14 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		if upstream != nil {
 			_ = upstream.Close()
 		}
-		s.observeResponseFailure(r, model, stream, failureFromError(openErr).Status, provider.Realm())
+		s.observeResponseFailureDetail(r, model, stream, failureFromError(openErr), provider.Realm())
 		writeFailure(w, openErr)
 		return
 	}
 	if upstream == nil {
-		s.observeResponseFailure(r, model, stream, http.StatusBadGateway, provider.Realm())
-		writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned no chat stream"))
+		failure := localFailure(http.StatusBadGateway, "upstream returned no chat stream")
+		s.observeResponseFailureDetail(r, model, stream, failure, provider.Realm())
+		writeFailure(w, failure)
 		return
 	}
 	tracked := newUsageTracker(withAttribution(upstream, provider.Realm()), started)
@@ -1450,7 +1461,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	chat, err := aggregateChatStream(tracked, model)
 	if err != nil {
-		failure := providerFailure(err)
+		failure := failureFromError(err)
 		observation := ProtocolObservation{
 			Protocol: "responses", Model: model, RequestedModel: model,
 			Realm: provider.Realm(), Effort: translated.Meta.Effort,
@@ -1489,14 +1500,31 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) observeResponseFailure(r *http.Request, model string, stream bool, status int, realms ...string) {
-	realm := ""
-	if len(realms) > 0 {
-		realm = realms[0]
+	s.observeResponseFailureDetail(r, model, stream, &apiFailure{Status: status, Message: "request failed"}, firstRealm(realms))
+}
+
+func (s *Server) observeResponseFailureDetail(r *http.Request, model string, stream bool, failure *apiFailure, realm string) {
+	status := http.StatusBadGateway
+	message := "request failed"
+	if failure != nil {
+		if failure.Status > 0 {
+			status = failure.Status
+		}
+		if strings.TrimSpace(failure.Message) != "" {
+			message = failure.Message
+		}
 	}
 	s.observeProtocol(r, ProtocolObservation{
 		Protocol: "responses", Model: model, RequestedModel: model, Realm: realm,
-		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: "request failed",
+		Stream: stream, Outcome: "failed", Status: status, Error: true, Message: message,
 	})
+}
+
+func firstRealm(realms []string) string {
+	if len(realms) > 0 {
+		return realms[0]
+	}
+	return ""
 }
 
 func rawObjectHasCompactionTrigger(payload map[string]json.RawMessage) bool {

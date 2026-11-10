@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -66,7 +67,7 @@ func (s *QuotaState) load() {
 		if stamp > 0 && stamp < now-float64(QuotaMaxAge/time.Second) {
 			continue
 		}
-		s.scans[windowKey(row.UID, row.Model)] = row
+		s.scans[realmWindowKey(row.Realm, row.UID, row.Model)] = row
 	}
 }
 
@@ -133,7 +134,7 @@ func (s *QuotaState) EnsureRealm(uid, model, realm string, now time.Time, delay 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := windowKey(uid, model)
+	key := realmWindowKey(realm, uid, model)
 	if _, ok := s.scans[key]; ok {
 		return false
 	}
@@ -143,13 +144,28 @@ func (s *QuotaState) EnsureRealm(uid, model, realm string, now time.Time, delay 
 }
 
 func (s *QuotaState) Get(uid, model string) (QuotaRow, bool) {
+	return s.GetRealm("", uid, model)
+}
+
+// GetRealm returns one realm-owned quota line.
+func (s *QuotaState) GetRealm(realm, uid, model string) (QuotaRow, bool) {
 	if s == nil {
 		return QuotaRow{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row, ok := s.scans[windowKey(uid, model)]
-	return row, ok
+	if row, ok := s.scans[realmWindowKey(realm, uid, model)]; ok {
+		return row, true
+	}
+	if strings.TrimSpace(realm) != "" {
+		return QuotaRow{}, false
+	}
+	for _, row := range s.scans {
+		if row.UID == uid && row.Model == model {
+			return row, true
+		}
+	}
+	return QuotaRow{}, false
 }
 
 // DueAt is max(last_scan+interval, next_at).
@@ -196,17 +212,23 @@ func (s *QuotaState) Due(watched map[string]bool, now time.Time, limit int, forc
 	return out
 }
 
-// Record writes one scan outcome. lastScan zero means "not really scanned".
+// Record writes one scan outcome for a realm-less line. lastScan zero means
+// "not really scanned".
 func (s *QuotaState) Record(uid, model string, now time.Time, lastScan bool, nextAt time.Time, attempts int, result, detail string) QuotaRow {
+	return s.RecordRealm("", uid, model, now, lastScan, nextAt, attempts, result, detail)
+}
+
+// RecordRealm writes one provider-realm scan outcome.
+func (s *QuotaState) RecordRealm(realm, uid, model string, now time.Time, lastScan bool, nextAt time.Time, attempts int, result, detail string) QuotaRow {
 	if s == nil {
 		return QuotaRow{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := windowKey(uid, model)
+	key := realmWindowKey(realm, uid, model)
 	row, ok := s.scans[key]
 	if !ok {
-		row = QuotaRow{UID: uid, Model: model, SeenAt: resetTime(now)}
+		row = QuotaRow{UID: uid, Model: model, Realm: realm, SeenAt: resetTime(now)}
 	}
 	if lastScan {
 		row.LastScan = resetTime(now)
@@ -221,14 +243,17 @@ func (s *QuotaState) Record(uid, model string, now time.Time, lastScan bool, nex
 	return row
 }
 
-// Drop removes one row.
-func (s *QuotaState) Drop(uid, model string) bool {
+// Drop removes one realm-less row.
+func (s *QuotaState) Drop(uid, model string) bool { return s.DropRealm("", uid, model) }
+
+// DropRealm removes one realm-owned row.
+func (s *QuotaState) DropRealm(realm, uid, model string) bool {
 	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := windowKey(uid, model)
+	key := realmWindowKey(realm, uid, model)
 	if _, ok := s.scans[key]; !ok {
 		return false
 	}
@@ -263,7 +288,7 @@ func (s *QuotaState) Snapshot(watched map[string]bool, now time.Time, limit int)
 			dueIn = 0
 		}
 		out = append(out, map[string]any{
-			"uid": row.UID, "uid8": first8(row.UID), "model": row.Model,
+			"uid": row.UID, "uid8": first8(row.UID), "model": row.Model, "realm": row.Realm,
 			"watched": watched[row.Model], "last_scan": row.LastScan,
 			"last_result": row.LastResult, "last_detail": row.LastDetail,
 			"due_in": dueIn,

@@ -166,9 +166,10 @@ func TestQuotaProbeLegacyStatesAndDisabled(t *testing.T) {
 }
 
 type realmProbeProvider struct {
-	realm string
-	uid   string
-	calls []string
+	realm   string
+	uid     string
+	calls   []string
+	results []providers.ProbeResult
 }
 
 func (p *realmProbeProvider) Realm() string { return p.realm }
@@ -177,11 +178,16 @@ func (p *realmProbeProvider) ProbeTargets(context.Context, providers.ProbeKind, 
 }
 func (p *realmProbeProvider) Probe(_ context.Context, _ providers.ProbeKind, target providers.ProbeTarget) (providers.ProbeResult, error) {
 	p.calls = append(p.calls, target.UID)
+	if len(p.results) > 0 {
+		result := p.results[0]
+		p.results = p.results[1:]
+		return result, nil
+	}
 	return providers.ProbeResult{OK: true, Status: 200}, nil
 }
 
 func TestRunQuotaDispatchesBothRealmProviders(t *testing.T) {
-	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	now := time.Now().Truncate(time.Second)
 	intl := &realmProbeProvider{realm: "intl", uid: "u-intl"}
 	cn := &realmProbeProvider{realm: "cn", uid: "u-cn"}
 	service := NewService(Service{
@@ -210,7 +216,7 @@ func TestRunQuotaDispatchesBothRealmProviders(t *testing.T) {
 }
 
 func TestRunWindowDispatchesBothRealmProviders(t *testing.T) {
-	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	now := time.Now().Truncate(time.Second)
 	intl := &realmProbeProvider{realm: "intl", uid: "u-intl"}
 	cn := &realmProbeProvider{realm: "cn", uid: "u-cn"}
 	current := now
@@ -234,5 +240,113 @@ func TestRunWindowDispatchesBothRealmProviders(t *testing.T) {
 	}
 	if len(cn.calls) != 1 || cn.calls[0] != "u-cn" {
 		t.Fatalf("cn window calls = %v", cn.calls)
+	}
+}
+
+func TestWindowAndQuotaRealmKeyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().Truncate(time.Second)
+	window := NewWindowState(dir)
+	window.Now = func() time.Time { return now }
+	if !window.ScheduleRealm("shared", "m1", "intl", now.Add(time.Minute), false, now, now) {
+		t.Fatal("schedule intl")
+	}
+	if !window.ScheduleRealm("shared", "m1", "cn", now.Add(2*time.Minute), false, now, now) {
+		t.Fatal("schedule cn")
+	}
+	reloadedWindow := NewWindowState(dir)
+	reloadedWindow.Now = func() time.Time { return now }
+	if got, ok := reloadedWindow.GetRealm("intl", "shared", "m1"); !ok || got.Realm != "intl" {
+		t.Fatalf("intl window after restart = %+v ok=%t", got, ok)
+	}
+	if got, ok := reloadedWindow.GetRealm("cn", "shared", "m1"); !ok || got.Realm != "cn" {
+		t.Fatalf("cn window after restart = %+v ok=%t", got, ok)
+	}
+	if !reloadedWindow.DropRealm("intl", "shared", "m1") {
+		t.Fatal("drop intl")
+	}
+	if _, ok := reloadedWindow.GetRealm("intl", "shared", "m1"); ok {
+		t.Fatal("intl window survived drop")
+	}
+	if _, ok := reloadedWindow.GetRealm("cn", "shared", "m1"); !ok {
+		t.Fatal("cn window was dropped with intl")
+	}
+
+	quota := NewQuotaState(dir)
+	quota.Now = func() time.Time { return now }
+	if !quota.EnsureRealm("shared", "m1", "intl", now, time.Minute) {
+		t.Fatal("ensure intl")
+	}
+	if !quota.EnsureRealm("shared", "m1", "cn", now, time.Minute) {
+		t.Fatal("ensure cn")
+	}
+	reloadedQuota := NewQuotaState(dir)
+	reloadedQuota.Now = func() time.Time { return now }
+	if got, ok := reloadedQuota.GetRealm("intl", "shared", "m1"); !ok || got.Realm != "intl" {
+		t.Fatalf("intl quota after restart = %+v ok=%t", got, ok)
+	}
+	if got, ok := reloadedQuota.GetRealm("cn", "shared", "m1"); !ok || got.Realm != "cn" {
+		t.Fatalf("cn quota after restart = %+v ok=%t", got, ok)
+	}
+	if !reloadedQuota.DropRealm("intl", "shared", "m1") {
+		t.Fatal("drop intl quota")
+	}
+	if _, ok := reloadedQuota.GetRealm("cn", "shared", "m1"); !ok {
+		t.Fatal("cn quota was dropped with intl")
+	}
+}
+
+func TestQuotaDerivedWindowKeepsRealm(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	provider := &realmProbeProvider{realm: "cn", uid: "u-cn"}
+	window := NewWindowState(t.TempDir())
+	window.Now = func() time.Time { return now }
+	quota := NewQuotaState(t.TempDir())
+	quota.Now = func() time.Time { return now }
+	provider.results = []providers.ProbeResult{{Status: 429, ResetAt: now.Add(time.Hour), Detail: "throttled"}}
+	service := NewService(Service{
+		Providers: []providers.ProbeProvider{provider},
+		Window:    window,
+		Quota:     quota,
+		WatchModels: func() []string {
+			return []string{"m1"}
+		},
+		Now:   func() time.Time { return now },
+		Sleep: func(time.Duration) {},
+	})
+	if _, err := service.RunQuota(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := window.GetRealm("cn", "u-cn", "m1"); !ok || got.Realm != "cn" {
+		t.Fatalf("quota-derived window = %+v ok=%t", got, ok)
+	}
+}
+
+func TestRunQuotaSharedUIDAndModelStaysRealmDistinct(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	intl := &realmProbeProvider{realm: "intl", uid: "shared"}
+	cn := &realmProbeProvider{realm: "cn", uid: "shared"}
+	service := NewService(Service{
+		Providers: []providers.ProbeProvider{intl, cn},
+		Window:    NewWindowState(t.TempDir()),
+		Quota:     NewQuotaState(t.TempDir()),
+		WatchModels: func() []string {
+			return []string{"m1"}
+		},
+		Now:   func() time.Time { return now },
+		Sleep: func(time.Duration) {},
+	})
+	sent, err := service.RunQuota(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent != 2 {
+		t.Fatalf("sent = %d, want one per realm", sent)
+	}
+	if len(intl.calls) != 1 || len(cn.calls) != 1 {
+		t.Fatalf("shared uid dispatched intl=%v cn=%v", intl.calls, cn.calls)
+	}
+	if intl.calls[0] != "shared" || cn.calls[0] != "shared" {
+		t.Fatalf("shared uid calls = intl:%v cn:%v", intl.calls, cn.calls)
 	}
 }

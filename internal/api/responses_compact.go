@@ -23,7 +23,7 @@ const compactionPrompt = "You are performing a CONTEXT CHECKPOINT COMPACTION. Cr
 func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request, upstream providers.ChatStream, model string, meta responseMeta) {
 	chat, err := aggregateChatStream(upstream, model)
 	if err != nil {
-		failure := providerFailure(err)
+		failure := failureFromError(err)
 		observation := ProtocolObservation{
 			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
 			Stream: meta.Streaming, Outcome: "failed", Status: failure.Status,

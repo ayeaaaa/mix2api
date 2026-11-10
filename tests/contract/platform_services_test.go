@@ -973,3 +973,101 @@ func TestUsageRecordProtocolFailuresCarryStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageRecordProtocolPreflightFailures(t *testing.T) {
+	f := newPlatformContractFixture(t)
+	last := func(t *testing.T) map[string]any {
+		t.Helper()
+		rows := readUsageRows(t, f.usage)
+		if len(rows) == 0 {
+			t.Fatal("no usage row")
+		}
+		return rows[len(rows)-1]
+	}
+	assert := func(t *testing.T, rec *httptest.ResponseRecorder, status int, label string) {
+		t.Helper()
+		if rec.Code != status {
+			t.Fatalf("%s status = %d body=%s", label, rec.Code, rec.Body)
+		}
+		row := last(t)
+		if row["error"] != true || int(apiInt(row["status"])) != status {
+			t.Fatalf("%s row = %+v", label, row)
+		}
+		if strings.TrimSpace(fmt.Sprint(row["message"])) == "" {
+			t.Fatalf("%s row has no message: %+v", label, row)
+		}
+	}
+
+	assert(t, f.request(t, http.MethodPost, "/v1/responses", `{bad`, f.apiHeaders()),
+		http.StatusBadRequest, "responses parse")
+	assert(t, f.request(t, http.MethodPost, "/v1/responses", `{"input":"hi"}`, f.apiHeaders()),
+		http.StatusBadRequest, "responses model")
+	assert(t, f.request(t, http.MethodPost, "/v1/responses",
+		`{"model":"`+platformModel+`","input":"hi","previous_response_id":"resp_old"}`, f.apiHeaders()),
+		http.StatusBadRequest, "responses previous_response_id")
+
+	assert(t, f.request(t, http.MethodPost, "/v1/messages", `{bad`, f.apiHeaders()),
+		http.StatusBadRequest, "messages parse")
+	assert(t, f.request(t, http.MethodPost, "/v1/messages",
+		`{"model":"`+platformModel+`","max_tokens":8,"messages":[]}`, f.apiHeaders()),
+		http.StatusBadRequest, "messages translation")
+
+	if _, err := f.keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "contract", Key: platformAPIKey, Realm: "intl",
+		Models: []string{"other-model"}, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assert(t, f.request(t, http.MethodPost, "/v1/responses",
+		`{"model":"`+platformModel+`","input":"hi"}`, f.apiHeaders()),
+		http.StatusBadRequest, "responses key model")
+	assert(t, f.request(t, http.MethodPost, "/v1/messages",
+		`{"model":"`+platformModel+`","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, f.apiHeaders()),
+		http.StatusBadRequest, "messages key model")
+}
+
+type contractRateLimitError struct {
+	message string
+	reset   time.Time
+}
+
+func (e *contractRateLimitError) Error() string             { return e.message }
+func (e *contractRateLimitError) HTTPStatus() int           { return http.StatusTooManyRequests }
+func (e *contractRateLimitError) ErrorType() string         { return "rate_limit_error" }
+func (e *contractRateLimitError) SafeMessage() string       { return e.message }
+func (e *contractRateLimitError) RetryDelay() time.Duration { return time.Second }
+func (e *contractRateLimitError) RetryReset() time.Time     { return e.reset }
+
+func TestUsageFailurePreservesProvider429Message(t *testing.T) {
+	f := newPlatformContractFixture(t)
+	reset := time.Now().Add(time.Hour).UTC().Format("2006-01-02 15:04:05")
+	message := "usage will reset at " + reset + " UTC"
+	f.provider.open = func(context.Context, providers.ChatRequest) (providers.ChatStream, error) {
+		return nil, &contractRateLimitError{message: message, reset: time.Now().Add(time.Hour)}
+	}
+	for _, call := range []struct {
+		path string
+		body string
+	}{
+		{"/v1/chat/completions", `{"model":"` + platformModel + `","messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/responses", `{"model":"` + platformModel + `","input":"hi"}`},
+		{"/v1/messages", `{"model":"` + platformModel + `","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		rec := f.request(t, http.MethodPost, call.path, call.body, f.apiHeaders())
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s = %d body=%s", call.path, rec.Code, rec.Body)
+		}
+	}
+	rows := readUsageRows(t, f.usage)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	for _, row := range rows {
+		if row["error"] != true || int(apiInt(row["status"])) != http.StatusTooManyRequests {
+			t.Fatalf("429 row = %+v", row)
+		}
+		if !strings.Contains(fmt.Sprint(row["message"]), "usage will reset at") {
+			t.Fatalf("429 message lost: %+v", row)
+		}
+	}
+}

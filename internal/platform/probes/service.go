@@ -115,7 +115,7 @@ func (s *Service) RunWindow(ctx context.Context) int {
 			continue
 		}
 		if result.OK {
-			s.Window.Drop(window.UID, window.Model)
+			s.Window.DropRealm(window.Realm, window.UID, window.Model)
 			s.log("✓ 窗口探针成功: " + first8(window.UID) + " " + window.Model)
 		} else if result.ResetAt.After(now.Add(WindowFreshThreshold)) {
 			s.Window.Update(window, result.ResetAt, 0, result.Detail, now)
@@ -130,7 +130,7 @@ func (s *Service) RunWindow(ctx context.Context) int {
 func (s *Service) retryWindow(window Window, now time.Time, detail string) {
 	attempts := window.Attempts + 1
 	if attempts >= WindowMaxAttempts {
-		s.Window.Drop(window.UID, window.Model)
+		s.Window.DropRealm(window.Realm, window.UID, window.Model)
 		s.log("窗口探针放弃: " + first8(window.UID) + " " + window.Model)
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Service) RunQuota(ctx context.Context, force bool) (int, error) {
 	due := s.Quota.Due(watchedSet, now, QuotaBatchLimit, force)
 	sent := 0
 	for _, row := range due {
-		if s.Window.HasWindow(row.UID, row.Model) {
+		if s.Window.HasWindowRealm(row.Realm, row.UID, row.Model) {
 			continue
 		}
 		target := providers.ProbeTarget{UID: row.UID, Model: row.Model, Realm: row.Realm}
@@ -215,12 +215,12 @@ func (s *Service) RunQuota(ctx context.Context, force bool) (int, error) {
 		}
 		switch {
 		case result.OK:
-			s.Window.Drop(row.UID, row.Model)
-			s.Quota.Record(row.UID, row.Model, now, true, time.Time{}, 0, "ok", "")
+			s.Window.DropRealm(row.Realm, row.UID, row.Model)
+			s.Quota.RecordRealm(row.Realm, row.UID, row.Model, now, true, time.Time{}, 0, "ok", "")
 			s.log("✓ 额度查询正常: " + first8(row.UID) + " " + row.Model)
 		case result.ResetAt.After(now.Add(5 * time.Second)):
-			s.Window.Schedule(row.UID, row.Model, result.ResetAt, result.Status == 429, now, now)
-			s.Quota.Record(row.UID, row.Model, now, true, time.Time{}, 0, "throttled", result.Detail)
+			s.Window.ScheduleRealm(row.UID, row.Model, row.Realm, result.ResetAt, result.Status == 429, now, now)
+			s.Quota.RecordRealm(row.Realm, row.UID, row.Model, now, true, time.Time{}, 0, "throttled", result.Detail)
 			s.log("额度查询已满: " + first8(row.UID) + " " + row.Model)
 		default:
 			detail := result.Detail
@@ -242,10 +242,10 @@ func (s *Service) quotaFailure(row QuotaRow, now time.Time, detail string, throt
 		result = "throttled"
 	}
 	if attempts >= QuotaMaxAttempts {
-		s.Quota.Record(row.UID, row.Model, now, true, time.Time{}, 0, result, detail)
+		s.Quota.RecordRealm(row.Realm, row.UID, row.Model, now, true, time.Time{}, 0, result, detail)
 		return
 	}
-	s.Quota.Record(row.UID, row.Model, now, false, now.Add(QuotaRetryDelay), attempts, result, detail)
+	s.Quota.RecordRealm(row.Realm, row.UID, row.Model, now, false, now.Add(QuotaRetryDelay), attempts, result, detail)
 }
 
 func (s *Service) watchModels() []string {

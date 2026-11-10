@@ -119,10 +119,11 @@ func (s *Server) handleChatWithWebTools(
 		return false
 	}
 	if err != nil {
-		failure := providerFailure(err)
+		failure := failureFromError(err)
 		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-			Kind: "chat", Stream: false, Outcome: "failed",
+			Protocol: "chat", Model: request.model, RequestedModel: request.model,
+			Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
+			Stream: false, Outcome: "failed",
 			Status: failure.Status, Error: true, Message: failure.Message,
 		})
 		writeFailure(w, err)
@@ -152,10 +153,11 @@ func (s *Server) handleChatWithWebToolsStream(
 		return false
 	}
 	if err != nil {
-		failure := providerFailure(err)
+		failure := failureFromError(err)
 		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
-			Kind: "chat", Stream: true, Outcome: "failed",
+			Protocol: "chat", Model: request.model, RequestedModel: request.model,
+			Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
+			Stream: true, Outcome: "failed",
 			Status: failure.Status, Error: true, Message: failure.Message,
 		})
 		writeFailure(w, err)
