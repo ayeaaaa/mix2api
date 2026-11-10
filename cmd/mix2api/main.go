@@ -114,6 +114,12 @@ func isLoopbackHost(host string) bool {
 }
 
 func main() {
+	if code := runCLI(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runServer() {
 	cfg := configFromEnv()
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("startup: %v", err)
