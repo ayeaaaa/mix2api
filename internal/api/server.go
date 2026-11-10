@@ -25,6 +25,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/usage"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/web"
 )
 
 // ServerOptions configures the generic API server.
@@ -152,6 +153,11 @@ type ServerOptions struct {
 	// or Messages request and then publishes the daily guards. A failure is
 	// logged and never changes the client response.
 	RecordUsage func(context.Context, usage.RecordInput) error
+
+	// Shutdown is the panel's "close gateway" action. The command injects a
+	// graceful http.Server shutdown. Nil keeps the route mounted but returns a
+	// service-unavailable error instead of pretending the process stopped.
+	Shutdown func()
 }
 
 // ProtocolObservation describes one completed Chat, Responses or Messages
@@ -345,6 +351,7 @@ func NewServer(opts ServerOptions) *http.Server {
 
 func (s *Server) mount() {
 	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mountDashboard()
 	for _, path := range []string{"/chat/completions", "/v1/chat/completions", "/completions", "/v1/completions"} {
 		s.mux.Handle(path, s.protectAPI(http.HandlerFunc(s.handleChat)))
 	}
@@ -370,6 +377,7 @@ func (s *Server) mountPlatformRoutes() {
 	if s == nil {
 		return
 	}
+	NewDashboardHandlers(s.panelGate(), s.opts.Shutdown).Register(s.mux)
 	usageService := s.opts.Usage
 	if usageService == nil {
 		usageService = s.opts.UsageSvc
@@ -442,6 +450,21 @@ func (s *Server) mountPlatformRoutes() {
 			}
 		}
 		updates.Register(s.mux)
+	}
+}
+
+// mountDashboard serves the embedded v1 dashboard at its exact v1 paths. It is
+// intentionally not a catch-all: the root pattern uses Go 1.22's {$} so an
+// unknown path still reaches the normal 404/provider route table.
+func (s *Server) mountDashboard() {
+	if s == nil || s.mux == nil {
+		return
+	}
+	handler := web.Handler()
+	for _, pattern := range []string{
+		"/{$}", "/dashboard", "/dashboard.html", "/ui", "/classic", "/classic/{$}", "/favicon.ico",
+	} {
+		s.mux.Handle(pattern, handler)
 	}
 }
 

@@ -1,0 +1,3 @@
+# The dashboard is shipped byte-for-byte from v1.6.5. Disable text/eol
+# normalization so a Windows checkout still matches web.DashboardSHA256.
+internal/web/dashboard.html -text

@@ -153,7 +153,18 @@ func main() {
 	}
 	defer platform.Close()
 
-	srv := api.NewServer(buildServerOptions(cfg, setup, platform, listenerPort))
+	// The panel's shutdown button must stop this exact HTTP server. The handler
+	// delays the call so the JSON reply reaches the browser first.
+	opts := buildServerOptions(cfg, setup, platform, listenerPort)
+	var srv *http.Server
+	opts.Shutdown = func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}
+	srv = api.NewServer(opts)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
