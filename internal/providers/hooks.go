@@ -16,6 +16,46 @@ type SettingsContributor interface {
 	SaveSettings(ctx context.Context, patch map[string]any) error
 }
 
+// LimitApplier is implemented by providers that opt into the shared daily
+// guards. values keeps v1's shape:
+//
+//	{"reserve_credits": {"global": 10, "intl": 20, "cn": 5}, ...}
+//
+// usage is nil when today's counters could not be read; a nil usage keeps the
+// provider's last known counters, while a non-nil fold treats a missing uid as
+// zero. Providers without this hook are untouched, so WorkBuddy credits never
+// leak into CodeArts or Raccoon.
+type LimitApplier interface {
+	ApplyLimits(values map[string]any, usage map[string]any)
+}
+
+// UsageSnapshot is the provider-neutral per-request attribution returned by a
+// chat stream. Providers that can report account/realm/token/credit do so;
+// providers that cannot return the zero value and the API records the provider
+// realm with an empty account.
+type UsageSnapshot struct {
+	Realm            string
+	Account          string
+	Model            string
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
+	ReasoningTokens  int64
+	Credit           float64
+	CreditKnown      bool
+	Free             bool
+	CostPolicy       string
+	Kind             string
+}
+
+// UsageSnapshotReporter is implemented by stream wrappers that track the
+// upstream usage frame. The API records exactly one usage row from this
+// snapshot without re-parsing the stream.
+type UsageSnapshotReporter interface {
+	UsageSnapshot() UsageSnapshot
+}
+
 // RealmSelector is implemented by providers that expose a switchable default
 // upstream exit. Only WorkBuddy currently implements it.
 type RealmSelector interface {

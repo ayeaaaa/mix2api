@@ -2,14 +2,20 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
+	"github.com/ayeaaaa/mix2api-v2/internal/app"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/version"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -26,8 +32,7 @@ type commandConfig struct {
 	APIKey        string
 	// APIKeyRealm binds every configured API key to one provider realm. When
 	// set, generic chat/models treat it as policy ahead of request realm hints
-	// and suppress WorkBuddy's intl→cn fallback. Per-key bindings are out of
-	// scope; this env applies process-wide.
+	// and suppress WorkBuddy's intl→cn fallback.
 	APIKeyRealm string
 }
 
@@ -135,18 +140,68 @@ func main() {
 		listenerPort = tcpAddr.Port
 	}
 
-	srv := api.NewServer(api.ServerOptions{
-		Addr:         cfg.Addr(),
-		ListenerPort: listenerPort,
-		Version:      version.Version,
-		Providers:    setup.Providers,
-		PanelAuth:    api.RequirePanelAuth(cfg.PanelPassword),
-		APIKeyAuth:   api.RequireAPIKeyAuth(cfg.APIKey),
-		StaticAPIKey: cfg.APIKey,
-		APIKeyRealm:  apiKeyRealmResolver(cfg.APIKeyRealm),
+	platform, err := app.BuildPlatform(setup, app.PlatformOptions{
+		Paths:         setup.Paths,
+		Version:       version.Version,
+		ListenerPort:  listenerPort,
+		PanelPassword: cfg.PanelPassword,
+		APIKey:        cfg.APIKey,
+		LAN:           !isLoopbackHost(cfg.Host),
+		Logger:        func(message string) { log.Print(message) },
 	})
+	if err != nil {
+		log.Fatalf("startup: platform: %v", err)
+	}
+	defer platform.Close()
+
+	srv := api.NewServer(api.ServerOptions{
+		Addr:                     cfg.Addr(),
+		ListenerPort:             listenerPort,
+		Version:                  version.Version,
+		Providers:                setup.Providers,
+		Platform:                 platform.HTTPServices(),
+		PanelAuth:                api.RequirePanelAuth(cfg.PanelPassword),
+		APIKeyAuth:               api.RequireAPIKeyAuth(cfg.APIKey),
+		StaticAPIKey:             cfg.APIKey,
+		APIKeyRealm:              apiKeyRealmResolver(cfg.APIKeyRealm),
+		AnthropicMessagesEnabled: platform.AnthropicMessagesEnabled,
+		PreserveRequestContract:  envBool("WB_PRESERVE_REQUEST_CONTRACT"),
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The listener is bound, so provider and platform background loops are safe
+	// to start without racing startup errors.
+	platform.Start(ctx)
 	log.Printf("listening on %s with %d provider(s)", listener.Addr(), len(setup.Providers))
-	if err := srv.Serve(listener); err != nil {
-		log.Fatal(err)
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(listener) }()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("server: %v", err)
+		}
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		cancel()
+	}
+
+	// Stop background loops before closing the stores they use.
+	stop()
+	platform.Close()
+}
+
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }

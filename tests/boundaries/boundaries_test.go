@@ -31,7 +31,24 @@ func TestDependencyDirection(t *testing.T) {
 				for _, prefix := range []string{
 					modulePath + "/internal/providers",
 					modulePath + "/internal/api",
+					modulePath + "/internal/platform",
 					modulePath + "/internal/web",
+				} {
+					if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			name: "providers",
+			dir:  filepath.Join(root, "internal", "providers"),
+			forbidden: func(importPath string) bool {
+				for _, prefix := range []string{
+					modulePath + "/internal/platform",
+					modulePath + "/internal/api",
+					modulePath + "/internal/app",
 				} {
 					if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
 						return true
@@ -55,7 +72,10 @@ func TestDependencyDirection(t *testing.T) {
 				if walkErr != nil {
 					return walkErr
 				}
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+				// Import rules constrain production packages. Provider tests
+				// may mount the HTTP surface to pin route behavior.
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
+					strings.HasSuffix(entry.Name(), "_test.go") {
 					return nil
 				}
 				file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
@@ -92,4 +112,12 @@ func repositoryRoot(t *testing.T) string {
 		t.Fatalf("repository root %q has no go.mod: %v", root, err)
 	}
 	return root
+}
+
+// TestBoundariesPlatformImports is the Gate D name for the same import rules:
+// providers never import platform/api/app, core never imports providers/api/
+// platform, platform may import providers/core, and api may import platform/
+// providers/core.
+func TestBoundariesPlatformImports(t *testing.T) {
+	TestDependencyDirection(t)
 }

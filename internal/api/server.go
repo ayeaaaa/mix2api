@@ -17,6 +17,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/logs"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/media"
 	panelplatform "github.com/ayeaaaa/mix2api-v2/internal/platform/panel"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/pricing"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/probes"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/proxy"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/settings"
@@ -75,6 +76,12 @@ type ServerOptions struct {
 	UsageSvc *usage.Service
 	LogStore *logs.LogStore
 	Logs     *logs.LogStore
+
+	// Pricing mounts the panel pricing status, refresh and runtime mapping.
+	Pricing               *pricing.Snapshot
+	PricingRefresher      *pricing.Refresher
+	PricingRefreshMinutes func() float64
+	PricingVariantInherit func() bool
 
 	// Media mounts the OpenAI-compatible image/video task surface. Nil keeps the
 	// routes absent (404), matching a build without the media service.
@@ -136,17 +143,35 @@ type ServerOptions struct {
 	// Task 12 wires the real recorder here; tests use it to pin terminal
 	// outcomes such as client_aborted without touching upstream state.
 	ProtocolObserver func(ProtocolObservation)
+
+	// Platform is the composed platform service set. New merges it into the
+	// individual options above; either form is valid for embedders/tests.
+	Platform *PlatformServices
+
+	// RecordUsage appends exactly one usage row for a finished Chat, Responses
+	// or Messages request and then publishes the daily guards. A failure is
+	// logged and never changes the client response.
+	RecordUsage func(context.Context, usage.RecordInput) error
 }
 
-// ProtocolObservation describes one completed Responses or Messages request.
-// Usage is the raw OpenAI usage block when the upstream supplied one.
+// ProtocolObservation describes one completed Chat, Responses or Messages
+// request. Usage is the raw OpenAI usage block when the upstream supplied one.
+// Realm/Account/timing fields are filled from the provider stream's optional
+// UsageSnapshotReporter; a provider without the hook leaves them empty.
 type ProtocolObservation struct {
-	Protocol string
-	Model    string
-	Stream   bool
-	Outcome  string
-	Status   int
-	Usage    map[string]any
+	Protocol       string
+	Model          string
+	RequestedModel string
+	Realm          string
+	Account        string
+	Kind           string
+	Stream         bool
+	Outcome        string
+	Status         int
+	Usage          map[string]any
+	ElapsedMS      int64
+	TTFTMS         int64
+	GenMS          int64
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}
@@ -189,25 +214,36 @@ func New(opts ServerOptions) *Server {
 		providers: normalizeProviders(opts.Providers),
 		mux:       http.NewServeMux(),
 	}
-	s.keyStore = firstKeyStore(opts.KeyStore, opts.Keys)
-	s.settings = opts.Settings
+	s.mergePlatform(opts.Platform)
+	s.keyStore = firstKeyStore(s.keyStore, s.opts.KeyStore, s.opts.Keys)
 	if s.settings == nil {
-		s.settings = opts.SettingsService
+		s.settings = s.opts.Settings
+	}
+	if s.settings == nil {
+		s.settings = s.opts.SettingsService
 	}
 	if s.keyStore == nil && s.settings != nil {
 		s.keyStore = s.settings.Keys
 	}
-	s.proxySlots = opts.ProxySlots
 	if s.proxySlots == nil {
-		s.proxySlots = opts.Proxy
+		s.proxySlots = s.opts.ProxySlots
 	}
-	s.realm = opts.Realm
-	s.keyLimiter = opts.KeyLimiter
+	if s.proxySlots == nil {
+		s.proxySlots = s.opts.Proxy
+	}
+	if s.realm == nil {
+		s.realm = s.opts.Realm
+	}
+	s.keyLimiter = s.opts.KeyLimiter
 	if s.keyLimiter == nil && s.keyStore != nil {
 		s.keyLimiter = keys.NewLimiter()
 	}
-	s.sessions = opts.PanelSessions
-	s.password = firstPassword(opts.PanelPassword, opts.PanelPasswords)
+	if s.sessions == nil {
+		s.sessions = s.opts.PanelSessions
+	}
+	if s.password == nil {
+		s.password = firstPassword(s.opts.PanelPassword, s.opts.PanelPasswords)
+	}
 	if s.settings != nil {
 		if s.settings.Keys == nil && s.keyStore != nil {
 			s.settings.Keys = s.keyStore
@@ -222,13 +258,13 @@ func New(opts ServerOptions) *Server {
 			s.settings.SettingsFile = s.settings.Store.Path
 		}
 	}
-	if opts.DefaultMaxOutputTokens != nil {
-		s.defaultTokens = cachedModelTokens(opts.DefaultMaxOutputTokens)
+	if s.opts.DefaultMaxOutputTokens != nil {
+		s.defaultTokens = cachedModelTokens(s.opts.DefaultMaxOutputTokens)
 	}
-	if opts.ListenerPort > 0 {
+	if s.opts.ListenerPort > 0 {
 		for _, provider := range s.providers {
 			if setter, ok := provider.(listenerPortSetter); ok {
-				setter.SetListenerPort(opts.ListenerPort)
+				setter.SetListenerPort(s.opts.ListenerPort)
 			}
 		}
 	}
@@ -304,8 +340,12 @@ func NewServer(opts ServerOptions) *http.Server {
 
 func (s *Server) mount() {
 	s.mux.HandleFunc("/health", s.handleHealth)
-	s.mux.Handle("/v1/chat/completions", s.protectAPI(http.HandlerFunc(s.handleChat)))
-	s.mux.Handle("/v1/models", s.protectAPI(http.HandlerFunc(s.handleModels)))
+	for _, path := range []string{"/chat/completions", "/v1/chat/completions", "/completions", "/v1/completions"} {
+		s.mux.Handle(path, s.protectAPI(http.HandlerFunc(s.handleChat)))
+	}
+	for _, path := range []string{"/models", "/v1/models"} {
+		s.mux.Handle(path, s.protectAPI(http.HandlerFunc(s.handleModels)))
+	}
 	for _, path := range []string{"/responses", "/v1/responses", "/responses/compact", "/v1/responses/compact"} {
 		s.mux.Handle(path, s.protectAPI(http.HandlerFunc(s.handleResponses)))
 	}
@@ -338,6 +378,12 @@ func (s *Server) mountPlatformRoutes() {
 	}
 	if logStore != nil {
 		NewLogsHandlers(logStore, nil).Register(s.mux)
+	}
+	if s.opts.Pricing != nil {
+		pricingHandlers := NewPricingHandlers(s.opts.Pricing, s.opts.PricingRefresher, s.panelGate())
+		pricingHandlers.RefreshMinutes = s.opts.PricingRefreshMinutes
+		pricingHandlers.VariantInherit = s.opts.PricingVariantInherit
+		pricingHandlers.Register(s.mux)
 	}
 	settingsService := s.settings
 	if settingsService != nil {
@@ -462,7 +508,62 @@ func (s *Server) Handler() http.Handler {
 	prefixes := append([]string(nil), platformPanelPrefixes...)
 	prefixes = append(prefixes, panelProtectedPrefixes(s.providers)...)
 	panel := wrapPanelAuth(s.mux, prefixes, s.panelGate())
-	return recoveryHandler(panel)
+	return recoveryHandler(platformHeaders(panel, s.opts.Version))
+}
+
+const serverProduct = "mix2api"
+
+// platformHeaders adds the v2 Server identity and v1-compatible CORS headers.
+// Management prefixes are deliberately excluded: the dashboard is same-origin
+// and a stray page must not be able to read account/usage replies.
+func platformHeaders(next http.Handler, version string) http.Handler {
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	header := serverProduct
+	if strings.TrimSpace(version) != "" {
+		header += "/" + strings.TrimSpace(version)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", header)
+		allowed := corsOriginAllowed(r.URL.Path)
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions && allowed {
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+var corsManagementPrefixes = []string{
+	"/v1/usage", "/usage", "/accounts", "/settings", "/tasks", "/scheduler",
+	"/panel", "/logs", "/codearts", "/raccoon", "/agents", "/updates",
+	"/pricing", "/activity", "/console",
+}
+
+var corsAPIPrefixes = []string{"/v1", "/chat", "/completions", "/models", "/responses"}
+
+func corsOriginAllowed(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, prefix := range corsManagementPrefixes {
+		if panelPathMatches(path, prefix) {
+			return false
+		}
+	}
+	for _, prefix := range corsAPIPrefixes {
+		if panelPathMatches(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) protectAPI(handler http.Handler) http.Handler {
@@ -623,8 +724,8 @@ func isNilProvider(provider providers.Provider) bool {
 	}
 }
 
-func (s *Server) observeProtocol(observation ProtocolObservation) {
-	if s == nil || s.opts.ProtocolObserver == nil {
+func (s *Server) observeProtocol(r *http.Request, observation ProtocolObservation) {
+	if s == nil {
 		return
 	}
 	if observation.Usage != nil {
@@ -634,5 +735,34 @@ func (s *Server) observeProtocol(observation ProtocolObservation) {
 		}
 		observation.Usage = copied
 	}
-	s.opts.ProtocolObserver(observation)
+	if s.opts.RecordUsage != nil {
+		ctx := context.Background()
+		if r != nil {
+			ctx = r.Context()
+		}
+		in := usage.RecordInput{
+			At:             time.Now(),
+			Model:          observation.Model,
+			RequestedModel: observation.RequestedModel,
+			Realm:          observation.Realm,
+			Account:        observation.Account,
+			KeyID:          keyIDFromRequest(r),
+			Kind:           observation.Kind,
+			Outcome:        observation.Outcome,
+			Stream:         observation.Stream,
+			Usage:          observation.Usage,
+			ElapsedMS:      observation.ElapsedMS,
+			TTFTMS:         observation.TTFTMS,
+			GenMS:          observation.GenMS,
+		}
+		if in.Kind == "" {
+			in.Kind = "chat"
+		}
+		if err := s.opts.RecordUsage(ctx, in); err != nil {
+			log.Printf("api: usage record failed: %v", err)
+		}
+	}
+	if s.opts.ProtocolObserver != nil {
+		s.opts.ProtocolObserver(observation)
+	}
 }

@@ -84,14 +84,16 @@ func writeResponsesStream(w http.ResponseWriter, r *http.Request, stream provide
 
 func (s *Server) serveResponsesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, meta responseMeta) {
 	result := runResponsesStream(w, r, stream, model, meta)
-	s.observeProtocol(ProtocolObservation{
+	observation := ProtocolObservation{
 		Protocol: "responses",
 		Model:    model,
 		Stream:   true,
 		Outcome:  result.outcome,
 		Status:   result.status,
 		Usage:    result.usage,
-	})
+	}
+	applyTracker(&observation, stream)
+	s.observeProtocol(r, observation)
 }
 
 func runResponsesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, meta responseMeta) responsesStreamResult {

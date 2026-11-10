@@ -110,6 +110,14 @@ func Open(path string, enabled bool, caps Caps, logger *log.Logger) *LogStore {
 	return openStore(path, enabled, caps, logger)
 }
 
+// OpenCaps builds a store with exactly the supplied caps. A zero value means
+// every axis is unlimited; it is not mistaken for the absent-key default that
+// Open applies. Composition uses this after settings.LogCaps has already
+// resolved missing keys to v1 defaults.
+func OpenCaps(path string, enabled bool, caps Caps, logger *log.Logger) *LogStore {
+	return openStore(path, enabled, caps, logger)
+}
+
 // OpenUnlimited is Open without an implicit retention default. A zero Caps
 // value means every axis is unlimited.
 func OpenUnlimited(path string, enabled bool, logger *log.Logger) *LogStore {

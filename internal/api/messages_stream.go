@@ -54,10 +54,12 @@ func writeMessagesStream(w http.ResponseWriter, r *http.Request, stream provider
 
 func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) {
 	result := runMessagesStream(w, r, stream, model)
-	s.observeProtocol(ProtocolObservation{
+	observation := ProtocolObservation{
 		Protocol: "messages", Model: model, Stream: true,
 		Outcome: result.outcome, Status: result.status, Usage: result.usage,
-	})
+	}
+	applyTracker(&observation, stream)
+	s.observeProtocol(r, observation)
 }
 
 const messagesPostDoneTimeout = 5 * time.Second

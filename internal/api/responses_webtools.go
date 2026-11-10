@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -136,6 +137,7 @@ func (s *Server) serveResponsesWithWebTools(
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
 	model string,
+	started time.Time,
 ) bool {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
@@ -143,15 +145,16 @@ func (s *Server) serveResponsesWithWebTools(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
 	if err != nil {
-		s.observeResponseFailure(model, false, providerFailure(err).Status)
+		s.observeResponseFailure(r, model, false, providerFailure(err).Status, provider.Realm())
 		writeFailure(w, err)
 		return true
 	}
 	response := chatToResponse(final, model, meta)
 	attachWebItems(response, meta.WebItems, meta.Sources)
-	s.observeProtocol(ProtocolObservation{
-		Protocol: "responses", Model: model, Stream: false, Outcome: "completed", Status: http.StatusOK,
-		Usage: usageMap(final["usage"]),
+	s.observeProtocol(r, ProtocolObservation{
+		Protocol: "responses", Model: model, Realm: provider.Realm(), Stream: false,
+		Outcome: "completed", Status: http.StatusOK, Usage: usageMap(final["usage"]),
+		ElapsedMS: time.Since(started).Milliseconds(),
 	})
 	writeJSONResponse(w, http.StatusOK, response)
 	return true
@@ -164,6 +167,7 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
 	model string,
+	started time.Time,
 ) bool {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
@@ -171,11 +175,11 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
 	if err != nil {
-		s.observeResponseFailure(model, true, providerFailure(err).Status)
+		s.observeResponseFailure(r, model, true, providerFailure(err).Status, provider.Realm())
 		writeFailure(w, err)
 		return true
 	}
-	stream := chatCompletionStream(final)
+	stream := newUsageTracker(newSnapshotStream(chatCompletionStream(final), snapshotFromChat(final, provider.Realm(), model)), started)
 	s.serveResponsesStream(w, r, stream, model, meta)
 	return true
 }

@@ -42,7 +42,10 @@ type chatStream struct {
 	sawDone     bool
 
 	lastUsage     map[string]any
+	lastCredit    float64
+	creditKnown   bool
 	creditChecked bool
+	usageMu       sync.Mutex
 
 	closeOnce sync.Once
 	closeErr  error
@@ -195,6 +198,8 @@ func (s *chatStream) trackUsage(data []byte) {
 	if !ok || len(usage) == 0 {
 		return
 	}
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
 	if s.lastUsage == nil {
 		s.lastUsage = cloneUsage(usage)
 		return
@@ -215,10 +220,14 @@ func (s *chatStream) creditFrame() []byte {
 	if !ok {
 		return nil
 	}
+	s.usageMu.Lock()
+	s.lastCredit = float64(credit)
+	s.creditKnown = true
 	usage := map[string]any{}
 	if s.lastUsage != nil {
 		usage = cloneUsage(s.lastUsage)
 	}
+	s.usageMu.Unlock()
 	usage["credit"] = credit
 	payload := map[string]any{
 		"id":      "chatcmpl-raccoon-usage",

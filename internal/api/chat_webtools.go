@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -111,15 +112,27 @@ func (s *Server) handleChatWithWebTools(
 	provider providers.Provider,
 	base providers.ChatRequest,
 	request *chatHTTPRequest,
+	started time.Time,
 ) bool {
 	final, handled, err := s.runChatWebRounds(r.Context(), provider, base, request)
 	if !handled {
 		return false
 	}
 	if err != nil {
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+			Kind: "chat", Stream: false, Outcome: "failed",
+			Status: providerFailure(err).Status,
+		})
 		writeFailure(w, err)
 		return true
 	}
+	usage, _ := final["usage"].(map[string]any)
+	s.observeProtocol(r, ProtocolObservation{
+		Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+		Kind: "chat", Stream: false, Outcome: "completed", Status: http.StatusOK,
+		Usage: usage, ElapsedMS: time.Since(started).Milliseconds(),
+	})
 	writeJSONResponse(w, http.StatusOK, final)
 	return true
 }
@@ -130,16 +143,32 @@ func (s *Server) handleChatWithWebToolsStream(
 	provider providers.Provider,
 	base providers.ChatRequest,
 	request *chatHTTPRequest,
+	started time.Time,
 ) bool {
 	final, handled, err := s.runChatWebRounds(r.Context(), provider, base, request)
 	if !handled {
 		return false
 	}
 	if err != nil {
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+			Kind: "chat", Stream: true, Outcome: "failed",
+			Status: providerFailure(err).Status,
+		})
 		writeFailure(w, err)
 		return true
 	}
-	writeChatStream(w, r, chatCompletionStream(final), request.model)
+	stream := newUsageTracker(chatCompletionStream(final), started)
+	defer func() { _ = stream.Close() }()
+	result := writeChatStream(w, r, stream, request.model)
+	usage, _ := final["usage"].(map[string]any)
+	observation := ProtocolObservation{
+		Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+		Kind: "chat", Stream: true, Outcome: result.Outcome, Status: result.Status,
+		Usage: usage,
+	}
+	applyTracker(&observation, stream)
+	s.observeProtocol(r, observation)
 	return true
 }
 

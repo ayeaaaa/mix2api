@@ -1,10 +1,12 @@
 package usage
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -62,6 +64,46 @@ func (s *Store) AppendRaw(line []byte) error {
 	copy(payload, trimmed)
 	payload[len(payload)-1] = '\n'
 	return s.appendLine(payload)
+}
+
+// ReadRows reads every complete JSONL row. A trailing fragment without a
+// newline is ignored, matching the append/scan discipline. Missing files yield
+// an empty slice; malformed lines are skipped so one hand-edited row cannot
+// take the usage page or the daily guard down.
+func (s *Store) ReadRows() ([]Row, error) {
+	if s == nil || s.Paths.Log == "" {
+		return nil, errors.New("usage: empty usage log path")
+	}
+	file, err := os.Open(s.Paths.Log)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 256*1024)
+	rows := make([]Row, 0, 256)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 && bytes.HasSuffix(line, []byte("\n")) {
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) > 0 {
+				decoder := json.NewDecoder(bytes.NewReader(trimmed))
+				decoder.UseNumber()
+				var row Row
+				if decodeErr := decoder.Decode(&row); decodeErr == nil && row != nil {
+					rows = append(rows, row)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return rows, nil
+			}
+			return rows, readErr
+		}
+	}
 }
 
 func (s *Store) appendLine(payload []byte) error {

@@ -1325,6 +1325,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	payload, failure := parseProtocolObject(w, r)
 	if failure != nil {
 		writeFailure(w, failure)
@@ -1372,7 +1373,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
-		s.observeResponseFailure(model, stream, boundFailure.Status)
+		s.observeResponseFailure(r, model, stream, boundFailure.Status)
 		writeFailure(w, boundFailure)
 		return
 	}
@@ -1387,7 +1388,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
-		s.observeResponseFailure(model, stream, providerFailure(resolveErr).Status)
+		s.observeResponseFailure(r, model, stream, providerFailure(resolveErr).Status)
 		writeFailure(w, resolveErr)
 		return
 	}
@@ -1410,12 +1411,12 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
 	}
-	if !compaction && s.opts.WebTools != nil {
+	if !compaction && s.opts.WebTools != nil && s.opts.WebTools.Active() {
 		if stream {
-			if handled := s.serveResponsesWithWebToolsStream(w, r, provider, chatRequest, translated, model); handled {
+			if handled := s.serveResponsesWithWebToolsStream(w, r, provider, chatRequest, translated, model, started); handled {
 				return
 			}
-		} else if handled := s.serveResponsesWithWebTools(w, r, provider, chatRequest, translated, model); handled {
+		} else if handled := s.serveResponsesWithWebTools(w, r, provider, chatRequest, translated, model, started); handled {
 			return
 		}
 	}
@@ -1424,51 +1425,66 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		if upstream != nil {
 			_ = upstream.Close()
 		}
-		s.observeResponseFailure(model, stream, providerFailure(openErr).Status)
+		s.observeResponseFailure(r, model, stream, providerFailure(openErr).Status, provider.Realm())
 		writeFailure(w, openErr)
 		return
 	}
 	if upstream == nil {
-		s.observeResponseFailure(model, stream, http.StatusBadGateway)
+		s.observeResponseFailure(r, model, stream, http.StatusBadGateway, provider.Realm())
 		writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned no chat stream"))
 		return
 	}
-	defer func() { _ = upstream.Close() }()
+	tracked := newUsageTracker(withAttribution(upstream, provider.Realm()), started)
+	defer func() { _ = tracked.Close() }()
 
 	if compaction {
-		s.writeResponsesCompaction(w, upstream, model, translated.Meta)
+		s.writeResponsesCompaction(w, r, tracked, model, translated.Meta)
 		return
 	}
 	if stream {
-		s.serveResponsesStream(w, r, upstream, model, translated.Meta)
+		s.serveResponsesStream(w, r, tracked, model, translated.Meta)
 		return
 	}
-	chat, err := aggregateChatStream(upstream, model)
+	chat, err := aggregateChatStream(tracked, model)
 	if err != nil {
-		s.observeResponseFailure(model, false, providerFailure(err).Status)
+		observation := ProtocolObservation{
+			Protocol: "responses", Model: model, Stream: false, Outcome: "failed",
+			Status: providerFailure(err).Status,
+		}
+		applyTracker(&observation, tracked)
+		s.observeProtocol(r, observation)
 		writeFailure(w, err)
 		return
 	}
 	response := chatToResponse(chat, model, translated.Meta)
 	if reasoningOnlyResponse(response) {
-		s.observeProtocol(ProtocolObservation{
+		observation := ProtocolObservation{
 			Protocol: "responses", Model: model, Stream: false, Outcome: "failed", Status: http.StatusBadGateway,
 			Usage: usageMap(chat["usage"]),
-		})
+		}
+		applyTracker(&observation, tracked)
+		s.observeProtocol(r, observation)
 		writeFailure(w, &apiFailure{Status: http.StatusBadGateway, Type: "server_error",
 			Message: "upstream returned reasoning without output text; retry"})
 		return
 	}
-	s.observeProtocol(ProtocolObservation{
-		Protocol: "responses", Model: model, Stream: false, Outcome: "completed", Status: http.StatusOK,
+	observation := ProtocolObservation{
+		Protocol: "responses", Model: model, Realm: provider.Realm(), Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(chat["usage"]),
-	})
+	}
+	applyTracker(&observation, tracked)
+	s.observeProtocol(r, observation)
 	writeJSONResponse(w, http.StatusOK, response)
 }
 
-func (s *Server) observeResponseFailure(model string, stream bool, status int) {
-	s.observeProtocol(ProtocolObservation{
-		Protocol: "responses", Model: model, Stream: stream, Outcome: "failed", Status: status,
+func (s *Server) observeResponseFailure(r *http.Request, model string, stream bool, status int, realms ...string) {
+	realm := ""
+	if len(realms) > 0 {
+		realm = realms[0]
+	}
+	s.observeProtocol(r, ProtocolObservation{
+		Protocol: "responses", Model: model, Realm: realm, Stream: stream,
+		Outcome: "failed", Status: status,
 	})
 }
 

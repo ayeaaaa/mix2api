@@ -20,22 +20,26 @@ const compactionPrompt = "You are performing a CONTEXT CHECKPOINT COMPACTION. Cr
 // Codex's compaction_trigger turn with exactly one compaction output item. The
 // upstream is a Chat Completions API, so the gateway asks for the handoff
 // summary itself and stores it in the item's opaque encrypted_content field.
-func (s *Server) writeResponsesCompaction(w http.ResponseWriter, upstream providers.ChatStream, model string, meta responseMeta) {
+func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request, upstream providers.ChatStream, model string, meta responseMeta) {
 	chat, err := aggregateChatStream(upstream, model)
 	if err != nil {
-		s.observeProtocol(ProtocolObservation{
+		observation := ProtocolObservation{
 			Protocol: "responses", Model: model, Stream: meta.Streaming, Outcome: "failed",
 			Status: providerFailure(err).Status,
-		})
+		}
+		applyTracker(&observation, upstream)
+		s.observeProtocol(r, observation)
 		writeFailure(w, err)
 		return
 	}
 	summary := chatMessageText(chat)
 	if summary == "" {
-		s.observeProtocol(ProtocolObservation{
+		observation := ProtocolObservation{
 			Protocol: "responses", Model: model, Stream: meta.Streaming, Outcome: "failed",
 			Status: http.StatusBadGateway, Usage: usageMap(chat["usage"]),
-		})
+		}
+		applyTracker(&observation, upstream)
+		s.observeProtocol(r, observation)
 		writeFailure(w, &apiFailure{
 			Status:  http.StatusBadGateway,
 			Type:    "server_error",
@@ -49,10 +53,12 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, upstream provid
 	} else {
 		writeJSONResponse(w, http.StatusOK, response)
 	}
-	s.observeProtocol(ProtocolObservation{
+	observation := ProtocolObservation{
 		Protocol: "responses", Model: model, Stream: meta.Streaming,
 		Outcome: "completed", Status: http.StatusOK, Usage: usageMap(chat["usage"]),
-	})
+	}
+	applyTracker(&observation, upstream)
+	s.observeProtocol(r, observation)
 }
 
 func (s *Server) writeCompactionStream(w http.ResponseWriter, response map[string]any) {

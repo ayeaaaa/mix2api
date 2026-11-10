@@ -39,6 +39,7 @@ type CodeArtsStream struct {
 	finishSent bool
 	lastText   string
 	usage      map[string]any
+	usageMu    sync.Mutex
 	queue      [][]byte
 
 	// closed is written by Close and read by Next; Close may race any caller
@@ -192,7 +193,9 @@ func (s *CodeArtsStream) handleEvent(data []byte) {
 	}
 
 	if usage, ok := payload["usage"].(map[string]any); ok && len(usage) > 0 {
+		s.usageMu.Lock()
 		s.usage = usage
+		s.usageMu.Unlock()
 	}
 
 	if choices := chatList(payload["choices"]); len(choices) > 0 {
@@ -298,13 +301,16 @@ func (s *CodeArtsStream) chunkAt(index int, delta map[string]any, finish any) []
 }
 
 func (s *CodeArtsStream) usageFrame() []byte {
+	s.usageMu.Lock()
+	usage := s.usage
+	s.usageMu.Unlock()
 	return chatSSEFrame(map[string]any{
 		"id":      chatStreamID,
 		"object":  "chat.completion.chunk",
 		"created": s.created,
 		"model":   s.model,
 		"choices": []any{},
-		"usage":   s.usage,
+		"usage":   usage,
 	})
 }
 
@@ -331,7 +337,10 @@ func (s *CodeArtsStream) queueTerminal() {
 		s.queue = append(s.queue, s.chunk(map[string]any{}, "stop"))
 		s.finishSent = true
 	}
-	if len(s.usage) > 0 {
+	s.usageMu.Lock()
+	hasUsage := len(s.usage) > 0
+	s.usageMu.Unlock()
+	if hasUsage {
 		s.queue = append(s.queue, s.usageFrame())
 	}
 	s.queue = append(s.queue, []byte("data: [DONE]\n\n"))

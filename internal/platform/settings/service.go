@@ -53,6 +53,13 @@ type Service struct {
 	Project                string
 	Version                string
 	Now                    func() time.Time
+	// OnLimitsChanged runs after a save touched any daily-guard key. It is the
+	// one refresh call site: the platform guard bypasses its fold TTL so a
+	// limit change is visible immediately.
+	OnLimitsChanged func(ctx context.Context, keys []string)
+	// OnLogSettingsChanged runs after a save touched log_db_* so the runtime
+	// log store can reconfigure without a restart.
+	OnLogSettingsChanged func(ctx context.Context)
 }
 
 // New returns a settings service.
@@ -590,11 +597,13 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		platformPatch[group.key] = clean
 		reply[group.key] = clean
 	}
+	logTouched := false
 	for _, key := range []string{"log_db_enabled", "log_db_max_rows", "log_db_max_days", "log_db_max_bytes"} {
 		raw, present := patch[key]
 		if !present {
 			continue
 		}
+		logTouched = true
 		switch key {
 		case "log_db_enabled":
 			value, ok := raw.(bool)
@@ -633,6 +642,12 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		if err := contributor.SaveSettings(ctx, patch); err != nil {
 			return nil, err
 		}
+	}
+	if logTouched && s.OnLogSettingsChanged != nil {
+		s.OnLogSettingsChanged(ctx)
+	}
+	if len(touchedLimits) > 0 && s.OnLimitsChanged != nil {
+		s.OnLimitsChanged(ctx, touchedLimits)
 	}
 
 	view, err := s.View(ctx)

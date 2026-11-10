@@ -33,6 +33,11 @@ type RecordInput struct {
 type Recorder struct {
 	Store *Store
 	Now   func() time.Time
+
+	// AfterRecord runs after one row was appended successfully. Composition
+	// uses it to publish the daily guards for every append path, including
+	// media tasks, without the API handlers calling the guard twice.
+	AfterRecord func(ctx context.Context, in RecordInput)
 }
 
 // Record appends exactly one row. An append failure is returned so the caller
@@ -104,7 +109,13 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 	if prompt > 0 {
 		row["cache_hit_pct"] = math.Round(bestCachedUsageTokens(in.Usage)*100/prompt*10) / 10
 	}
-	return r.Store.Append(row)
+	if err := r.Store.Append(row); err != nil {
+		return err
+	}
+	if r.AfterRecord != nil {
+		r.AfterRecord(ctx, in)
+	}
+	return nil
 }
 
 func defaultRecordOutcome(outcome string) string {

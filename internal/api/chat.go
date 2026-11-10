@@ -46,6 +46,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // and future embedders may pass an explicit provider/model pair; the model is
 // still validated against that provider's Models catalog.
 func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider providers.Provider, model string) {
+	started := time.Now()
 	request, failure := parseChatHTTPRequest(w, r)
 	if failure != nil {
 		writeFailure(w, failure)
@@ -101,12 +102,12 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
 	}
-	if s.opts.WebTools != nil {
+	if s.opts.WebTools != nil && s.opts.WebTools.Active() {
 		if request.stream {
-			if handled := s.handleChatWithWebToolsStream(w, r, provider, chatRequest, request); handled {
+			if handled := s.handleChatWithWebToolsStream(w, r, provider, chatRequest, request, started); handled {
 				return
 			}
-		} else if handled := s.handleChatWithWebTools(w, r, provider, chatRequest, request); handled {
+		} else if handled := s.handleChatWithWebTools(w, r, provider, chatRequest, request, started); handled {
 			return
 		}
 	}
@@ -115,20 +116,47 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		if stream != nil {
 			_ = stream.Close()
 		}
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+			Kind: "chat", Stream: request.stream, Outcome: "failed",
+			Status: providerFailure(err).Status,
+		})
 		writeFailure(w, err)
 		return
 	}
 	if stream == nil {
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "chat", Model: request.model, Realm: provider.Realm(),
+			Kind: "chat", Stream: request.stream, Outcome: "failed",
+			Status: http.StatusBadGateway,
+		})
 		writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned no chat stream"))
 		return
 	}
-	defer func() { _ = stream.Close() }()
+	tracked := newUsageTracker(withAttribution(stream, provider.Realm()), started)
+	defer func() { _ = tracked.Close() }()
 
+	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	if request.stream {
-		writeChatStream(w, r, stream, request.model)
-		return
+		result = writeChatStream(w, r, tracked, request.model)
+	} else {
+		result = writeChatCompletion(w, tracked, request.model)
 	}
-	writeChatCompletion(w, stream, request.model)
+	observation := ProtocolObservation{
+		Protocol: "chat", Model: request.model, Realm: provider.Realm(), Kind: "chat",
+		Stream: request.stream, Outcome: result.Outcome, Status: result.Status,
+		Usage: result.Usage,
+	}
+	applyTracker(&observation, tracked)
+	s.observeProtocol(r, observation)
+}
+
+// chatStreamResult is the terminal outcome of one Chat request. Usage is the
+// aggregate block when the non-stream path produced one.
+type chatStreamResult struct {
+	Outcome string
+	Status  int
+	Usage   map[string]any
 }
 
 func parseChatHTTPRequest(w http.ResponseWriter, r *http.Request) (*chatHTTPRequest, *apiFailure) {
@@ -381,7 +409,8 @@ func isWorkBuddyProvider(provider providers.Provider) bool {
 // silent upstreams alive, and the normalizer hoists usage/finish fields. After
 // [DONE] the writer keeps reading long enough to forward a provider's post-DONE
 // credit accounting frame; clients that stop at [DONE] never wait for it.
-func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) {
+func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) chatStreamResult {
+	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	writer := newSSEWriter(w)
 	defer writer.Close()
 	normalizer := newStreamNormalizer(model)
@@ -393,28 +422,38 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 				final := normalizer.finalize()
 				for _, out := range final {
 					if writeErr := writer.Write(out); writeErr != nil {
-						return
+						result.Outcome = "client_aborted"
+						return result
 					}
 				}
 				if !writer.WroteHeaders() && len(final) == 0 && !normalizer.sawAny {
+					result.Outcome = "failed"
+					result.Status = http.StatusBadGateway
 					writeFailure(w, localFailure(http.StatusBadGateway, "upstream returned an empty stream"))
-					return
+					return result
 				}
-				_ = writer.Write([]byte("data: [DONE]\n\n"))
-				return
+				if err := writer.Write([]byte("data: [DONE]\n\n")); err != nil {
+					result.Outcome = "client_aborted"
+				}
+				return result
 			}
 			if r != nil && r.Context().Err() != nil {
-				return
+				result.Outcome = "client_aborted"
+				return result
 			}
 			if errors.Is(err, context.Canceled) {
-				return
+				result.Outcome = "client_aborted"
+				return result
 			}
+			result.Outcome = "upstream_aborted"
+			result.Status = providerFailure(err).Status
 			if !writer.WroteHeaders() {
+				result.Outcome = "failed"
 				writeFailure(w, err)
-				return
+				return result
 			}
 			writeSSEError(writer, err)
-			return
+			return result
 		}
 		if len(frame) == 0 {
 			continue
@@ -422,21 +461,24 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 		if sseFrameDone(frame) {
 			for _, out := range normalizer.finalize() {
 				if writeErr := writer.Write(out); writeErr != nil {
-					return
+					result.Outcome = "client_aborted"
+					return result
 				}
 			}
 			if writeErr := writer.Write([]byte("data: [DONE]\n\n")); writeErr != nil {
-				return
+				result.Outcome = "client_aborted"
+				return result
 			}
 			forwardPostDone(writer, r, stream, normalizer)
-			return
+			return result
 		}
 		for _, out := range normalizer.absorb(frame) {
 			if len(out) == 0 {
 				continue
 			}
 			if writeErr := writer.Write(out); writeErr != nil {
-				return
+				result.Outcome = "client_aborted"
+				return result
 			}
 		}
 	}
@@ -490,13 +532,19 @@ func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatSt
 	}
 }
 
-func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, model string) {
+func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, model string) chatStreamResult {
 	completion, err := aggregateChatStream(stream, model)
 	if err != nil {
+		status := providerFailure(err).Status
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
 		writeFailure(w, err)
-		return
+		return chatStreamResult{Outcome: "failed", Status: status}
 	}
+	usage, _ := completion["usage"].(map[string]any)
 	writeJSONResponse(w, http.StatusOK, completion)
+	return chatStreamResult{Outcome: "completed", Status: http.StatusOK, Usage: usage}
 }
 
 func aggregateChatStream(stream providers.ChatStream, model string) (map[string]any, error) {

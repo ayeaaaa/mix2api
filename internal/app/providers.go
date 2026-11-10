@@ -34,11 +34,16 @@ type Paths struct {
 }
 
 // PathsFromEnv resolves ACCOUNTS_DIR and USAGE_DIR. Blank values fall back to
-// the defaults above so the command starts without configuration.
+// WB_PROXY_USAGE_DIR (v1's name) and then the defaults above so the command
+// starts without configuration.
 func PathsFromEnv() Paths {
+	usageDir := envDir("USAGE_DIR", "")
+	if strings.TrimSpace(usageDir) == "" {
+		usageDir = envDir("WB_PROXY_USAGE_DIR", DefaultUsageDir)
+	}
 	return Paths{
 		AccountsDir: envDir("ACCOUNTS_DIR", DefaultAccountsDir),
-		UsageDir:    envDir("USAGE_DIR", DefaultUsageDir),
+		UsageDir:    usageDir,
 	}
 }
 

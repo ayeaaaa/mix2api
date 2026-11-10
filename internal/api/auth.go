@@ -115,11 +115,20 @@ func hasEnabledKeys(entries []keys.Entry) bool {
 	return false
 }
 
-// staticAPIKeyPasses probes the legacy opaque middleware without writing its
-// rejection to the real response. v1 accepts the launcher key alongside the
-// panel-managed key list, so a configured static key stays usable.
+// staticAPIKeyPasses matches the configured legacy launcher key directly. The
+// panel-managed key list stays authoritative when it has any enabled entry, so
+// v1's "panel lock-down wins" rule is preserved. The synthetic launcher entry
+// is context-only; it is never written to settings.json. When only the opaque
+// APIKeyAuth seam is configured (embedders/tests), it is probed without writing
+// its rejection to the real response.
 func (s *Server) staticAPIKeyPasses(r *http.Request) bool {
-	if s == nil || s.opts.APIKeyAuth == nil {
+	if s == nil {
+		return false
+	}
+	if configured := strings.TrimSpace(s.opts.StaticAPIKey); configured != "" {
+		return constantTimeTokenEqual(apiKeyFromRequest(r), configured)
+	}
+	if s.opts.APIKeyAuth == nil {
 		return false
 	}
 	passed := false

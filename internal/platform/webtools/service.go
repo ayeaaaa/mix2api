@@ -28,6 +28,9 @@ type Service struct {
 	Engines         []string
 	EngineURLs      map[string]string
 	AllowPrivate    bool
+	// Enabled gates local execution without replacing the service. Nil means
+	// enabled (tests and embedders); composition reads the panel setting.
+	Enabled func() bool
 
 	cache *ttlCache
 
@@ -67,6 +70,18 @@ func New() *Service {
 
 // NewService is an alias for New for composition code.
 func NewService() *Service { return New() }
+
+// Active reports whether the gateway should execute local web rounds. A nil
+// Enabled callback keeps the service enabled, matching tests and embedders.
+func (s *Service) Active() bool {
+	if s == nil {
+		return false
+	}
+	if s.Enabled == nil {
+		return true
+	}
+	return s.Enabled()
+}
 
 // Default is the package-level service used by the convenience functions.
 var Default = New()
