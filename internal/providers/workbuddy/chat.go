@@ -214,7 +214,8 @@ func (p *Provider) openChat(
 	if attemptLimit < 2 {
 		attemptLimit = 2
 	}
-	exclude := make(map[string]bool)
+	blocked := blockedAccounts(accounts, req.AllowedAccounts)
+	exclude := cloneExclude(blocked)
 	refreshed := make(map[string]bool)
 	var lastErr error
 	var bestRate *APIError
@@ -235,7 +236,7 @@ func (p *Provider) openChat(
 			// blips, and intentionally do not reset the rotation.
 			if sawTransient && !retriedTransient {
 				retriedTransient = true
-				exclude = make(map[string]bool)
+				exclude = cloneExclude(blocked)
 				attemptLimit += len(accounts) + 1
 				select {
 				case <-ctx.Done():
@@ -2102,6 +2103,36 @@ func cloneMap(source map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
+}
+
+// blockedAccounts returns the accounts a per-API-key allow-list excludes.
+func blockedAccounts(accounts []*Account, allowed []string) map[string]bool {
+	if len(allowed) == 0 {
+		return nil
+	}
+	permitted := make(map[string]bool, len(allowed))
+	for _, uid := range allowed {
+		permitted[uid] = true
+	}
+	blocked := make(map[string]bool)
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		uid := accountUID(account)
+		if uid != "" && !permitted[uid] {
+			blocked[uid] = true
+		}
+	}
+	return blocked
+}
+
+func cloneExclude(source map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(source))
 	for key, value := range source {
 		out[key] = value
 	}

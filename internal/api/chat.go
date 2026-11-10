@@ -66,6 +66,10 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		writeFailure(w, localFailure(http.StatusBadRequest, "model is required"))
 		return
 	}
+	if failure := s.keyModelFailure(r, request.model); failure != nil {
+		writeFailure(w, failure)
+		return
+	}
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
@@ -95,6 +99,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		Messages:           request.messages,
 		SessionKey:         request.sessionKey,
 		AllowRealmFallback: allowRealmFallback,
+		AllowedAccounts:    keyAllowedAccounts(r),
 	}
 	stream, err := provider.OpenChat(r.Context(), chatRequest)
 	if err != nil {

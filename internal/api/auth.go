@@ -1,17 +1,127 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
-// RequirePanelAuth returns the default cookie-less panel middleware. The token
+// keyEntryContextKey stores the matched API-key row for downstream binding and
+// usage attribution. Panel sessions deliberately leave it empty.
+type keyEntryContextKey struct{}
+
+func withKeyEntry(ctx context.Context, entry *keys.Entry) context.Context {
+	if entry == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, keyEntryContextKey{}, entry)
+}
+
+// KeyEntryFromContext returns the API key that authenticated r, or nil.
+func KeyEntryFromContext(r *http.Request) *keys.Entry {
+	if r == nil {
+		return nil
+	}
+	entry, _ := r.Context().Value(keyEntryContextKey{}).(*keys.Entry)
+	return entry
+}
+
+// keyAllowedAccounts returns the key's account allow-list, or nil when the
+// request is unrestricted (panel session, no key, or no account refs).
+func keyAllowedAccounts(r *http.Request) []string {
+	entry := KeyEntryFromContext(r)
+	if entry == nil || len(entry.Accounts) == 0 {
+		return nil
+	}
+	return append([]string(nil), entry.Accounts...)
+}
+
+// requireKeyAuth is the platform key/panel gate. A valid panel session unlocks
+// generic API routes; otherwise an enabled key is matched and its concurrency
+// lease is held for the whole request including SSE. auth_disabled=true skips
+// only the key requirement.
+func (s *Server) requireKeyAuth(next http.Handler) http.Handler {
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.sessions != nil && s.sessions.Valid(panelSessionToken(r)) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		entries, err := s.keyStore.List(false)
+		if err != nil {
+			writeV1Error(w, http.StatusInternalServerError, "server_error", "api key store unavailable")
+			return
+		}
+		supplied := apiKeyFromRequest(r)
+		entry, ok := keys.Match(entries, supplied)
+		if !ok {
+			if !s.keyStore.AuthRequired() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
+			return
+		}
+		release, acquired := s.keyLimiter.Acquire(entry.ID, entry.ConcurrencyLimit)
+		if !acquired {
+			name := strings.TrimSpace(entry.Name)
+			if name == "" {
+				name = entry.ID
+			}
+			limit := entry.ConcurrencyLimit
+			message := "Rate limit reached: API key '" + name + "' reached its concurrency limit (" +
+				strconv.Itoa(limit) + " in flight); retry shortly"
+			reset := time.Now().Add(2 * time.Second)
+			writeV1ErrorWithRetry(w, http.StatusTooManyRequests, "rate_limit_error", message, 2*time.Second, reset)
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r.WithContext(withKeyEntry(r.Context(), entry)))
+	})
+}
+
+func panelSessionToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get("X-Panel-Token"))
+}
+
+// keyModelFailure enforces a key's model allow-list before the request reaches
+// upstream. Unrestricted keys are a no-op.
+func (s *Server) keyModelFailure(r *http.Request, model string) *apiFailure {
+	entry := KeyEntryFromContext(r)
+	if entry == nil || keys.AllowsModel(*entry, model) {
+		return nil
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = "未命名"
+	}
+	allowed := strings.Join(entry.Models, "、")
+	if allowed == "" {
+		allowed = "-"
+	}
+	asked := strings.TrimSpace(model)
+	if asked == "" {
+		asked = "(未指定模型)"
+	}
+	message := "API Key「" + name + "」的模型限制不允許 " + asked + "。該 Key 目前允許：" + allowed +
+		"。請在看板「設置」頁修改這個 Key 的模型限制，或改用允許該模型的 Key。"
+	return localFailure(http.StatusBadRequest, message)
+}
+
 // is accepted in X-Panel-Token or Authorization: Bearer; it is never stored in
 // a cookie. Unsafe methods also reject cross-site Origin/Sec-Fetch-Site values
 // so a browser page on another origin cannot drive panel mutations when the

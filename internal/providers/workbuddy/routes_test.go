@@ -274,10 +274,7 @@ func TestRoutesWorkBuddyPanelMetadataAndTwinOwnership(t *testing.T) {
 		"GET /activity/history",
 		"POST /catalog/refresh",
 		"GET /scheduler",
-		"GET /settings",
 		"POST /settings/restriction/reset",
-		"GET /realm",
-		"POST /realm",
 	}
 	for _, key := range required {
 		if !seen[key] {
@@ -733,17 +730,12 @@ func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
 		t.Fatalf("credits/fetch missing busy: %s", rec.Body)
 	}
 
-	rec = f.do(http.MethodGet, "/realm", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("realm get status=%d body=%s", rec.Code, rec.Body)
+	realmContext := context.Background()
+	if got := f.intl.ActiveRealm(realmContext); got != realmIntl || len(f.intl.RealmOptions()) != 2 {
+		t.Fatalf("realm state = %q options=%v", got, f.intl.RealmOptions())
 	}
-	realm := decodeWBRoutesJSON(t, rec)
-	if wbRouteText(realm["current"]) != realmIntl || len(realm["options"].([]any)) != 2 {
-		t.Fatalf("realm get = %#v", realm)
-	}
-	rec = f.do(http.MethodPost, "/realm", map[string]any{"realm": "cn"})
-	if rec.Code != http.StatusOK || decodeWBRoutesJSON(t, rec)["current"] != realmCN {
-		t.Fatalf("realm post = %s", rec.Body)
+	if err := f.intl.SetActiveRealm(realmContext, "cn"); err != nil {
+		t.Fatalf("realm switch: %v", err)
 	}
 	if got := f.intl.activeRealm(); got != realmCN {
 		t.Fatalf("active realm = %q", got)
@@ -752,9 +744,8 @@ func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), `"realm": "cn"`) {
 		t.Fatalf("active_realm.json = %q, err=%v", data, err)
 	}
-	rec = f.do(http.MethodPost, "/realm", map[string]any{"realm": "bogus"})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad realm status=%d body=%s", rec.Code, rec.Body)
+	if err := f.intl.SetActiveRealm(realmContext, "bogus"); err == nil {
+		t.Fatal("bad realm accepted")
 	}
 
 	rec = f.do(http.MethodPost, "/settings/restriction/reset", map[string]any{})
@@ -1685,8 +1676,8 @@ func TestRoutesLegacyUnqualifiedAdminActionsSpanRealms(t *testing.T) {
 	}
 
 	// GET /accounts follows the persisted active exit when no realm is named.
-	if rec := f.do(http.MethodPost, "/realm", map[string]any{"realm": realmCN}); rec.Code != http.StatusOK {
-		t.Fatalf("realm switch = %s", rec.Body)
+	if err := f.intl.SetActiveRealm(context.Background(), realmCN); err != nil {
+		t.Fatalf("realm switch: %v", err)
 	}
 	rec = f.do(http.MethodGet, "/accounts", nil)
 	rows := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
@@ -1765,51 +1756,52 @@ func TestRoutesWorkBuddyCreditsGrantsCatalogSchedulerSettings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
-	rec = f.do(http.MethodGet, "/settings", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("settings status=%d body=%s", rec.Code, rec.Body)
+	settings, err := f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view: %v", err)
 	}
-	settings := decodeWBRoutesJSON(t, rec)
 	schedule, _ := settings["schedule"].(map[string]any)
-	if len(schedule["checkin"].([]any)) != 2 {
+	if len(scheduleHoursAny(schedule["checkin"])) != 2 {
 		t.Fatalf("settings schedule = %#v", schedule)
 	}
-	assertWBNoSecret(t, "settings", rec.Body.String(), "refresh-uid-intl", "accessToken", "refreshToken")
+	settingsJSON, _ := json.Marshal(settings)
+	assertWBNoSecret(t, "settings", string(settingsJSON), "refresh-uid-intl", "accessToken", "refreshToken")
 
-	rec = f.do(http.MethodPost, "/settings/save", map[string]any{
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
 		"schedule": map[string]any{"checkin": []any{7, 19}},
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("settings save status=%d body=%s", rec.Code, rec.Body)
+	}); err != nil {
+		t.Fatalf("settings save: %v", err)
 	}
 	if got := f.intl.scheduleHours("checkin", []int{9, 21}); len(got) != 2 || got[0] != 7 || got[1] != 19 {
 		t.Fatalf("saved schedule = %v", got)
 	}
-	rec = f.do(http.MethodPost, "/settings/save", map[string]any{
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
 		"workbuddy": map[string]any{"intl": map[string]any{"timeout_seconds": 5, "max_concurrent": 3}},
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("workbuddy settings save status=%d body=%s", rec.Code, rec.Body)
+	}); err != nil {
+		t.Fatalf("workbuddy settings save: %v", err)
 	}
-	rec = f.do(http.MethodGet, "/settings", nil)
-	settings = decodeWBRoutesJSON(t, rec)
+	settings, err = f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view: %v", err)
+	}
 	workbuddy := settings["workbuddy"].(map[string]any)
 	intlConfig := workbuddy["intl"].(map[string]any)
-	if intlConfig["timeout_seconds"].(json.Number).String() != "5" ||
-		intlConfig["max_concurrent"].(json.Number).String() != "3" {
+	if intlConfig["timeout_seconds"].(float64) != 5 ||
+		intlConfig["max_concurrent"].(int) != 3 {
 		t.Fatalf("saved workbuddy config = %#v", intlConfig)
 	}
-	rec = f.do(http.MethodPost, "/settings/save", map[string]any{
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
 		"auto_switch_product": true,
 		"upstream":            map[string]any{"header_timeout_seconds": 42},
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("global settings save status=%d body=%s", rec.Code, rec.Body)
+	}); err != nil {
+		t.Fatalf("global settings save: %v", err)
 	}
-	rec = f.do(http.MethodGet, "/settings", nil)
-	settings = decodeWBRoutesJSON(t, rec)
-	if settings["auto_switch_product"] != true ||
-		settings["upstream"].(map[string]any)["header_timeout_seconds"].(json.Number).String() != "42" {
+	settings, err = f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view: %v", err)
+	}
+	upstream, _ := settings["upstream"].(map[string]any)
+	if settings["auto_switch_product"] != true || upstream["header_timeout_seconds"] != float64(42) {
 		t.Fatalf("global settings = %#v", settings)
 	}
 }
@@ -2221,6 +2213,48 @@ func TestRoutesWorkBuddyLoginAutoExcludesExternalSlots(t *testing.T) {
 		t.Fatalf("auto slot = %q reserved=%v, want slot-c", slot, reserved)
 	}
 	f.intl.releaseLoginProxy(slot)
+}
+
+func scheduleHoursAny(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	case []int:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = item
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func TestRouteOwnershipMigration(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	for _, route := range f.intl.Routes() {
+		switch route.Path {
+		case "/settings", "/settings/save", "/realm":
+			t.Fatalf("WorkBuddy still owns migrated route %s %s", route.Method, route.Path)
+		}
+	}
+	if view, err := f.intl.SettingsView(context.Background()); err != nil || view["workbuddy"] == nil {
+		t.Fatalf("SettingsView = %#v err=%v", view, err)
+	}
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"daily_chat_web": true,
+	}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if got := f.intl.ActiveRealm(context.Background()); got != realmIntl {
+		t.Fatalf("ActiveRealm = %q", got)
+	}
+	if err := f.intl.SetActiveRealm(context.Background(), realmCN); err != nil || f.intl.ActiveRealm(context.Background()) != realmCN {
+		t.Fatalf("SetActiveRealm = %v", err)
+	}
+	if options := f.intl.RealmOptions(); len(options) != 2 {
+		t.Fatalf("RealmOptions = %#v", options)
+	}
 }
 
 func TestRoutesWorkBuddyTwinCompositionAndNotFound(t *testing.T) {

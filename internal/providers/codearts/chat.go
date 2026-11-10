@@ -115,7 +115,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	if attempts < 2 {
 		attempts = 2
 	}
-	exclude := make(map[string]bool)
+	exclude := blockedCodeArtsAccounts(accounts, req.AllowedAccounts)
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -1579,4 +1579,26 @@ func (p *Provider) noAccountError() error {
 		message = "没有可用的 CodeArts 账号：" + strings.Join(reasons, "；")
 	}
 	return &APIError{Kind: KindUnavailable, Status: http.StatusBadGateway, Message: message}
+}
+
+// blockedCodeArtsAccounts excludes accounts outside a per-key allow-list.
+func blockedCodeArtsAccounts(accounts []*Account, allowed []string) map[string]bool {
+	if len(allowed) == 0 {
+		return map[string]bool{}
+	}
+	permitted := make(map[string]bool, len(allowed))
+	for _, uid := range allowed {
+		permitted[uid] = true
+	}
+	blocked := make(map[string]bool)
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		uid, _ := account.currentUID()
+		if uid != "" && !permitted[uid] {
+			blocked[uid] = true
+		}
+	}
+	return blocked
 }

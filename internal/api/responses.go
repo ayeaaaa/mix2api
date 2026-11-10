@@ -1335,6 +1335,10 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, localFailure(http.StatusBadRequest, "model is required"))
 		return
 	}
+	if failure := s.keyModelFailure(r, model); failure != nil {
+		writeFailure(w, failure)
+		return
+	}
 	stream, _ := decodeJSONBool(payload["stream"])
 	isCompactPath := strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/responses/compact")
 
@@ -1356,7 +1360,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 
 	translated, err := translateResponsesRequest(payload, responseTranslateOptions{
 		ForceCompaction:         isCompactPath,
-		DefaultMaxOutputTokens:  s.opts.DefaultMaxOutputTokens,
+		DefaultMaxOutputTokens:  s.defaultMaxOutputTokens,
 		PreserveRequestContract: s.opts.PreserveRequestContract,
 	})
 	if err != nil {
@@ -1403,6 +1407,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		Messages:           chatMessagesRaw(translated.Chat),
 		SessionKey:         request.sessionKey,
 		AllowRealmFallback: allowRealmFallback,
+		AllowedAccounts:    keyAllowedAccounts(r),
 	}
 	upstream, openErr := provider.OpenChat(r.Context(), chatRequest)
 	if openErr != nil {

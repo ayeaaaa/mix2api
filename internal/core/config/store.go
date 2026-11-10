@@ -96,6 +96,30 @@ func (s *Store) Merge(patch map[string]any) (map[string]any, error) {
 	return merged, nil
 }
 
+// Update applies fn to the current settings and atomically writes the result.
+// It is the read-modify-write primitive for callers that must delete legacy
+// keys, which Merge cannot express because it only adds or replaces values.
+// The whole cycle is serialized with Merge across Store values sharing a path.
+func (s *Store) Update(fn func(map[string]any) error) (map[string]any, error) {
+	lock := mergeLock(s.Path)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	if fn != nil {
+		if err := fn(current); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.write(current); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
 func mergeMaps(dst, patch map[string]any) map[string]any {
 	if dst == nil {
 		dst = map[string]any{}

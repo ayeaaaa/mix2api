@@ -54,7 +54,7 @@ func (s *Server) handleMessagesCountTokens(w http.ResponseWriter, r *http.Reques
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
-	chat, err := messagesToChatWithDefault(payload, s.opts.DefaultMaxOutputTokens)
+	chat, err := messagesToChatWithDefault(payload, s.defaultMaxOutputTokens)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", time.Time{})
 		return

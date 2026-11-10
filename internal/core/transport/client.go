@@ -139,6 +139,10 @@ func slotNumber(id string) (int, bool) {
 	return number, true
 }
 
+// NormalizeProxyURL exposes the legacy proxy URL normalizer for platform
+// settings code. It mirrors the Python normalize_proxy_url helper.
+func NormalizeProxyURL(raw string) string { return normalizeProxyURL(raw) }
+
 // normalizeProxyURL trims whitespace, supplies the default http scheme, and
 // converts the old vendor host:port:user:pass form. It mirrors the Python
 // normalize_proxy_url helper so migrated settings keep working.

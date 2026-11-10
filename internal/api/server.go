@@ -2,12 +2,20 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/logs"
+	panelplatform "github.com/ayeaaaa/mix2api-v2/internal/platform/panel"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/proxy"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/settings"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/usage"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -24,6 +32,42 @@ type ServerOptions struct {
 	// Providers are mounted under their declared routes and are reachable
 	// through the generic /v1/chat/completions and /v1/models endpoints.
 	Providers []providers.Provider
+
+	// KeyStore enables the platform API-key gate. When set, it replaces the
+	// opaque APIKeyAuth middleware for generic /v1 and provider AuthAPIKey
+	// routes and supplies per-key realm/model binding plus concurrency limits.
+	// KeyStore and Keys are aliases; either may be set.
+	KeyStore *keys.Store
+	Keys     *keys.Store
+	// KeyLimiter tracks per-key in-flight requests. Nil uses a server-local
+	// limiter.
+	KeyLimiter *keys.Limiter
+
+	// PanelSessions and PanelPassword enable the dynamic panel login/session
+	// flow. When PanelAuth is nil, PanelSessions supplies the default gate.
+	PanelSessions *panelplatform.Sessions
+	PanelPassword *panelplatform.Password
+	// PanelPasswords is an alias for PanelPassword.
+	PanelPasswords *panelplatform.Password
+
+	// Settings, Realm, and ProxySlots mount the panel settings, realm, and
+	// proxy-slot groups. Settings may own the key store itself.
+	Settings        *settings.Service
+	SettingsService *settings.Service
+	Realm           *settings.RealmService
+	ProxySlots      *proxy.Slots
+	Proxy           *proxy.Slots
+	// ProxyProbe and ProxyDiscover are injected network seams for the two
+	// panel routes that would otherwise contact configured exits.
+	ProxyProbe    func(ctx context.Context, url string) (map[string]any, error)
+	ProxyDiscover func(ctx context.Context) []map[string]any
+
+	// Usage and LogStore mount the already-built usage and runtime-log route
+	// groups behind the panel-prefix gate.
+	Usage    *usage.Service
+	UsageSvc *usage.Service
+	LogStore *logs.LogStore
+	Logs     *logs.LogStore
 
 	// PanelAuth wraps every AuthPanel route and its top-level provider subtree.
 	// Nil fails closed for panel routes; it never leaves them open.
@@ -89,6 +133,13 @@ type Server struct {
 	opts      ServerOptions
 	providers []providers.Provider
 	mux       *http.ServeMux
+
+	keyStore   *keys.Store
+	keyLimiter *keys.Limiter
+	sessions   *panelplatform.Sessions
+	password   *panelplatform.Password
+
+	defaultTokens func(string) int
 }
 
 // listenerPortSetter is the optional provider contract used to inject the
@@ -104,6 +155,16 @@ func New(opts ServerOptions) *Server {
 		providers: normalizeProviders(opts.Providers),
 		mux:       http.NewServeMux(),
 	}
+	s.keyStore = firstKeyStore(opts.KeyStore, opts.Keys)
+	s.keyLimiter = opts.KeyLimiter
+	if s.keyLimiter == nil && s.keyStore != nil {
+		s.keyLimiter = keys.NewLimiter()
+	}
+	s.sessions = opts.PanelSessions
+	s.password = firstPassword(opts.PanelPassword, opts.PanelPasswords)
+	if opts.DefaultMaxOutputTokens != nil {
+		s.defaultTokens = cachedModelTokens(opts.DefaultMaxOutputTokens)
+	}
 	if opts.ListenerPort > 0 {
 		for _, provider := range s.providers {
 			if setter, ok := provider.(listenerPortSetter); ok {
@@ -113,6 +174,53 @@ func New(opts ServerOptions) *Server {
 	}
 	s.mount()
 	return s
+}
+
+func firstKeyStore(values ...*keys.Store) *keys.Store {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstPassword(values ...*panelplatform.Password) *panelplatform.Password {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func cachedModelTokens(lookup func(string) int) func(string) int {
+	var mu sync.Mutex
+	cache := map[string]int{}
+	return func(model string) int {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return 0
+		}
+		mu.Lock()
+		if value, ok := cache[model]; ok {
+			mu.Unlock()
+			return value
+		}
+		mu.Unlock()
+		value := lookup(model)
+		mu.Lock()
+		cache[model] = value
+		mu.Unlock()
+		return value
+	}
+}
+
+func (s *Server) defaultMaxOutputTokens(model string) int {
+	if s == nil || s.defaultTokens == nil {
+		return 0
+	}
+	return s.defaultTokens(model)
 }
 
 // NewServer returns an HTTP server exposing the generic health, models, chat,
@@ -143,8 +251,107 @@ func (s *Server) mount() {
 	for _, path := range []string{"/messages/count_tokens", "/v1/messages/count_tokens"} {
 		s.mux.Handle(path, s.protectMessages(http.HandlerFunc(s.handleMessagesCountTokens)))
 	}
+	s.mountPlatformRoutes()
 	for _, provider := range s.providers {
 		registerProviderRoutes(s.mux, provider, s.decorateProviderRoute)
+	}
+}
+
+func (s *Server) mountPlatformRoutes() {
+	if s == nil {
+		return
+	}
+	usageService := s.opts.Usage
+	if usageService == nil {
+		usageService = s.opts.UsageSvc
+	}
+	if usageService != nil {
+		NewUsageHandlers(usageService, nil).Register(s.mux)
+	}
+	logStore := s.opts.LogStore
+	if logStore == nil {
+		logStore = s.opts.Logs
+	}
+	if logStore != nil {
+		NewLogsHandlers(logStore, nil).Register(s.mux)
+	}
+	settingsService := s.opts.Settings
+	if settingsService == nil {
+		settingsService = s.opts.SettingsService
+	}
+	if settingsService != nil {
+		NewSettingsHandlers(settingsService, s.keyStore, s.panelGate()).Register(s.mux)
+		if s.opts.Realm != nil {
+			NewRealmHandlers(s.opts.Realm, s.panelGate()).Register(s.mux)
+		}
+	}
+	slots := s.opts.ProxySlots
+	if slots == nil {
+		slots = s.opts.Proxy
+	}
+	if slots != nil {
+		NewProxyHandlers(slots, s.panelGate(), s.opts.ProxyProbe, s.opts.ProxyDiscover).Register(s.mux)
+	}
+	if s.password != nil || s.sessions != nil || s.keyStore != nil {
+		NewPanelHandlers(s.password, s.sessions, s.keyStore, s.raccoonStatus, s.panelGate()).Register(s.mux)
+	}
+}
+
+// platformPanelPrefixes are the v1 top-level groups owned by platform routes.
+// The whole subtree is gated, including unknown paths, matching v1's
+// _is_panel_route behavior.
+var platformPanelPrefixes = []string{
+	"/accounts", "/usage", "/v1/usage", "/activity", "/tasks", "/scheduler",
+	"/settings", "/updates", "/logs", "/console", "/pricing", "/agents",
+	"/codearts", "/raccoon",
+}
+
+func (s *Server) panelGate() func(http.Handler) http.Handler {
+	if s == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	if s.sessions != nil && s.opts.PanelAuth != nil {
+		sessionGate := panelplatform.RequireSession(s.sessions)
+		staticGate := s.opts.PanelAuth
+		return func(next http.Handler) http.Handler {
+			withSession := sessionGate(next)
+			withStatic := staticGate(next)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if s.sessions.Valid(panelplatform.TokenFromRequest(r)) {
+					withSession.ServeHTTP(w, r)
+					return
+				}
+				withStatic.ServeHTTP(w, r)
+			})
+		}
+	}
+	if s.sessions != nil {
+		return panelplatform.RequireSession(s.sessions)
+	}
+	if s.opts.PanelAuth != nil {
+		return s.opts.PanelAuth
+	}
+	return RequirePanelAuth("")
+}
+
+func (s *Server) apiGate() func(http.Handler) http.Handler {
+	if s == nil {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
+			})
+		}
+	}
+	if s.keyStore != nil {
+		return s.requireKeyAuth
+	}
+	if s.opts.APIKeyAuth != nil {
+		return s.opts.APIKeyAuth
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
+		})
 	}
 }
 
@@ -155,32 +362,24 @@ func (s *Server) Handler() http.Handler {
 	if s == nil {
 		return http.NotFoundHandler()
 	}
-	panel := wrapPanelAuth(s.mux, panelProtectedPrefixes(s.providers), s.opts.PanelAuth)
+	prefixes := append([]string(nil), platformPanelPrefixes...)
+	prefixes = append(prefixes, panelProtectedPrefixes(s.providers)...)
+	panel := wrapPanelAuth(s.mux, prefixes, s.panelGate())
 	return recoveryHandler(panel)
 }
 
 func (s *Server) protectAPI(handler http.Handler) http.Handler {
-	if s == nil || s.opts.APIKeyAuth == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
-		})
-	}
-	return s.opts.APIKeyAuth(handler)
+	return s.apiGate()(handler)
 }
 
-// decorateProviderRoute applies AuthAPIKey to provider-declared routes. Panel
-// routes are guarded at the top-level subtree so unknown paths fail closed too.
+// decorateProviderRoute applies the API-key gate to provider-declared routes.
+// Panel routes are guarded at the top-level subtree so unknown paths fail
+// closed too.
 func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.HandlerFunc) http.HandlerFunc {
 	if auth != providers.AuthAPIKey {
 		return handler
 	}
-	if s.opts.APIKeyAuth == nil {
-		return func(w http.ResponseWriter, r *http.Request) {
-			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
-		}
-	}
-	protected := s.opts.APIKeyAuth(handler)
-	return protected.ServeHTTP
+	return s.apiGate()(handler).ServeHTTP
 }
 
 // apiKeyBoundRealm returns the concrete provider realm bound to the request's
@@ -188,6 +387,14 @@ func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.Ha
 // WorkBuddy-only discovery alias "all") is an operator configuration error and
 // is rejected instead of silently falling back to model matching.
 func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
+	if entry := KeyEntryFromContext(r); entry != nil {
+		if realm := keys.BoundRealm(entry); realm != "" {
+			if realm == "all" || s.providerForRealm(realm) == nil {
+				return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
+			}
+			return realm, nil
+		}
+	}
 	if s == nil || s.opts.APIKeyRealm == nil {
 		return "", nil
 	}

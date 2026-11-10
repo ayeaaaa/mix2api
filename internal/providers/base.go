@@ -54,6 +54,10 @@ type ChatRequest struct {
 	// The API layer sets false when a realm was explicitly requested or bound
 	// to an API key, because that is the operator's written intent.
 	AllowRealmFallback *bool
+
+	// AllowedAccounts is the API key's account allow-list. An empty list means
+	// every account; providers exclude non-listed accounts from dispatch.
+	AllowedAccounts []string
 }
 
 // ChatStream is a provider-owned stream of response bytes.

@@ -583,11 +583,7 @@ func (p *Provider) Routes() []providers.Route {
 		{Method: http.MethodGet, Path: "/scheduler", Auth: panel, Handler: p.handleScheduler},
 		{Method: http.MethodPost, Path: "/scheduler/trigger", Auth: panel, Handler: p.handleSchedulerTrigger},
 		{Method: http.MethodPost, Path: "/scheduler/toggle", Auth: panel, Handler: p.handleSchedulerToggle},
-		{Method: http.MethodGet, Path: "/settings", Auth: panel, Handler: p.handleSettings},
-		{Method: http.MethodPost, Path: "/settings/save", Auth: panel, Handler: p.handleSettingsSave},
 		{Method: http.MethodPost, Path: "/settings/restriction/reset", Auth: panel, Handler: p.handleSettingsRestrictionReset},
-		{Method: http.MethodGet, Path: "/realm", Auth: panel, Handler: p.handleRealm},
-		{Method: http.MethodPost, Path: "/realm", Auth: panel, Handler: p.handleRealm},
 	}
 }
 

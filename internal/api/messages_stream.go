@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/api/protocol"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -59,6 +60,10 @@ func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, str
 	})
 }
 
+const messagesPostDoneTimeout = 5 * time.Second
+
+var errMessagesPostDoneTimeout = errors.New("post-DONE drain timeout")
+
 func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) messagesStreamResult {
 	writer := newSSEWriter(w)
 	defer writer.Close()
@@ -81,8 +86,17 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		if clientCanceled(r) {
 			return messagesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
 		}
-		chunk, err := reader.Next()
+		var chunk protocol.Chunk
+		var err error
+		if postDone {
+			chunk, err = readPostDoneChunk(reader, stream)
+		} else {
+			chunk, err = reader.Next()
+		}
 		if err != nil {
+			if errors.Is(err, errMessagesPostDoneTimeout) {
+				break
+			}
 			if errors.Is(err, io.EOF) {
 				break
 			}
@@ -184,6 +198,30 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 	})
 	state.emit(writer, "message_stop", map[string]any{})
 	return messagesStreamResult{usage: state.usage, outcome: "completed", status: http.StatusOK}
+}
+
+func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream) (protocol.Chunk, error) {
+	type result struct {
+		chunk protocol.Chunk
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		chunk, err := reader.Next()
+		done <- result{chunk: chunk, err: err}
+	}()
+	timer := time.NewTimer(messagesPostDoneTimeout)
+	defer timer.Stop()
+	select {
+	case outcome := <-done:
+		return outcome.chunk, outcome.err
+	case <-timer.C:
+		// Providers may never close after [DONE]. Close the stream so the
+		// reader goroutine can finish, then finalize the client response with
+		// the usage already observed.
+		_ = stream.Close()
+		return protocol.Chunk{}, errMessagesPostDoneTimeout
+	}
 }
 
 func (s *messagesStreamState) emit(writer *sseWriter, eventType string, payload map[string]any) {

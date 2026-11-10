@@ -613,9 +613,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
-	chat, err := messagesToChatWithDefault(payload, s.opts.DefaultMaxOutputTokens)
+	chat, err := messagesToChatWithDefault(payload, s.defaultMaxOutputTokens)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", time.Time{})
+		return
+	}
+	model := strings.TrimSpace(anthropicText(chat["model"]))
+	if failure := s.keyModelFailure(r, model); failure != nil {
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
 	s.serveMessagesRequest(w, r, payload, chat)
@@ -684,6 +689,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 		Messages:           chatMessagesRaw(chat),
 		SessionKey:         request.sessionKey,
 		AllowRealmFallback: allowRealmFallback,
+		AllowedAccounts:    keyAllowedAccounts(r),
 	}
 	upstream, openErr := provider.OpenChat(r.Context(), chatRequest)
 	if openErr != nil {
@@ -802,9 +808,10 @@ func writeAnthropicError(w http.ResponseWriter, status int, message, errType str
 }
 
 // protectMessages accepts either the panel session or an API key, matching
-// v1's _key_ok gate. The two middleware contracts are opaque, so each is tried
-// against a discard writer; a middleware that calls next authorizes the
-// request. Downstream errors are still rendered as the Anthropic envelope.
+// v1's _key_ok gate. Each middleware is probed against a capturing writer; a
+// successful probe runs the real handler with SSE flushing. A non-401 rejection
+// from the gate that actually rejected the credential is preserved instead of
+// being collapsed into 401 (for example per-key 429 concurrency limits).
 func (s *Server) protectMessages(next http.Handler) http.Handler {
 	if s == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -817,48 +824,103 @@ func (s *Server) protectMessages(next http.Handler) http.Handler {
 			defer writer.finish()
 			next.ServeHTTP(writer, request)
 		})
-		if s.tryMessagesAuth(w, r, handler, s.opts.APIKeyAuth) {
+
+		var panelRejection *authProbe
+		if gate := s.panelGate(); gate != nil {
+			probe := &authProbe{header: make(http.Header)}
+			if s.probeMessagesAuth(w, r, handler, gate, probe) {
+				return
+			}
+			panelRejection = probe
+		}
+		apiProbe := &authProbe{header: make(http.Header)}
+		if s.probeMessagesAuth(w, r, handler, s.apiGate(), apiProbe) {
 			return
 		}
-		if s.tryMessagesAuth(w, r, handler, s.opts.PanelAuth) {
+		if apiProbe.status != 0 && apiProbe.status != http.StatusUnauthorized {
+			apiProbe.writeAnthropic(w)
+			return
+		}
+		if panelRejection != nil && panelRejection.status != 0 && panelRejection.status != http.StatusUnauthorized {
+			panelRejection.writeAnthropic(w)
 			return
 		}
 		writeAnthropicError(w, http.StatusUnauthorized, "invalid api key", "authentication_error", time.Time{})
 	})
 }
 
-func (s *Server) tryMessagesAuth(w http.ResponseWriter, r *http.Request, gate http.Handler, auth func(http.Handler) http.Handler) bool {
+func (s *Server) probeMessagesAuth(w http.ResponseWriter, r *http.Request, gate http.Handler, auth func(http.Handler) http.Handler, probe *authProbe) bool {
 	if auth == nil {
 		return false
 	}
 	passed := false
 	authorized := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 		passed = true
-		// Auth middleware in this tree does not wrap writes; route the actual
-		// handler to the real response writer so SSE flushing still works.
 		gate.ServeHTTP(w, request)
 	})
-	probe := &discardResponseWriter{header: make(http.Header)}
 	auth(authorized).ServeHTTP(probe, r)
 	return passed
 }
 
-type discardResponseWriter struct {
+type authProbe struct {
 	header http.Header
+	status int
+	body   bytes.Buffer
 }
 
-func (w *discardResponseWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = make(http.Header)
+func (p *authProbe) Header() http.Header {
+	if p.header == nil {
+		p.header = make(http.Header)
 	}
-	return w.header
+	return p.header
 }
 
-func (w *discardResponseWriter) WriteHeader(int) {}
+func (p *authProbe) WriteHeader(status int) { p.status = status }
 
-func (w *discardResponseWriter) Write(data []byte) (int, error) { return len(data), nil }
+func (p *authProbe) Write(data []byte) (int, error) {
+	if p.status == 0 {
+		p.status = http.StatusOK
+	}
+	return p.body.Write(data)
+}
 
-func (w *discardResponseWriter) Flush() {}
+func (p *authProbe) Flush() {}
+
+func (p *authProbe) writeAnthropic(w http.ResponseWriter) {
+	status := p.status
+	if status < 400 || status > 599 {
+		status = http.StatusBadGateway
+	}
+	message := ""
+	decoder := json.NewDecoder(bytes.NewReader(p.body.Bytes()))
+	decoder.UseNumber()
+	var envelope map[string]any
+	if decoder.Decode(&envelope) == nil {
+		if rawError, ok := envelope["error"].(map[string]any); ok {
+			message = anthropicText(rawError["message"])
+		} else if envelope["type"] == "error" {
+			if rawError, ok := envelope["error"].(map[string]any); ok {
+				message = anthropicText(rawError["message"])
+			}
+		}
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	// Preserve the rate-limit recovery instant the gate advertised.
+	for _, name := range []string{"Retry-After", "X-RateLimit-Reset-At", "X-RateLimit-Reset"} {
+		if value := strings.TrimSpace(p.header.Get(name)); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	reset := time.Time{}
+	if raw := strings.TrimSpace(p.header.Get("X-RateLimit-Reset")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			reset = time.Unix(seconds, 0)
+		}
+	}
+	writeAnthropicError(w, status, message, protocol.AnthropicErrorType(status), reset)
+}
 
 type anthropicErrorWriter struct {
 	http.ResponseWriter
