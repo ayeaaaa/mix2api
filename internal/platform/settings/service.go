@@ -197,7 +197,7 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"account_max_concurrent":      accountMaxConcurrent(data),
 		"account_max_concurrent_max":  maxAccountMaxConcurrent,
 		"account_inflight":            map[string]any{},
-		"affinity_stable_key_enabled": boolDefaultTrue(data["affinity_stable_key_enabled"]),
+		"affinity_stable_key_enabled": boolTrue(data["affinity_stable_key_enabled"]),
 		"accounts_collapsed":          boolTrue(data["accounts_collapsed"]),
 		"accounts_separate_tab":       boolTrue(data["accounts_separate_tab"]),
 		"key_before_hidden":           boolTrue(data["key_before_hidden"]),
