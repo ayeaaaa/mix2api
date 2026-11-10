@@ -1,0 +1,151 @@
+name: release
+
+# Manual only. Nothing is tagged, pushed, or published until an operator
+# explicitly sets publish=true and confirms Gate F signoff. The repository must
+# never create a v2.0.0 tag from a scheduled or push event.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version without v (for example 2.0.0-rc.1)"
+        required: true
+        type: string
+      commit:
+        description: "Commit SHA to release (must match the checked-out ref)"
+        required: true
+        type: string
+      gate_f_signed:
+        description: "Type yes only after oracle + real-account smoke signoff"
+        required: true
+        default: "no"
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: true
+        default: true
+        type: boolean
+      publish:
+        description: "Create the tag/release and push the container image"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify requested commit
+        run: |
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "${{ inputs.commit }}" || {
+            echo "checked-out $actual != requested ${{ inputs.commit }}" >&2
+            exit 1
+          }
+      - name: Format, vet, tests
+        run: make check
+      - name: Race tests
+        run: make race
+      - name: CGO=0 Windows build
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false -o /tmp/mix2api.exe ./cmd/mix2api
+      - name: CGO=0 macOS builds
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -buildvcs=false -o /tmp/mix2api-darwin-amd64 ./cmd/mix2api
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -buildvcs=false -o /tmp/mix2api-darwin-arm64 ./cmd/mix2api
+      - name: Build release assets
+        run: |
+          VERSION="${{ inputs.version }}" \
+          COMMIT="${{ inputs.commit }}" \
+          BUILD_DATE="$(git show -s --format=%cI HEAD)" \
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+          make dist
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+      - name: Verify asset inventory
+        run: |
+          test -s dist/SHA256SUMS
+          test -s dist/sbom.spdx.json
+          test -s dist/release.json
+          grep -q "mix2api-.*-openwrt-armv7.tar.gz" dist/SHA256SUMS
+          grep -q "mix2api-.*-windows-amd64.zip" dist/SHA256SUMS
+          grep -q "mix2api-.*-darwin-arm64.tar.gz" dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mix2api-dist
+          path: dist/
+          if-no-files-found: error
+
+  container:
+    needs: verify
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve build metadata
+        run: echo "BUILD_DATE=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ inputs.version }}
+            COMMIT=${{ inputs.commit }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          tags: ghcr.io/${{ github.repository }}:${{ inputs.version }}
+
+  publish:
+    needs: [verify, container]
+    if: ${{ inputs.publish && inputs.gate_f_signed == 'yes' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mix2api-dist
+          path: dist
+      - name: Refuse unsigned Gate F
+        run: |
+          test "${{ inputs.gate_f_signed }}" = "yes" || {
+            echo "Gate F signoff is required before publishing" >&2
+            exit 1
+          }
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ inputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; refusing to overwrite" >&2
+            exit 1
+          fi
+          prerelease=()
+          if [ "${{ inputs.prerelease }}" = "true" ]; then prerelease=(--prerelease); fi
+          gh release create "$tag" dist/* \
+            --target "${{ inputs.commit }}" \
+            --title "mix2api $tag" \
+            --notes-file CHANGELOG.md \
+            "${prerelease[@]}"
