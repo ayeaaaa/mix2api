@@ -735,6 +735,10 @@ func validateJSONL(path string) (int, error) {
 				if err := decoder.Decode(&value); err != nil {
 					return rows, fmt.Errorf("migrate: invalid JSONL in %s at row %d: %w", path, rows+1, err)
 				}
+				var trailing any
+				if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+					return rows, fmt.Errorf("migrate: trailing JSONL data in %s at row %d", path, rows+1)
+				}
 				rows++
 			}
 		} else if len(line) > 0 {
@@ -754,7 +758,11 @@ func validateJSONL(path string) (int, error) {
 }
 
 func validateSQLite(path string) error {
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	urlPath := filepath.ToSlash(path)
+	if volume := filepath.VolumeName(path); volume != "" && !strings.HasPrefix(urlPath, "/") {
+		urlPath = "/" + urlPath
+	}
+	dsn := (&url.URL{Scheme: "file", Path: urlPath, RawQuery: "mode=ro"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("migrate: open sqlite %s: %w", path, err)

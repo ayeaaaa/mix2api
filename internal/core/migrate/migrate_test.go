@@ -194,6 +194,9 @@ func TestInvalidInputsAreRefused(t *testing.T) {
 		"malformed usage row": func(root string) {
 			writeFixtureFile(t, filepath.Join(root, "usage", "usage.jsonl"), "{\"ok\":1}\nnot-json\n")
 		},
+		"trailing JSONL garbage": func(root string) {
+			writeFixtureFile(t, filepath.Join(root, "usage", "usage.jsonl"), "{\"ok\":1} trailing\n")
+		},
 		"corrupt sqlite": func(root string) {
 			writeFixtureFile(t, filepath.Join(root, "usage", "logs.sqlite3"), "not a sqlite database")
 		},
