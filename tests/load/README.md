@@ -38,14 +38,14 @@ Command: 200 concurrent SSE, one 3-token completion per request
 | Metric | Value |
 | --- | --- |
 | requests / failures | 200 / 0 |
-| elapsed | 149 ms |
-| p50 first byte | 120 ms |
-| p95 first byte | 140 ms |
-| p99 first byte | 145 ms |
+| elapsed | 167 ms |
+| p50 first byte | 136 ms |
+| p95 first byte | 162 ms |
+| p99 first byte | 163 ms |
 | usage rows | 200 |
-| SQLite log rows / append time | 200 / 42 ms |
-| process memory (`Sys`) before/after | 13 MB / 67 MB |
-| goroutines before/after | 11 / 615 |
+| SQLite log rows / append time | 200 / 36 ms |
+| process memory (`Sys`) before/after | 13 MB / 72 MB |
+| goroutines before/after | 11 / 587 |
 
 These numbers are local fake-upstream evidence, not a promise for real provider
 latency. The v1.6.5 baseline is **not recorded** in this tree; run the same

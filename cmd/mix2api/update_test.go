@@ -27,3 +27,14 @@ func TestUpdateCommandRequiresAction(t *testing.T) {
 		t.Fatalf("stderr = %q", errOut.String())
 	}
 }
+
+func TestUpdateRecoverNoJournalIsIdle(t *testing.T) {
+	root := t.TempDir()
+	var out, errOut strings.Builder
+	if code := runUpdateCommand([]string{"recover", "--root", root, "--request-dir", t.TempDir(), "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"state":"idle"`) || !strings.Contains(out.String(), "没有中断的更新") {
+		t.Fatalf("output = %q", out.String())
+	}
+}

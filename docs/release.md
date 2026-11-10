@@ -35,13 +35,17 @@ Outputs in `dist/`:
 | `mix2api-<version>-darwin-{amd64,arm64}.tar.gz` | macOS |
 | `mix2api-<version>-openwrt-{amd64,arm64,armv7}.tar.gz` | OpenWrt + init/UCI |
 | `mix2api-<version>-portable-{linux-amd64,windows-amd64}` | portable launchers |
-| `SHA256SUMS` | asset checksums |
+| `SHA256SUMS` | checksums for every archive, `sbom.spdx.json`, and `release.json` |
 | `sbom.spdx.json` | SPDX 2.3 dependency inventory |
 | `release.json` | version/tag/commit/date + asset hashes |
 
 Every archive contains `release-manifest.json` with per-file sha256 and mode.
 The update executor verifies that manifest and `SHA256SUMS` before replacing
-anything.
+anything. `SHA256SUMS` covers every deliverable except itself.
+
+`SOURCE_DATE_EPOCH` (or `--archive-date`) fixes archive entry timestamps; when
+unset the tool uses `1980-01-01T00:00:00Z`, never "now". `BUILD_DATE` is the
+injected build identity and must be the commit timestamp for reproducibility.
 
 ## Verify
 
@@ -68,7 +72,7 @@ docker buildx build \
   --build-arg VERSION=2.0.0-rc.1 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api:v2.0.0-rc.1 .
+  -t ghcr.io/ayeaaaa/mix2api-v2:v2.0.0-rc.1 .
 ```
 
 The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
@@ -93,7 +97,8 @@ job until the Gate F table is signed for this commit.
   `mix2api update install --version <previous>`; the executor takes a complete
   backup first.
 - Data: `mix2api rollback --from <v2-data> --to <fresh-v1-dir>`, then point
-  v1.6.5 at the fresh directory. Never share a live directory.
+  v1.6.5 at the fresh directory. The command is copy-only, validates the
+  v1-format data, and never writes the source. Never share a live directory.
 - Container: redeploy the previous image tag/digest.
 
 ## Versioning

@@ -339,23 +339,27 @@ func buildRelease(opts options, targets []target, stderr io.Writer) ([]string, e
 		checksums[filepath.Base(archivePath)] = sum
 		assets = append(assets, archivePath)
 	}
-	checksumPath := filepath.Join(opts.Out, corerelease.ChecksumsName)
-	if err := writeChecksums(checksumPath, checksums); err != nil {
-		return nil, err
-	}
-	assets = append(assets, checksumPath)
-
 	sbomPath := filepath.Join(opts.Out, "sbom.spdx.json")
 	if err := writeSBOM(sbomPath, opts, firstBinary(binaries)); err != nil {
 		return nil, err
 	}
-	assets = append(assets, sbomPath)
-
 	summaryPath := filepath.Join(opts.Out, "release.json")
 	if err := writeSummary(summaryPath, opts, checksums); err != nil {
 		return nil, err
 	}
-	assets = append(assets, summaryPath)
+	// SHA256SUMS covers every generated deliverable except itself.
+	for _, extra := range []string{sbomPath, summaryPath} {
+		sum, _, err := corerelease.FileSHA256(extra)
+		if err != nil {
+			return nil, err
+		}
+		checksums[filepath.Base(extra)] = sum
+	}
+	checksumPath := filepath.Join(opts.Out, corerelease.ChecksumsName)
+	if err := writeChecksums(checksumPath, checksums); err != nil {
+		return nil, err
+	}
+	assets = append(assets, sbomPath, summaryPath, checksumPath)
 	sort.Strings(assets)
 	fmt.Fprintf(stderr, "release: wrote %d assets to %s\n", len(assets), opts.Out)
 	return assets, nil
@@ -461,6 +465,11 @@ func payloadEntries(opts options, item target, binary string) ([]archiveEntry, e
 		{Name: binaryEntry, Source: binary, Mode: 0o755},
 		{Name: "LICENSE", Source: filepath.Join(opts.RepoRoot, "LICENSE"), Mode: 0o644},
 		{Name: "README.md", Source: filepath.Join(opts.RepoRoot, "README.md"), Mode: 0o644},
+	}
+	if item.Kind == corerelease.KindStandard && item.GOOS == "linux" {
+		entries = append(entries, archiveEntry{
+			Name: "mix2api.service", Source: filepath.Join(opts.RepoRoot, "packaging", "systemd", "mix2api.service"), Mode: 0o644,
+		})
 	}
 	switch item.Kind {
 	case corerelease.KindOpenWrt:

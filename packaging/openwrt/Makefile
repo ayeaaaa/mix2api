@@ -24,9 +24,9 @@ define Package/mix2api
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
   TITLE:=mix2api multi-provider AI gateway
-  URL:=https://github.com/ayeaaaa/mix2api
+  URL:=https://github.com/ayeaaaa/mix2api-v2
   DEPENDS:=+ca-bundle +ca-certificates +tzdata
-  PKGARCH:=all
+  PKGARCH:=$(ARCH)
 endef
 
 define Package/mix2api/description
@@ -54,6 +54,7 @@ define Package/mix2api/install
 	$(INSTALL_BIN) ./files/mix2api.init $(1)/etc/init.d/mix2api
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/mix2api.config $(1)/etc/config/mix2api
+	chmod 0600 $(1)/etc/config/mix2api
 	$(INSTALL_DIR) $(1)/srv/mix2api/accounts
 	$(INSTALL_DIR) $(1)/srv/mix2api/usage
 	$(INSTALL_DIR) $(1)/srv/mix2api/media

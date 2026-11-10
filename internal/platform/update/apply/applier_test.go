@@ -456,3 +456,278 @@ func TestBackupUsesRunningVersionWhenManifestIsMissing(t *testing.T) {
 		t.Fatalf("backups = %d err=%v", len(records), err)
 	}
 }
+
+func writeTestJournal(t *testing.T, root string, entry journalEntry) {
+	t.Helper()
+	journal := transactionJournal{Format: transactionFormat, Version: "2.0.0", Root: root, Phase: "applying", Entries: []journalEntry{entry}}
+	raw, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, JournalName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverInitialJournalDoesNotTouchUntouchedFile(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "mix2api")
+	writeFile(t, target, "old-binary", 0o755)
+	newHash := sha256.Sum256([]byte("new-binary"))
+	writeTestJournal(t, root, journalEntry{
+		Path: "mix2api", Target: target, NewSHA256: hex.EncodeToString(newHash[:]), NewSize: int64(len("new-binary")),
+	})
+	applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := applier.RecoverOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Found || !recovery.Restored {
+		t.Fatalf("recovery = %#v", recovery)
+	}
+	if got := readString(t, target); got != "old-binary" {
+		t.Fatalf("untouched file was changed to %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, JournalName)); !os.IsNotExist(err) {
+		t.Fatalf("journal remained: %v", err)
+	}
+}
+
+func TestRecoverReconstructsLegacyJournalFromOldSibling(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "mix2api")
+	oldPath := target + ".mix2api-old"
+	writeFile(t, oldPath, "old-binary", 0o755)
+	// Simulate the crash window before the journal gained Existed=true.
+	writeTestJournal(t, root, journalEntry{
+		Path: "mix2api", Target: target, OldPath: oldPath,
+		NewSHA256: strings.Repeat("0", 64), NewSize: 10,
+	})
+	applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.RecoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := readString(t, target); got != "old-binary" {
+		t.Fatalf("recovered file = %q", got)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old sibling remained: %v", err)
+	}
+}
+
+func TestRecoverAfterNewFileAppliedRestoresOriginal(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "mix2api")
+	oldPath := target + ".mix2api-old"
+	writeFile(t, oldPath, "old-binary", 0o755)
+	writeFile(t, target, "new-binary", 0o755)
+	oldHash := sha256.Sum256([]byte("old-binary"))
+	newHash := sha256.Sum256([]byte("new-binary"))
+	writeTestJournal(t, root, journalEntry{
+		Path: "mix2api", Target: target, OldPath: oldPath, Existed: true,
+		OriginalSHA256: hex.EncodeToString(oldHash[:]), OriginalSize: int64(len("old-binary")),
+		NewSHA256: hex.EncodeToString(newHash[:]), NewSize: int64(len("new-binary")), Complete: true,
+	})
+	applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.RecoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := readString(t, target); got != "old-binary" {
+		t.Fatalf("recovered file = %q", got)
+	}
+}
+
+func TestRecoverWithoutJournalIsDistinct(t *testing.T) {
+	applier, err := New(Options{Root: t.TempDir(), BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := applier.RecoverOnce(context.Background())
+	if err != nil || recovery.Found || recovery.Restored {
+		t.Fatalf("recovery = %#v err=%v", recovery, err)
+	}
+}
+
+func TestARMExecutorNormalizesGOARM(t *testing.T) {
+	root := t.TempDir()
+	applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), GOOS: "linux", GOARCH: "arm", GOARM: "armv7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applier.goarm != "7" || applier.goarch != "arm" {
+		t.Fatalf("platform = %s/%s goarm=%q", applier.goos, applier.goarch, applier.goarm)
+	}
+	if _, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), GOOS: "linux", GOARCH: "arm", GOARM: "8"}); err == nil {
+		t.Fatal("invalid GOARM accepted")
+	}
+}
+
+func TestWindowsBatchHooksUseCmdExe(t *testing.T) {
+	spec := CommandSpec{Path: `C:\hooks\restart.cmd`, Args: []string{"--fast"}}
+	program, args := commandProgram(spec, "windows")
+	if program != "cmd.exe" || len(args) != 5 || args[0] != "/d" || args[1] != "/s" || args[2] != "/c" ||
+		args[3] != spec.Path || args[4] != "--fast" {
+		t.Fatalf("batch program = %q args=%v", program, args)
+	}
+	program, args = commandProgram(CommandSpec{Path: `C:\hooks\restart.exe`, Args: []string{"--fast"}}, "windows")
+	if program != `C:\hooks\restart.exe` || len(args) != 1 || args[0] != "--fast" {
+		t.Fatalf("exe program = %q args=%v", program, args)
+	}
+	program, args = commandProgram(CommandSpec{Path: "/usr/bin/systemctl", Args: []string{"stop", "mix2api"}}, "linux")
+	if program != "/usr/bin/systemctl" || len(args) != 2 {
+		t.Fatalf("unix program = %q args=%v", program, args)
+	}
+}
+
+func TestRollbackToManifestlessInstallRemovesNewerManifestAndSynthesizes(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mix2api"), "old-binary", 0o755)
+	archive, checksums, _ := buildTestRelease(t, root, "2.0.0", map[string][]byte{
+		"mix2api":   []byte("new-binary"),
+		"README.md": []byte("new readme"),
+	})
+	applier, err := New(Options{
+		Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), CurrentVersion: "1.5.0",
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, ArchivePath: archive, Checksums: checksums,
+		RequestDir: t.TempDir(), Controller: &fakeController{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "README.md")); err != nil {
+		t.Fatalf("new file missing before rollback: %v", err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "rollback", Version: "1.5.0", Tag: "v1.5.0", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("newer-only file survived manifest-less rollback: %v", err)
+	}
+	manifest, err := readInstalledManifest(root)
+	if err != nil {
+		t.Fatalf("synthesized manifest: %v", err)
+	}
+	if manifest.Version != "1.5.0" || manifest.Tag != "v1.5.0" {
+		t.Fatalf("synthesized manifest = %#v", manifest)
+	}
+}
+
+func TestUnknownBackupVersionIsNotPublished(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mix2api"), "old-binary", 0o755)
+	archive, checksums, _ := buildTestRelease(t, root, "2.0.0", map[string][]byte{"mix2api": []byte("new-binary")})
+	requestDir := t.TempDir()
+	applier, err := New(Options{
+		Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"),
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, ArchivePath: archive, Checksums: checksums,
+		RequestDir: requestDir, Controller: &fakeController{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(requestDir, update.BackupsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "0.0.0") {
+		t.Fatalf("unknown backup leaked into inventory: %s", raw)
+	}
+}
+
+func TestReleaseURLIdentity(t *testing.T) {
+	safe := "https://github.com/ayeaaaa/mix2api-v2/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
+	if !releaseURLAllowed(safe) {
+		t.Fatal("canonical release URL rejected")
+	}
+	old := "https://github.com/ayeaaaa/mix2api/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
+	if releaseURLAllowed(old) {
+		t.Fatal("v1 repository URL accepted for v2 assets")
+	}
+}
+
+func TestInstallFinalFromRCAndRollbackToRC(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mix2api"), "rc-binary", 0o755)
+	writeCurrentManifest(t, root, "2.0.0-rc.1", map[string][]byte{"mix2api": []byte("rc-binary")})
+	archive, checksums, _ := buildTestRelease(t, root, "2.0.0", map[string][]byte{"mix2api": []byte("final-binary")})
+	applier, err := New(Options{
+		Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir(),
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, ArchivePath: archive, Checksums: checksums,
+		Controller: &fakeController{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root}); err != nil {
+		t.Fatalf("RC->final install: %v", err)
+	}
+	if got := readString(t, filepath.Join(root, "mix2api")); got != "final-binary" {
+		t.Fatalf("final binary = %q", got)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "rollback", Version: "2.0.0-rc.1", Tag: "v2.0.0-rc.1", Root: root}); err != nil {
+		t.Fatalf("final->RC rollback: %v", err)
+	}
+	if got := readString(t, filepath.Join(root, "mix2api")); got != "rc-binary" {
+		t.Fatalf("RC binary = %q", got)
+	}
+	manifest, err := readInstalledManifest(root)
+	if err != nil || manifest.Version != "2.0.0-rc.1" {
+		t.Fatalf("manifest = %#v err=%v", manifest, err)
+	}
+}
+
+func TestPruneKeepsIncompleteBackupsForDiagnosis(t *testing.T) {
+	backupDir := t.TempDir()
+	applier, err := New(Options{Root: t.TempDir(), BackupDir: backupDir, RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeRecord := func(version, created string, complete bool) *backupRecord {
+		dir := filepath.Join(backupDir, version+"-"+strings.ReplaceAll(created, ":", ""))
+		if err := os.MkdirAll(filepath.Join(dir, backupFilesDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		record := &backupRecord{Format: BackupFormat, Version: version, CreatedAt: created, Complete: complete, Dir: dir}
+		if err := writeBackupMeta(record); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	makeRecord("1.0.0", "2026-11-01 00:00:00", true)
+	makeRecord("1.1.0", "2026-11-02 00:00:00", true)
+	makeRecord("1.2.0", "2026-11-03 00:00:00", false)
+	makeRecord("1.3.0", "2026-11-04 00:00:00", true)
+	makeRecord("1.4.0", "2026-11-05 00:00:00", true)
+	applier.pruneBackups()
+	records, err := applier.listBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	incomplete := 0
+	complete := 0
+	for _, record := range records {
+		if record.Complete {
+			complete++
+		} else {
+			incomplete++
+		}
+	}
+	if complete != keepBackups || incomplete != 1 {
+		t.Fatalf("after prune complete=%d incomplete=%d records=%d", complete, incomplete, len(records))
+	}
+}

@@ -173,8 +173,8 @@ func (f *proxyFetcher) FetchWithProxy(_ context.Context, _ string, proxy string)
 }
 
 func TestCheckerLegacyStateDevVersionAndProxySlot(t *testing.T) {
-	if !IsNewer("2.0.1", "2.0.0-dev") || IsNewer("2.0.0", "2.0.0-dev") {
-		t.Fatal("dev version comparison is wrong")
+	if !IsNewer("2.0.1", "2.0.0-dev") || !IsNewer("2.0.0", "2.0.0-dev") || IsNewer("2.0.0-dev", "2.0.0") {
+		t.Fatal("dev/rc/final version comparison is wrong")
 	}
 	settings := newMemorySettings()
 	settings.data[CheckEnabledKey] = true

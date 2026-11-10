@@ -16,9 +16,12 @@ install -m 0600 etc/config/mix2api /etc/config/mix2api
 /etc/init.d/mix2api start
 ```
 
-The default listener is loopback `127.0.0.1:58675`; expose it through your
-reverse proxy rather than binding the router directly to the WAN. A
-non-loopback `HOST` requires both `PANEL_PASSWORD` and `MIX2API_API_KEY`.
+The service runs as root because procd and the `/srv/mix2api` data directories
+are root-owned. `/etc/config/mix2api` is installed mode `0600` because it may
+contain the panel password. The default listener is loopback
+`127.0.0.1:58675`; expose it through your reverse proxy rather than binding the
+router directly to the WAN. A non-loopback `HOST` requires both
+`PANEL_PASSWORD` and `MIX2API_API_KEY`.
 
 ## SDK package
 

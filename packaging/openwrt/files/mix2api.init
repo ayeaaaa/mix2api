@@ -19,13 +19,12 @@ start_service() {
 
 	procd_open_instance
 	procd_set_param command /usr/bin/mix2api
-	procd_set_param env \
-		HOST="$host" \
-		PORT="$port" \
-		ACCOUNTS_DIR="$accounts_dir" \
-		USAGE_DIR="$usage_dir" \
-		WB_MEDIA_DIR="$media_dir"
-	[ -n "$panel_password" ] && procd_set_param env PANEL_PASSWORD="$panel_password"
+	procd_append_param env "HOST=$host"
+	procd_append_param env "PORT=$port"
+	procd_append_param env "ACCOUNTS_DIR=$accounts_dir"
+	procd_append_param env "USAGE_DIR=$usage_dir"
+	procd_append_param env "WB_MEDIA_DIR=$media_dir"
+	[ -n "$panel_password" ] && procd_append_param env "PANEL_PASSWORD=$panel_password"
 	procd_set_param respawn 3600 5 5
 	procd_set_param file /etc/config/mix2api
 	procd_set_param stdout 1

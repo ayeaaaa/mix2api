@@ -54,16 +54,17 @@ func (a *Applier) createBackup(manifest corerelease.Manifest, targetVersion stri
 		return nil, err
 	}
 	sourceVersion := a.currentVersion()
-	if sourceVersion == "" {
-		sourceVersion = "0.0.0"
+	label := sourceVersion
+	if label == "" {
+		label = "unknown"
 	}
 	stamp := a.now().UTC().Format("20060102-150405")
-	dir := filepath.Join(a.backupDir, sourceVersion+"-"+stamp)
+	dir := filepath.Join(a.backupDir, label+"-"+stamp)
 	for index := 1; ; index++ {
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			break
 		}
-		dir = filepath.Join(a.backupDir, fmt.Sprintf("%s-%s-%d", sourceVersion, stamp, index))
+		dir = filepath.Join(a.backupDir, fmt.Sprintf("%s-%s-%d", label, stamp, index))
 	}
 	if err := os.MkdirAll(filepath.Join(dir, backupFilesDir), 0o700); err != nil {
 		return nil, err
@@ -168,10 +169,10 @@ func secureExistingPath(root, relative string) (string, error) {
 
 func (a *Applier) currentVersion() string {
 	manifest, err := readInstalledManifest(a.root)
-	if err == nil && manifest != nil && stableVersion(manifest.Version) {
+	if err == nil && manifest != nil && releaseVersion(manifest.Version) {
 		return manifest.Version
 	}
-	if stableVersion(a.fallbackVersion) {
+	if releaseVersion(a.fallbackVersion) {
 		return a.fallbackVersion
 	}
 	return ""
@@ -201,7 +202,7 @@ func writeBackupMeta(record *backupRecord) error {
 }
 
 func (a *Applier) verifyBackup(record *backupRecord) error {
-	if record == nil || !record.Complete || !stableVersion(record.Version) {
+	if record == nil || !record.Complete || !releaseVersion(record.Version) {
 		return errors.New("apply: backup is incomplete or has an invalid version")
 	}
 	for _, file := range record.Files {
@@ -281,7 +282,7 @@ func (a *Applier) publishBackups() error {
 		if len(rows) >= 8 {
 			break
 		}
-		if !stableVersion(record.Version) {
+		if !releaseVersion(record.Version) {
 			continue
 		}
 		rows = append(rows, map[string]any{
@@ -309,23 +310,34 @@ func countExisting(files []backupFile) int {
 
 func (a *Applier) pruneBackups() {
 	records, err := a.listBackups()
-	if err != nil || len(records) <= keepBackups {
+	if err != nil {
 		return
 	}
-	for _, record := range records[keepBackups:] {
+	complete := make([]*backupRecord, 0, len(records))
+	for _, record := range records {
+		if record.Complete {
+			complete = append(complete, record)
+		}
+	}
+	if len(complete) <= keepBackups {
+		return
+	}
+	for _, record := range complete[keepBackups:] {
 		_ = os.RemoveAll(record.Dir)
 	}
 }
 
 type journalEntry struct {
-	Path      string `json:"path"`
-	Target    string `json:"target"`
-	OldPath   string `json:"old_path,omitempty"`
-	Existed   bool   `json:"existed"`
-	Mode      uint32 `json:"mode"`
-	NewSHA256 string `json:"new_sha256,omitempty"`
-	NewSize   int64  `json:"new_size,omitempty"`
-	Complete  bool   `json:"complete"`
+	Path           string `json:"path"`
+	Target         string `json:"target"`
+	OldPath        string `json:"old_path,omitempty"`
+	Existed        bool   `json:"existed"`
+	OriginalSHA256 string `json:"original_sha256,omitempty"`
+	OriginalSize   int64  `json:"original_size,omitempty"`
+	Mode           uint32 `json:"mode"`
+	NewSHA256      string `json:"new_sha256,omitempty"`
+	NewSize        int64  `json:"new_size,omitempty"`
+	Complete       bool   `json:"complete"`
 }
 
 type transactionJournal struct {
@@ -338,7 +350,7 @@ type transactionJournal struct {
 
 const transactionFormat = "mix2api-update-transaction/1"
 
-func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup *backupRecord, restoring bool) error {
+func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup *backupRecord) error {
 	journal := &transactionJournal{Format: transactionFormat, Root: a.root, Phase: "applying"}
 	if backup != nil {
 		journal.Version = backup.Version
@@ -348,10 +360,25 @@ func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup 
 		if err != nil {
 			return err
 		}
-		journal.Entries = append(journal.Entries, journalEntry{
+		entry := journalEntry{
 			Path: file.Path, Target: target, Mode: file.Mode,
 			NewSHA256: file.SHA256, NewSize: file.Size,
-		})
+		}
+		info, err := os.Lstat(target)
+		if err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("apply: target %s is not a regular file", file.Path)
+			}
+			entry.Existed = true
+			entry.OldPath = target + ".mix2api-old"
+			entry.OriginalSHA256, entry.OriginalSize, err = corerelease.FileSHA256(target)
+			if err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		journal.Entries = append(journal.Entries, entry)
 	}
 	if err := a.writeJournal(journal); err != nil {
 		return err
@@ -360,20 +387,18 @@ func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup 
 		entry := &journal.Entries[index]
 		source := filepath.Join(stageRoot, filepath.FromSlash(entry.Path))
 		if info, err := os.Stat(source); err != nil || !info.Mode().IsRegular() {
-			_ = a.restoreJournal(journal)
-			return fmt.Errorf("apply: staged file %s is missing", entry.Path)
+			return a.abortApply(journal, fmt.Errorf("apply: staged file %s is missing", entry.Path))
 		}
-		if info, err := os.Lstat(entry.Target); err == nil {
-			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-				_ = a.restoreJournal(journal)
-				return fmt.Errorf("apply: target %s is not a regular file", entry.Path)
-			}
-			entry.Existed = true
-			entry.OldPath = entry.Target + ".mix2api-old"
+		if entry.Existed {
 			_ = os.Remove(entry.OldPath)
 			if err := os.Rename(entry.Target, entry.OldPath); err != nil {
-				_ = a.restoreJournal(journal)
-				return err
+				return a.abortApply(journal, err)
+			}
+			// Persist the rename before writing the replacement so a crash
+			// between these steps can always reconstruct the original.
+			if err := a.writeJournal(journal); err != nil {
+				_ = os.Rename(entry.OldPath, entry.Target)
+				return a.abortApply(journal, err)
 			}
 		}
 		temp := entry.Target + ".mix2api-new"
@@ -383,24 +408,61 @@ func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup 
 			mode = 0o644
 		}
 		if err := copyFileMode(source, temp, mode); err != nil {
-			_ = a.restoreJournal(journal)
-			return err
+			return a.abortApply(journal, err)
 		}
 		if err := os.Rename(temp, entry.Target); err != nil {
 			_ = os.Remove(temp)
-			_ = a.restoreJournal(journal)
-			return err
+			return a.abortApply(journal, err)
 		}
 		entry.Complete = true
+		if err := a.writeJournal(journal); err != nil {
+			return a.abortApply(journal, err)
+		}
+	}
+	if err := a.verifyApplied(journal); err != nil {
+		return a.abortApply(journal, err)
+	}
+	// Delete the journal only after every applied file is verified. The
+	// original siblings stay until the journal is gone, so a crash during
+	// cleanup is either recoverable (journal present) or already committed.
+	if err := a.removeJournal(); err != nil {
+		return a.abortApply(journal, err)
 	}
 	for _, entry := range journal.Entries {
 		if entry.OldPath != "" {
 			_ = os.Remove(entry.OldPath)
 		}
 	}
-	return os.Remove(filepath.Join(a.root, JournalName))
+	_ = syncDir(a.root)
+	return nil
 }
 
+func (a *Applier) abortApply(journal *transactionJournal, cause error) error {
+	if err := a.restoreJournal(journal); err != nil {
+		return errors.Join(cause, fmt.Errorf("apply: restore failed: %w", err))
+	}
+	if err := a.removeJournal(); err != nil {
+		a.logger("update: remove journal after restore: " + err.Error())
+	}
+	return cause
+}
+
+func (a *Applier) verifyApplied(journal *transactionJournal) error {
+	for _, entry := range journal.Entries {
+		info, err := os.Lstat(entry.Target)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("apply: applied file %s is missing", entry.Path)
+		}
+		sum, size, err := corerelease.FileSHA256(entry.Target)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(sum, entry.NewSHA256) || (entry.NewSize != 0 && size != entry.NewSize) {
+			return fmt.Errorf("apply: applied file %s checksum mismatch", entry.Path)
+		}
+	}
+	return nil
+}
 func (a *Applier) prepareTarget(relative string) (string, error) {
 	target, err := safeJoinExistingParent(a.root, relative)
 	if err != nil {
@@ -460,11 +522,41 @@ func (a *Applier) restoreJournal(journal *transactionJournal) error {
 	var firstErr error
 	for index := len(journal.Entries) - 1; index >= 0; index-- {
 		entry := journal.Entries[index]
-		if entry.Existed {
+		// Reconstruct state from the journal and the .mix2api-old sibling.
+		// Older journals wrote Existed=false, so the sibling is authoritative
+		// evidence that the original was moved before a crash.
+		oldExists := false
+		if entry.OldPath != "" {
 			if _, err := os.Lstat(entry.OldPath); err == nil {
-				_ = os.Remove(entry.Target)
-				if err := os.Rename(entry.OldPath, entry.Target); err != nil && firstErr == nil {
-					firstErr = err
+				oldExists = true
+			}
+		}
+		existed := entry.Existed || oldExists
+		if existed {
+			if oldExists {
+				if info, err := os.Lstat(entry.Target); err == nil {
+					if info.Mode().IsRegular() {
+						if err := os.Remove(entry.Target); err != nil && firstErr == nil {
+							firstErr = err
+						}
+					} else if firstErr == nil {
+						firstErr = fmt.Errorf("apply: recovery target %s is not a regular file", entry.Path)
+					}
+				}
+				if err := os.Rename(entry.OldPath, entry.Target); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				_ = syncDir(filepath.Dir(entry.Target))
+			}
+			if entry.OriginalSHA256 != "" {
+				sum, size, err := corerelease.FileSHA256(entry.Target)
+				if err != nil || !strings.EqualFold(sum, entry.OriginalSHA256) || (entry.OriginalSize != 0 && size != entry.OriginalSize) {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("apply: recovered file %s does not match its original checksum", entry.Path)
+					}
 				}
 			}
 			continue
@@ -489,11 +581,32 @@ func (a *Applier) restoreJournal(journal *transactionJournal) error {
 			firstErr = err
 		}
 	}
+	for _, entry := range journal.Entries {
+		_ = os.Remove(entry.Target + ".mix2api-new")
+	}
+	if firstErr == nil {
+		_ = syncDir(a.root)
+	}
 	return firstErr
 }
 
-func (a *Applier) removeJournal() {
-	_ = os.Remove(filepath.Join(a.root, JournalName))
+func (a *Applier) removeJournal() error {
+	path := filepath.Join(a.root, JournalName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDir(a.root)
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer dir.Close()
+	// Directory fsync is best effort; Windows and some filesystems reject it.
+	_ = dir.Sync()
+	return nil
 }
 
 // NoopController is used when the operator supervises restarts externally.

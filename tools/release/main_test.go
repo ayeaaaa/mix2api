@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,5 +140,48 @@ func TestSummaryShape(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("summary missing %q: %s", want, raw)
 		}
+	}
+}
+
+func TestChecksumsCoverSBOMAndReleaseJSON(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	buildDir := filepath.Join(out, ".build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "mix2api-linux-amd64"), []byte("fake-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := options{
+		Out: out, RepoRoot: repoRoot, Version: "2.0.0-rc.1", Commit: "abc123",
+		Date: "2026-11-08T00:00:00Z", SourceDate: "1980-01-01T00:00:00Z", SkipBuild: true,
+	}
+	targets := []target{{Name: "linux-amd64", GOOS: "linux", GOARCH: "amd64", Kind: corerelease.KindStandard}}
+	if _, err := buildRelease(opts, targets, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(out, corerelease.ChecksumsName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums, err := corerelease.ParseChecksums(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sbom.spdx.json", "release.json", "mix2api-2.0.0-rc.1-linux-amd64.tar.gz"} {
+		if sums[name] == "" {
+			t.Fatalf("checksum missing %s: %s", name, raw)
+		}
+	}
+	if _, ok := sums[corerelease.ChecksumsName]; ok {
+		t.Fatal("checksum file must not checksum itself")
+	}
+	sbomHash, _, err := corerelease.FileSHA256(filepath.Join(out, "sbom.spdx.json"))
+	if err != nil || sums["sbom.spdx.json"] != sbomHash {
+		t.Fatalf("sbom checksum = %q want %q err=%v", sums["sbom.spdx.json"], sbomHash, err)
 	}
 }

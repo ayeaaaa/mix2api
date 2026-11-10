@@ -36,6 +36,8 @@ permissions:
 
 env:
   GO_VERSION: "1.22"
+  RELEASE_REPOSITORY: "ayeaaaa/mix2api-v2"
+  IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api-v2"
 
 jobs:
   verify:
@@ -91,7 +93,7 @@ jobs:
 
   container:
     needs: verify
-    if: ${{ inputs.publish }}
+    if: ${{ inputs.publish && inputs.gate_f_signed == 'yes' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +117,7 @@ jobs:
             VERSION=${{ inputs.version }}
             COMMIT=${{ inputs.commit }}
             BUILD_DATE=${{ env.BUILD_DATE }}
-          tags: ghcr.io/${{ github.repository }}:${{ inputs.version }}
+          tags: ${{ env.IMAGE_REPOSITORY }}:v${{ inputs.version }}
 
   publish:
     needs: [verify, container]
@@ -133,18 +135,22 @@ jobs:
             echo "Gate F signoff is required before publishing" >&2
             exit 1
           }
+      - name: Verify release repository identity
+        run: |
+          test "${{ env.RELEASE_REPOSITORY }}" = "ayeaaaa/mix2api-v2"
+          test "${{ env.IMAGE_REPOSITORY }}" = "ghcr.io/ayeaaaa/mix2api-v2"
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="v${{ inputs.version }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" -R "${{ env.RELEASE_REPOSITORY }}" >/dev/null 2>&1; then
             echo "release $tag already exists; refusing to overwrite" >&2
             exit 1
           fi
           prerelease=()
           if [ "${{ inputs.prerelease }}" = "true" ]; then prerelease=(--prerelease); fi
-          gh release create "$tag" dist/* \
+          gh release create "$tag" dist/* -R "${{ env.RELEASE_REPOSITORY }}" \
             --target "${{ inputs.commit }}" \
             --title "mix2api $tag" \
             --notes-file CHANGELOG.md \

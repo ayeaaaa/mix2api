@@ -6,6 +6,7 @@ dist
 bin
 data
 *.log
+.env
 *.pid
 tests/oracle/v1.6.5
 tests/oracle/__pycache__

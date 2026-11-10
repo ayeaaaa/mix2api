@@ -57,7 +57,7 @@ Use the panel and a small `/v1/models` + chat check before switching traffic.
 
 Rollback produces a fresh directory that v1.6.5 can read. It copies current v2
 data (including usage rows appended by v2 and v2-created files) and validates it
-with the same v1-compatible readers:
+with the same structural v1-format validators (JSON/JSONL/SQLite; no value rewriting):
 
 ```sh
 mix2api rollback --from /srv/mix2api-v2/data --to /srv/mix2api-v1-restored --dry-run

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixtureRoot(t *testing.T) string {
@@ -233,17 +234,26 @@ func TestDestinationMustBeNewAndOutsideSource(t *testing.T) {
 func TestLockConflictAndStaleLockCleanup(t *testing.T) {
 	root := fixtureRoot(t)
 	dest := filepath.Join(t.TempDir(), "out")
-	if err := os.WriteFile(dest+lockSuffix, []byte("pid=1\n"), 0o600); err != nil {
+	now := time.Now().UTC()
+	if err := os.WriteFile(dest+lockSuffix, []byte("pid=1\nstarted="+now.Format(time.RFC3339)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Migrate(Options{From: root, To: dest}); err == nil {
-		t.Fatal("lock conflict accepted")
+	if _, err := Migrate(Options{From: root, To: dest, Now: func() time.Time { return now }}); err == nil {
+		t.Fatal("recent lock conflict accepted")
 	}
 	if err := os.Remove(dest + lockSuffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Migrate(Options{From: root, To: dest}); err != nil {
+	if _, err := Migrate(Options{From: root, To: dest, Now: func() time.Time { return now }}); err != nil {
 		t.Fatalf("migration after lock removal: %v", err)
+	}
+
+	staleDest := filepath.Join(t.TempDir(), "stale")
+	if err := os.WriteFile(staleDest+lockSuffix, []byte("pid=1\nstarted="+now.Add(-48*time.Hour).Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Migrate(Options{From: root, To: staleDest, Now: func() time.Time { return now }}); err != nil {
+		t.Fatalf("stale lock was not reclaimed: %v", err)
 	}
 }
 
@@ -317,5 +327,47 @@ func TestJSONLTrailingFragmentTolerated(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "out")
 	if _, err := Migrate(Options{From: root, To: dest}); err != nil {
 		t.Fatalf("trailing fragment rejected: %v", err)
+	}
+}
+
+func TestSymlinkOverlapIsRejected(t *testing.T) {
+	root := fixtureRoot(t)
+	link := filepath.Join(t.TempDir(), "source-link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := Migrate(Options{From: root, To: filepath.Join(link, "nested")}); err == nil {
+		t.Fatal("destination through symlinked source parent accepted")
+	}
+	empty := t.TempDir()
+	destLink := filepath.Join(t.TempDir(), "dest-link")
+	if err := os.Symlink(empty, destLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := Migrate(Options{From: root, To: destLink}); err == nil {
+		t.Fatal("symlinked destination accepted")
+	}
+}
+
+func TestReceiptFailurePublishesNothing(t *testing.T) {
+	root := fixtureRoot(t)
+	parent := t.TempDir()
+	blocker := filepath.Join(parent, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(parent, "out")
+	receipt := filepath.Join(blocker, "receipt.json")
+	if _, err := Migrate(Options{From: root, To: dest, Receipt: receipt}); err == nil {
+		t.Fatal("unwritable receipt accepted")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("destination published despite receipt failure: %v", err)
+	}
+	entries, _ := os.ReadDir(parent)
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".partial-") {
+			t.Fatalf("staging left behind: %s", entry.Name())
+		}
 	}
 }

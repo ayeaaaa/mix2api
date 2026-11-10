@@ -13,8 +13,20 @@ sudo install -m 0644 LICENSE README.md release-manifest.json /srv/mix2api/
 sudo install -d -m 0700 /srv/mix2api/accounts /srv/mix2api/usage /srv/mix2api/media
 ```
 
-Set `PANEL_PASSWORD` and `MIX2API_API_KEY` in the unit environment. A
-non-loopback `HOST` refuses to start without both.
+Set `PANEL_PASSWORD` and `MIX2API_API_KEY` in `/etc/mix2api/env` (mode 0600).
+A non-loopback `HOST` refuses to start without both. A hardened unit is
+provided at `packaging/systemd/mix2api.service`:
+
+```sh
+sudo install -m 0644 packaging/systemd/mix2api.service /etc/systemd/system/mix2api.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now mix2api
+```
+
+The unit runs as `mix2api`, keeps `/usr/local/bin` read-only, and only permits
+writes under `/var/lib/mix2api`. For the privileged update executor, run
+`mix2api update run` as the owner of the install directory, not through the
+gateway unit.
 
 ### Docker
 
@@ -71,7 +83,11 @@ Full contract and Windows notes: `docs/update-executor.md`.
 Use the panel rollback request, or:
 
 ```sh
-mix2api update rollback --root /srv/mix2api --version <previous-version> ...
+# The normal path is the panel's rollback request plus `mix2api update run`.
+# Direct execution must repeat the stop/start hooks:
+mix2api update rollback --root /srv/mix2api --version <previous-version> \
+  --stop-command /usr/bin/systemctl --stop-arg mix2api \
+  --start-command /usr/bin/systemctl --start-arg mix2api
 ```
 
 This verifies the complete backup, stops the service, restores files, removes

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	DefaultRepository   = "ayeaaaa/mix2api"
+	DefaultRepository   = "ayeaaaa/mix2api-v2"
 	ScheduledInterval   = 24 * time.Hour
 	StartupWindow       = time.Hour
 	StartupChecks       = 6

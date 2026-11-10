@@ -68,11 +68,15 @@ func runUpdateCommand(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 
 	if action == "recover" {
-		if err := applier.Recover(ctx); err != nil {
+		recovery, err := applier.RecoverOnce(ctx)
+		if err != nil {
 			fmt.Fprintln(stderr, "mix2api update: "+err.Error())
 			return 1
 		}
-		result := apply.Result{State: "restored", Message: "已恢复中断的更新"}
+		result := apply.Result{State: "idle", Version: recovery.Version, Message: "没有中断的更新"}
+		if recovery.Found {
+			result = apply.Result{State: "restored", Version: recovery.Version, Message: "已恢复中断的更新"}
+		}
 		writeUpdateResult(stdout, *asJSON, result)
 		return 0
 	}

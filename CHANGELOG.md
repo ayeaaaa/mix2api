@@ -37,6 +37,28 @@ smoke, and CI workflow dry-run are still pending; see `docs/gate-f.md`.
 - Manual release workflow with explicit `publish` and `gate_f_signed` guards,
   multi-arch GHCR build, checksum verification, and release asset upload.
 
+### Fixed
+
+- Update journal now records original hashes, existence, old paths, and
+  completion state before and after each rename; recovery reconstructs the
+  `.mix2api-old` sibling, verifies the restored original, and keeps the journal
+  on mismatch.
+- Final `2.0.0` is offered over a running `2.0.0-rc.N`; rollback to a retained
+  RC backup is supported.
+- Migration rejects symlink/real-path overlap, reclaims stale locks, stages the
+  receipt before publishing, and leaves no destination when receipt staging
+  fails.
+- Rollback to a manifest-less version removes the newer manifest and
+  synthesizes one when the backup version is known.
+- Windows `.cmd`/`.bat` update hooks run through `cmd.exe /d /s /c`; `.exe`
+  hooks run directly.
+- Release identity is unified on `ayeaaaa/mix2api-v2` for GitHub releases,
+  GHCR, compose, and the updater. ARMv7 GOARM is propagated and validated.
+- OpenWrt packages carry the target `PKGARCH`, append env vars through procd,
+  and install the UCI config as `0600`.
+- `SHA256SUMS` now covers the SBOM and release metadata in addition to every
+  archive.
+
 ### Changed
 
 - v2 defaults to the `2.0.0-rc.1` build identity; release builds override it

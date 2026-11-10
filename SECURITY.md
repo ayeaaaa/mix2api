@@ -37,7 +37,7 @@ a working exploit. Include:
 
 The gateway process only queues one validated request. The privileged executor:
 
-- accepts only `https://github.com/ayeaaaa/mix2api/releases/download/...`;
+- accepts only `https://github.com/ayeaaaa/mix2api-v2/releases/download/...`;
 - requires `SHA256SUMS` to match the fixed asset name;
 - validates `release-manifest.json` (format, version, stable tag, fixed
   repository, platform, per-file sha256);

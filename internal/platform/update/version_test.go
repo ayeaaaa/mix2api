@@ -17,6 +17,33 @@ func TestParseVersionAndCompare(t *testing.T) {
 	if !IsNewer("v1.2.4", "1.2.3") || IsNewer("1.2.3", "v1.2.3") || IsNewer("bad", "1.0.0") {
 		t.Fatal("IsNewer ordering wrong")
 	}
+	for _, test := range []struct {
+		candidate, current string
+		want               bool
+	}{
+		{"2.0.0", "2.0.0-rc.1", true},
+		{"2.0.0-rc.1", "2.0.0", false},
+		{"2.0.0-rc.2", "2.0.0-rc.1", true},
+		{"2.0.0-rc.1", "2.0.0-rc.2", false},
+		{"2.0.0-rc.1.1", "2.0.0-rc.1", true},
+		{"2.0.0-rc.1", "2.0.0-rc.1", false},
+		{"2.0.0", "2.0.0-dev", true},
+		{"2.0.0-dev", "2.0.0-rc.1", false},
+	} {
+		if got := IsNewer(test.candidate, test.current); got != test.want {
+			t.Fatalf("IsNewer(%q,%q)=%v want %v", test.candidate, test.current, got, test.want)
+		}
+	}
+	for _, value := range []string{"2.0.0", "2.0.0-rc.1", "v2.0.0-rc.1"} {
+		if !IsReleaseVersion(value) {
+			t.Fatalf("IsReleaseVersion(%q)=false", value)
+		}
+	}
+	for _, value := range []string{"2.0", "2.0.0+meta", "rc.1", ""} {
+		if IsReleaseVersion(value) {
+			t.Fatalf("IsReleaseVersion(%q)=true", value)
+		}
+	}
 }
 
 func TestPickLatestStable(t *testing.T) {
@@ -36,5 +63,14 @@ func TestPickLatestStable(t *testing.T) {
 	}
 	if url := SafeReleaseURL("http://github.com/x"); url != "" {
 		t.Fatalf("unsafe url = %q", url)
+	}
+}
+
+func TestFinalReleaseIsNewerThanRunningCandidate(t *testing.T) {
+	picked := PickLatest([]any{
+		map[string]any{"tag_name": "v2.0.0", "html_url": "https://github.com/ayeaaaa/mix2api-v2/releases/tag/v2.0.0"},
+	}, "2.0.0-rc.1")
+	if picked == nil || !picked.Newer || picked.Version != "2.0.0" {
+		t.Fatalf("picked = %#v", picked)
 	}
 }

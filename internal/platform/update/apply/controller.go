@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +55,8 @@ func (c *CommandController) run(ctx context.Context, spec CommandSpec, request u
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(runCtx, spec.Path, spec.Args...)
+	program, args := commandProgram(spec, runtime.GOOS)
+	command := exec.CommandContext(runCtx, program, args...)
 	command.Dir = request.Root
 	command.Env = append(baseEnv(), "MIX2API_UPDATE_PHASE="+phase,
 		fmt.Sprintf("MIX2API_UPDATE_PORT=%d", request.Port),
@@ -74,6 +77,20 @@ func (c *CommandController) run(ctx context.Context, spec CommandSpec, request u
 		return fmt.Errorf("update: %s command failed: %w: %s", phase, err, truncate(strings.TrimSpace(output.String()), 240))
 	}
 	return nil
+}
+
+// commandProgram keeps Windows batch hooks safe: CreateProcess cannot execute
+// a .cmd/.bat directly, so it must run through cmd.exe /d /s /c. Executables
+// and other platforms keep the fixed executable + argument form (no shell).
+func commandProgram(spec CommandSpec, goos string) (string, []string) {
+	if goos == "windows" {
+		switch strings.ToLower(filepath.Ext(spec.Path)) {
+		case ".cmd", ".bat":
+			args := []string{"/d", "/s", "/c", spec.Path}
+			return "cmd.exe", append(args, spec.Args...)
+		}
+	}
+	return spec.Path, append([]string(nil), spec.Args...)
 }
 
 func baseEnv() []string {

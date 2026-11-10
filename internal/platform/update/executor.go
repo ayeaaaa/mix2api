@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -19,8 +18,6 @@ const (
 	ExecutorMarker     = "executor.json"
 	PortableMarker     = "portable.json"
 )
-
-var stableVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
 // ActiveStates are states where a request is still in flight.
 var ActiveStates = map[string]bool{
@@ -255,7 +252,7 @@ func (e *Executor) ReadBackups() ([]Backup, bool) {
 			continue
 		}
 		version := strings.TrimSpace(stringValue(item["version"]))
-		if !stableVersionPattern.MatchString(version) {
+		if !IsReleaseVersion(version) || version == "0.0.0" {
 			continue
 		}
 		complete, _ := item["complete"].(bool)

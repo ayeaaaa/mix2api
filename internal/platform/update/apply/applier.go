@@ -114,6 +114,18 @@ func New(opts Options) (*Applier, error) {
 	if opts.GOARCH == "" {
 		opts.GOARCH = runtime.GOARCH
 	}
+	if strings.TrimSpace(opts.GOARM) == "" && opts.GOARCH == "arm" {
+		opts.GOARM = corerelease.RuntimeGOARM()
+	}
+	if opts.GOARCH == "arm" {
+		family, ok := corerelease.NormalizeGOARM(opts.GOARM)
+		if !ok {
+			return nil, fmt.Errorf("apply: invalid GOARM %q", opts.GOARM)
+		}
+		opts.GOARM = family
+	} else if strings.TrimSpace(opts.GOARM) != "" {
+		return nil, fmt.Errorf("apply: GOARM is only valid for GOARCH arm")
+	}
 	if opts.Root == "" {
 		executable, err := os.Executable()
 		if err != nil {
@@ -178,8 +190,11 @@ func (a *Applier) validateRequest(request update.Request) error {
 		return errors.New("apply: request action must be install or rollback")
 	}
 	version := strings.TrimPrefix(strings.TrimSpace(request.Version), "v")
-	if !stableVersion(version) {
+	if !releaseVersion(version) {
 		return fmt.Errorf("apply: invalid target version %q", request.Version)
+	}
+	if request.Action == "install" && !stableVersion(version) {
+		return fmt.Errorf("apply: install target %q must be a stable release", request.Version)
 	}
 	if request.Tag != "v"+version {
 		return fmt.Errorf("apply: tag %q does not match version %q", request.Tag, version)
@@ -198,6 +213,10 @@ func (a *Applier) validateRequest(request update.Request) error {
 
 func stableVersion(value string) bool {
 	return corerelease.ValidateVersion(value) == nil && !strings.Contains(value, "-")
+}
+
+func releaseVersion(value string) bool {
+	return corerelease.ValidateVersion(value) == nil && value != "0.0.0"
 }
 
 func (a *Applier) install(ctx context.Context, request update.Request) (Result, error) {
@@ -231,7 +250,7 @@ func (a *Applier) install(ctx context.Context, request update.Request) (Result, 
 	}
 
 	a.setStatus("applying", version, "正在应用更新")
-	if err := a.applyFiles(staging.Root, staging.Manifest.Files, backup, false); err != nil {
+	if err := a.applyFiles(staging.Root, staging.Manifest.Files, backup); err != nil {
 		_ = a.controller.Start(ctx, request)
 		return a.fail(version, "应用更新失败，已回滚", err)
 	}
@@ -281,6 +300,15 @@ func (a *Applier) rollback(ctx context.Context, request update.Request) (Result,
 		// backup. The transaction already restored every backed-up file.
 		_ = a.removeExtras(current.Files, backup)
 	}
+	if !backupHasManifest(backup) {
+		_ = os.Remove(filepath.Join(a.root, corerelease.ManifestName))
+		if releaseVersion(backup.Version) {
+			if err := a.synthesizeManifest(backup); err != nil {
+				_ = a.controller.Start(ctx, request)
+				return a.fail(version, "回退后写入版本信息失败", err)
+			}
+		}
+	}
 	a.setStatus("restarting", version, "正在启动服务")
 	if err := a.controller.Start(ctx, request); err != nil {
 		return a.fail(version, "回退后启动失败", err)
@@ -299,7 +327,7 @@ func (a *Applier) rollbackTo(ctx context.Context, request update.Request, backup
 		}
 		entries = append(entries, file.entry())
 	}
-	return a.applyFiles(backup.FilesDir(), entries, backup, true)
+	return a.applyFiles(backup.FilesDir(), entries, backup)
 }
 
 func (a *Applier) fail(version, message string, err error) (Result, error) {
@@ -314,29 +342,42 @@ func (a *Applier) safeMessage(message string) string {
 	return truncate(message, 240)
 }
 
+// Recovery reports whether an interrupted transaction was found.
+type Recovery struct {
+	Found    bool   `json:"found"`
+	Restored bool   `json:"restored"`
+	Version  string `json:"version,omitempty"`
+}
+
 // Recover finishes or reverses an interrupted apply transaction.
 func (a *Applier) Recover(ctx context.Context) error {
+	_, err := a.RecoverOnce(ctx)
+	return err
+}
+
+// RecoverOnce is Recover with an explicit no-op result for the CLI.
+func (a *Applier) RecoverOnce(ctx context.Context) (Recovery, error) {
 	journalPath := filepath.Join(a.root, JournalName)
 	raw, err := os.ReadFile(journalPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return Recovery{Found: false}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("apply: read journal: %w", err)
+		return Recovery{}, fmt.Errorf("apply: read journal: %w", err)
 	}
 	var journal transactionJournal
 	if err := json.Unmarshal(raw, &journal); err != nil {
-		return fmt.Errorf("apply: parse journal: %w", err)
+		return Recovery{}, fmt.Errorf("apply: parse journal: %w", err)
 	}
 	if err := a.restoreJournal(&journal); err != nil {
-		return fmt.Errorf("apply: recover interrupted update: %w", err)
+		return Recovery{Found: true, Version: journal.Version}, fmt.Errorf("apply: recover interrupted update: %w", err)
 	}
-	if err := os.Remove(journalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	if err := a.removeJournal(); err != nil {
+		return Recovery{Found: true, Version: journal.Version}, err
 	}
 	a.setStatus("failed", journal.Version, "上次更新中断，已恢复原版本")
 	a.logger("update: recovered interrupted transaction")
-	return nil
+	return Recovery{Found: true, Restored: true, Version: journal.Version}, nil
 }
 
 func (a *Applier) fetchRelease(ctx context.Context, version string) (archivePath, checksumPath string, cleanup func(), err error) {
@@ -394,6 +435,38 @@ func (a *Applier) consumeRequest() {
 
 func (a *Applier) writeInstalledManifest(staging *stagedRelease) error {
 	raw, err := staging.Manifest.Marshal()
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(a.root, corerelease.ManifestName), raw, 0o644)
+}
+
+func backupHasManifest(backup *backupRecord) bool {
+	for _, file := range backup.Files {
+		if file.Existed && file.Path == corerelease.ManifestName {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Applier) synthesizeManifest(backup *backupRecord) error {
+	manifest := corerelease.Manifest{
+		Format: corerelease.Format, Version: backup.Version, Tag: corerelease.Tag(backup.Version),
+		Commit: "rollback", Date: a.now().UTC().Format(time.RFC3339),
+		GOOS: a.goos, GOARCH: a.goarch, GOARM: a.goarm,
+		Kind: corerelease.KindStandard, Repository: corerelease.Repository,
+	}
+	for _, file := range backup.Files {
+		if !file.Existed {
+			continue
+		}
+		manifest.Files = append(manifest.Files, file.entry())
+	}
+	if err := manifest.Validate(); err != nil {
+		return err
+	}
+	raw, err := manifest.Marshal()
 	if err != nil {
 		return err
 	}

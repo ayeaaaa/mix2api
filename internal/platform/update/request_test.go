@@ -265,3 +265,34 @@ func TestStatusUpdatedAt(t *testing.T) {
 		t.Fatalf("status = %#v ok=%v", status, ok)
 	}
 }
+
+func TestReleaseCandidateToFinalUpgradeAndRollback(t *testing.T) {
+	manager, dir := systemdManager(t)
+	installation, err := manager.Install("v2.0.0", "2.0.0-rc.1", 8788, false, "x/y")
+	if err != nil {
+		t.Fatalf("RC->final install: %v", err)
+	}
+	if installation.State != "queued" || installation.Version != "2.0.0" {
+		t.Fatalf("installation = %#v", installation)
+	}
+	_ = os.Remove(filepath.Join(dir, RequestFile))
+	if _, err := manager.Install("v2.0.0", "2.0.0", 8788, false, "x/y"); err != ErrTargetInvalid {
+		t.Fatalf("same-version install err = %v", err)
+	}
+	_ = os.Remove(filepath.Join(dir, RequestFile))
+
+	raw, _ := json.Marshal(map[string]any{"backups": []any{map[string]any{
+		"version": "2.0.0-rc.1", "created_at": "2026-11-09 00:00:00",
+		"files": 4, "complete": true, "size_mb": 20,
+	}}})
+	if err := os.WriteFile(filepath.Join(dir, BackupsFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installation, err = manager.Rollback("2.0.0-rc.1", "2.0.0", 8788, false)
+	if err != nil {
+		t.Fatalf("final->RC rollback: %v", err)
+	}
+	if installation.Version != "2.0.0-rc.1" {
+		t.Fatalf("rollback = %#v", installation)
+	}
+}

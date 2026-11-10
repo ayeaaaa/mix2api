@@ -40,13 +40,20 @@ func TestDockerfileIsMultiStageCGOFreeNonRootAndHealthchecked(t *testing.T) {
 	if strings.Contains(dockerfile, "USER root") {
 		t.Fatal("Dockerfile runs as root")
 	}
+	if strings.Contains(dockerfile, "chown -R mix2api:mix2api /app\n") || !strings.Contains(dockerfile, "chmod 0555 /app") {
+		t.Fatal("application directory is not read-only")
+	}
+	dockerignore, err := os.ReadFile(filepath.Join("..", "..", ".dockerignore"))
+	if err != nil || !strings.Contains(string(dockerignore), ".env") {
+		t.Fatalf(".dockerignore must exclude .env: %v", err)
+	}
 }
 
 func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 	for _, name := range []string{"docker-compose.yml", "deploy/docker-compose.yml", "deploy/docker-compose.image.yml"} {
 		text := repoFile(t, name)
 		for _, want := range []string{
-			"image: ghcr.io/ayeaaaa/mix2api:",
+			"image: ghcr.io/ayeaaaa/mix2api-v2:",
 			"/app/accounts",
 			"/app/usage",
 			"/app/media",
@@ -67,7 +74,7 @@ func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 
 func TestOpenWrtAssets(t *testing.T) {
 	initScript := repoFile(t, "packaging/openwrt/files/mix2api.init")
-	for _, want := range []string{"USE_PROCD=1", "procd_open_instance", "ACCOUNTS_DIR", "WB_MEDIA_DIR"} {
+	for _, want := range []string{"USE_PROCD=1", "procd_open_instance", "procd_append_param env", "ACCOUNTS_DIR", "WB_MEDIA_DIR"} {
 		if !strings.Contains(initScript, want) {
 			t.Fatalf("init script missing %q", want)
 		}
@@ -77,9 +84,18 @@ func TestOpenWrtAssets(t *testing.T) {
 		t.Fatalf("UCI config = %s", config)
 	}
 	makefile := repoFile(t, "packaging/openwrt/Makefile")
-	for _, want := range []string{"include $(TOPDIR)/rules.mk", "MIX2API_BINARY", "mix2api.init", "mix2api.config", "BuildPackage"} {
+	for _, want := range []string{"include $(TOPDIR)/rules.mk", "MIX2API_BINARY", "mix2api.init", "mix2api.config", "BuildPackage", "PKGARCH:=$(ARCH)", "chmod 0600"} {
 		if !strings.Contains(makefile, want) {
 			t.Fatalf("OpenWrt Makefile missing %q", want)
+		}
+	}
+}
+
+func TestSystemdUnitIsHardened(t *testing.T) {
+	unit := repoFile(t, "packaging/systemd/mix2api.service")
+	for _, want := range []string{"User=mix2api", "EnvironmentFile=-/etc/mix2api/env", "ExecStart=/usr/local/bin/mix2api", "NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mix2api"} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("systemd unit missing %q", want)
 		}
 	}
 }
@@ -115,7 +131,7 @@ func TestMakefileTargets(t *testing.T) {
 	makefile := repoFile(t, "Makefile")
 	for _, want := range []string{
 		"CGO_ENABLED=0 go build", "-trimpath", "-buildvcs=false",
-		"go test -race ./...", "go vet ./...", "gofmt -l", "dist:",
+		"CGO_ENABLED=1 go test -race ./...", "go vet ./...", "gofmt -l", "dist:",
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Fatalf("Makefile missing %q", want)

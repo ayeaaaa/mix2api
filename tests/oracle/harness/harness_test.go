@@ -158,3 +158,30 @@ func writeTestJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
 }
+
+func TestLoadRejectsIncompleteProvenanceAndUnsafeCasePaths(t *testing.T) {
+	dir := t.TempDir()
+	hash := strings.Repeat("a", 64)
+	write := func(document Document) {
+		raw, _ := json.Marshal(document)
+		_ = os.WriteFile(filepath.Join(dir, "oracle.json"), raw, 0o644)
+	}
+	base := Document{
+		Format: Format,
+		Provenance: Provenance{
+			TargetVersion: "1.6.5", TargetCommit: "", FakeUpstream: true,
+			Network: "loopback-only", RecordedAt: "2026-11-08T00:00:00Z", BaseURL: "http://127.0.0.1:1",
+		},
+		Cases: []Case{{Name: "one", Method: "GET", Path: "/one", Kind: "json", Status: 200, File: "one.json", SHA256: hash}},
+	}
+	write(base)
+	if _, err := Load(dir); err == nil {
+		t.Fatal("missing commit accepted")
+	}
+	base.Provenance.TargetCommit = "abc"
+	base.Cases[0].File = "../one.json"
+	write(base)
+	if _, err := Load(dir); err == nil {
+		t.Fatal("unsafe fixture filename accepted")
+	}
+}

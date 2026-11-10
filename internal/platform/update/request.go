@@ -143,21 +143,14 @@ func (m *RequestManager) Install(tag, currentVersion string, port int, lan bool,
 		return Installation{}, ErrInstallDisabled
 	}
 	tag = strings.TrimSpace(tag)
-	targetMajor, targetMinor, targetPatch, ok := ParseVersion(tag)
-	currentMajor, currentMinor, currentPatch, currentOK := ParseVersion("v" + normalizeCurrentVersion(currentVersion))
-	if !ok || !currentOK {
-		return Installation{}, ErrTargetInvalid
-	}
-	target := [3]int{targetMajor, targetMinor, targetPatch}
-	current := [3]int{currentMajor, currentMinor, currentPatch}
-	if !(target[0] > current[0] || (target[0] == current[0] && target[1] > current[1]) ||
-		(target[0] == current[0] && target[1] == current[1] && target[2] > current[2])) {
+	target := NormalizeVersion(tag)
+	if !stableVersionPattern.MatchString(target) || !IsNewer(target, currentVersion) {
 		return Installation{}, ErrTargetInvalid
 	}
 	if m.active() {
 		return Installation{}, ErrRequestActive
 	}
-	version := fmt.Sprintf("%d.%d.%d", targetMajor, targetMinor, targetPatch)
+	version := target
 	request := m.requestFields(version, port, lan)
 	request.Action = "install"
 	request.Tag = tag
@@ -172,13 +165,11 @@ func (m *RequestManager) Rollback(version, currentVersion string, port int, lan 
 	if m == nil || !m.Enabled() {
 		return Installation{}, ErrInstallDisabled
 	}
-	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
-	major, minor, patch, ok := ParseVersion(target)
-	if !ok || !stableVersionPattern.MatchString(target) {
+	target := NormalizeVersion(version)
+	if !IsReleaseVersion(target) {
 		return Installation{}, ErrRollbackInvalid
 	}
-	target = fmt.Sprintf("%d.%d.%d", major, minor, patch)
-	current := normalizeCurrentVersion(currentVersion)
+	current := NormalizeVersion(currentVersion)
 	if target == current {
 		return Installation{}, ErrRollbackSame
 	}
@@ -204,14 +195,6 @@ func (m *RequestManager) Rollback(version, currentVersion string, port int, lan 
 		return Installation{}, err
 	}
 	return Installation{State: "queued", Version: target, Message: "回退任务已排队"}, nil
-}
-
-func normalizeCurrentVersion(value string) string {
-	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
-	if index := strings.IndexAny(value, "-+ "); index >= 0 {
-		value = value[:index]
-	}
-	return value
 }
 
 func (m *RequestManager) active() bool {

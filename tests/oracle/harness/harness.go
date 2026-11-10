@@ -147,6 +147,9 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 	if document.Provenance.BaseURL == "" {
 		document.Provenance.BaseURL = r.BaseURL
 	}
+	if err := validateProvenance(document.Provenance); err != nil {
+		return err
+	}
 	for _, item := range r.Cases {
 		status, body, err := r.fetch(ctx, item)
 		if err != nil {
@@ -160,6 +163,9 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 			return err
 		}
 		document.Cases = append(document.Cases, item)
+	}
+	if err := validateDocument(&document); err != nil {
+		return err
 	}
 	raw, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
@@ -181,14 +187,14 @@ func Load(dir string) (*Document, error) {
 	if document.Format != Format {
 		return nil, fmt.Errorf("oracle: unsupported format %q", document.Format)
 	}
-	if !document.Provenance.FakeUpstream {
-		return nil, errors.New("oracle: fixture does not declare a fake upstream")
-	}
-	if document.Provenance.Network != "loopback-only" {
-		return nil, errors.New("oracle: fixture does not declare loopback-only provenance")
+	if err := validateProvenance(document.Provenance); err != nil {
+		return nil, err
 	}
 	if len(document.Cases) == 0 {
 		return nil, errors.New("oracle: no cases")
+	}
+	if err := validateCases(document.Cases); err != nil {
+		return nil, err
 	}
 	for _, item := range document.Cases {
 		body, err := os.ReadFile(filepath.Join(dir, item.File))
@@ -411,6 +417,80 @@ func summarize(value any) string {
 		}
 		return string(raw)
 	}
+}
+
+func validateDocument(document *Document) error {
+	if document == nil {
+		return errors.New("oracle: nil document")
+	}
+	if document.Format != Format {
+		return fmt.Errorf("oracle: unsupported format %q", document.Format)
+	}
+	if err := validateProvenance(document.Provenance); err != nil {
+		return err
+	}
+	if len(document.Cases) == 0 {
+		return errors.New("oracle: no cases")
+	}
+	return validateCases(document.Cases)
+}
+
+func validateProvenance(value Provenance) error {
+	if strings.TrimSpace(value.TargetVersion) == "" || strings.TrimSpace(value.TargetCommit) == "" {
+		return errors.New("oracle: provenance requires target version and commit")
+	}
+	if !value.FakeUpstream {
+		return errors.New("oracle: fixture does not declare a fake upstream")
+	}
+	if value.Network != "loopback-only" {
+		return errors.New("oracle: fixture does not declare loopback-only provenance")
+	}
+	if _, err := time.Parse(time.RFC3339, value.RecordedAt); err != nil {
+		return errors.New("oracle: provenance recorded_at must be RFC3339")
+	}
+	if err := validateLoopback(value.BaseURL); err != nil {
+		return fmt.Errorf("oracle: provenance base_url: %w", err)
+	}
+	return nil
+}
+
+func validateCases(cases []Case) error {
+	names := map[string]bool{}
+	for _, item := range cases {
+		name := strings.TrimSpace(item.Name)
+		if name == "" || names[name] {
+			return fmt.Errorf("oracle: empty or duplicate case name %q", item.Name)
+		}
+		names[name] = true
+		if item.Method == "" || !strings.HasPrefix(item.Path, "/") || strings.Contains(item.Path, "://") {
+			return fmt.Errorf("oracle: invalid request for %s", name)
+		}
+		if item.Kind != "json" && item.Kind != "sse" {
+			return fmt.Errorf("oracle: invalid kind for %s", name)
+		}
+		if item.Status < 200 || item.Status > 599 {
+			return fmt.Errorf("oracle: invalid status for %s", name)
+		}
+		if item.File == "" || filepath.Base(item.File) != item.File || strings.ContainsAny(item.File, "/\\") {
+			return fmt.Errorf("oracle: unsafe fixture filename for %s", name)
+		}
+		if !isSHA256(item.SHA256) {
+			return fmt.Errorf("oracle: invalid fixture checksum for %s", name)
+		}
+	}
+	return nil
+}
+
+func isSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // SortedCaseNames returns fixture names in stable order for reports.

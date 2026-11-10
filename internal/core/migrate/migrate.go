@@ -121,7 +121,15 @@ func run(direction string, opts Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	if overlaps(from, to) {
+	realFrom, err := canonicalPath(from)
+	if err != nil {
+		return Summary{}, err
+	}
+	realTo, err := canonicalPath(to)
+	if err != nil {
+		return Summary{}, err
+	}
+	if overlaps(realFrom, realTo) {
 		return Summary{}, errors.New("migrate: source and destination overlap")
 	}
 	if opts.Receipt == "" {
@@ -131,8 +139,20 @@ func run(direction string, opts Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	if overlaps(from, receiptPath) || overlaps(to, receiptPath) {
+	realReceipt, err := canonicalPath(receiptPath)
+	if err != nil {
+		return Summary{}, err
+	}
+	if overlaps(realFrom, realReceipt) || overlaps(realTo, realReceipt) {
 		return Summary{}, errors.New("migrate: receipt path overlaps data")
+	}
+	if info, err := os.Lstat(receiptPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return Summary{}, errors.New("migrate: receipt path must not be a symlink")
+		}
+		return Summary{}, errors.New("migrate: receipt already exists; choose a new path")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Summary{}, err
 	}
 	migrator := &Migrator{opts: opts, interrupt: opts.interrupt}
 	if err := migrator.detectLayout(from); err != nil {
@@ -239,16 +259,27 @@ func run(direction string, opts Options) (Summary, error) {
 	if err := validateTree(staging, migrator.layout, &summary); err != nil {
 		return Summary{}, err
 	}
+	// Stage the receipt before publishing. If the receipt cannot be written,
+	// the destination is not created at all.
+	receiptTemp, err := stageReceipt(receiptPath, receipt{
+		Format: ReceiptFormat, Direction: direction, Layout: migrator.layout,
+		Source: from, Dest: to, CreatedAt: opts.Now().Format(time.RFC3339),
+		Files: records,
+	})
+	if err != nil {
+		return Summary{}, err
+	}
 	if err := publish(staging, to); err != nil {
+		_ = os.Remove(receiptTemp)
 		return Summary{}, err
 	}
 	removeStaging = false
 	summary.Dirs = dirs
-	if err := writeReceipt(receiptPath, receipt{
-		Format: ReceiptFormat, Direction: direction, Layout: migrator.layout,
-		Source: from, Dest: to, CreatedAt: opts.Now().Format(time.RFC3339),
-		Files: records,
-	}); err != nil {
+	if err := os.Rename(receiptTemp, receiptPath); err != nil {
+		_ = os.Remove(receiptTemp)
+		return summary, fmt.Errorf("migrate: destination published but receipt rename failed: %w", err)
+	}
+	if err := syncParent(receiptPath); err != nil {
 		return summary, err
 	}
 	return summary, nil
@@ -317,16 +348,61 @@ func cleanDestination(value string) (string, error) {
 	if absolute == string(filepath.Separator) || absolute == "." {
 		return "", errors.New("migrate: refusing filesystem root as destination")
 	}
+	if info, err := os.Lstat(absolute); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("migrate: destination must not be a symlink")
+	}
 	return absolute, nil
 }
 
+// canonicalPath resolves symlinks in the existing prefix of path. The final
+// component may not exist (the destination is usually new).
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := filepath.Clean(absolute)
+	missing := []string{}
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("migrate: resolve path %s: %w", path, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func syncParent(path string) error {
+	parent, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return nil
+	}
+	defer parent.Close()
+	_ = parent.Sync()
+	return nil
+}
+
 func ensureDestination(path string) error {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("migrate: destination must not be a symlink")
 	}
 	if !info.IsDir() {
 		return errors.New("migrate: destination exists and is not a directory")
@@ -342,7 +418,10 @@ func ensureDestination(path string) error {
 }
 
 func publish(staging, dest string) error {
-	if info, err := os.Stat(dest); err == nil {
+	if info, err := os.Lstat(dest); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("migrate: destination became a symlink")
+		}
 		if !info.IsDir() {
 			return errors.New("migrate: destination is not a directory")
 		}
@@ -562,17 +641,42 @@ func countDirs(path string) int {
 	return count
 }
 
+const lockStaleAfter = 24 * time.Hour
+
 func acquireLock(path string, now time.Time) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
+	for attempt := 0; attempt < 2; attempt++ {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "pid=%d\nstarted=%s\n", os.Getpid(), now.Format(time.RFC3339))
+			_ = file.Sync()
+			return file, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if !staleLock(path, now) {
 			return nil, fmt.Errorf("migrate: destination is locked by %s", path)
 		}
-		return nil, err
+		_ = os.Remove(path)
 	}
-	_, _ = fmt.Fprintf(file, "pid=%d\nstarted=%s\n", os.Getpid(), now.Format(time.RFC3339))
-	_ = file.Sync()
-	return file, nil
+	return nil, fmt.Errorf("migrate: could not acquire destination lock %s", path)
+}
+
+func staleLock(path string, now time.Time) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	started := time.Time{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "started=") {
+			started, _ = time.Parse(time.RFC3339, strings.TrimPrefix(line, "started="))
+		}
+	}
+	if started.IsZero() {
+		return true
+	}
+	return now.Sub(started) > lockStaleAfter
 }
 
 func releaseLock(path string, file *os.File) {
@@ -582,43 +686,40 @@ func releaseLock(path string, file *os.File) {
 	_ = os.Remove(path)
 }
 
-func writeReceipt(path string, value receipt) error {
+func stageReceipt(path string, value receipt) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return err
+		return "", err
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	name := temp.Name()
+	remove := func() { _ = os.Remove(name) }
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
-		_ = os.Remove(name)
-		return err
+		remove()
+		return "", err
 	}
 	if _, err := temp.Write(append(raw, '\n')); err != nil {
 		_ = temp.Close()
-		_ = os.Remove(name)
-		return err
+		remove()
+		return "", err
 	}
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
-		_ = os.Remove(name)
-		return err
+		remove()
+		return "", err
 	}
 	if err := temp.Close(); err != nil {
-		_ = os.Remove(name)
-		return err
+		remove()
+		return "", err
 	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	return nil
+	return name, nil
 }
 
 func validateTree(root, layout string, summary *Summary) error {

@@ -42,7 +42,7 @@ wrapper scripts when shell syntax is needed.
 
 ## Safety properties
 
-- Only `https://github.com/ayeaaaa/mix2api/releases/download/vX.Y.Z/` URLs are
+- Only `https://github.com/ayeaaaa/mix2api-v2/releases/download/vX.Y.Z/` URLs are
   constructed; redirects must stay on HTTPS GitHub hosts.
 - `SHA256SUMS` must contain the exact asset name and match before extraction.
 - The archive must have one top-level directory and a
@@ -63,7 +63,8 @@ wrapper scripts when shell syntax is needed.
 ## Backups
 
 Backups live under `<root>/.mix2api-backups` by default, one directory per
-retained version, mode `0700`. The newest three are kept. The panel inventory
+retained version, mode `0700`. The newest three **complete** backups are kept;
+incomplete backups remain on disk for diagnosis. The panel inventory
 is `<request-dir>/backups.json`; it contains versions, times, file counts,
 sizes, and completeness, never paths.
 
@@ -82,6 +83,8 @@ mix2api.exe update run --request-dir C:\ProgramData\mix2api\updates `
   --start-command C:\ProgramData\mix2api\start-service.cmd
 ```
 
-Use `.exe`/`.cmd` wrappers understood by `CreateProcess`; `CommandController`
-does not invoke a shell. Ensure the hooks report failure with a non-zero exit
-status so the executor can restore the previous version.
+Use `.exe` hooks directly, or `.cmd`/`.bat` wrappers. Windows cannot execute a
+batch file through `CreateProcess`, so the executor runs `.cmd`/`.bat` through
+`cmd.exe /d /s /c <fixed path>`; `.exe` hooks run directly. Arguments are fixed
+operator values, never request fields. Ensure hooks report failure with a
+non-zero exit status so the executor can restore the previous version.

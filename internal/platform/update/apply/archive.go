@@ -403,14 +403,18 @@ func NewHTTPDownloader(client *http.Client, maxBytes int64) *HTTPDownloader {
 	return &HTTPDownloader{Client: client, MaxBytes: maxBytes}
 }
 
-// Download writes one validated GitHub release URL to dest.
-func (d *HTTPDownloader) Download(ctx context.Context, rawURL, dest string) error {
+func releaseURLAllowed(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return err
+		return false
 	}
-	if parsed.Scheme != "https" || parsed.Hostname() != "github.com" ||
-		!strings.HasPrefix(parsed.Path, "/"+corerelease.Repository+"/releases/download/") {
+	return parsed.Scheme == "https" && parsed.Hostname() == "github.com" &&
+		strings.HasPrefix(parsed.Path, "/"+corerelease.Repository+"/releases/download/")
+}
+
+// Download writes one validated GitHub release URL to dest.
+func (d *HTTPDownloader) Download(ctx context.Context, rawURL, dest string) error {
+	if !releaseURLAllowed(rawURL) {
 		return fmt.Errorf("apply: refusing non-release URL %q", rawURL)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)

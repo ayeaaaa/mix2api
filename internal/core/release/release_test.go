@@ -98,3 +98,44 @@ func TestManifestValidationAndFileVerification(t *testing.T) {
 		}
 	}
 }
+
+func TestARMGOARMNormalizationAndPlatformMatching(t *testing.T) {
+	for _, value := range []string{"7", "v7", "armv7", "ARM7"} {
+		if family, ok := NormalizeGOARM(value); !ok || family != "7" {
+			t.Fatalf("NormalizeGOARM(%q) = %q %v", value, family, ok)
+		}
+	}
+	for _, value := range []string{"", "8", "arm64", "v7hard"} {
+		if _, ok := NormalizeGOARM(value); ok {
+			t.Fatalf("NormalizeGOARM(%q) accepted", value)
+		}
+	}
+	if got := AssetName("2.0.0", KindStandard, "linux", "arm", "armv7"); got != "mix2api-2.0.0-linux-armv7.tar.gz" {
+		t.Fatalf("arm asset = %q", got)
+	}
+	base := Manifest{
+		Format: Format, Version: "2.0.0", Tag: "v2.0.0", Repository: Repository,
+		GOOS: "linux", GOARCH: "arm", GOARM: "armv7",
+		Files: []File{{Path: "mix2api", SHA256: strings.Repeat("a", 64)}},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("armv7 manifest rejected: %v", err)
+	}
+	if !PlatformMatches(base, "linux", "arm", "7") {
+		t.Fatal("armv7 manifest did not match GOARM=7")
+	}
+	if PlatformMatches(base, "linux", "arm", "6") {
+		t.Fatal("armv7 manifest matched GOARM=6")
+	}
+	missing := base
+	missing.GOARM = ""
+	if err := missing.Validate(); err == nil {
+		t.Fatal("arm manifest without GOARM accepted")
+	}
+	amd := base
+	amd.GOARCH = "amd64"
+	amd.GOARM = "7"
+	if err := amd.Validate(); err == nil {
+		t.Fatal("GOARM accepted on amd64")
+	}
+}

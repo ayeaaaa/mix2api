@@ -27,7 +27,7 @@ const (
 	// v1's Python portable manifest.
 	Format = "mix2api-release/2"
 	// Repository is the only repository the updater accepts.
-	Repository = "ayeaaaa/mix2api"
+	Repository = "ayeaaaa/mix2api-v2"
 
 	KindStandard = "standard"
 	KindOpenWrt  = "openwrt"
@@ -73,12 +73,27 @@ func ValidateVersion(value string) error {
 // Tag returns the fixed GitHub tag for a version.
 func Tag(version string) string { return "v" + strings.TrimPrefix(strings.TrimSpace(version), "v") }
 
+// NormalizeGOARM accepts the GOARM spellings emitted by Go, release YAML, and
+// docs ("7", "v7", "armv7") and returns the canonical digit family.
+func NormalizeGOARM(value string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.TrimPrefix(normalized, "arm")
+	normalized = strings.TrimPrefix(normalized, "v")
+	switch normalized {
+	case "5", "6", "7":
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
 // ArchLabel normalizes GOARCH/GOARM for asset names.
 func ArchLabel(goarch, goarm string) string {
 	goarch = strings.TrimSpace(goarch)
-	goarm = strings.TrimSpace(goarm)
-	if goarch == "arm" && goarm != "" {
-		return "armv" + goarm
+	if goarch == "arm" {
+		if family, ok := NormalizeGOARM(goarm); ok {
+			return "armv" + family
+		}
 	}
 	return goarch
 }
@@ -214,6 +229,13 @@ func (m Manifest) Validate() error {
 	if m.GOOS == "" || m.GOARCH == "" {
 		return errors.New("release: manifest is missing platform")
 	}
+	if m.GOARCH == "arm" {
+		if _, ok := NormalizeGOARM(m.GOARM); !ok {
+			return fmt.Errorf("release: invalid GOARM %q", m.GOARM)
+		}
+	} else if strings.TrimSpace(m.GOARM) != "" {
+		return fmt.Errorf("release: GOARM must be empty for GOARCH %s", m.GOARCH)
+	}
 	if len(m.Files) == 0 {
 		return errors.New("release: manifest has no files")
 	}
@@ -235,6 +257,20 @@ func (m Manifest) Validate() error {
 		seen[entry.Path] = true
 	}
 	return nil
+}
+
+// PlatformMatches reports whether a manifest targets the executor platform.
+// ARM families accept 7, v7, and armv7 as the same target.
+func PlatformMatches(m Manifest, goos, goarch, goarm string) bool {
+	if m.GOOS != goos || m.GOARCH != goarch {
+		return false
+	}
+	if goarch == "arm" {
+		left, leftOK := NormalizeGOARM(m.GOARM)
+		right, rightOK := NormalizeGOARM(goarm)
+		return leftOK && rightOK && left == right
+	}
+	return strings.TrimSpace(m.GOARM) == ""
 }
 
 // Marshal renders a manifest with a trailing newline.

@@ -18,7 +18,7 @@ func SortBackups(items []Backup) []Backup {
 func CompleteBackups(items []Backup) []Backup {
 	out := []Backup{}
 	for _, item := range items {
-		if item.Complete && stableVersionPattern.MatchString(item.Version) {
+		if item.Complete && IsReleaseVersion(item.Version) && item.Version != "0.0.0" {
 			out = append(out, item)
 		}
 	}

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
 # Reproducible multi-arch runtime image. Build with:
-#   docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/ayeaaaa/mix2api:v2.0.0-rc.1 .
+#   docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/ayeaaaa/mix2api-v2:v2.0.0-rc.1 .
 #
 # CGO is disabled and the dashboard is embedded in the binary, so the runtime
 # stage needs no toolchain, shell scripts, or writable application directory.
@@ -29,7 +29,8 @@ RUN apk add --no-cache ca-certificates tzdata \
  && addgroup -S -g 10001 mix2api \
  && adduser -S -D -H -u 10001 -G mix2api mix2api \
  && mkdir -p /app/accounts /app/usage /app/media \
- && chown -R mix2api:mix2api /app
+ && chown -R mix2api:mix2api /app/accounts /app/usage /app/media \
+ && chmod 0555 /app
 COPY --from=build /out/mix2api /app/mix2api
 COPY LICENSE /app/LICENSE
 WORKDIR /app
