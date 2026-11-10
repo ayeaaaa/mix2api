@@ -35,7 +35,7 @@ func (s *Server) runChatWebRounds(
 	for round := 0; round <= maxRounds; round++ {
 		dropTools := round == maxRounds
 		if dropTools {
-			delete(chat, "tools")
+			dropInternalWebTools(chat)
 			messages = append(messages, map[string]any{
 				"role": "system",
 				"content": "The web tools are no longer available. Answer the user now with " +

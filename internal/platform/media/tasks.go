@@ -47,6 +47,7 @@ type Task struct {
 	EnableAudio           any      `json:"enable_audio,omitempty"`
 	ImageToVideo          bool     `json:"image_to_video"`
 	HasReferenceMaterials bool     `json:"has_reference_materials"`
+	AllowedAccounts       []string `json:"-"`
 	PromptHead            string   `json:"prompt_head,omitempty"`
 	PromptLen             int      `json:"prompt_len,omitempty"`
 	CreatedAt             int64    `json:"created_at"`
@@ -339,9 +340,13 @@ func (s *TaskStore) CreatePending(model string, params map[string]any, body map[
 			Seconds: task.Seconds, Resolution: task.Resolution,
 			AspectRatio: task.AspectRatio, EnableAudio: task.EnableAudio,
 			ImageToVideo: task.ImageToVideo, PromptHead: task.PromptHead,
-			PromptLen: task.PromptLen, Warnings: append([]string(nil), task.Warnings...),
+			HasReferenceMaterials: task.HasReferenceMaterials,
+			AllowedAccounts:       append([]string(nil), task.AllowedAccounts...),
+			PromptLen:             task.PromptLen,
+			Warnings:              append([]string(nil), task.Warnings...),
 		},
 		Body: copied,
+		Size: size,
 	}
 	s.evictLocked()
 	s.persistLocked()
@@ -385,8 +390,9 @@ func (s *TaskStore) newTaskLocked(model string, params map[string]any, accountUI
 	task := Task{
 		ID: "vid_" + randomHex(8), Status: status, Model: model, Realm: realm,
 		Account: accountUID, Key: keyID, CreatedAt: now,
-		ImageToVideo: boolValue(params["image_to_video"]),
-		PromptHead:   truncateRunes(prompt, 80), PromptLen: len([]rune(prompt)),
+		ImageToVideo:    boolValue(params["image_to_video"]),
+		AllowedAccounts: append([]string(nil), stringList(params["allowed_accounts"])...),
+		PromptHead:      truncateRunes(prompt, 80), PromptLen: len([]rune(prompt)),
 		Warnings: append([]string(nil), stringList(params["warnings"])...),
 	}
 	if value, ok := params["seconds"]; ok {
@@ -486,7 +492,25 @@ func (s *TaskStore) submittingCountLocked() int {
 
 // PendingCount is the number of queued/running tasks. It deliberately matches
 // v1's queue-full gate, which counted tasks already submitted.
-func (s *TaskStore) PendingCount() int { return s.ActiveCount() }
+func (s *TaskStore) PendingCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeCountLocked() + s.waitingCountLocked()
+}
+
+// InFlightCount counts submitted and currently-submitting tasks. It is the
+// direct-submit concurrency gate (waiting tasks do not hold an upstream slot).
+func (s *TaskStore) InFlightCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeCountLocked() + s.submittingCountLocked()
+}
 
 // WaitingCount is the number of locally queued, not-yet-submitted tasks.
 func (s *TaskStore) WaitingCount() int {

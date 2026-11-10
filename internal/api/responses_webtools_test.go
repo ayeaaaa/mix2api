@@ -249,3 +249,54 @@ func TestWebRoundsMixedClientToolPreserved(t *testing.T) {
 		t.Fatalf("mixed output client=%v web=%v internal=%v output=%#v", hasClient, hasWeb, hasInternal, output)
 	}
 }
+
+func TestWebDropToolsKeepsClientTools(t *testing.T) {
+	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<li class="b_algo"><h2><a href="https://go.dev/doc">Go docs</a></h2><p>Official docs</p></li>`)
+	}))
+	defer searchServer.Close()
+	web := webtools.New()
+	web.AllowPrivate = true
+	web.MinInterval = 0
+	web.SearchBudget = 5 * time.Second
+	web.Engines = []string{"bing"}
+	web.EngineURLs = map[string]string{"bing": searchServer.URL + "?q=%s"}
+	streams := []providers.ChatStream{}
+	for i := 0; i < webtools.MaxRounds(); i++ {
+		streams = append(streams, webToolCallStream())
+	}
+	streams = append(streams, newStubStream(chatSSE(textChunks("final", "done")...)...))
+	server, provider := responseTestServer(t, nil, ServerOptions{WebTools: web})
+	provider.mu.Lock()
+	provider.openStreams = streams
+	provider.openStream = nil
+	provider.mu.Unlock()
+	rec := doRequest(server, http.MethodPost, "/v1/responses", `{
+		"model":"m1","stream":false,
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"loop"}]}],
+		"tools":[{"type":"web_search"},{"type":"function","name":"client_tool","parameters":{}}],
+		"tool_choice":{"type":"web_search"}
+	}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	opened := provider.opened()
+	if len(opened) != webtools.MaxRounds()+1 {
+		t.Fatalf("rounds = %d", len(opened))
+	}
+	last := opened[len(opened)-1]
+	rawTools, present := last.Raw["tools"]
+	if !present {
+		t.Fatal("client tools were dropped on the final round")
+	}
+	toolsText := string(rawTools)
+	if strings.Contains(toolsText, "web_search") || strings.Contains(toolsText, "web_fetch") {
+		t.Fatalf("internal web tools survived final round: %s", toolsText)
+	}
+	if !strings.Contains(toolsText, "client_tool") {
+		t.Fatalf("client tool missing from final round: %s", toolsText)
+	}
+	if choice, present := last.Raw["tool_choice"]; present {
+		t.Fatalf("internal tool_choice survived final round: %s", choice)
+	}
+}

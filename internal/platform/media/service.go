@@ -174,7 +174,8 @@ func NewService(opts ServiceOptions) *Service {
 		body, _ := service.Tasks.PendingBody(task.ID)
 		params := map[string]any{
 			"seconds": task.Seconds, "resolution": task.Resolution,
-			"aspect_ratio": task.AspectRatio, "enable_audio": task.EnableAudio,
+			"allowed_accounts": append([]string(nil), task.AllowedAccounts...),
+			"aspect_ratio":     task.AspectRatio, "enable_audio": task.EnableAudio,
 			"image_to_video": task.ImageToVideo,
 			"cost_hint": service.Pricing.CostHint("video", task.Model,
 				intValue(task.Seconds, DefaultVideoSeconds), stringValue(task.Resolution), task.HasReferenceMaterials),
@@ -812,8 +813,13 @@ func (s *Service) SubmitVideo(ctx context.Context, request VideoRequest) (VideoS
 	if err := s.CheckDailySpend(request.KeyID, cost); err != nil {
 		return VideoSubmission{}, err
 	}
-	if s.Tasks.ActiveCount() >= s.Tasks.Concurrency() {
-		task, createErr := s.Tasks.CreatePending(modelID, params, body, realm, request.KeyID)
+	if s.Tasks.InFlightCount() >= s.Tasks.Concurrency() {
+		queueParams := map[string]any{}
+		for key, value := range params {
+			queueParams[key] = value
+		}
+		queueParams["allowed_accounts"] = append([]string(nil), request.AllowedAccounts...)
+		task, createErr := s.Tasks.CreatePending(modelID, queueParams, body, realm, request.KeyID)
 		if createErr != nil {
 			if errors.Is(createErr, ErrQueueFull) {
 				return VideoSubmission{}, mediaError("queue_full", "生视频队列已满；等一会儿再试，或先减少并发")
@@ -848,7 +854,12 @@ func (s *Service) SubmitVideo(ctx context.Context, request VideoRequest) (VideoS
 	if err != nil {
 		return VideoSubmission{}, normalizeProviderError(err)
 	}
-	task, err := s.Tasks.Create(modelID, params, submission.Account, body, submission.UpstreamID, realm, request.KeyID, submission.Warnings...)
+	createParams := map[string]any{}
+	for key, value := range params {
+		createParams[key] = value
+	}
+	createParams["allowed_accounts"] = append([]string(nil), request.AllowedAccounts...)
+	task, err := s.Tasks.Create(modelID, createParams, submission.Account, body, submission.UpstreamID, realm, request.KeyID, submission.Warnings...)
 	if err != nil {
 		return VideoSubmission{}, mediaError("upstream", err.Error())
 	}

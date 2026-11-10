@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -47,7 +48,7 @@ func (s *Server) runResponsesWebRounds(
 	for round := 0; round <= maxRounds; round++ {
 		dropTools := round == maxRounds
 		if dropTools {
-			delete(translated.Chat, "tools")
+			dropInternalWebTools(translated.Chat)
 			messages = append(messages, map[string]any{
 				"role": "system",
 				"content": "The web tools are no longer available. Answer the user now with " +
@@ -177,6 +178,81 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	stream := chatCompletionStream(final)
 	s.serveResponsesStream(w, r, stream, model, meta)
 	return true
+}
+
+// dropInternalWebTools removes only the gateway-owned function declarations on
+// the final round. Client tools stay available, and a tool_choice naming a
+// now-removed web tool is normalized away instead of poisoning the request.
+func dropInternalWebTools(chat map[string]any) {
+	if chat == nil {
+		return
+	}
+	var kept any
+	switch tools := chat["tools"].(type) {
+	case []map[string]any:
+		filtered := make([]map[string]any, 0, len(tools))
+		for _, tool := range tools {
+			if !isInternalWebTool(tool) {
+				filtered = append(filtered, tool)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(chat, "tools")
+		} else {
+			kept = filtered
+			chat["tools"] = kept
+		}
+	case []any:
+		filtered := make([]any, 0, len(tools))
+		for _, raw := range tools {
+			tool, _ := raw.(map[string]any)
+			if tool == nil || !isInternalWebTool(tool) {
+				filtered = append(filtered, raw)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(chat, "tools")
+		} else {
+			chat["tools"] = filtered
+		}
+	}
+	if choice, ok := chat["tool_choice"]; ok {
+		if toolChoiceIsInternal(choice) {
+			delete(chat, "tool_choice")
+		}
+	}
+}
+
+func isInternalWebTool(tool map[string]any) bool {
+	kind := strings.ToLower(strings.TrimSpace(stringValue(tool["type"])))
+	name := strings.ToLower(strings.TrimSpace(stringValue(tool["name"])))
+	if function, ok := tool["function"].(map[string]any); ok && name == "" {
+		name = strings.ToLower(strings.TrimSpace(stringValue(function["name"])))
+	}
+	switch kind {
+	case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_fetch":
+		return true
+	}
+	return webtools.IsInternalTool(name)
+}
+
+func toolChoiceIsInternal(choice any) bool {
+	switch typed := choice.(type) {
+	case string:
+		return webtools.IsInternalTool(strings.TrimSpace(typed))
+	case map[string]any:
+		kind := strings.ToLower(strings.TrimSpace(stringValue(typed["type"])))
+		if kind == "web_search" || kind == "web_fetch" || strings.Contains(kind, "web_search") {
+			return true
+		}
+		if function, ok := typed["function"].(map[string]any); ok {
+			return webtools.IsInternalTool(stringValue(function["name"]))
+		}
+		if name := stringValue(typed["name"]); name != "" {
+			return webtools.IsInternalTool(name)
+		}
+	}
+	return false
 }
 
 func (s *Server) executeWebCall(ctx context.Context, call map[string]any) (map[string]any, []map[string]any, string) {

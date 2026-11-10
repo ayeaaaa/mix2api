@@ -645,3 +645,100 @@ func TestMediaPassesAllowedAccounts(t *testing.T) {
 		t.Fatalf("allowed accounts = %#v", allowed)
 	}
 }
+
+func TestQueuedVideoRetainsAllowedAccountsAndReferenceFlag(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	keyStore := keys.New(store)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "one", Key: "key-one", Realm: "cn", Enabled: true,
+		Accounts: []string{"acct-allowed"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	cfg.VideoConcurrency = 1
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "running"}
+	server := New(ServerOptions{Media: fixture.Service, KeyStore: keyStore, PanelAuth: passThroughAuth})
+	auth := map[string]string{"Authorization": "Bearer key-one"}
+	first := doRequest(server, http.MethodPost, "/v1/videos", `{"prompt":"one","model":"vid-1"}`, auth)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first = %d %s", first.Code, first.Body)
+	}
+	reference := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte("ref"))
+	second := doRequest(server, http.MethodPost, "/v1/videos", `{"prompt":"two","model":"vid-1","reference_videos":["`+reference+`"]}`, auth)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second = %d %s", second.Code, second.Body)
+	}
+	secondBody := decodeBody(t, second)
+	taskID := secondBody["id"].(string)
+	if task, ok := fixture.Service.Task(taskID); !ok || !task.HasReferenceMaterials || len(task.AllowedAccounts) != 1 {
+		t.Fatalf("queued task lost reference/allowed data: %#v ok=%v", task, ok)
+	}
+	fixture.Provider.mu.Lock()
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "completed", Videos: []string{"https://cdn.example/v.mp4"}, Credit: floatPtr(1)}
+	fixture.Provider.mu.Unlock()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		fixture.Provider.mu.Lock()
+		submits := fixture.Provider.submitCalls
+		allowed, _ := fixture.Provider.lastVideo.Params["allowed_accounts"].([]string)
+		fixture.Provider.mu.Unlock()
+		if submits >= 2 {
+			if len(allowed) != 1 || allowed[0] != "acct-allowed" {
+				t.Fatalf("queued submitter allowed accounts = %#v lastVideo=%#v", allowed, fixture.Provider.lastVideo)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("queued task did not reach the submitter")
+}
+
+func TestMediaMaxPendingIncludesWaiting(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	cfg.VideoConcurrency = 1
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Service.Tasks.SetMaxPending(2)
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "running"}
+	first := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"one","model":"vid-1"}`, nil)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first = %d %s", first.Code, first.Body)
+	}
+	second := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"two","model":"vid-1"}`, nil)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second = %d %s", second.Code, second.Body)
+	}
+	third := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"three","model":"vid-1"}`, nil)
+	if third.Code != http.StatusTooManyRequests {
+		t.Fatalf("third should hit pending cap including waiting: %d %s", third.Code, third.Body)
+	}
+}
+
+func TestReloadedJSONNumberSeconds(t *testing.T) {
+	dir := t.TempDir()
+	state := `{"tasks":[{"id":"vid_num","status":"completed","model":"vid-1","realm":"cn","key":"","seconds":10,"created_at":1,"completed_at":2}]}`
+	if err := os.WriteFile(filepath.Join(dir, "tasks.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tasks := media.NewTaskStore(media.TaskStoreOptions{Dir: dir})
+	t.Cleanup(tasks.Stop)
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	service := media.NewService(media.ServiceOptions{
+		ConfigFunc: func() media.Config { return cfg }, Tasks: tasks,
+		Pricing: media.NewPricing(dir),
+	})
+	server := New(ServerOptions{Media: service, APIKeyAuth: passThroughAuth, PanelAuth: passThroughAuth})
+	rec := doRequest(server, http.MethodGet, "/v1/videos/vid_num", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get = %d %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["seconds"] != "10" {
+		t.Fatalf("seconds = %#v", body["seconds"])
+	}
+}

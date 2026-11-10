@@ -195,3 +195,66 @@ func TestMediaWaitingBodyBudgetAndHugeLimit(t *testing.T) {
 		t.Fatalf("huge List allocated/returned %d", len(tasks))
 	}
 }
+
+func TestWaitingBudgetReleasedOnCancelAndPump(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(TaskStoreOptions{Dir: dir, MaxWaitingMB: 1, PollInterval: time.Millisecond, PollTimeout: 100 * time.Millisecond})
+	t.Cleanup(store.Stop)
+	body := map[string]any{"prompt": strings.Repeat("a", 600*1024)}
+	task, err := store.CreatePending("m", map[string]any{"seconds": 5}, body, "cn", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	if store.waitingBytes <= 0 {
+		store.mu.Unlock()
+		t.Fatal("waiting budget was not charged")
+	}
+	store.mu.Unlock()
+	if ok, _ := store.Cancel(task.ID); !ok {
+		t.Fatal("cancel failed")
+	}
+	store.mu.Lock()
+	afterCancel := store.waitingBytes
+	store.mu.Unlock()
+	if afterCancel != 0 {
+		t.Fatalf("waiting budget after cancel = %d", afterCancel)
+	}
+	// Pump releases the budget before handing the body to the submitter.
+	store.SetSubmitter(func(context.Context, Task) (providers.MediaVideoSubmit, error) {
+		return providers.MediaVideoSubmit{UpstreamID: "up"}, nil
+	})
+	store.SetPoller(func(context.Context, string, string) (providers.MediaVideoState, error) {
+		return providers.MediaVideoState{Status: "running"}, nil
+	}, nil)
+	if _, err := store.CreatePending("m", map[string]any{"seconds": 5}, body, "cn", "k"); err != nil {
+		t.Fatalf("budget not reusable after cancel: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		bytes := store.waitingBytes
+		store.mu.Unlock()
+		if bytes == 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("waiting budget was not released by the submitter pump")
+}
+
+func TestInFlightCountIncludesQueuedAndSubmitting(t *testing.T) {
+	store := NewTaskStore(TaskStoreOptions{Dir: t.TempDir(), Concurrency: 1})
+	t.Cleanup(store.Stop)
+	store.mu.Lock()
+	store.tasks["q"] = &Task{ID: "q", Status: TaskQueued}
+	store.tasks["s"] = &Task{ID: "s", Status: TaskSubmitting}
+	store.order = []string{"q", "s"}
+	store.mu.Unlock()
+	if got := store.InFlightCount(); got != 2 {
+		t.Fatalf("InFlightCount = %d, want 2", got)
+	}
+	if got := store.PendingCount(); got != 1 {
+		t.Fatalf("PendingCount = %d, want queued-only active count", got)
+	}
+}

@@ -421,6 +421,8 @@ func taskPublic(service *media.Service, task media.Task) map[string]any {
 			out["seconds"] = strconv.Itoa(int(typed))
 		case string:
 			out["seconds"] = typed
+		case json.Number:
+			out["seconds"] = typed.String()
 		}
 	}
 	if task.Resolution != nil {
