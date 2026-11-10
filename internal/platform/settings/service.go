@@ -32,8 +32,19 @@ const (
 	defaultLogMaxDays            = 7
 	maxLogMaxRows                = 100000000
 	maxLogMaxDays                = 36500
-	maxLogMaxBytes               = 100 * 1024 * 1024 * 1024
 )
+
+// maxLogMaxBytes is v1's 100 GiB cap on 64-bit platforms. 32-bit targets
+// (OpenWrt armv7) clamp to the largest representable int so the same settings
+// code compiles without changing the wire value type.
+var maxLogMaxBytes = func() int {
+	if strconv.IntSize >= 64 {
+		gib := 1
+		gib <<= 30
+		return 100 * gib
+	}
+	return int(^uint(0) >> 1)
+}()
 
 var (
 	limitKeys   = []string{"reserve_credits", "daily_token_limit", "daily_credit_limit", "model_daily_token_limit", "expiring_window_days"}

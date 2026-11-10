@@ -453,8 +453,12 @@ func packageTarget(opts options, item target, binary string) (string, error) {
 }
 
 func payloadEntries(opts options, item target, binary string) ([]archiveEntry, error) {
+	binaryEntry := binaryName
+	if item.GOOS == "windows" {
+		binaryEntry += ".exe"
+	}
 	entries := []archiveEntry{
-		{Name: binaryName, Source: binary, Mode: 0o755},
+		{Name: binaryEntry, Source: binary, Mode: 0o755},
 		{Name: "LICENSE", Source: filepath.Join(opts.RepoRoot, "LICENSE"), Mode: 0o644},
 		{Name: "README.md", Source: filepath.Join(opts.RepoRoot, "README.md"), Mode: 0o644},
 	}
@@ -470,6 +474,7 @@ func payloadEntries(opts options, item target, binary string) ([]archiveEntry, e
 			archiveEntry{Name: "start-mix2api.sh", Source: filepath.Join(opts.RepoRoot, "packaging", "portable", "start-mix2api.sh"), Mode: 0o755},
 			archiveEntry{Name: "stop-mix2api.sh", Source: filepath.Join(opts.RepoRoot, "packaging", "portable", "stop-mix2api.sh"), Mode: 0o755},
 			archiveEntry{Name: "start-mix2api.cmd", Source: filepath.Join(opts.RepoRoot, "packaging", "portable", "start-mix2api.cmd"), Mode: 0o644},
+			archiveEntry{Name: "stop-mix2api.cmd", Source: filepath.Join(opts.RepoRoot, "packaging", "portable", "stop-mix2api.cmd"), Mode: 0o644},
 			archiveEntry{Name: "PORTABLE.md", Source: filepath.Join(opts.RepoRoot, "packaging", "portable", "README.md"), Mode: 0o644},
 		)
 	}

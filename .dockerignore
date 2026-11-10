@@ -1,0 +1,11 @@
+.git
+.gitignore
+.github
+.superpowers
+dist
+bin
+data
+*.log
+*.pid
+tests/oracle/v1.6.5
+tests/oracle/__pycache__
