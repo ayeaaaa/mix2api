@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/update"
@@ -80,12 +81,15 @@ func baseEnv() []string {
 }
 
 type limitedBuffer struct {
+	mu    sync.Mutex
 	data  []byte
 	limit int
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	original := len(p)
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	remaining := b.limit - len(b.data)
 	if remaining > 0 {
 		if len(p) > remaining {
@@ -96,4 +100,8 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return original, nil
 }
 
-func (b *limitedBuffer) String() string { return string(b.data) }
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}

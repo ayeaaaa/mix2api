@@ -168,11 +168,11 @@ func secureExistingPath(root, relative string) (string, error) {
 
 func (a *Applier) currentVersion() string {
 	manifest, err := readInstalledManifest(a.root)
-	if err != nil || manifest == nil {
-		return ""
-	}
-	if stableVersion(manifest.Version) {
+	if err == nil && manifest != nil && stableVersion(manifest.Version) {
 		return manifest.Version
+	}
+	if stableVersion(a.fallbackVersion) {
+		return a.fallbackVersion
 	}
 	return ""
 }

@@ -51,36 +51,38 @@ type ServiceController interface {
 // Options configures one Applier. Zero values are resolved to the command's
 // runtime platform and standard paths.
 type Options struct {
-	RequestDir  string
-	Root        string
-	BackupDir   string
-	Repository  string
-	GOOS        string
-	GOARCH      string
-	GOARM       string
-	Now         func() time.Time
-	Downloader  Downloader
-	Controller  ServiceController
-	Logger      func(string)
-	ArchivePath string
-	Checksums   string
+	RequestDir     string
+	Root           string
+	BackupDir      string
+	Repository     string
+	CurrentVersion string
+	GOOS           string
+	GOARCH         string
+	GOARM          string
+	Now            func() time.Time
+	Downloader     Downloader
+	Controller     ServiceController
+	Logger         func(string)
+	ArchivePath    string
+	Checksums      string
 }
 
 // Applier performs validated installs and rollbacks.
 type Applier struct {
-	requestDir string
-	root       string
-	backupDir  string
-	repository string
-	goos       string
-	goarch     string
-	goarm      string
-	now        func() time.Time
-	downloader Downloader
-	controller ServiceController
-	logger     func(string)
-	archive    string
-	checksums  string
+	requestDir      string
+	root            string
+	backupDir       string
+	repository      string
+	fallbackVersion string
+	goos            string
+	goarch          string
+	goarm           string
+	now             func() time.Time
+	downloader      Downloader
+	controller      ServiceController
+	logger          func(string)
+	archive         string
+	checksums       string
 }
 
 // Result is the outcome of an install or rollback.
@@ -142,8 +144,8 @@ func New(opts Options) (*Applier, error) {
 		requestDir: strings.TrimSpace(opts.RequestDir),
 		root:       opts.Root,
 		backupDir:  opts.BackupDir,
-		repository: opts.Repository,
-		goos:       opts.GOOS, goarch: opts.GOARCH, goarm: opts.GOARM,
+		repository: opts.Repository, fallbackVersion: strings.TrimPrefix(strings.TrimSpace(opts.CurrentVersion), "v"),
+		goos: opts.GOOS, goarch: opts.GOARCH, goarm: opts.GOARM,
 		now: opts.Now, downloader: opts.Downloader, controller: opts.Controller,
 		logger: opts.Logger, archive: opts.ArchivePath, checksums: opts.Checksums,
 	}, nil

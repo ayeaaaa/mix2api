@@ -431,3 +431,28 @@ func singleTime() func() time.Time {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	return func() time.Time { return now }
 }
+
+func TestBackupUsesRunningVersionWhenManifestIsMissing(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mix2api"), "old-binary", 0o755)
+	archive, checksums, _ := buildTestRelease(t, root, "2.0.0", map[string][]byte{"mix2api": []byte("new-binary")})
+	requestDir := t.TempDir()
+	applier, err := New(Options{
+		RequestDir: requestDir, Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"),
+		CurrentVersion: "1.5.0", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		ArchivePath: archive, Checksums: checksums, Controller: &fakeController{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := applier.listBackups()
+	if err != nil || len(records) != 1 || records[0].Version != "1.5.0" {
+		for _, record := range records {
+			t.Logf("backup version=%q complete=%v reason=%q", record.Version, record.Complete, record.Reason)
+		}
+		t.Fatalf("backups = %d err=%v", len(records), err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/version"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/update"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/update/apply"
 )
@@ -38,7 +39,7 @@ func runUpdateCommand(args []string, stdout, stderr io.Writer) int {
 	var stopArgs, startArgs repeatFlag
 	flags.Var(&stopArgs, "stop-arg", "argument for --stop-command (repeatable)")
 	flags.Var(&startArgs, "start-arg", "argument for --start-command (repeatable)")
-	version := flags.String("version", "", "target version for install/rollback (default: queued request)")
+	targetVersion := flags.String("version", "", "target version for install/rollback (default: queued request)")
 	asJSON := flags.Bool("json", false, "print one JSON result")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
@@ -50,7 +51,8 @@ func runUpdateCommand(args []string, stdout, stderr io.Writer) int {
 
 	options := apply.Options{
 		RequestDir: *requestDir, Root: *root, BackupDir: *backupDir,
-		ArchivePath: *archive, Checksums: *checksums,
+		CurrentVersion: version.NormalizedVersion(),
+		ArchivePath:    *archive, Checksums: *checksums,
 		Logger: func(message string) { fmt.Fprintln(stderr, message) },
 		Controller: &apply.CommandController{
 			StopCommand:  apply.CommandSpec{Path: *stopCommand, Args: append([]string(nil), stopArgs...)},
@@ -75,7 +77,7 @@ func runUpdateCommand(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	request, err := updateRequestForAction(action, *version, *requestDir, applier.Root())
+	request, err := updateRequestForAction(action, *targetVersion, *requestDir, applier.Root())
 	if err != nil {
 		fmt.Fprintln(stderr, "mix2api update: "+err.Error())
 		return 1
