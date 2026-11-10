@@ -8,7 +8,10 @@
 *.log
 
 # Local build/test artifacts.
+/bin/
+/dist/
 /mix2api
+.env
 *.test
 coverage.out
 *.out
