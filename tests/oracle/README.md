@@ -1,5 +1,58 @@
 # v1.6.5 oracle for contract goldens
 
+## Selected-output harness (Gate F)
+
+`tests/oracle/cmd/oracle` records and compares a fixed set of v1.6.5 outputs.
+Recording is deliberately restricted to loopback and requires
+`--fake-upstream`; it refuses to run against a real account or a remote host.
+The harness writes raw responses plus a checksummed manifest with provenance
+(`fake_upstream`, `loopback-only`, target version/commit). Fixtures are **not**
+committed until a real recording is reviewed; the current tree still contains
+no captured v1.6.5 oracle.
+
+Selected cases:
+
+| Case | Endpoint |
+| --- | --- |
+| health | `GET /health?force=1` |
+| models | `GET /v1/models?realm=raccoon` |
+| chat / chat_stream | `POST /v1/chat/completions?realm=raccoon` |
+| responses / responses_stream | `POST /v1/responses?realm=raccoon` |
+| messages | `POST /v1/messages?realm=raccoon` |
+| admin_accounts | `GET /raccoon/accounts` (panel token) |
+| media_models | `GET /v1/media/models` (API key) |
+| agents | `GET /agents` (panel token) |
+| updates / updates_backups | `GET /updates`, `GET /updates/backups` |
+| usage | `GET /usage` (panel token) |
+| logs | `GET /logs` (panel token) |
+
+```sh
+# After starting v1.6.5 against the local fake upstream (see below):
+tests/oracle/run.sh record \
+  --base http://127.0.0.1:18765 --out /tmp/mix2api-oracle \
+  --version 1.6.5 --commit e40c4e8994f9cc6ace3457e350466cdd5d422a37 \
+  --fake-upstream --panel-token "$PANEL" --api-key "$API_KEY"
+
+# Against the v2 candidate with the same fake-upstream accounts:
+tests/oracle/run.sh compare \
+  --base http://127.0.0.1:18766 --oracle /tmp/mix2api-oracle \
+  --panel-token "$PANEL" --api-key "$API_KEY"
+```
+
+Normalization uses `tests/contract/normalize.go`: transport metadata is
+dropped, generated IDs/timestamps are replaced only in identifier contexts,
+model/account IDs and content survive, SSE frames are merged semantically, and
+`[DONE]` is recorded. The harness never contacts a non-loopback host and never
+writes credentials into the fixture.
+
+**Gate F status: selected oracle recording and comparison are PENDING.** The
+real-account checklist is in `REAL-ACCOUNT-SMOKE.md` and must be completed on
+dedicated accounts before any `v2.0.0` tag.
+
+The older manual procedure below remains the reference for starting the v1
+fake upstream and seeding accounts.
+
+
 The v2 golden fixtures in `tests/contract/testdata` are currently hand-written
 v2 regression goldens, **not captured v1.6.5 oracle output** (see
 `tests/contract/testdata/PROVENANCE.md`). The procedure below is how to record
