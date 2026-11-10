@@ -347,8 +347,10 @@ func ValidateCachePosition(entry map[string]any, path string) (int64, bool) {
 		}
 	}
 	// v1/v3 checkpoints predate the explicit mtime field; when it is present
-	// it must not claim a future write, but its absence is not invalid. Store
-	// whole seconds: nanosecond values do not round-trip through json.Number
+	// it must not claim a future write, but its absence is not invalid. A
+	// legacy entry without mtime is accepted on device/inode/size/tail alone;
+	// any mismatch there is a cold rescan, never a fatal error. Store whole
+	// seconds: nanosecond values do not round-trip through json.Number
 	// (float64) without occasionally rounding up and looking "future".
 	if storedMTime, okMTime := cacheInt(entry["mtime"]); okMTime {
 		if info.ModTime().Unix() < storedMTime {
@@ -434,4 +436,66 @@ func cacheInt(value any) (int64, bool) {
 func CacheFingerprint(value string) string {
 	sum := sha1.Sum([]byte(value))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// cacheFingerprintOK accepts both our compact fingerprint strings and the
+// richer v1 records (a pricing dependency object plus realm_inputs). A string
+// mismatch rejects; a v1 object is accepted after shape validation.
+func (s *Service) cacheFingerprintOK(entry map[string]any) bool {
+	if value, ok := entry["pricing"]; ok {
+		switch typed := value.(type) {
+		case nil:
+		case string:
+			if typed != CacheFingerprint(s.pricingFingerprint()) {
+				return false
+			}
+		case []any, map[string]any:
+			// v1 policy-dependency record; its shape is intentionally richer
+			// than the v2 compact digest. The position/tail check still proves
+			// the folded prefix is the same bytes.
+		default:
+			return false
+		}
+	}
+	if value, ok := entry["realm_fp"]; ok {
+		if text, ok := value.(string); ok {
+			return text == CacheFingerprint(s.realmFingerprint())
+		}
+		if value != nil {
+			return false
+		}
+	}
+	if value, ok := entry["realm_inputs"]; ok && value != nil {
+		return validV1RealmInputs(value)
+	}
+	return true
+}
+
+func validV1RealmInputs(value any) bool {
+	parts, ok := value.([]any)
+	if !ok || len(parts) != 2 {
+		return false
+	}
+	if parts[0] != nil {
+		if _, ok := parts[0].(string); !ok {
+			return false
+		}
+	}
+	pairs, ok := parts[1].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range pairs {
+		pair, ok := raw.([]any)
+		if !ok || len(pair) != 2 {
+			return false
+		}
+		if _, ok := pair[0].(string); !ok {
+			return false
+		}
+		if _, ok := pair[1].(string); !ok {
+			return false
+		}
+	}
+	return true
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -36,10 +37,14 @@ type seriesState struct {
 	Minutes map[int64]*SeriesBucket `json:"minutes"`
 	Credits []SeriesCredit          `json:"credits"`
 	MaxAt   float64                 `json:"max_at"`
+	// MinuteComplete is false when the state was adopted from a v1 cache that
+	// only carried hour/day buckets. Minute windows then fall back to a scan;
+	// hour/day windows can still be served by the hour-start pseudo-minutes.
+	MinuteComplete bool `json:"minute_complete"`
 }
 
 func newSeriesState() seriesState {
-	return seriesState{Minutes: map[int64]*SeriesBucket{}}
+	return seriesState{Minutes: map[int64]*SeriesBucket{}, MinuteComplete: true}
 }
 
 func (s *seriesState) fold(row Row) {
@@ -83,21 +88,10 @@ func (s *seriesState) fold(row Row) {
 	}
 }
 
-// Timeseries returns bucketed token/credit series.
-func (s *Service) Timeseries(ctx context.Context, opts SeriesOptions) (map[string]any, error) {
-	if s == nil || s.Store == nil {
-		return nil, fmt.Errorf("usage: nil service")
-	}
+// seriesPlan resolves the window and bucket size exactly once, so the data
+// path and the ETag path cannot disagree about the resolved step.
+func (s *Service) seriesPlan(opts SeriesOptions) (Range, time.Time, time.Time, int) {
 	window := ParseRange(opts.Range, opts.Since, opts.Until)
-	realm := scopeRealm(opts.Realm)
-	pinnedLo := boundKey(window.Since)
-	pinnedHi := boundKey(window.Until)
-	if pinnedLo == "" {
-		pinnedLo = "auto"
-	}
-	if pinnedHi == "" {
-		pinnedHi = "auto"
-	}
 	hi := s.now()
 	if window.Until != nil {
 		hi = *window.Until
@@ -124,6 +118,24 @@ func (s *Service) Timeseries(ctx context.Context, opts SeriesOptions) (map[strin
 		default:
 			step = 86400
 		}
+	}
+	return window, lo, hi, step
+}
+
+// Timeseries returns bucketed token/credit series.
+func (s *Service) Timeseries(ctx context.Context, opts SeriesOptions) (map[string]any, error) {
+	if s == nil || s.Store == nil {
+		return nil, fmt.Errorf("usage: nil service")
+	}
+	window, lo, hi, step := s.seriesPlan(opts)
+	realm := scopeRealm(opts.Realm)
+	pinnedLo := boundKey(window.Since)
+	pinnedHi := boundKey(window.Until)
+	if pinnedLo == "" {
+		pinnedLo = "auto"
+	}
+	if pinnedHi == "" {
+		pinnedHi = "auto"
 	}
 	cacheKey := fmt.Sprintf("%s|%s|%s|%d", realm, pinnedLo, pinnedHi, step)
 	if value, _, ok := s.resultGet("series", cacheKey); ok {
@@ -153,7 +165,7 @@ func (s *Service) Timeseries(ctx context.Context, opts SeriesOptions) (map[strin
 		"series":         buckets,
 		"credits":        credits,
 	}
-	s.resultPutQuery("series", cacheKey, SeriesETagKey(opts.Realm, window, opts.BucketSeconds), payload, s.statsTTL())
+	s.resultPutQuery("series", cacheKey, SeriesETagKeyResolved(opts.Realm, window, step), payload, s.statsTTL())
 	return payload, nil
 }
 
@@ -185,7 +197,7 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 		if entryRealm != realm {
 			continue
 		}
-		if fingerprint, _ := entry["realm_fp"].(string); fingerprint != CacheFingerprint(s.realmFingerprint()) {
+		if !s.cacheFingerprintOK(entry) {
 			continue
 		}
 		offset, ok := ValidateCachePosition(entry, s.Store.Paths.Log)
@@ -193,16 +205,21 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 			continue
 		}
 		raw, ok := entry["data"].(map[string]any)
-		if !ok {
-			continue
-		}
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			continue
-		}
 		var state seriesState
-		if err := json.Unmarshal(encoded, &state); err != nil {
-			continue
+		if ok {
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(encoded, &state); err != nil {
+				continue
+			}
+		} else {
+			converted, valid := seriesStateFromV1(entry)
+			if !valid {
+				continue
+			}
+			state = converted
 		}
 		if state.Minutes == nil {
 			state.Minutes = map[int64]*SeriesBucket{}
@@ -240,6 +257,113 @@ func (s *Service) saveSeries(realm string, state seriesState, offset int64) {
 	_ = s.Cache.Save("series", entry)
 }
 
+// seriesStateFromV1 converts a real v1 series checkpoint entry. v1 stores
+// `minutes` as [minute, requests, errors, prompt, completion, reasoning,
+// cached, total, credit] rows; older entries without that ring carry
+// `days[].hours` instead, which we materialize as hour-start pseudo-minutes.
+func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
+	state := newSeriesState()
+	state.MinuteComplete = false
+	if raw, ok := entry["minutes"]; ok && raw != nil {
+		rows, ok := raw.([]any)
+		if !ok {
+			return seriesState{}, false
+		}
+		for _, row := range rows {
+			values, ok := row.([]any)
+			if !ok || len(values) < 9 {
+				return seriesState{}, false
+			}
+			minute, ok := numericValue(values[0])
+			if !ok {
+				return seriesState{}, false
+			}
+			key := int64(minute) * 60
+			bucket := &SeriesBucket{At: float64(key)}
+			fields := []*int64{&bucket.Requests, &bucket.Errors, &bucket.PromptTokens,
+				&bucket.CompletionTokens, &bucket.ReasoningTokens, &bucket.CachedTokens,
+				&bucket.TotalTokens}
+			for index, target := range fields {
+				value, ok := numericValue(values[index+1])
+				if !ok {
+					return seriesState{}, false
+				}
+				*target = int64(value)
+			}
+			credit, ok := numericValue(values[8])
+			if !ok {
+				return seriesState{}, false
+			}
+			bucket.Credit = credit
+			state.Minutes[key] = bucket
+		}
+		state.MinuteComplete = true
+	} else if days, ok := entry["days"].(map[string]any); ok {
+		for _, rawDay := range days {
+			day, ok := rawDay.(map[string]any)
+			if !ok {
+				continue
+			}
+			hours, ok := day["hours"].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, rawHour := range hours {
+				hour, ok := rawHour.(map[string]any)
+				if !ok {
+					continue
+				}
+				bucket, ok := seriesBucketFromMap(hour)
+				if !ok {
+					continue
+				}
+				state.Minutes[int64(bucket.At)] = bucket
+			}
+		}
+	}
+	credits, _ := entry["credits"].([]any)
+	if len(state.Minutes) == 0 && len(credits) == 0 {
+		// No usable series data in the entry.
+		return seriesState{}, false
+	}
+	if credits != nil {
+		encoded, err := json.Marshal(credits)
+		if err != nil || json.Unmarshal(encoded, &state.Credits) != nil {
+			return seriesState{}, false
+		}
+	}
+	if maxAt, ok := numericValue(entry["max_at"]); ok {
+		state.MaxAt = maxAt
+	}
+	return state, true
+}
+
+func seriesBucketFromMap(raw map[string]any) (*SeriesBucket, bool) {
+	at, ok := numericValue(raw["at"])
+	if !ok {
+		return nil, false
+	}
+	bucket := &SeriesBucket{At: at}
+	for field, target := range map[string]*int64{
+		"requests": &bucket.Requests, "errors": &bucket.Errors,
+		"prompt_tokens": &bucket.PromptTokens, "completion_tokens": &bucket.CompletionTokens,
+		"reasoning_tokens": &bucket.ReasoningTokens, "cached_tokens": &bucket.CachedTokens,
+		"total_tokens": &bucket.TotalTokens,
+	} {
+		value, ok := numericValue(raw[field])
+		if !ok {
+			return nil, false
+		}
+		*target = int64(value)
+	}
+	credit, ok := numericValue(raw["credit"])
+	if !ok {
+		return nil, false
+	}
+	bucket.Credit = credit
+	return bucket, true
+}
+
 // seriesSlice turns minute buckets into the requested grid. It reports false
 // when the window/bucket does not align, so the caller falls back to a raw
 // scan with the exact v1 origin rule.
@@ -250,7 +374,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 		return nil, nil, false
 	}
 	if step == 60 {
-		if lo.Second() != 0 || lo.Nanosecond() != 0 {
+		if !state.MinuteComplete || lo.Second() != 0 || lo.Nanosecond() != 0 {
 			return nil, nil, false
 		}
 	} else if step == 3600 {
@@ -389,4 +513,10 @@ func topCredits(credits []SeriesCredit) []SeriesCredit {
 		credits = []SeriesCredit{}
 	}
 	return credits
+}
+
+// SeriesETagKeyResolved identifies a timeseries query by its resolved bucket
+// step, so aliases such as bucket=30 and bucket=60 share one validator.
+func SeriesETagKeyResolved(realm string, window Range, step int) string {
+	return strings.Join([]string{"series", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until), fmt.Sprint(step)}, "\x1f")
 }

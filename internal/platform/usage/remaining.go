@@ -314,16 +314,21 @@ func (s *Service) adoptRemaining(ctx context.Context) (*remainingState, int64, i
 			continue
 		}
 		raw, ok := entry["data"].(map[string]any)
-		if !ok {
-			continue
-		}
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			continue
-		}
 		var state remainingState
-		if err := json.Unmarshal(encoded, &state); err != nil {
-			continue
+		if ok {
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(encoded, &state); err != nil {
+				continue
+			}
+		} else {
+			converted, valid := remainingStateFromV1(entry)
+			if !valid {
+				continue
+			}
+			state = converted
 		}
 		if state.Usage == nil {
 			state.Usage = map[string]*usageBuffer{}
@@ -359,6 +364,63 @@ func (s *Service) adoptRemaining(ctx context.Context) (*remainingState, int64, i
 		return &state, newLog, fileOffset, true
 	}
 	return nil, 0, 0, false
+}
+
+// remainingStateFromV1 converts the v1 checkpoint shape: events plus
+// per-(uid,model) prefix-sum buffers ({at, cum, head, base}). The prefix sums
+// are expanded back into individual samples; a decreasing prefix is corrupt
+// and rejects the entry (cold rescan).
+func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
+	state := remainingState{Usage: map[string]*usageBuffer{}, Realms: map[string]string{}}
+	if rawEvents, ok := entry["events"].([]any); ok {
+		encoded, err := json.Marshal(rawEvents)
+		if err != nil || json.Unmarshal(encoded, &state.Events) != nil {
+			return remainingState{}, false
+		}
+	}
+	rawUsage, ok := entry["usage"].(map[string]any)
+	if !ok {
+		return state, true
+	}
+	for key, raw := range rawUsage {
+		pair, ok := raw.(map[string]any)
+		if !ok {
+			return remainingState{}, false
+		}
+		ats, okAts := pair["at"].([]any)
+		cums, okCums := pair["cum"].([]any)
+		if !okAts || !okCums || len(ats) != len(cums) {
+			return remainingState{}, false
+		}
+		head, _ := cacheInt(pair["head"])
+		if head < 0 || head > int64(len(ats)) {
+			return remainingState{}, false
+		}
+		base, _ := cacheInt(pair["base"])
+		previous := float64(base)
+		if head > 0 {
+			value, ok := numericValue(cums[head-1])
+			if !ok {
+				return remainingState{}, false
+			}
+			previous = value
+		}
+		buffer := &usageBuffer{}
+		for index := int(head); index < len(ats); index++ {
+			at, ok := numericValue(ats[index])
+			if !ok {
+				return remainingState{}, false
+			}
+			cum, ok := numericValue(cums[index])
+			if !ok || cum < previous {
+				return remainingState{}, false
+			}
+			appendSample(buffer, at, int64(cum-previous))
+			previous = cum
+		}
+		state.Usage[key] = buffer
+	}
+	return state, true
 }
 
 func limitEventFromRow(row Row) *limitEvent {

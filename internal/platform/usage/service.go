@@ -232,6 +232,69 @@ func (s *Service) QueryETag(kind, signature string) string {
 	return s.queryETags[kind+"\x1f"+signature]
 }
 
+// SnapshotETag returns the validator for one snapshot query.
+func (s *Service) SnapshotETag(opts SnapshotOptions) string {
+	if s == nil {
+		return ""
+	}
+	window := ParseRange(opts.Range, opts.Since, opts.Until)
+	return s.QueryETag("snapshot", SnapshotETagKey(opts.Realm, window))
+}
+
+// AnalyticsETag returns the validator for one analytics query.
+func (s *Service) AnalyticsETag(opts AnalyticsOptions) string {
+	if s == nil {
+		return ""
+	}
+	window := ParseRange(opts.Range, opts.Since, opts.Until)
+	return s.QueryETag("analytics", AnalyticsETagKey(opts.Realm, window))
+}
+
+// PerfETag returns the validator for one perf query.
+func (s *Service) PerfETag(opts PerfOptions) string {
+	if s == nil {
+		return ""
+	}
+	sample := opts.Sample
+	if sample <= 0 {
+		sample = 5000
+	}
+	if sample < 10 {
+		sample = 10
+	}
+	if sample > 20000 {
+		sample = 20000
+	}
+	window := ParseRange(opts.Range, opts.Since, opts.Until)
+	return s.QueryETag("perf", PerfETagKey(opts.Realm, window, sample))
+}
+
+// SeriesETag returns the validator for one timeseries query, keyed by the
+// resolved bucket step so bucket aliases share the same tag.
+func (s *Service) SeriesETag(opts SeriesOptions) string {
+	if s == nil {
+		return ""
+	}
+	window, _, _, step := s.seriesPlan(opts)
+	return s.QueryETag("series", SeriesETagKeyResolved(opts.Realm, window, step))
+}
+
+// ByAccountETag returns the validator for the constant by-account view.
+func (s *Service) ByAccountETag() string {
+	if s == nil {
+		return ""
+	}
+	return s.QueryETag("by_account", ByAccountETagKey())
+}
+
+// RemainingETag returns the validator for the constant remaining view.
+func (s *Service) RemainingETag() string {
+	if s == nil {
+		return ""
+	}
+	return s.QueryETag("remaining", RemainingETagKey())
+}
+
 // ETag signatures deliberately contain every query dimension that changes the
 // payload. They are built by the same helpers on the service and HTTP sides so
 // one query can never be served another query's validator.
@@ -251,9 +314,15 @@ func PerfETagKey(realm string, window Range, sample int) string {
 	return strings.Join([]string{"perf", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until), fmt.Sprint(sample)}, "\x1f")
 }
 
-// SeriesETagKey identifies a timeseries query.
+// SeriesETagKey identifies a timeseries query by an explicit bucket size.
+// Values below the minimum 60s resolve to the same step and therefore the same
+// validator; the service itself always uses the fully resolved step.
 func SeriesETagKey(realm string, window Range, bucketSeconds int) string {
-	return strings.Join([]string{"series", scopeRealm(realm), boundKey(window.Since), boundKey(window.Until), fmt.Sprint(bucketSeconds)}, "\x1f")
+	step := bucketSeconds
+	if step > 0 && step < 60 {
+		step = 60
+	}
+	return SeriesETagKeyResolved(realm, window, step)
 }
 
 // ByAccountETagKey is constant: this view has no query dimensions.

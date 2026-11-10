@@ -372,10 +372,7 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 		if entryRealm != realm {
 			continue
 		}
-		if fingerprint, _ := entry["pricing"].(string); fingerprint != CacheFingerprint(s.pricingFingerprint()) {
-			continue
-		}
-		if fingerprint, _ := entry["realm_fp"].(string); fingerprint != CacheFingerprint(s.realmFingerprint()) {
+		if !s.cacheFingerprintOK(entry) {
 			continue
 		}
 		offset, ok := ValidateCachePosition(entry, s.Store.Paths.Log)
@@ -539,8 +536,12 @@ func (s *Service) analyticsPayload(allMaps, winMaps analyticsMaps, realm string,
 			"window": entry.Window, "all_time": entry.AllTime,
 			"window_models": entry.WindowModels, "all_models": entry.AllModels,
 		}
-		if info, ok := s.Accounts[uid]; ok && info.Credits != nil {
-			item["credits"] = info.Credits
+		if info, ok := s.Accounts[uid]; ok {
+			credits := info.Credits
+			if credits == nil {
+				credits = map[string]any{}
+			}
+			item["credits"] = credits
 		}
 		accounts = append(accounts, item)
 	}

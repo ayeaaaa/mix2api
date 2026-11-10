@@ -184,7 +184,7 @@ type Entry struct {
 	InheritedFrom string  `json:"inherited_from,omitempty"`
 	OverrideFrom  string  `json:"override_from,omitempty"`
 	Flat          Rates   `json:"flat"`
-	Bands         []Band  `json:"bands,omitempty"`
+	Bands         []Band  `json:"bands"`
 }
 
 // Cost is the estimated equivalent-token cost of one usage row.
@@ -253,7 +253,7 @@ type Policy struct {
 	Unit          float64 `json:"unit,omitempty"`
 	USDCNY        float64 `json:"usd_cny,omitempty"`
 	Flat          Rates   `json:"flat"`
-	Bands         []Band  `json:"bands,omitempty"`
+	Bands         []Band  `json:"bands"`
 	Via           string  `json:"via,omitempty"`
 	InheritedFrom string  `json:"inherited_from,omitempty"`
 	OverrideFrom  string  `json:"override_from,omitempty"`

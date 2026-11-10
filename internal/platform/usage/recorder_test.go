@@ -105,7 +105,7 @@ func TestRecorderCachedTokenAliases(t *testing.T) {
 	if err := recorder.Record(context.Background(), RecordInput{
 		At: at, Model: "m", Realm: "intl",
 		Usage: map[string]any{
-			"prompt_tokens": 100, "completion_tokens": 10,
+			"prompt_tokens": 100, "completion_tokens": 10, "reasoning_tokens": 0,
 			"cached_tokens": 0, "cache_read_input_tokens": 0,
 			"prompt_tokens_details":     map[string]any{"cached_tokens": 40},
 			"completion_tokens_details": map[string]any{"reasoning_tokens": 7},

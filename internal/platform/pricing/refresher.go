@@ -320,7 +320,6 @@ func (r *Refresher) Run(ctx context.Context) {
 		if interval <= 0 {
 			r.mu.Lock()
 			r.lastAttempt = r.clock()
-			r.lastRun = r.lastAttempt
 			r.mu.Unlock()
 			continue
 		}
@@ -353,11 +352,8 @@ func (r *Refresher) noteAttempt(at time.Time, success bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastAttempt = at
-	// lastRun is the scheduling clock: a failed attempt still advances it so
-	// the next wait is measured from when the attempt happened, not from the
-	// previous success (or from zero on a freshly started process).
-	r.lastRun = at
 	if success {
+		r.lastRun = at
 		r.failures = 0
 		r.nextAttempt = time.Time{}
 		return
@@ -379,6 +375,10 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 		return errors.New("pricing: nil refresher")
 	}
 	if !r.runMu.TryLock() {
+		// A long manual refresh already owns the work. Record the attempt so
+		// the background loop waits out a backoff instead of retrying/logging
+		// in a hot cycle while that fetch is still running.
+		r.noteAttempt(r.clock(), false)
 		return errors.New("pricing: refresh already running")
 	}
 	defer r.runMu.Unlock()

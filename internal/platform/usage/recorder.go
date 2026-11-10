@@ -135,13 +135,13 @@ func copyUsageFields(row map[string]any, usage map[string]any) {
 			row[field] = int64(value)
 		}
 	}
-	reasoning := usage["reasoning_tokens"]
-	if reasoning == nil {
-		reasoning = nestedUsageValue(usage, "completion_tokens_details", "reasoning_tokens")
+	reasoning, reasoningOK := numericValue(usage["reasoning_tokens"])
+	if !reasoningOK || reasoning <= 0 {
+		if nested, ok := numericValue(nestedUsageValue(usage, "completion_tokens_details", "reasoning_tokens")); ok && nested > 0 {
+			reasoning = nested
+		}
 	}
-	if value, ok := numericValue(reasoning); ok {
-		row["reasoning_tokens"] = int64(value)
-	}
+	row["reasoning_tokens"] = int64(reasoning)
 	if value, ok := numericValue(usage["credit"]); ok {
 		row["credit"] = value
 	}

@@ -230,3 +230,49 @@ func numberOf(t *testing.T, value any) float64 {
 		return 0
 	}
 }
+
+func TestUsageETagsCrossQueryAnalyticsPerfAndSeries(t *testing.T) {
+	service := usageTestService(t)
+	if err := service.Store.Append(map[string]any{
+		"at": float64(time.Now().Unix() - 30), "model": "m", "realm": "cn",
+		"account": "b", "key": "k1", "outcome": "completed", "kind": "chat",
+		"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewUsageHandlers(service, nil).Register(mux)
+
+	assertDifferent := func(a, b string) {
+		left := perform(t, mux, a)
+		right := perform(t, mux, b)
+		if left.Header().Get("ETag") == "" || right.Header().Get("ETag") == "" ||
+			left.Header().Get("ETag") == right.Header().Get("ETag") {
+			t.Fatalf("ETags not query-specific: %s=%q %s=%q", a, left.Header().Get("ETag"), b, right.Header().Get("ETag"))
+		}
+		request := httptest.NewRequest(http.MethodGet, a, nil)
+		request.Header.Set("If-None-Match", right.Header().Get("ETag"))
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("cross-query analytics/perf ETag returned %d for %s", recorder.Code, a)
+		}
+	}
+	assertDifferent("/usage/analytics?realm=intl", "/usage/analytics?realm=cn")
+	assertDifferent("/usage/perf?realm=intl&sample=50", "/usage/perf?realm=intl&sample=100")
+
+	// Bucket alias: 30s resolves to the 60s minimum, so both queries share a
+	// validator and the second one can be a 304.
+	alias := perform(t, mux, "/usage/timeseries?realm=intl&bucket=30")
+	canonical := perform(t, mux, "/usage/timeseries?realm=intl&bucket=60")
+	if alias.Header().Get("ETag") == "" || alias.Header().Get("ETag") != canonical.Header().Get("ETag") {
+		t.Fatalf("bucket aliases have different ETags: %q vs %q", alias.Header().Get("ETag"), canonical.Header().Get("ETag"))
+	}
+	request := httptest.NewRequest(http.MethodGet, "/usage/timeseries?realm=intl&bucket=30", nil)
+	request.Header.Set("If-None-Match", canonical.Header().Get("ETag"))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotModified {
+		t.Fatalf("bucket alias should return 304, got %d", recorder.Code)
+	}
+}

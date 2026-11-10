@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -528,6 +529,9 @@ func TestEnsurePolicyMintsAndIsIdempotent(t *testing.T) {
 	if len(policies) == 0 || len(timeline) == 0 {
 		t.Fatalf("policy files were not minted: policies=%q timeline=%q", policies, timeline)
 	}
+	if !strings.Contains(string(policies), `"bands":null`) {
+		t.Fatalf("policy row must carry v1 bands:null: %s", policies)
+	}
 	cost := snapshot.CostForRow(map[string]any{"model": "m", "prompt_tokens": 1_000_000})
 	if !cost.Known || cost.CNY <= 0 || cost.Policy != first {
 		t.Fatalf("minted policy is not usable: %+v", cost)
@@ -591,5 +595,113 @@ func TestRefresherDisabledDoesNotFetch(t *testing.T) {
 	refresher.Stop()
 	if calls != 0 {
 		t.Fatalf("disabled refresher fetched %d times", calls)
+	}
+}
+
+func TestRefresherBusyManualRunOnceDoesNotChurn(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot, err := Load(accounts, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	refresher := NewRefresher(RefresherOptions{
+		Snapshot: snapshot,
+		Interval: func() float64 { return 0.001 },
+		RetryMin: 20 * time.Millisecond,
+		RetryMax: 40 * time.Millisecond,
+		Fetch: func(context.Context) (map[string]OpenRouterPrice, error) {
+			close(started)
+			<-release
+			return nil, errors.New("offline")
+		},
+	})
+	firstDone := make(chan struct{})
+	go func() { _ = refresher.RunOnce(context.Background()); close(firstDone) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("manual refresh never started")
+	}
+	secondStart := time.Now()
+	err = refresher.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("busy RunOnce = %v", err)
+	}
+	if elapsed := time.Since(secondStart); elapsed > 200*time.Millisecond {
+		t.Fatalf("busy RunOnce blocked for %v", elapsed)
+	}
+	status := refresher.Status()
+	if status["last_attempt"].(int64) == 0 {
+		t.Fatalf("busy attempt not recorded: %+v", status)
+	}
+	if status["next_run"].(int64) == 0 {
+		t.Fatalf("busy retry not scheduled: %+v", status)
+	}
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("manual refresh did not finish")
+	}
+}
+
+func TestRefresherSuccessThenFailureAndDisabled(t *testing.T) {
+	accounts, usage := tempDirs(t)
+	snapshot, err := Load(accounts, usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := "ok"
+	refresher := NewRefresher(RefresherOptions{
+		Snapshot: snapshot,
+		Interval: func() float64 { return 5 },
+		Fetch: func(context.Context) (map[string]OpenRouterPrice, error) {
+			if mode == "fail" {
+				return nil, errors.New("offline")
+			}
+			return map[string]OpenRouterPrice{
+				"openai/gpt-6-astra": {Prompt: 0.000001, Completion: 0.000002, InputCacheReadPresent: true, InputCacheRead: 0.0000005},
+			}, nil
+		},
+	})
+	if err := refresher.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	success := refresher.Status()
+	if success["last_run"].(int64) == 0 || success["failures"].(int64) != 0 {
+		t.Fatalf("success status = %+v", success)
+	}
+	successRun := success["last_run"].(int64)
+	time.Sleep(2 * time.Millisecond)
+	mode = "fail"
+	if err := refresher.RunOnce(context.Background()); err == nil {
+		t.Fatal("failure did not surface")
+	}
+	failed := refresher.Status()
+	if failed["last_run"].(int64) != successRun {
+		t.Fatalf("last_run must stay on the last success: %+v", failed)
+	}
+	if failed["last_attempt"].(int64) == 0 || failed["failures"].(int64) != 1 {
+		t.Fatalf("failure attempt not recorded: %+v", failed)
+	}
+	settings, _ := json.Marshal(map[string]any{"pricing_enabled": false})
+	if err := os.WriteFile(filepath.Join(accounts, "settings.json"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if err := refresher.RunOnce(context.Background()); err == nil {
+		t.Fatal("disabled RunOnce did not fail")
+	}
+	disabled := refresher.Status()
+	if disabled["last_run"].(int64) != successRun {
+		t.Fatalf("disabled attempt changed last_run: %+v", disabled)
+	}
+	if disabled["failures"].(int64) != 2 {
+		t.Fatalf("disabled attempt not counted: %+v", disabled)
+	}
+	if disabled["last_attempt"].(int64) == failed["last_attempt"].(int64) {
+		t.Fatalf("disabled attempt did not advance last_attempt: %+v", disabled)
 	}
 }

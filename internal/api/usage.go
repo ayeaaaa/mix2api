@@ -104,14 +104,14 @@ func (h *UsageHandlers) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	window := h.window(r)
-	data, err := h.Service.Snapshot(r.Context(), usage.SnapshotOptions{
-		Realm: h.realm(r), Range: window.Range, Since: window.Since, Until: window.Until,
-	})
+	opts := usage.SnapshotOptions{Realm: h.realm(r), Range: window.Range, Since: window.Since, Until: window.Until}
+	before := h.Service.SnapshotETag(opts)
+	data, err := h.Service.Snapshot(r.Context(), opts)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage snapshot failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("snapshot", usage.SnapshotETagKey(h.realm(r), usage.Range{Since: window.Since, Until: window.Until})), data)
+	h.writeCached(w, r, stableETag(before, h.Service.SnapshotETag(opts)), data)
 }
 
 func (h *UsageHandlers) handleRecent(w http.ResponseWriter, r *http.Request) {
@@ -137,14 +137,14 @@ func (h *UsageHandlers) handleAnalytics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	window := h.window(r)
-	data, err := h.Service.Analytics(r.Context(), usage.AnalyticsOptions{
-		Realm: h.analyticsRealm(r), Range: window.Range, Since: window.Since, Until: window.Until,
-	})
+	opts := usage.AnalyticsOptions{Realm: h.analyticsRealm(r), Range: window.Range, Since: window.Since, Until: window.Until}
+	before := h.Service.AnalyticsETag(opts)
+	data, err := h.Service.Analytics(r.Context(), opts)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage analytics failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("analytics", usage.AnalyticsETagKey(h.analyticsRealm(r), usage.Range{Since: window.Since, Until: window.Until})), data)
+	h.writeCached(w, r, stableETag(before, h.Service.AnalyticsETag(opts)), data)
 }
 
 func (h *UsageHandlers) handlePerf(w http.ResponseWriter, r *http.Request) {
@@ -160,15 +160,14 @@ func (h *UsageHandlers) handlePerf(w http.ResponseWriter, r *http.Request) {
 	if sample > 20000 {
 		sample = 20000
 	}
-	data, err := h.Service.Perf(r.Context(), usage.PerfOptions{
-		Realm: h.realm(r), Range: window.Range, Since: window.Since,
-		Until: window.Until, Sample: sample,
-	})
+	opts := usage.PerfOptions{Realm: h.realm(r), Range: window.Range, Since: window.Since, Until: window.Until, Sample: sample}
+	before := h.Service.PerfETag(opts)
+	data, err := h.Service.Perf(r.Context(), opts)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage perf failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("perf", usage.PerfETagKey(h.realm(r), usage.Range{Since: window.Since, Until: window.Until}, sample)), data)
+	h.writeCached(w, r, stableETag(before, h.Service.PerfETag(opts)), data)
 }
 
 func (h *UsageHandlers) handleTimeseries(w http.ResponseWriter, r *http.Request) {
@@ -178,15 +177,14 @@ func (h *UsageHandlers) handleTimeseries(w http.ResponseWriter, r *http.Request)
 	}
 	window := h.window(r)
 	bucket := parseQueryInt(r, "bucket", 0)
-	data, err := h.Service.Timeseries(r.Context(), usage.SeriesOptions{
-		Realm: h.realm(r), Range: window.Range, Since: window.Since,
-		Until: window.Until, BucketSeconds: bucket,
-	})
+	opts := usage.SeriesOptions{Realm: h.realm(r), Range: window.Range, Since: window.Since, Until: window.Until, BucketSeconds: bucket}
+	before := h.Service.SeriesETag(opts)
+	data, err := h.Service.Timeseries(r.Context(), opts)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage timeseries failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("series", usage.SeriesETagKey(h.realm(r), usage.Range{Since: window.Since, Until: window.Until}, bucket)), data)
+	h.writeCached(w, r, stableETag(before, h.Service.SeriesETag(opts)), data)
 }
 
 func (h *UsageHandlers) handleByAccount(w http.ResponseWriter, r *http.Request) {
@@ -194,12 +192,13 @@ func (h *UsageHandlers) handleByAccount(w http.ResponseWriter, r *http.Request) 
 		writeV1Error(w, http.StatusServiceUnavailable, "server_error", "usage service unavailable")
 		return
 	}
+	before := h.Service.ByAccountETag()
 	data, err := h.Service.ByAccount(r.Context())
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage by-account failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("by_account", usage.ByAccountETagKey()), data)
+	h.writeCached(w, r, stableETag(before, h.Service.ByAccountETag()), data)
 }
 
 func (h *UsageHandlers) handleRemaining(w http.ResponseWriter, r *http.Request) {
@@ -207,12 +206,20 @@ func (h *UsageHandlers) handleRemaining(w http.ResponseWriter, r *http.Request) 
 		writeV1Error(w, http.StatusServiceUnavailable, "server_error", "usage service unavailable")
 		return
 	}
+	before := h.Service.RemainingETag()
 	data, err := h.Service.Remaining(r.Context())
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage remaining failed")
 		return
 	}
-	h.writeCached(w, r, h.Service.QueryETag("remaining", usage.RemainingETagKey()), data)
+	h.writeCached(w, r, stableETag(before, h.Service.RemainingETag()), data)
+}
+
+func stableETag(before, after string) string {
+	if before != "" && before != after {
+		return ""
+	}
+	return after
 }
 
 func (h *UsageHandlers) writeCached(w http.ResponseWriter, r *http.Request, etag string, data any) {

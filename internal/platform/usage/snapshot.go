@@ -250,10 +250,7 @@ func (s *Service) adoptSnapshot(ctx context.Context, realm string) (map[string]a
 		if entryRealm != realm {
 			continue
 		}
-		if fingerprint, _ := entry["pricing"].(string); fingerprint != CacheFingerprint(s.pricingFingerprint()) {
-			continue
-		}
-		if fingerprint, _ := entry["realm_fp"].(string); fingerprint != CacheFingerprint(s.realmFingerprint()) {
+		if !s.cacheFingerprintOK(entry) {
 			continue
 		}
 		offset, ok := ValidateCachePosition(entry, s.Store.Paths.Log)

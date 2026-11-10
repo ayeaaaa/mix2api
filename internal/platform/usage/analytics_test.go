@@ -87,7 +87,7 @@ func TestAnalyticsEnrichesIdleAccounts(t *testing.T) {
 	service := env.service()
 	service.Accounts = map[string]AccountInfo{
 		"acct-a": {UID: "acct-a", Nickname: "A", Realm: "intl", Domain: "example.test"},
-		"acct-z": {UID: "acct-z", Nickname: "Zed", Realm: "intl", Domain: "idle.test", Credits: map[string]any{"packages": []any{}}},
+		"acct-z": {UID: "acct-z", Nickname: "Zed", Realm: "intl", Domain: "idle.test"},
 	}
 	payload, err := service.Analytics(context.Background(), AnalyticsOptions{Realm: "intl"})
 	if err != nil {
@@ -108,7 +108,8 @@ func TestAnalyticsEnrichesIdleAccounts(t *testing.T) {
 	if mustNumber(t, idle["window"].(AnalyticsStat).Requests) != 0 {
 		t.Fatalf("idle account should have zero window stats: %+v", idle)
 	}
-	if idle["credits"] == nil {
-		t.Fatalf("idle account credits not enriched: %+v", idle)
+	credits, ok := idle["credits"].(map[string]any)
+	if !ok || credits == nil {
+		t.Fatalf("idle account credits should default to {}: %+v", idle)
 	}
 }

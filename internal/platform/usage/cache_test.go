@@ -420,3 +420,50 @@ func TestLegacyV3CacheMTimeOptional(t *testing.T) {
 		t.Fatalf("legacy v3 checkpoint with no mtime was not adopted")
 	}
 }
+
+func TestCheckpointExcludesPartialTrailingLine(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	env := newTestEnv(t, []map[string]any{
+		row(float64(now.Unix())-3600, "m", "intl", "a", 10, 1, nil),
+	})
+	t.Setenv("WB_USAGE_CACHE", "1")
+	second := row(float64(now.Unix())-60, "m", "intl", "a", 20, 2, nil)
+	secondData, _ := json.Marshal(second)
+	split := len(secondData) / 2
+	file, err := os.OpenFile(env.Paths.Log, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(secondData[:split]); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+
+	service := env.service()
+	service.Now = func() time.Time { return now }
+	first, err := service.Snapshot(context.Background(), SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mustNumber(t, first["requests"]) != 1 {
+		t.Fatalf("partial line counted as a row: %+v", first)
+	}
+
+	file, err = os.OpenFile(env.Paths.Log, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(secondData[split:], '\n')); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	fresh := env.service()
+	fresh.Now = func() time.Time { return now }
+	all, err := fresh.Snapshot(context.Background(), SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mustNumber(t, all["requests"]) != 2 {
+		t.Fatalf("completed trailing row lost after partial-line checkpoint: %+v", all)
+	}
+}
