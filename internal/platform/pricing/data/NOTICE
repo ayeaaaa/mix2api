@@ -1,0 +1,8 @@
+pricing.json is a verbatim copy of mix2api v1.6.5
+`app/pricing/pricing.json`, distributed under the MIT License
+(Copyright (c) 2026 mix2api contributors).
+
+The snapshot's meta.sources and meta.note fields attribute the underlying
+price data to OpenRouter (https://openrouter.ai/api/v1/models). The copy is
+embedded as the offline fallback; an operator can override it with
+`WB_PRICING_FILE` or `<install>/pricing/pricing.json`.
