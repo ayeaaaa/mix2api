@@ -629,6 +629,9 @@ func TestRefresherBusyManualRunOnceDoesNotChurn(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("busy RunOnce = %v", err)
 	}
+	if refresher.Status()["failures"].(int64) != 0 {
+		t.Fatalf("busy RunOnce incremented failures: %+v", refresher.Status())
+	}
 	if elapsed := time.Since(secondStart); elapsed > 200*time.Millisecond {
 		t.Fatalf("busy RunOnce blocked for %v", elapsed)
 	}
@@ -636,8 +639,11 @@ func TestRefresherBusyManualRunOnceDoesNotChurn(t *testing.T) {
 	if status["last_attempt"].(int64) == 0 {
 		t.Fatalf("busy attempt not recorded: %+v", status)
 	}
-	if status["next_run"].(int64) == 0 {
-		t.Fatalf("busy retry not scheduled: %+v", status)
+	if status["failures"].(int64) != 0 || status["busy"] != true {
+		t.Fatalf("busy overlap counted as failure: %+v", status)
+	}
+	if status["next_run"].(int64) < status["last_attempt"].(int64) {
+		t.Fatalf("busy overlap scheduled before its attempt: %+v", status)
 	}
 	close(release)
 	select {

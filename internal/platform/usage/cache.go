@@ -445,23 +445,32 @@ func (s *Service) cacheFingerprintOK(entry map[string]any) bool {
 	if value, ok := entry["pricing"]; ok {
 		switch typed := value.(type) {
 		case nil:
+			// An explicit null dependency record means v1 could not describe
+			// the prices its fold used; do not adopt it.
+			return false
 		case string:
 			if typed != CacheFingerprint(s.pricingFingerprint()) {
 				return false
 			}
-		case []any, map[string]any:
-			// v1 policy-dependency record; its shape is intentionally richer
-			// than the v2 compact digest. The position/tail check still proves
-			// the folded prefix is the same bytes.
+		case map[string]any:
+			if !validV1PricingRecord(typed) {
+				return false
+			}
+		case []any:
+			if len(typed) == 0 {
+				return false
+			}
+			first, ok := typed[0].(string)
+			if !ok || (first != "on" && first != "off") {
+				return false
+			}
 		default:
 			return false
 		}
 	}
 	if value, ok := entry["realm_fp"]; ok {
-		if text, ok := value.(string); ok {
-			return text == CacheFingerprint(s.realmFingerprint())
-		}
-		if value != nil {
+		text, ok := value.(string)
+		if !ok || text != CacheFingerprint(s.realmFingerprint()) {
 			return false
 		}
 	}
@@ -494,6 +503,58 @@ func validV1RealmInputs(value any) bool {
 			return false
 		}
 		if _, ok := pair[1].(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validV1PricingRecord(record map[string]any) bool {
+	refs, ok := record["refs"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for id, digest := range refs {
+		if id == "" {
+			return false
+		}
+		if digest != nil {
+			if _, ok := digest.(string); !ok {
+				return false
+			}
+		}
+	}
+	if builtin, ok := record["builtin"]; ok && builtin != nil {
+		if _, ok := builtin.(string); !ok {
+			return false
+		}
+	}
+	for _, field := range []string{"timeline", "timeline_at"} {
+		if value, ok := record[field]; ok && value != nil {
+			if field == "timeline" {
+				if _, ok := value.(string); !ok {
+					return false
+				}
+			} else if _, ok := numericValue(value); !ok {
+				return false
+			}
+		}
+	}
+	for _, field := range []string{"timeline_models", "unresolved"} {
+		if value, ok := record[field]; ok && value != nil {
+			list, ok := value.([]any)
+			if !ok {
+				return false
+			}
+			for _, item := range list {
+				if _, ok := item.(string); !ok {
+					return false
+				}
+			}
+		}
+	}
+	if backfilled, ok := record["backfilled"]; ok {
+		if _, ok := backfilled.(bool); !ok {
 			return false
 		}
 	}

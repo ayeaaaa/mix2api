@@ -38,13 +38,23 @@ type seriesState struct {
 	Credits []SeriesCredit          `json:"credits"`
 	MaxAt   float64                 `json:"max_at"`
 	// MinuteComplete is false when the state was adopted from a v1 cache that
-	// only carried hour/day buckets. Minute windows then fall back to a scan;
-	// hour/day windows can still be served by the hour-start pseudo-minutes.
+	// only carried hour/day buckets. Minute windows then fall back to a scan.
 	MinuteComplete bool `json:"minute_complete"`
+	// MinutesCoverAll is true only for a v2 state folded from the start of the
+	// log. A v1 minute ring covers roughly six hours, so older minute windows
+	// must cold-scan even when the ring itself is present.
+	MinutesCoverAll bool    `json:"minutes_cover_all"`
+	MinutesFrom     float64 `json:"minutes_from,omitempty"`
+	// Hours carries v1 days[].hours buckets for hour/day windows; HoursComplete
+	// is false when days_floor or any day's hours subtable is missing.
+	Hours         map[int64]*SeriesBucket `json:"hours,omitempty"`
+	HoursFloor    string                  `json:"hours_floor,omitempty"`
+	HoursMaxAt    float64                 `json:"hours_max_at,omitempty"`
+	HoursComplete bool                    `json:"hours_complete"`
 }
 
 func newSeriesState() seriesState {
-	return seriesState{Minutes: map[int64]*SeriesBucket{}, MinuteComplete: true}
+	return seriesState{Minutes: map[int64]*SeriesBucket{}, MinuteComplete: true, MinutesCoverAll: true}
 }
 
 func (s *seriesState) fold(row Row) {
@@ -264,11 +274,14 @@ func (s *Service) saveSeries(realm string, state seriesState, offset int64) {
 func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
 	state := newSeriesState()
 	state.MinuteComplete = false
+	state.MinutesCoverAll = false
+	minutesPresent := false
 	if raw, ok := entry["minutes"]; ok && raw != nil {
 		rows, ok := raw.([]any)
 		if !ok {
 			return seriesState{}, false
 		}
+		minutesPresent = true
 		for _, row := range rows {
 			values, ok := row.([]any)
 			if !ok || len(values) < 9 {
@@ -298,7 +311,21 @@ func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
 			state.Minutes[key] = bucket
 		}
 		state.MinuteComplete = true
-	} else if days, ok := entry["days"].(map[string]any); ok {
+	}
+	if raw, ok := entry["minutes_from"]; ok && raw != nil {
+		value, valid := numericValue(raw)
+		if !valid {
+			return seriesState{}, false
+		}
+		state.MinutesFrom = value
+	}
+	state.Hours = map[int64]*SeriesBucket{}
+	state.HoursComplete = false
+	if rawFloor, ok := entry["days_floor"].(string); ok && rawFloor != "" {
+		state.HoursFloor = rawFloor
+		state.HoursComplete = true
+	}
+	if days, ok := entry["days"].(map[string]any); ok {
 		for _, rawDay := range days {
 			day, ok := rawDay.(map[string]any)
 			if !ok {
@@ -306,24 +333,35 @@ func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
 			}
 			hours, ok := day["hours"].(map[string]any)
 			if !ok {
+				state.HoursComplete = false
 				continue
 			}
 			for _, rawHour := range hours {
 				hour, ok := rawHour.(map[string]any)
 				if !ok {
+					state.HoursComplete = false
 					continue
 				}
 				bucket, ok := seriesBucketFromMap(hour)
 				if !ok {
+					state.HoursComplete = false
 					continue
 				}
-				state.Minutes[int64(bucket.At)] = bucket
+				state.Hours[int64(bucket.At)] = bucket
 			}
 		}
+	} else {
+		state.HoursComplete = false
+	}
+	if state.HoursFloor == "" {
+		state.HoursComplete = false
+	}
+	if maxAt, ok := numericValue(entry["max_at"]); ok {
+		state.MaxAt = maxAt
+		state.HoursMaxAt = maxAt
 	}
 	credits, _ := entry["credits"].([]any)
-	if len(state.Minutes) == 0 && len(credits) == 0 {
-		// No usable series data in the entry.
+	if !minutesPresent && len(state.Hours) == 0 && len(credits) == 0 {
 		return seriesState{}, false
 	}
 	if credits != nil {
@@ -331,9 +369,6 @@ func seriesStateFromV1(entry map[string]any) (seriesState, bool) {
 		if err != nil || json.Unmarshal(encoded, &state.Credits) != nil {
 			return seriesState{}, false
 		}
-	}
-	if maxAt, ok := numericValue(entry["max_at"]); ok {
-		state.MaxAt = maxAt
 	}
 	return state, true
 }
@@ -377,13 +412,40 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 		if !state.MinuteComplete || lo.Second() != 0 || lo.Nanosecond() != 0 {
 			return nil, nil, false
 		}
+		if !state.MinutesCoverAll {
+			if len(state.Minutes) == 0 {
+				return nil, nil, false
+			}
+			loUnix := float64(lo.Unix())
+			if state.MinutesFrom > 0 && loUnix <= state.MinutesFrom {
+				return nil, nil, false
+			}
+			if state.MaxAt > 0 && loUnix < state.MaxAt-6*3600 {
+				return nil, nil, false
+			}
+			if state.MaxAt > 0 && float64(hi.Unix()) > state.MaxAt {
+				return nil, nil, false
+			}
+		}
 	} else if step == 3600 {
 		if lo.Unix() != localHourStart(lo).Unix() {
 			return nil, nil, false
 		}
+		if !state.MinutesCoverAll {
+			if !state.HoursComplete || hi.Unix() != localHourStart(hi).Unix() {
+				return nil, nil, false
+			}
+			return seriesHoursSlice(state, lo, hi, step)
+		}
 	} else if step == 86400 {
 		if lo.Unix() != localMidnight(lo).Unix() {
 			return nil, nil, false
+		}
+		if !state.MinutesCoverAll {
+			if !state.HoursComplete || hi.Unix() != localMidnight(hi).Unix() {
+				return nil, nil, false
+			}
+			return seriesHoursSlice(state, lo, hi, step)
 		}
 	} else {
 		return nil, nil, false
@@ -435,6 +497,63 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 	}
 	credits = topCredits(credits)
 	return buckets, credits, true
+}
+
+func seriesHoursSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket, []SeriesCredit, bool) {
+	if state.HoursFloor == "" {
+		return nil, nil, false
+	}
+	floor, ok := dayKeyStart(state.HoursFloor)
+	if !ok || float64(lo.Unix()) < floor {
+		return nil, nil, false
+	}
+	if state.HoursMaxAt > 0 && float64(hi.Unix()) > state.HoursMaxAt {
+		return nil, nil, false
+	}
+	grouped := map[int64]*SeriesBucket{}
+	for at, bucket := range state.Hours {
+		if at < lo.Unix() || at > hi.Unix() {
+			continue
+		}
+		var key int64
+		if step == 3600 {
+			key = at
+		} else {
+			key = localMidnight(time.Unix(at, 0)).Unix()
+		}
+		target := grouped[key]
+		if target == nil {
+			target = &SeriesBucket{At: float64(key)}
+			grouped[key] = target
+		}
+		target.Requests += bucket.Requests
+		target.Errors += bucket.Errors
+		target.PromptTokens += bucket.PromptTokens
+		target.CompletionTokens += bucket.CompletionTokens
+		target.ReasoningTokens += bucket.ReasoningTokens
+		target.CachedTokens += bucket.CachedTokens
+		target.TotalTokens += bucket.TotalTokens
+		target.Credit += bucket.Credit
+	}
+	if len(grouped) == 0 {
+		return nil, nil, false
+	}
+	keys := make([]int64, 0, len(grouped))
+	for key := range grouped {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	buckets := make([]SeriesBucket, 0, len(keys))
+	for _, key := range keys {
+		buckets = append(buckets, *grouped[key])
+	}
+	credits := make([]SeriesCredit, 0)
+	for _, credit := range state.Credits {
+		if credit.At >= float64(lo.Unix()) && credit.At <= float64(hi.Unix()) {
+			credits = append(credits, credit)
+		}
+	}
+	return buckets, topCredits(credits), true
 }
 
 func (s *Service) seriesScan(ctx context.Context, realm string, lo, hi time.Time, step int) ([]SeriesBucket, []SeriesCredit, error) {

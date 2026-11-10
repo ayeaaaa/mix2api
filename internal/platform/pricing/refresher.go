@@ -168,6 +168,8 @@ func NextRefreshWait(now, lastRun time.Time, intervalMinutes float64) time.Durat
 	return remaining
 }
 
+var errRefreshBusy = errors.New("pricing: refresh already running")
+
 // FetchFunc fetches the normalized OpenRouter catalogue.
 type FetchFunc func(ctx context.Context) (map[string]OpenRouterPrice, error)
 
@@ -210,6 +212,7 @@ type Refresher struct {
 	stopped     bool
 	lastRun     time.Time
 	lastAttempt time.Time
+	busy        bool
 	nextAttempt time.Time
 	failures    int64
 	retryMin    time.Duration
@@ -323,7 +326,7 @@ func (r *Refresher) Run(ctx context.Context) {
 			r.mu.Unlock()
 			continue
 		}
-		if err := r.RunOnce(ctx); err != nil {
+		if err := r.RunOnce(ctx); err != nil && !errors.Is(err, errRefreshBusy) {
 			r.logf("pricing refresh failed: %s", err.Error())
 		}
 	}
@@ -348,10 +351,18 @@ func (r *Refresher) nextWait(now time.Time, intervalMinutes float64) time.Durati
 	return wait
 }
 
+func (r *Refresher) noteBusy(at time.Time) {
+	r.mu.Lock()
+	r.lastAttempt = at
+	r.busy = true
+	r.mu.Unlock()
+}
+
 func (r *Refresher) noteAttempt(at time.Time, success bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastAttempt = at
+	r.busy = false
 	if success {
 		r.lastRun = at
 		r.failures = 0
@@ -375,11 +386,11 @@ func (r *Refresher) RunOnce(ctx context.Context) error {
 		return errors.New("pricing: nil refresher")
 	}
 	if !r.runMu.TryLock() {
-		// A long manual refresh already owns the work. Record the attempt so
-		// the background loop waits out a backoff instead of retrying/logging
-		// in a hot cycle while that fetch is still running.
-		r.noteAttempt(r.clock(), false)
-		return errors.New("pricing: refresh already running")
+		// A long manual refresh already owns the work. This is not a fetch
+		// failure: record the attempt, mark busy, and let the loop wait a
+		// normal interval instead of incrementing the failure backoff.
+		r.noteBusy(r.clock())
+		return errRefreshBusy
 	}
 	defer r.runMu.Unlock()
 
@@ -466,14 +477,27 @@ func (r *Refresher) Status() map[string]any {
 	if nextRun.IsZero() && interval > 0 && !r.lastAttempt.IsZero() {
 		nextRun = r.lastAttempt.Add(time.Duration(interval * float64(time.Minute)))
 	}
+	lastRun := int64(0)
+	if !r.lastRun.IsZero() {
+		lastRun = r.lastRun.Unix()
+	}
+	lastAttempt := int64(0)
+	if !r.lastAttempt.IsZero() {
+		lastAttempt = r.lastAttempt.Unix()
+	}
+	nextRunUnix := int64(0)
+	if !nextRun.IsZero() {
+		nextRunUnix = nextRun.Unix()
+	}
 	return map[string]any{
 		"interval_minutes": interval,
 		"enabled":          master && interval > 0,
 		"master_enabled":   master,
-		"last_run":         r.lastRun.Unix(),
-		"last_attempt":     r.lastAttempt.Unix(),
-		"next_run":         nextRun.Unix(),
+		"last_run":         lastRun,
+		"last_attempt":     lastAttempt,
+		"next_run":         nextRunUnix,
 		"failures":         r.failures,
+		"busy":             r.busy,
 		"last_error":       r.lastErr,
 		"last_models":      r.models,
 		"last_extra":       r.extra,

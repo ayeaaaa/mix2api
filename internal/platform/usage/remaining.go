@@ -372,15 +372,17 @@ func (s *Service) adoptRemaining(ctx context.Context) (*remainingState, int64, i
 // and rejects the entry (cold rescan).
 func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
 	state := remainingState{Usage: map[string]*usageBuffer{}, Realms: map[string]string{}}
-	if rawEvents, ok := entry["events"].([]any); ok {
-		encoded, err := json.Marshal(rawEvents)
-		if err != nil || json.Unmarshal(encoded, &state.Events) != nil {
-			return remainingState{}, false
-		}
+	rawEvents, ok := entry["events"].([]any)
+	if !ok {
+		return remainingState{}, false
+	}
+	encoded, err := json.Marshal(rawEvents)
+	if err != nil || json.Unmarshal(encoded, &state.Events) != nil {
+		return remainingState{}, false
 	}
 	rawUsage, ok := entry["usage"].(map[string]any)
 	if !ok {
-		return state, true
+		return remainingState{}, false
 	}
 	for key, raw := range rawUsage {
 		pair, ok := raw.(map[string]any)
@@ -405,7 +407,11 @@ func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
 			}
 			previous = value
 		}
-		buffer := &usageBuffer{}
+		type sample struct {
+			at     float64
+			tokens int64
+		}
+		samples := make([]sample, 0, len(ats)-int(head))
 		for index := int(head); index < len(ats); index++ {
 			at, ok := numericValue(ats[index])
 			if !ok {
@@ -415,8 +421,16 @@ func remainingStateFromV1(entry map[string]any) (remainingState, bool) {
 			if !ok || cum < previous {
 				return remainingState{}, false
 			}
-			appendSample(buffer, at, int64(cum-previous))
+			samples = append(samples, sample{at: at, tokens: int64(cum - previous)})
 			previous = cum
+		}
+		// v1's _pair_repair stable-sorts regression-prone completions before
+		// any range query; do the same during adoption.
+		sort.SliceStable(samples, func(i, j int) bool { return samples[i].at < samples[j].at })
+		buffer := &usageBuffer{At: make([]float64, 0, len(samples)), Tokens: make([]int64, 0, len(samples))}
+		for _, item := range samples {
+			buffer.At = append(buffer.At, item.at)
+			buffer.Tokens = append(buffer.Tokens, item.tokens)
 		}
 		state.Usage[key] = buffer
 	}
