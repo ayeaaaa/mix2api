@@ -1410,8 +1410,12 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
 	}
-	if !compaction && !stream && s.opts.WebTools != nil {
-		if handled := s.serveResponsesWithWebTools(w, r, provider, chatRequest, translated, model); handled {
+	if !compaction && s.opts.WebTools != nil {
+		if stream {
+			if handled := s.serveResponsesWithWebToolsStream(w, r, provider, chatRequest, translated, model); handled {
+				return
+			}
+		} else if handled := s.serveResponsesWithWebTools(w, r, provider, chatRequest, translated, model); handled {
 			return
 		}
 	}

@@ -1,6 +1,7 @@
 package probes
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,4 +82,25 @@ func itoa64(value int64) string {
 		return "-" + digits
 	}
 	return digits
+}
+
+func TestWindowProbeLegacyListAndMapStates(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour).Unix()
+	for _, payload := range []string{
+		`[{"uid":"u1","model":"m1","reset_at":"%d","attempts":"2"}]`,
+		`{"u1\u0000m1":{"uid":"u1","model":"m1","reset_at":%d,"attempts":2}}`,
+	} {
+		payload = fmt.Sprintf(payload, reset)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, WindowStateFile), []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		state := NewWindowState(dir)
+		state.Now = func() time.Time { return now }
+		window, ok := state.Get("u1", "m1")
+		if !ok || int64(window.ResetAt) != reset || window.Attempts != 2 {
+			t.Fatalf("legacy state %s = %#v ok=%v", payload, window, ok)
+		}
+	}
 }

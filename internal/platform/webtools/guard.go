@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/core/netguard"
 	"time"
 )
 
@@ -75,16 +77,7 @@ func (s *Service) GuardURL(raw string, resolve bool) (string, error) {
 	return parsed.String(), nil
 }
 
-func (s *Service) publicIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if mapped := ip.To4(); mapped != nil {
-		ip = mapped
-	}
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
-}
+func (s *Service) publicIP(ip net.IP) bool { return netguard.IsPublicIP(ip) }
 
 func (s *Service) lookupHost(host string) ([]net.IP, error) {
 	if s != nil && s.LookupIP != nil {

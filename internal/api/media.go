@@ -72,7 +72,7 @@ func (h *MediaHandlers) handleImage(edit bool) http.HandlerFunc {
 		keyID := h.server.requestKeyID(r)
 		bound := h.server.requestBoundRealm(r)
 		request := media.ImageRequest{
-			KeyID: keyID, BoundRealm: bound,
+			KeyID: keyID, BoundRealm: bound, AllowedAccounts: keyAllowedAccounts(r),
 			Model: stringPayload(payload, "model"), Prompt: stringPayload(payload, "prompt"),
 			Size: stringPayload(payload, "size"), ResponseFormat: stringPayload(payload, "response_format"),
 		}
@@ -123,7 +123,8 @@ func (h *MediaHandlers) handleVideoSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 	submission, err := h.Service.SubmitVideo(r.Context(), media.VideoRequest{
-		KeyID: h.server.requestKeyID(r), BoundRealm: h.server.requestBoundRealm(r), Payload: payload,
+		KeyID: h.server.requestKeyID(r), BoundRealm: h.server.requestBoundRealm(r),
+		AllowedAccounts: keyAllowedAccounts(r), Payload: payload,
 	})
 	if err != nil {
 		h.writeMediaError(w, err)
@@ -291,7 +292,7 @@ func (h *MediaHandlers) visible(r *http.Request, task media.Task) bool {
 		return true
 	}
 	keyID := h.server.requestKeyID(r)
-	return keyID != "" && task.Key == keyID
+	return task.Key == keyID
 }
 
 func (h *MediaHandlers) writeMediaError(w http.ResponseWriter, err error) {
@@ -310,8 +311,10 @@ func (h *MediaHandlers) writeMediaError(w http.ResponseWriter, err error) {
 		status, errorType = http.StatusNotFound, "invalid_request_error"
 	case "no_credit":
 		status, errorType = http.StatusPaymentRequired, "insufficient_quota"
-	case "rate_limit", "busy", "queue_full":
+	case "rate_limit", "queue_full":
 		status, errorType = http.StatusTooManyRequests, "rate_limit_error"
+	case "busy":
+		status, errorType = http.StatusServiceUnavailable, "server_error"
 	case "auth", "upstream", "empty_result", "task_lost":
 		status, errorType = http.StatusBadGateway, "server_error"
 	}
@@ -541,11 +544,14 @@ func (s *Server) contentAuthorized(r *http.Request) bool {
 	if s.isPanelRequest(r) {
 		return true
 	}
+	if s.keyStore != nil && !s.keyStore.AuthRequired() {
+		return true
+	}
 	if supplied := strings.TrimSpace(apiKeyFromRequest(r)); supplied == "" {
 		return false
 	}
 	if s.keyStore != nil {
-		return s.requestKeyEntry(r) != nil || !s.keyStore.AuthRequired()
+		return s.requestKeyEntry(r) != nil
 	}
 	if s.opts.APIKeyAuth != nil {
 		return s.staticAPIKeyPasses(r)

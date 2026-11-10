@@ -142,6 +142,7 @@ func main() {
 		Providers:    setup.Providers,
 		PanelAuth:    api.RequirePanelAuth(cfg.PanelPassword),
 		APIKeyAuth:   api.RequireAPIKeyAuth(cfg.APIKey),
+		StaticAPIKey: cfg.APIKey,
 		APIKeyRealm:  apiKeyRealmResolver(cfg.APIKeyRealm),
 	})
 	log.Printf("listening on %s with %d provider(s)", listener.Addr(), len(setup.Providers))

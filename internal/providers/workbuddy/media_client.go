@@ -2,6 +2,7 @@ package workbuddy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 const (
 	mediaConfigPath       = "/v3/config"
+	mediaPresignPath      = "/console/as/support/presigned_url"
 	mediaImagePath        = "/v2/images/generations"
 	mediaEditPath         = "/v2/images/edits"
 	mediaVideoSubmitPath  = "/v2/videos/generations"
@@ -133,6 +135,153 @@ func (p *Provider) mediaDoRaw(ctx context.Context, account *Account, method, pat
 		return response.StatusCode, nil, errors.New("workbuddy: media response too large")
 	}
 	return response.StatusCode, raw, nil
+}
+
+// uploadReferenceMaterials replaces client-supplied data URLs for reference
+// videos/audio with upstream-fetchable COS URLs. Images already accept data
+// URLs; upstream explicitly downloads video/audio URLs, so those must be
+// uploaded first.
+func (p *Provider) uploadReferenceMaterials(ctx context.Context, account *Account, body map[string]any) (map[string]any, error) {
+	if body == nil {
+		return body, nil
+	}
+	out := make(map[string]any, len(body))
+	for key, value := range body {
+		out[key] = value
+	}
+	for _, entry := range []struct {
+		field string
+		inner string
+		label string
+	}{
+		{"reference_videos", "video_url", "参考视频"},
+		{"reference_audios", "audio_url", "参考音频"},
+	} {
+		items, _ := out[entry.field].([]map[string]any)
+		if len(items) == 0 {
+			continue
+		}
+		updated := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			url := strings.TrimSpace(mediaStringValue(entry.inner, item))
+			if strings.HasPrefix(strings.ToLower(url), "data:") {
+				data, filename, err := decodeProviderDataURL(url)
+				if err != nil {
+					return nil, &providers.MediaError{Code: "invalid_request", Message: err.Error()}
+				}
+				if len(data) > 8*1024*1024 {
+					return nil, &providers.MediaError{Code: "invalid_request", Message: entry.label + "超过 8 MB 上限"}
+				}
+				url, err = p.uploadReferenceFile(ctx, account, data, filename)
+				if err != nil {
+					return nil, err
+				}
+			}
+			copy := make(map[string]any, len(item))
+			for key, value := range item {
+				copy[key] = value
+			}
+			copy[entry.inner] = url
+			updated = append(updated, copy)
+		}
+		out[entry.field] = updated
+	}
+	return out, nil
+}
+
+func mediaStringValue(key string, values map[string]any) string {
+	text, _ := values[key].(string)
+	return text
+}
+
+func decodeProviderDataURL(value string) ([]byte, string, error) {
+	header, payload, ok := strings.Cut(strings.TrimSpace(value), ",")
+	if !ok || !strings.HasPrefix(strings.ToLower(header), "data:") {
+		return nil, "", errors.New("参考素材 data URL 格式无效")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(strings.TrimPrefix(header, "data:"), ";", 2)[0]))
+	body := strings.TrimSpace(payload)
+	data, err := base64.StdEncoding.DecodeString(body)
+	if err != nil || len(data) == 0 {
+		return nil, "", errors.New("参考素材 data URL 解不出内容")
+	}
+	ext := ".bin"
+	switch mimeType {
+	case "video/mp4":
+		ext = ".mp4"
+	case "video/quicktime":
+		ext = ".mov"
+	case "video/webm":
+		ext = ".webm"
+	case "audio/mpeg":
+		ext = ".mp3"
+	case "audio/mp4", "audio/m4a":
+		ext = ".m4a"
+	case "audio/wav", "audio/x-wav":
+		ext = ".wav"
+	case "audio/aac":
+		ext = ".aac"
+	}
+	return data, "upload" + ext, nil
+}
+
+func (p *Provider) uploadReferenceFile(ctx context.Context, account *Account, data []byte, filename string) (string, error) {
+	objectKey := "uploads/" + safeUploadStem(filename)
+	body, _ := json.Marshal(map[string]any{"object_keys": []string{objectKey}})
+	status, raw, err := p.mediaDoRaw(ctx, account, http.MethodPost, mediaPresignPath, body, 120*time.Second)
+	if err != nil {
+		return "", &providers.MediaError{Code: "upstream", Message: "参考素材预签名失败"}
+	}
+	if status < 200 || status >= 300 {
+		return "", mediaFailure(status, string(raw), "media")
+	}
+	var payload map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return "", &providers.MediaError{Code: "upstream", Message: "参考素材预签名响应无效"}
+	}
+	dataBlock, _ := payload["data"].(map[string]any)
+	items, _ := dataBlock["items"].([]any)
+	if len(items) == 0 {
+		return "", &providers.MediaError{Code: "upstream", Message: "预签名没有返回上传地址"}
+	}
+	item, _ := items[0].(map[string]any)
+	uploadURL, _ := item["upload_url"].(string)
+	downloadURL, _ := item["download_url"].(string)
+	if strings.TrimSpace(uploadURL) == "" || strings.TrimSpace(downloadURL) == "" {
+		return "", &providers.MediaError{Code: "upstream", Message: "预签名没有返回上传地址"}
+	}
+	requestCtx, cancel := context.WithTimeout(nonNilContext(ctx), 120*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPut, uploadURL, strings.NewReader(string(data)))
+	if err != nil {
+		return "", &providers.MediaError{Code: "upstream", Message: "参考素材上传请求无效"}
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+	client := p.mediaClient()
+	proxyURL := ""
+	account.mu.RLock()
+	proxyURL = strings.TrimSpace(account.Auth.ProxyURL)
+	account.mu.RUnlock()
+	response, err := client.Do(requestCtx, request, proxyURL)
+	if err != nil {
+		return "", &providers.MediaError{Code: "upstream", Message: "参考素材上传失败"}
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", &providers.MediaError{Code: "upstream", Message: fmt.Sprintf("参考素材上传失败（HTTP %d）", response.StatusCode)}
+	}
+	return strings.TrimSpace(downloadURL), nil
+}
+
+func safeUploadStem(filename string) string {
+	base := filepath.Base(strings.TrimSpace(filename))
+	if base == "" || base == "." {
+		base = "upload.bin"
+	}
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), base)
 }
 
 func (p *Provider) mediaPost(ctx context.Context, account *Account, path string, body map[string]any, timeout time.Duration, phase string) (map[string]any, error) {
@@ -343,7 +492,7 @@ func (p *Provider) mediaBudgetOK(account *Account, model string, cost float64) (
 	return true, ""
 }
 
-func (p *Provider) pickMediaAccount(model string, excluded map[string]bool, cost float64) (*Account, error) {
+func (p *Provider) pickMediaAccount(model string, excluded map[string]bool, cost float64, allowed []string) (*Account, error) {
 	pool := p.Pool()
 	if pool == nil {
 		return nil, &providers.MediaError{Code: "upstream", Message: "账号池不可用"}
@@ -351,6 +500,17 @@ func (p *Provider) pickMediaAccount(model string, excluded map[string]bool, cost
 	skip := map[string]bool{}
 	for key, value := range excluded {
 		skip[key] = value
+	}
+	if len(allowed) > 0 {
+		allowedSet := map[string]bool{}
+		for _, uid := range allowed {
+			allowedSet[strings.TrimSpace(uid)] = true
+		}
+		for _, account := range pool.Accounts() {
+			if account != nil && !allowedSet[account.UID()] {
+				skip[account.UID()] = true
+			}
+		}
 	}
 	reasons := []string{}
 	for attempt := 0; attempt < 4; attempt++ {

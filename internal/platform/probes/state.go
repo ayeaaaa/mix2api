@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -86,4 +88,56 @@ func NewState(accountsDir string) *State {
 		Window: NewWindowState(accountsDir),
 		Quota:  NewQuotaState(accountsDir),
 	}
+}
+
+func probeString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case json.Number:
+		return typed.String()
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	default:
+		return ""
+	}
+}
+
+func probeFloat(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case json.Number:
+		number, _ := typed.Float64()
+		return number
+	case string:
+		number, _ := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return number
+	default:
+		return 0
+	}
+}
+
+func probeInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		number, _ := typed.Int64()
+		return int(number)
+	case string:
+		number, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return number
+	default:
+		return 0
+	}
+}
+
+func probeBool(value any) bool {
+	flag, _ := value.(bool)
+	return flag
 }

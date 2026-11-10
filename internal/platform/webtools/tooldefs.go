@@ -264,6 +264,16 @@ func ArgsFromAny(raw any) map[string]any {
 		if json.Unmarshal([]byte(typed), &out) == nil {
 			return out
 		}
+	case json.RawMessage:
+		var out map[string]any
+		if json.Unmarshal(typed, &out) == nil {
+			return out
+		}
+	case []byte:
+		var out map[string]any
+		if json.Unmarshal(typed, &out) == nil {
+			return out
+		}
 	}
 	return map[string]any{}
 }

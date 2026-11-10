@@ -29,6 +29,7 @@ type mediaTestProvider struct {
 
 	mu           sync.Mutex
 	imageCalls   int
+	modelCalls   int
 	submitCalls  int
 	pollCalls    int
 	lastImage    providers.MediaRequest
@@ -46,7 +47,11 @@ func (p *mediaTestProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{MediaGeneration: true, MediaImages: true, MediaVideos: true}
 }
 func (p *mediaTestProvider) MediaModels(context.Context, string) ([]providers.Model, error) {
-	return append([]providers.Model(nil), p.models...), nil
+	p.mu.Lock()
+	p.modelCalls++
+	models := append([]providers.Model(nil), p.models...)
+	p.mu.Unlock()
+	return models, nil
 }
 func (p *mediaTestProvider) GenerateImage(_ context.Context, req providers.MediaRequest) (providers.MediaImageResult, error) {
 	p.mu.Lock()
@@ -447,5 +452,196 @@ func TestMediaQueueFullBeforeSpending(t *testing.T) {
 	fixture.Provider.mu.Unlock()
 	if after != before {
 		t.Fatalf("queue-full request spent credits: submits %d -> %d", before, after)
+	}
+}
+
+func TestVideoQueueDrainsAfterCompletion(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	cfg.VideoConcurrency = 1
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "running"}
+	first := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"one","model":"vid-1"}`, nil)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first = %d %s", first.Code, first.Body)
+	}
+	second := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"two","model":"vid-1"}`, nil)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second = %d %s", second.Code, second.Body)
+	}
+	secondBody := decodeBody(t, second)
+	if numberText(secondBody["queue_position"]) != "1" {
+		t.Fatalf("second was not queued: %#v", secondBody)
+	}
+	fixture.Provider.mu.Lock()
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "completed", Videos: []string{"https://cdn.example/v.mp4"}, Credit: floatPtr(1)}
+	fixture.Provider.mu.Unlock()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		fixture.Provider.mu.Lock()
+		submits := fixture.Provider.submitCalls
+		fixture.Provider.mu.Unlock()
+		if submits >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("waiting video task never drained into the submitter")
+}
+
+func TestVideoTaskLostMapping(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Provider.pollErr = &providers.MediaError{Code: "task_lost", Message: "account gone"}
+	rec := doRequest(fixture.Server, http.MethodPost, "/v1/videos", `{"prompt":"one","model":"vid-1"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit = %d %s", rec.Code, rec.Body)
+	}
+	taskID := decodeBody(t, rec)["id"].(string)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec = doRequest(fixture.Server, http.MethodGet, "/v1/videos/"+taskID, "", nil)
+		body := decodeBody(t, rec)
+		if body["status"] == "failed" {
+			errorObj, _ := body["error"].(map[string]any)
+			if errorObj["code"] != "task_lost" {
+				t.Fatalf("error = %#v", errorObj)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("task_lost task did not reach failed")
+}
+
+func TestMediaBusyReturns503(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	for i := 0; i < 4; i++ {
+		if !fixture.Service.AcquireSlot() {
+			t.Fatalf("could not acquire slot %d", i)
+		}
+	}
+	defer func() {
+		for i := 0; i < 4; i++ {
+			fixture.Service.ReleaseSlot()
+		}
+	}()
+	rec := doRequest(fixture.Server, http.MethodPost, "/v1/images/generations", `{"prompt":"x","model":"img-1"}`, nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("busy = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMediaCatalogCacheAndPricingShape(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Service.Pricing.LearnVideo("vid-1", "720P", 57.14, 4, false)
+	for i := 0; i < 2; i++ {
+		rec := doRequest(fixture.Server, http.MethodGet, "/v1/media/models", "", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("models = %d %s", rec.Code, rec.Body)
+		}
+	}
+	fixture.Provider.mu.Lock()
+	calls := fixture.Provider.modelCalls
+	fixture.Provider.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("catalog calls = %d, want cached once", calls)
+	}
+	rec := doRequest(fixture.Server, http.MethodGet, "/v1/media/models", "", nil)
+	body := decodeBody(t, rec)
+	models, _ := body["models"].([]any)
+	for _, raw := range models {
+		model, _ := raw.(map[string]any)
+		if model["id"] == "vid-1" {
+			if numberText(model["creditPerSecond"]) != "14.285" {
+				t.Fatalf("creditPerSecond = %#v", model["creditPerSecond"])
+			}
+			perSecond, _ := model["creditsPerSecond"].(map[string]any)
+			if numberText(perSecond["720P"]) != "14.285" {
+				t.Fatalf("creditsPerSecond = %#v", model["creditsPerSecond"])
+			}
+		}
+	}
+}
+
+func TestMediaTasksStatsShape(t *testing.T) {
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	rec := doRequest(fixture.Server, http.MethodGet, "/v1/media/tasks", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tasks = %d %s", rec.Code, rec.Body)
+	}
+	stats, _ := decodeBody(t, rec)["stats"].(map[string]any)
+	for _, key := range []string{"total", "pending", "by_status", "queue_depth", "workers", "concurrency", "active", "waiting", "busy_accounts"} {
+		if _, ok := stats[key]; !ok {
+			t.Fatalf("stats missing %q: %#v", key, stats)
+		}
+	}
+}
+
+func TestMediaAuthDisabledTaskVisibility(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	keyStore := keys.New(store)
+	if _, err := keyStore.Save([]keys.Entry{{ID: "k1", Name: "one", Key: "key-one", Realm: "cn", Enabled: true}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyStore.SetAuthDisabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if keyStore.AuthRequired() {
+		t.Fatal("auth_disabled did not clear AuthRequired")
+	}
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	fixture.Provider.pollState = providers.MediaVideoState{Status: "running"}
+	server := New(ServerOptions{Media: fixture.Service, KeyStore: keyStore, PanelAuth: passThroughAuth})
+	// No key request when auth is disabled owns key="" and must be visible.
+	rec := doRequest(server, http.MethodPost, "/v1/videos", `{"prompt":"x","model":"vid-1"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit = %d %s", rec.Code, rec.Body)
+	}
+	taskID := decodeBody(t, rec)["id"].(string)
+	rec = doRequest(server, http.MethodGet, "/v1/videos/"+taskID, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth-disabled task = %d %s", rec.Code, rec.Body)
+	}
+	// A request with a different key still cannot see it.
+	rec = doRequest(server, http.MethodGet, "/v1/videos/"+taskID, "", map[string]string{"Authorization": "Bearer key-one"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("key-scoped task = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMediaPassesAllowedAccounts(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	keyStore := keys.New(store)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "k1", Name: "one", Key: "key-one", Realm: "cn", Enabled: true,
+		Accounts: []string{"acct-allowed"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg := media.DefaultConfig()
+	cfg.Enabled = true
+	fixture := newMediaFixture(t, cfg, nil)
+	server := New(ServerOptions{Media: fixture.Service, KeyStore: keyStore, PanelAuth: passThroughAuth})
+	rec := doRequest(server, http.MethodPost, "/v1/images/generations", `{"prompt":"x","model":"img-1"}`, map[string]string{"Authorization": "Bearer key-one"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("image = %d %s", rec.Code, rec.Body)
+	}
+	fixture.Provider.mu.Lock()
+	allowed, _ := fixture.Provider.lastImage.Params["allowed_accounts"].([]string)
+	fixture.Provider.mu.Unlock()
+	if len(allowed) != 1 || allowed[0] != "acct-allowed" {
+		t.Fatalf("allowed accounts = %#v", allowed)
 	}
 }

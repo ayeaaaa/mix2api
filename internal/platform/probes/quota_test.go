@@ -2,6 +2,7 @@ package probes
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -128,5 +129,38 @@ func TestServiceWithoutProvider(t *testing.T) {
 	}
 	if sent := service.RunWindow(context.Background()); sent != 0 {
 		t.Fatalf("window no-op sent = %d", sent)
+	}
+}
+
+func TestQuotaProbeLegacyStatesAndDisabled(t *testing.T) {
+	now := time.Now()
+	scan := now.Add(-time.Hour).Unix()
+	next := now.Add(time.Hour).Unix()
+	for _, payload := range []string{
+		`[{"uid":"u1","model":"m1","last_scan":"%d","next_at":"%d"}]`,
+		`{"u1\u0000m1":{"uid":"u1","model":"m1","last_scan":%d,"next_at":%d}}`,
+	} {
+		payload = fmt.Sprintf(payload, scan, next)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, QuotaStateFile), []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		state := NewQuotaState(dir)
+		state.Now = func() time.Time { return now }
+		row, ok := state.Get("u1", "m1")
+		if !ok || int64(row.LastScan) != scan || int64(row.NextAt) != next {
+			t.Fatalf("legacy state %s = %#v ok=%v", payload, row, ok)
+		}
+	}
+	provider := &quotaFakeProvider{targets: []providers.ProbeTarget{{UID: "u1"}}}
+	service := NewService(Service{
+		Provider: provider, Window: NewWindowState(t.TempDir()), Quota: NewQuotaState(t.TempDir()),
+		WatchModels: func() []string { return []string{"m1"} },
+		Enabled:     func() bool { return false },
+		Now:         func() time.Time { return now },
+	})
+	sent, err := service.RunQuota(context.Background(), true)
+	if err != nil || sent != 0 || provider.calls != 0 {
+		t.Fatalf("disabled quota = sent %d err=%v calls=%d", sent, err, provider.calls)
 	}
 }

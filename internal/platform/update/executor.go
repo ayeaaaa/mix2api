@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 )
 
 const (
@@ -40,9 +39,10 @@ var VisibleStates = map[string]bool{
 
 // Installation is the panel installation state.
 type Installation struct {
-	State   string `json:"state"`
-	Version string `json:"version"`
-	Message string `json:"message"`
+	State     string `json:"state"`
+	Version   string `json:"version"`
+	Message   string `json:"message"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // Request is one queued executor request.
@@ -168,7 +168,7 @@ func (e *Executor) ownerAllowed(uid uint32) bool {
 
 func (e *Executor) readChecked(name string, limit int64) ([]byte, bool) {
 	path := filepath.Join(e.dir(), name)
-	flags := os.O_RDONLY | syscall.O_CLOEXEC | syscall.O_NOFOLLOW
+	flags := os.O_RDONLY | secureOpenFlags()
 	fd, err := os.OpenFile(path, flags, 0)
 	if err != nil {
 		return nil, false
@@ -178,7 +178,7 @@ func (e *Executor) readChecked(name string, limit int64) ([]byte, bool) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > limit || info.Mode().Perm()&0o022 != 0 {
 		return nil, false
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && !e.ownerAllowed(stat.Uid) {
+	if uid, ok := fileOwner(info); ok && !e.ownerAllowed(uid) {
 		return nil, false
 	}
 	raw, err := ioReadAllLimit(fd, limit+1)
@@ -227,8 +227,10 @@ func (e *Executor) ReadStatus() (Installation, bool) {
 	}
 	version, _ := payload["version"].(string)
 	message, _ := payload["message"].(string)
+	updatedAt, _ := payload["updated_at"].(string)
 	return Installation{
 		State: state, Version: truncateString(version, 32), Message: truncateString(message, 240),
+		UpdatedAt: truncateString(strings.TrimSpace(updatedAt), 32),
 	}, true
 }
 

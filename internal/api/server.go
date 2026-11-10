@@ -3,9 +3,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +102,11 @@ type ServerOptions struct {
 	// APIKeyAuth wraps the generic /v1 endpoints and provider routes declared
 	// AuthAPIKey. Nil fails closed with 401.
 	APIKeyAuth func(http.Handler) http.Handler
+
+	// StaticAPIKey is the legacy launcher key, when configured. It is used only
+	// by the agent configurator to hand a local client a usable key; it is never
+	// written to logs or API responses.
+	StaticAPIKey string
 
 	// APIKeyRealm optionally reports the realm bound to the request's API key.
 	// A non-empty result is an operator-written exit policy: it outranks
@@ -350,7 +357,9 @@ func (s *Server) mountPlatformRoutes() {
 		NewMediaHandlers(s.opts.Media, s).Register(s.mux)
 	}
 	if s.opts.Agents != nil {
-		NewAgentHandlers(s.opts.Agents, s.panelGate()).Register(s.mux)
+		agentsHandlers := NewAgentHandlers(s.opts.Agents, s.panelGate())
+		agentsHandlers.Server = s
+		agentsHandlers.Register(s.mux)
 	}
 	if s.opts.Probes != nil {
 		NewQuotaHandlers(s.opts.Probes, s.panelGate()).Register(s.mux)
@@ -365,10 +374,20 @@ func (s *Server) mountPlatformRoutes() {
 				if err != nil {
 					return 1
 				}
-				if value, ok := data["keep_backups"].(float64); ok {
+				switch value := data["keep_backups"].(type) {
+				case float64:
 					return int(value)
+				case int:
+					return value
+				case json.Number:
+					number, _ := value.Int64()
+					return int(number)
+				case string:
+					number, _ := strconv.Atoi(strings.TrimSpace(value))
+					return number
+				default:
+					return 1
 				}
-				return 1
 			}
 		}
 		updates.Register(s.mux)

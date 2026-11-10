@@ -82,6 +82,17 @@ func (p *Provider) Probe(ctx context.Context, kind providers.ProbeKind, target p
 	if account == nil {
 		return providers.ProbeResult{Detail: "account unavailable"}, nil
 	}
+	if !account.Auth.APIKey && strings.TrimSpace(account.Auth.RefreshToken) != "" {
+		expiry := account.Auth.ExpiresAt
+		if expiry.IsZero() {
+			if claims := parseJWTClaims(account.Auth.AccessToken); claims.ExpiresAt > 0 {
+				expiry = time.Unix(claims.ExpiresAt, 0)
+			}
+		}
+		if !expiry.IsZero() && p.probeNowTime().Add(tokenRefreshSkew).After(expiry) {
+			_, _ = p.ensureToken(ctx, account, tokenRefreshRequestPath)
+		}
+	}
 	body := map[string]any{
 		"model": target.Model,
 		"messages": []any{map[string]any{

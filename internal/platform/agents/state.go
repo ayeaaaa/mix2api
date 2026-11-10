@@ -25,9 +25,11 @@ const (
 
 var stampPattern = regexp.MustCompile(`^\d{8}-\d{6}-`)
 
-// State is the persisted integration record per client.
+// State is the persisted integration record per client. Extra preserves
+// unknown top-level keys from hand-edited or future state files.
 type State struct {
-	Clients map[string]Record `json:"clients"`
+	Clients map[string]Record
+	Extra   map[string]json.RawMessage
 }
 
 // Record describes the files one successful apply wrote.
@@ -52,17 +54,36 @@ func statePath(accountsDir string) string {
 }
 
 func loadState(accountsDir string) State {
-	state := State{Clients: map[string]Record{}}
+	state := State{Clients: map[string]Record{}, Extra: map[string]json.RawMessage{}}
 	raw, err := os.ReadFile(statePath(accountsDir))
 	if err != nil {
 		return state
 	}
-	var decoded State
-	if json.Unmarshal(raw, &decoded) != nil {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
 		return state
 	}
-	if decoded.Clients != nil {
-		state.Clients = decoded.Clients
+	clientsRaw := document["clients"]
+	if len(clientsRaw) > 0 {
+		var clients map[string]Record
+		if json.Unmarshal(clientsRaw, &clients) == nil && clients != nil {
+			state.Clients = clients
+		}
+		for key, value := range document {
+			if key != "clients" {
+				state.Extra[key] = value
+			}
+		}
+		return state
+	}
+	// v1 wrote the client map directly, without a "clients" wrapper.
+	for key, value := range document {
+		var record Record
+		if json.Unmarshal(value, &record) == nil && (record.AppliedAt != "" || record.Files != nil || record.BaseURL != "") {
+			state.Clients[key] = record
+			continue
+		}
+		state.Extra[key] = value
 	}
 	return state
 }
@@ -71,7 +92,15 @@ func saveState(accountsDir string, state State) error {
 	if state.Clients == nil {
 		state.Clients = map[string]Record{}
 	}
-	raw, err := json.MarshalIndent(state, "", "  ")
+	payload := map[string]any{}
+	for key, value := range state.Extra {
+		payload[key] = value
+	}
+	for key, value := range state.Clients {
+		payload[key] = value
+	}
+	delete(payload, "clients")
+	raw, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -1,26 +1,29 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
-// serveResponsesWithWebTools executes local web tool calls and feeds the
-// results back into additional chat rounds. It returns false when the client
-// did not declare either local tool.
-func (s *Server) serveResponsesWithWebTools(
-	w http.ResponseWriter,
-	r *http.Request,
+// runResponsesWebRounds executes local web tools and returns the final chat
+// completion plus the web items/sources the client should see.
+func (s *Server) runResponsesWebRounds(
+	ctx context.Context,
 	provider providers.Provider,
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
 	model string,
-) bool {
+) (map[string]any, responseMeta, error) {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
-		return false
+		return nil, translated.Meta, nil
 	}
 	if tools, ok := translated.Chat["tools"].([]map[string]any); ok {
 		translated.Chat["tools"] = webtools.InstallToolDefs(tools, wants)
@@ -40,31 +43,41 @@ func (s *Server) serveResponsesWithWebTools(
 	webItems := []any{}
 	sources := []map[string]any{}
 	var final map[string]any
-	rounds := webtools.MaxRounds()
-	for round := 0; round < rounds; round++ {
+	maxRounds := webtools.MaxRounds()
+	for round := 0; round <= maxRounds; round++ {
+		dropTools := round == maxRounds
+		if dropTools {
+			delete(translated.Chat, "tools")
+			messages = append(messages, map[string]any{
+				"role": "system",
+				"content": "The web tools are no longer available. Answer the user now with " +
+					"what you already have. Do not say that you are searching again.",
+			})
+			translated.Chat["messages"] = messages
+		}
 		raw, err := chatMapToRaw(translated.Chat)
 		if err != nil {
-			writeFailure(w, localFailure(http.StatusBadRequest, "invalid request"))
-			return true
+			return nil, translated.Meta, err
 		}
 		request := chatRequest
 		request.Raw = raw
 		request.Messages = chatMessagesRaw(translated.Chat)
-		upstream, openErr := provider.OpenChat(r.Context(), request)
+		upstream, openErr := provider.OpenChat(ctx, request)
 		if openErr != nil {
 			if upstream != nil {
 				_ = upstream.Close()
 			}
-			s.observeResponseFailure(model, false, providerFailure(openErr).Status)
-			writeFailure(w, openErr)
-			return true
+			return nil, translated.Meta, openErr
 		}
 		chat, aggregateErr := aggregateChatStream(upstream, model)
 		_ = upstream.Close()
 		if aggregateErr != nil {
-			s.observeResponseFailure(model, false, providerFailure(aggregateErr).Status)
-			writeFailure(w, aggregateErr)
-			return true
+			return nil, translated.Meta, aggregateErr
+		}
+		if dropTools {
+			stripInternalToolCalls(chat)
+			final = chat
+			break
 		}
 		calls := internalWebCalls(chat)
 		if len(calls) == 0 {
@@ -78,51 +91,121 @@ func (s *Server) serveResponsesWithWebTools(
 		}
 		messages = append(messages, message)
 		for _, call := range calls {
-			function, _ := call["function"].(map[string]any)
-			name := stringValue(function["name"])
-			arguments := function["arguments"]
-			result := s.opts.WebTools.Execute(r.Context(), name, arguments)
+			if !webtools.IsInternalTool(stringValue(callFunction(call)["name"])) {
+				continue
+			}
+			item, sourceList, result := s.executeWebCall(ctx, call)
+			webItems = append(webItems, item)
+			sources = append(sources, sourceList...)
 			callID := stringValue(call["id"])
 			if callID == "" {
 				callID = randomChatID("call_")
 			}
 			messages = append(messages, map[string]any{
-				"role": "tool", "tool_call_id": callID, "name": name, "content": result,
+				"role": "tool", "tool_call_id": callID,
+				"name": stringValue(callFunction(call)["name"]), "content": result,
 			})
-			args := webtools.ArgsFromAny(arguments)
-			item := map[string]any{
-				"id": randomChatID("ws_"), "type": "web_search_call", "status": "completed",
-			}
-			if name == webtools.WebFetchName {
-				item["action"] = map[string]any{"type": "open_url", "url": webtools.URLArg(args)}
-			} else {
-				item["action"] = map[string]any{"type": "search", "query": webtools.QueryArgs(args)}
-			}
-			for _, source := range webtools.Sources(result) {
-				sources = append(sources, map[string]any{"title": source.Title, "url": source.URL})
-			}
-			webItems = append(webItems, item)
 		}
 		translated.Chat["messages"] = messages
+		clientCalls := clientToolCalls(chat)
+		if len(clientCalls) > 0 {
+			// Mixed client/internal calls: internal calls are executed, but the
+			// client's own tool calls are returned instead of being dropped.
+			stripInternalToolCalls(chat)
+			final = chat
+			break
+		}
 	}
 	if final == nil {
-		// Round cap reached while the model still asked for tools: return the
-		// last assistant text rather than leaking another internal call.
 		final = map[string]any{"choices": []any{map[string]any{
 			"message":       map[string]any{"role": "assistant", "content": "Web search round limit reached."},
 			"finish_reason": "stop",
 		}}}
 	}
-	translated.Meta.WebItems = webItems
-	translated.Meta.Sources = sources
-	response := chatToResponse(final, model, translated.Meta)
-	attachWebItems(response, webItems, sources)
+	meta := translated.Meta
+	meta.WebItems = webItems
+	meta.Sources = sources
+	return final, meta, nil
+}
+
+func (s *Server) serveResponsesWithWebTools(
+	w http.ResponseWriter,
+	r *http.Request,
+	provider providers.Provider,
+	chatRequest providers.ChatRequest,
+	translated *responsesTranslation,
+	model string,
+) bool {
+	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
+	if !wants.Search && !wants.Fetch {
+		return false
+	}
+	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
+	if err != nil {
+		s.observeResponseFailure(model, false, providerFailure(err).Status)
+		writeFailure(w, err)
+		return true
+	}
+	response := chatToResponse(final, model, meta)
+	attachWebItems(response, meta.WebItems, meta.Sources)
 	s.observeProtocol(ProtocolObservation{
 		Protocol: "responses", Model: model, Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(final["usage"]),
 	})
 	writeJSONResponse(w, http.StatusOK, response)
 	return true
+}
+
+func (s *Server) serveResponsesWithWebToolsStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	provider providers.Provider,
+	chatRequest providers.ChatRequest,
+	translated *responsesTranslation,
+	model string,
+) bool {
+	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
+	if !wants.Search && !wants.Fetch {
+		return false
+	}
+	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
+	if err != nil {
+		s.observeResponseFailure(model, true, providerFailure(err).Status)
+		writeFailure(w, err)
+		return true
+	}
+	stream := chatCompletionStream(final)
+	s.serveResponsesStream(w, r, stream, model, meta)
+	return true
+}
+
+func (s *Server) executeWebCall(ctx context.Context, call map[string]any) (map[string]any, []map[string]any, string) {
+	function := callFunction(call)
+	name := stringValue(function["name"])
+	arguments := function["arguments"]
+	result := s.opts.WebTools.Execute(ctx, name, arguments)
+	args := webtools.ArgsFromAny(arguments)
+	item := map[string]any{
+		"id": randomChatID("ws_"), "type": "web_search_call", "status": "completed",
+	}
+	if name == webtools.WebFetchName {
+		item["action"] = map[string]any{"type": "open_url", "url": webtools.URLArg(args)}
+	} else {
+		item["action"] = map[string]any{"type": "search", "query": webtools.QueryArgs(args)}
+	}
+	sources := []map[string]any{}
+	for _, source := range webtools.Sources(result) {
+		sources = append(sources, map[string]any{"title": source.Title, "url": source.URL})
+	}
+	return item, sources, result
+}
+
+func callFunction(call map[string]any) map[string]any {
+	function, _ := call["function"].(map[string]any)
+	if function == nil {
+		return map[string]any{}
+	}
+	return function
 }
 
 func metaTools(values []any) []map[string]any {
@@ -154,12 +237,51 @@ func internalWebCalls(chat map[string]any) []map[string]any {
 		if !ok {
 			continue
 		}
-		function, _ := call["function"].(map[string]any)
+		function := callFunction(call)
 		if webtools.IsInternalTool(stringValue(function["name"])) {
 			out = append(out, call)
 		}
 	}
 	return out
+}
+
+func clientToolCalls(chat map[string]any) []map[string]any {
+	message := assistantMessage(chat)
+	if message == nil {
+		return nil
+	}
+	toolCalls, _ := message["tool_calls"].([]any)
+	out := []map[string]any{}
+	for _, raw := range toolCalls {
+		call, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if !webtools.IsInternalTool(stringValue(callFunction(call)["name"])) {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func stripInternalToolCalls(chat map[string]any) {
+	message := assistantMessage(chat)
+	if message == nil {
+		return
+	}
+	toolCalls, _ := message["tool_calls"].([]any)
+	kept := []any{}
+	for _, raw := range toolCalls {
+		call, ok := raw.(map[string]any)
+		if !ok || !webtools.IsInternalTool(stringValue(callFunction(call)["name"])) {
+			kept = append(kept, raw)
+		}
+	}
+	if len(kept) == 0 {
+		delete(message, "tool_calls")
+		return
+	}
+	message["tool_calls"] = kept
 }
 
 func assistantMessage(chat map[string]any) map[string]any {
@@ -183,3 +305,69 @@ func attachWebItems(response map[string]any, items []any, sources []map[string]a
 		response["sources"] = sources
 	}
 }
+
+// chatCompletionStream turns an aggregated chat completion into the minimal
+// ChatStream shape so the existing streaming writers can emit one continuous
+// response after local web rounds.
+func chatCompletionStream(chat map[string]any) providers.ChatStream {
+	frames := [][]byte{}
+	message := assistantMessage(chat)
+	finish := "stop"
+	if choices, ok := chat["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if value, ok := choice["finish_reason"].(string); ok && value != "" {
+				finish = value
+			}
+		}
+	}
+	delta := map[string]any{}
+	role := "assistant"
+	delta["role"] = role
+	if message != nil {
+		if text, ok := message["content"].(string); ok && text != "" {
+			delta["content"] = text
+		}
+		if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+			delta["tool_calls"] = toolCalls
+			if finish == "stop" {
+				finish = "tool_calls"
+			}
+		}
+	}
+	if reasoning, ok := message["reasoning_content"].(string); ok && reasoning != "" {
+		delta["reasoning_content"] = reasoning
+	}
+	chunk := map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta}}}
+	if usage := chat["usage"]; usage != nil {
+		chunk["usage"] = usage
+	}
+	raw, _ := json.Marshal(chunk)
+	frames = append(frames, []byte("data: "+string(raw)+"\n\n"))
+	finalChunk := map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
+	if usage := chat["usage"]; usage != nil {
+		finalChunk["usage"] = usage
+	}
+	raw, _ = json.Marshal(finalChunk)
+	frames = append(frames, []byte("data: "+string(raw)+"\n\n"))
+	frames = append(frames, []byte("data: [DONE]\n\n"))
+	return &memoryChatStream{frames: frames}
+}
+
+type memoryChatStream struct {
+	frames [][]byte
+	index  int
+}
+
+func (m *memoryChatStream) Next() ([]byte, error) {
+	if m.index >= len(m.frames) {
+		return nil, io.EOF
+	}
+	frame := m.frames[m.index]
+	m.index++
+	return frame, nil
+}
+
+func (m *memoryChatStream) Close() error { return nil }
+
+var _ = bytes.NewReader
+var _ = errors.Is

@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,18 +16,19 @@ import (
 )
 
 const (
-	DefaultRepository = "ayeaaaa/mix2api"
-	ScheduledInterval = 24 * time.Hour
-	StartupWindow     = time.Hour
-	StartupChecks     = 6
-	StartupStampsKept = 12
-	FirstDelay        = 30 * time.Second
-	PollInterval      = 5 * time.Minute
-	RequestTimeout    = 10 * time.Second
-	MaxReleaseBody    = 2 << 20
-	CheckStateKey     = "update_check_state"
-	CheckEnabledKey   = "update_check_enabled"
-	ProxySlotKey      = "update_check_proxy_slot"
+	DefaultRepository   = "ayeaaaa/mix2api"
+	ScheduledInterval   = 24 * time.Hour
+	StartupWindow       = time.Hour
+	StartupChecks       = 6
+	StartupStampsKept   = 12
+	FirstDelay          = 30 * time.Second
+	PollInterval        = 5 * time.Minute
+	RequestTimeout      = 10 * time.Second
+	MaxReleaseBody      = 2 << 20
+	CheckStateKey       = "update_check"
+	LegacyCheckStateKey = "update_check_state"
+	CheckEnabledKey     = "update_check_enabled"
+	ProxySlotKey        = "update_check_proxy_slot"
 )
 
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
@@ -41,6 +43,12 @@ type Settings interface {
 // Fetcher returns the raw GitHub releases document for a URL.
 type Fetcher interface {
 	Fetch(ctx context.Context, url string) ([]byte, error)
+}
+
+// ProxyFetcher is an optional fetcher extension used by deployments that pin
+// release checks to a proxy slot. Fetchers without it remain valid.
+type ProxyFetcher interface {
+	FetchWithProxy(ctx context.Context, url, proxy string) ([]byte, error)
 }
 
 // FetcherFunc adapts a function to Fetcher.
@@ -114,6 +122,13 @@ func (c *Checker) loadState() {
 		return
 	}
 	raw, _ := data[CheckStateKey].(map[string]any)
+	if raw == nil {
+		// Earlier work stored the same document under update_check_state.
+		raw, _ = data[LegacyCheckStateKey].(map[string]any)
+		if raw != nil {
+			_, _ = c.settings.Merge(map[string]any{CheckStateKey: raw})
+		}
+	}
 	if raw == nil {
 		return
 	}
@@ -275,7 +290,18 @@ func (c *Checker) runCheck(ctx context.Context) {
 	c.lastError = ""
 	c.mu.Unlock()
 	url := GitHubReleasesURL()
-	raw, err := c.fetcher.Fetch(ctx, url)
+	proxy := c.proxyURL()
+	var raw []byte
+	var err error
+	if proxy != "" {
+		if proxyFetcher, ok := c.fetcher.(ProxyFetcher); ok {
+			raw, err = proxyFetcher.FetchWithProxy(ctx, url, proxy)
+		} else {
+			raw, err = c.fetcher.Fetch(ctx, url)
+		}
+	} else {
+		raw, err = c.fetcher.Fetch(ctx, url)
+	}
 	if err != nil {
 		c.fail(DescribeFailure(err))
 		return
@@ -306,6 +332,32 @@ func (c *Checker) runCheck(ctx context.Context) {
 	if latest != nil && latest.Newer {
 		c.log("发现新版本 " + latest.Version + "（当前 " + c.currentVersion + "）")
 	}
+}
+
+func (c *Checker) proxyURL() string {
+	if c == nil || c.settings == nil {
+		return ""
+	}
+	data, err := c.settings.Load()
+	if err != nil {
+		return ""
+	}
+	slotID := strings.TrimSpace(stringValue(data[ProxySlotKey]))
+	if slotID == "" {
+		return ""
+	}
+	slots, _ := data["proxy_slots"].([]any)
+	for _, raw := range slots {
+		slot, _ := raw.(map[string]any)
+		if slot == nil || strings.TrimSpace(stringValue(slot["id"])) != slotID {
+			continue
+		}
+		if enabled, ok := slot["enabled"].(bool); ok && !enabled {
+			return ""
+		}
+		return strings.TrimSpace(stringValue(slot["url"]))
+	}
+	return ""
 }
 
 func (c *Checker) fail(message string) {
@@ -422,6 +474,24 @@ func DescribeFailure(err error) string {
 	return truncateString(typeName(err), 80)
 }
 
+func redirectedClient(client *http.Client) *http.Client {
+	copy := *client
+	copy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 5 {
+			return errors.New("too many redirects")
+		}
+		if req.URL.Scheme != "https" {
+			return errors.New("redirect must use https")
+		}
+		host := strings.ToLower(req.URL.Hostname())
+		if host != "github.com" && host != "api.github.com" {
+			return errors.New("redirect host is not github")
+		}
+		return nil
+	}
+	return &copy
+}
+
 func typeName(err error) string {
 	if err == nil {
 		return "unknown"
@@ -473,10 +543,24 @@ type GitHubFetcher struct {
 
 // Fetch tries the releases API then the releases/latest redirect endpoint.
 func (f *GitHubFetcher) Fetch(ctx context.Context, releasesURL string) ([]byte, error) {
+	return f.FetchWithProxy(ctx, releasesURL, "")
+}
+
+// FetchWithProxy is Fetch pinned to one proxy URL.
+func (f *GitHubFetcher) FetchWithProxy(ctx context.Context, releasesURL, proxy string) ([]byte, error) {
 	client := f.Client
 	if client == nil {
 		client = &http.Client{Timeout: RequestTimeout}
 	}
+	if strings.TrimSpace(proxy) != "" {
+		proxyURL, err := url.Parse(proxy)
+		if err == nil {
+			copy := *client
+			copy.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+			client = &copy
+		}
+	}
+	client = redirectedClient(client)
 	apiErr := error(nil)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
 	if err == nil {
@@ -517,6 +601,9 @@ func (f *GitHubFetcher) Fetch(ctx context.Context, releasesURL string) ([]byte, 
 	final := ""
 	if response.Request != nil && response.Request.URL != nil {
 		final = response.Request.URL.String()
+	}
+	if !strings.HasPrefix(final, "https://github.com/") {
+		return nil, apiErr
 	}
 	match := releaseTagPattern.FindStringSubmatch(final)
 	if match == nil {

@@ -1,10 +1,12 @@
 package probes
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,15 +53,8 @@ func (s *WindowState) loadLocked() {
 	if err != nil {
 		return
 	}
-	var payload struct {
-		Version int      `json:"version"`
-		Windows []Window `json:"windows"`
-	}
-	if json.Unmarshal(raw, &payload) != nil {
-		return
-	}
 	now := s.now().Unix()
-	for _, window := range payload.Windows {
+	for _, window := range decodeWindowRows(raw) {
 		if window.UID == "" || window.Model == "" || window.ResetAt <= 0 {
 			continue
 		}
@@ -68,6 +63,60 @@ func (s *WindowState) loadLocked() {
 		}
 		s.windows[windowKey(window.UID, window.Model)] = window
 	}
+}
+
+func decodeWindowRows(raw []byte) []Window {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return nil
+	}
+	return decodeWindowValue(value)
+}
+
+func decodeWindowValue(value any) []Window {
+	switch typed := value.(type) {
+	case []any:
+		out := []Window{}
+		for _, item := range typed {
+			if window, ok := decodeWindowMap(item); ok {
+				out = append(out, window)
+			}
+		}
+		return out
+	case map[string]any:
+		if nested, ok := typed["windows"]; ok {
+			return decodeWindowValue(nested)
+		}
+		out := []Window{}
+		for _, item := range typed {
+			if window, ok := decodeWindowMap(item); ok {
+				out = append(out, window)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func decodeWindowMap(value any) (Window, bool) {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return Window{}, false
+	}
+	window := Window{
+		UID:        strings.TrimSpace(probeString(item["uid"])),
+		Model:      strings.TrimSpace(probeString(item["model"])),
+		ResetAt:    probeFloat(item["reset_at"]),
+		Attempts:   probeInt(item["attempts"]),
+		LastTry:    probeFloat(item["last_try"]),
+		LastResult: probeString(item["last_result"]),
+		Cap:        probeBool(item["cap"]),
+		CapAt:      probeFloat(item["cap_at"]),
+	}
+	return window, window.UID != "" && window.Model != ""
 }
 
 func (s *WindowState) now() time.Time {

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/netguard"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/usage"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -40,14 +41,15 @@ func mediaError(code, message string) *Error { return &Error{Code: code, Message
 
 // ImageRequest is one synchronous image generation/edit call.
 type ImageRequest struct {
-	KeyID          string
-	BoundRealm     string
-	Model          string
-	Prompt         string
-	Size           string
-	ResponseFormat string
-	N              int
-	Images         []string
+	KeyID           string
+	BoundRealm      string
+	AllowedAccounts []string
+	Model           string
+	Prompt          string
+	Size            string
+	ResponseFormat  string
+	N               int
+	Images          []string
 }
 
 // ImageResponse is the OpenAI Images wire body.
@@ -62,9 +64,10 @@ type ImageResponse struct {
 
 // VideoRequest is one asynchronous video submission.
 type VideoRequest struct {
-	KeyID      string
-	BoundRealm string
-	Payload    map[string]any
+	KeyID           string
+	BoundRealm      string
+	AllowedAccounts []string
+	Payload         map[string]any
 }
 
 // VideoSubmission reports whether the task was submitted or locally queued.
@@ -87,6 +90,7 @@ type ServiceOptions struct {
 	HTTPClient *http.Client
 	LookupIP   func(host string) ([]net.IP, error)
 	Slots      int
+	CatalogTTL time.Duration
 }
 
 // Service owns provider selection, realm policy, limits, pricing evidence and
@@ -105,6 +109,10 @@ type Service struct {
 	LookupIP   func(host string) ([]net.IP, error)
 
 	slots chan struct{}
+
+	catalogMu  sync.Mutex
+	catalog    map[string]catalogEntry
+	catalogTTL time.Duration
 
 	rateMu sync.Mutex
 	rates  map[string]*rateBucket
@@ -135,6 +143,9 @@ func NewService(opts ServiceOptions) *Service {
 	if opts.Slots <= 0 {
 		opts.Slots = 4
 	}
+	if opts.CatalogTTL <= 0 {
+		opts.CatalogTTL = 5 * time.Minute
+	}
 	service := &Service{
 		ConfigFunc: opts.ConfigFunc,
 		Providers:  opts.Providers,
@@ -147,12 +158,44 @@ func NewService(opts ServiceOptions) *Service {
 		HTTPClient: opts.HTTPClient,
 		LookupIP:   opts.LookupIP,
 		slots:      make(chan struct{}, opts.Slots),
+		catalog:    map[string]catalogEntry{},
+		catalogTTL: opts.CatalogTTL,
 		rates:      map[string]*rateBucket{},
 	}
 	if service.ConfigFunc != nil {
 		service.Tasks.SetConcurrency(service.Config().VideoConcurrency)
 	}
 	service.Tasks.SetOnFinish(service.recordTaskFinish)
+	service.Tasks.SetSubmitter(func(ctx context.Context, task Task) (providers.MediaVideoSubmit, error) {
+		provider, err := service.MediaProviderFor(task.Realm)
+		if err != nil {
+			return providers.MediaVideoSubmit{}, err
+		}
+		body, _ := service.Tasks.PendingBody(task.ID)
+		params := map[string]any{
+			"seconds": task.Seconds, "resolution": task.Resolution,
+			"aspect_ratio": task.AspectRatio, "enable_audio": task.EnableAudio,
+			"image_to_video": task.ImageToVideo,
+			"cost_hint": service.Pricing.CostHint("video", task.Model,
+				intValue(task.Seconds, DefaultVideoSeconds), stringValue(task.Resolution), task.HasReferenceMaterials),
+		}
+		busy := service.Tasks.BusyAccounts()
+		if len(busy) > 0 {
+			excluded := make([]string, 0, len(busy))
+			for account := range busy {
+				excluded = append(excluded, account)
+			}
+			params["exclude_accounts"] = excluded
+		}
+		request := providers.MediaRequest{
+			Realm: task.Realm, Model: task.Model, KeyID: task.Key,
+			Params: params, Body: body,
+		}
+		if prompt, ok := body["prompt"].(string); ok {
+			request.Prompt = prompt
+		}
+		return provider.SubmitVideo(ctx, request)
+	})
 	service.Tasks.SetTaskPoller(
 		func(ctx context.Context, task Task) (providers.MediaVideoState, error) {
 			provider, err := service.MediaProviderFor(task.Realm)
@@ -170,6 +213,13 @@ func NewService(opts ServiceOptions) *Service {
 		},
 	)
 	return service
+}
+
+func (s *Service) nowTime() time.Time {
+	if s != nil && s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 // Config returns the current media settings.
@@ -243,16 +293,9 @@ func (s *Service) Models(ctx context.Context, realm, tag string) (map[string]any
 	if realm != "cn" && realm != "intl" {
 		return nil, mediaError("invalid_request", "realm must be one of cn, intl")
 	}
-	provider, err := s.MediaProviderFor(realm)
+	models, err := s.catalogModels(ctx, realm)
 	if err != nil {
 		return nil, err
-	}
-	models, err := provider.MediaModels(ctx, realm)
-	if err != nil {
-		return nil, normalizeProviderError(err)
-	}
-	if len(models) == 0 {
-		return nil, mediaError("no_media_model", "该区目录里没有任何媒体模型（该账号可能没有生图权限）")
 	}
 	filtered := make([]map[string]any, 0, len(models))
 	for _, model := range models {
@@ -294,8 +337,15 @@ func (s *Service) decoratePrice(model map[string]any) {
 	}
 	generation := VideoCapabilities(model)
 	resolution := stringValue(generation["defaultResolution"])
+	if resolution == "" {
+		if values := stringList(generation["resolutions"]); len(values) > 0 {
+			resolution = values[0]
+		}
+	}
 	if price := s.Pricing.PricePerSecond(id, resolution, true, false); price != nil {
 		model["creditPerSecond"] = *price
+	} else {
+		model["creditPerSecond"] = nil
 	}
 	perResolution := map[string]float64{}
 	for _, name := range stringList(generation["resolutions"]) {
@@ -320,7 +370,7 @@ func (s *Service) decoratePrice(model map[string]any) {
 	if len(withRef) > 0 {
 		model["creditsPerSecondWithReference"] = withRef
 	}
-	if _, exists := model["creditPerSecond"]; !exists {
+	if model["creditPerSecond"] == nil {
 		model["creditPerSecondCeiling"] = VideoCostPerSecondCeiling
 	}
 }
@@ -334,7 +384,7 @@ func (s *Service) AllowImage(keyID string) (bool, int) {
 	if limit <= 0 {
 		return true, 0
 	}
-	now := s.Now()
+	now := s.nowTime()
 	bucket := now.Unix() / 60
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
@@ -358,6 +408,11 @@ func (s *Service) AllowImage(keyID string) (bool, int) {
 
 type rateBucket struct{ count int }
 
+type catalogEntry struct {
+	models []map[string]any
+	at     time.Time
+}
+
 // CheckDailySpend enforces the per-key daily media credit budget. 0 disables.
 func (s *Service) CheckDailySpend(keyID string, cost float64) error {
 	limit := s.Config().DailyCreditsPerKey
@@ -376,7 +431,7 @@ func (s *Service) DailySpend(keyID string) float64 {
 	if s == nil {
 		return 0
 	}
-	now := s.Now()
+	now := s.nowTime()
 	day := now.Format("2006-01-02")
 	s.spendMu.Lock()
 	defer s.spendMu.Unlock()
@@ -431,7 +486,7 @@ func (s *Service) addSpend(keyID string, credit *float64) {
 	}
 	s.spendMu.Lock()
 	defer s.spendMu.Unlock()
-	now := s.Now().Format("2006-01-02")
+	now := s.nowTime().Format("2006-01-02")
 	if !s.spendRead || s.spendDay != now {
 		s.spend = s.scanSpend(now)
 		s.spendDay = now
@@ -548,7 +603,7 @@ func (s *Service) generate(ctx context.Context, request ImageRequest, edit bool)
 	}
 	mediaRequest := providers.MediaRequest{
 		Realm: realm, Model: modelID, Prompt: request.Prompt, KeyID: request.KeyID,
-		Params: map[string]any{"size": size, "mode": modeName(edit), "cost_hint": cost},
+		Params: map[string]any{"size": size, "mode": modeName(edit), "cost_hint": cost, "allowed_accounts": request.AllowedAccounts},
 		Body:   body,
 	}
 	var result providers.MediaImageResult
@@ -587,7 +642,7 @@ func (s *Service) generate(ctx context.Context, request ImageRequest, edit bool)
 		out.Hint = degraded
 	}
 	if out.Created <= 0 {
-		out.Created = s.Now().Unix()
+		out.Created = s.nowTime().Unix()
 	}
 	out.Data = []map[string]any{item}
 	if result.Credit != nil {
@@ -607,6 +662,29 @@ func modeName(edit bool) string {
 }
 
 func (s *Service) mediaModels(ctx context.Context, realm string) ([]map[string]any, error) {
+	models, err := s.catalogModels(ctx, realm)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		out = append(out, cloneModel(model))
+	}
+	return out, nil
+}
+
+func (s *Service) catalogModels(ctx context.Context, realm string) ([]map[string]any, error) {
+	now := s.nowTime()
+	s.catalogMu.Lock()
+	if entry, ok := s.catalog[realm]; ok && now.Sub(entry.at) < s.catalogTTL {
+		models := make([]map[string]any, 0, len(entry.models))
+		for _, model := range entry.models {
+			models = append(models, cloneModel(model))
+		}
+		s.catalogMu.Unlock()
+		return models, nil
+	}
+	s.catalogMu.Unlock()
 	provider, err := s.MediaProviderFor(realm)
 	if err != nil {
 		return nil, err
@@ -615,14 +693,38 @@ func (s *Service) mediaModels(ctx context.Context, realm string) ([]map[string]a
 	if err != nil {
 		return nil, normalizeProviderError(err)
 	}
-	out := make([]map[string]any, 0, len(models))
-	for _, model := range models {
-		out = append(out, model)
-	}
-	if len(out) == 0 {
+	if len(models) == 0 {
 		return nil, mediaError("no_media_model", "该区目录里没有任何媒体模型（该账号可能没有生图权限）")
 	}
+	copied := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		copied = append(copied, cloneModel(model))
+	}
+	s.catalogMu.Lock()
+	s.catalog[realm] = catalogEntry{models: copied, at: now}
+	s.catalogMu.Unlock()
+	out := make([]map[string]any, 0, len(copied))
+	for _, model := range copied {
+		out = append(out, cloneModel(model))
+	}
 	return out, nil
+}
+
+func cloneModel(model map[string]any) map[string]any {
+	out := make(map[string]any, len(model))
+	for key, value := range model {
+		switch typed := value.(type) {
+		case map[string]any:
+			out[key] = cloneModel(typed)
+		case []any:
+			out[key] = append([]any(nil), typed...)
+		case []string:
+			out[key] = append([]string(nil), typed...)
+		default:
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // SubmitVideo validates and either submits a video task or queues it locally.
@@ -713,6 +815,9 @@ func (s *Service) SubmitVideo(ctx context.Context, request VideoRequest) (VideoS
 	if s.Tasks.ActiveCount() >= s.Tasks.Concurrency() {
 		task, createErr := s.Tasks.CreatePending(modelID, params, body, realm, request.KeyID)
 		if createErr != nil {
+			if errors.Is(createErr, ErrQueueFull) {
+				return VideoSubmission{}, mediaError("queue_full", "生视频队列已满；等一会儿再试，或先减少并发")
+			}
 			return VideoSubmission{}, mediaError("upstream", createErr.Error())
 		}
 		return VideoSubmission{Task: task, Queued: true, QueuePosition: s.Tasks.QueuePosition(task.ID)}, nil
@@ -734,6 +839,7 @@ func (s *Service) SubmitVideo(ctx context.Context, request VideoRequest) (VideoS
 		Realm: realm, Model: modelID, Prompt: nonEmpty(payload["prompt"]), KeyID: request.KeyID,
 		Params: params, Body: body,
 	}
+	mediaRequest.Params["allowed_accounts"] = request.AllowedAccounts
 	mediaRequest.Params["cost_hint"] = cost
 	if len(excluded) > 0 {
 		mediaRequest.Params["exclude_accounts"] = excluded
@@ -807,9 +913,9 @@ func (s *Service) recordUsage(ctx context.Context, kind, realm, model, account, 
 		usageBlock["credit"] = *credit
 	}
 	_ = s.Usage.Record(ctx, usage.RecordInput{
-		At: s.Now(), Model: model, Realm: realm, Account: account, KeyID: keyID,
+		At: s.nowTime(), Model: model, Realm: realm, Account: account, KeyID: keyID,
 		Kind: kind, Outcome: "completed", Usage: usageBlock, Media: usageParams,
-		ElapsedMS: elapsedMillis(started, s.Now()),
+		ElapsedMS: elapsedMillis(started, s.nowTime()),
 	})
 }
 
@@ -882,7 +988,11 @@ func (s *Service) resolveInputImage(ctx context.Context, value string) (string, 
 }
 
 func (s *Service) assertPublicHost(host string) error {
-	ips, err := s.LookupIP(host)
+	lookup := s.LookupIP
+	if lookup == nil {
+		lookup = net.LookupIP
+	}
+	ips, err := lookup(host)
 	if err != nil || len(ips) == 0 {
 		return mediaError("invalid_request", "输入图 URL 解析失败")
 	}
@@ -899,7 +1009,11 @@ func (s *Service) fetchURLBytes(ctx context.Context, target string) ([]byte, str
 	if err != nil {
 		return nil, "", err
 	}
-	client := *s.HTTPClient
+	httpClient := s.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 180 * time.Second}
+	}
+	client := *httpClient
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 1 {
 			return errors.New("redirect not allowed")
@@ -939,21 +1053,9 @@ func (s *Service) fetchImageBytes(ctx context.Context, target string) ([]byte, e
 	return data, err
 }
 
-// IsPublicIP rejects loopback, private, link-local, multicast and unspecified
-// addresses, including IPv4-mapped IPv6.
-func IsPublicIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if mapped := ip.To4(); mapped != nil {
-		ip = mapped
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	return true
-}
+// IsPublicIP rejects loopback, private, link-local, multicast, documentation,
+// CGNAT, benchmarking and reserved addresses.
+func IsPublicIP(ip net.IP) bool { return netguard.IsPublicIP(ip) }
 
 func sniffImageMIME(data []byte) string {
 	if len(data) >= 4 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' {

@@ -114,6 +114,18 @@ func runResponsesStream(w http.ResponseWriter, r *http.Request, stream providers
 
 	emitter.emit("response.created", map[string]any{"response": state.responseObject("in_progress")})
 	emitter.emit("response.in_progress", map[string]any{"response": state.responseObject("in_progress")})
+	for _, raw := range meta.WebItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		index := len(state.outputs)
+		state.outputs = append(state.outputs, item)
+		added := cloneStringMap(item)
+		added["status"] = "in_progress"
+		emitter.emit("response.output_item.added", map[string]any{"output_index": index, "item": added})
+		emitter.emit("response.output_item.done", map[string]any{"output_index": index, "item": item})
+	}
 
 	reader := protocol.NewReader(stream)
 	for {
@@ -201,7 +213,18 @@ func (s *responsesStreamState) responseObject(status string) map[string]any {
 	if usage := responsesUsage(s.usage); usage != nil {
 		response["usage"] = usage
 	}
+	if len(s.meta.Sources) > 0 {
+		response["sources"] = s.meta.Sources
+	}
 	return response
+}
+
+func cloneStringMap(value map[string]any) map[string]any {
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }
 
 func (s *responsesStreamState) currentText() string {

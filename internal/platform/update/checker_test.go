@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -156,5 +157,62 @@ func TestCheckerStopPrompt(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+type proxyFetcher struct {
+	proxy string
+}
+
+func (f *proxyFetcher) Fetch(context.Context, string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
+func (f *proxyFetcher) FetchWithProxy(_ context.Context, _ string, proxy string) ([]byte, error) {
+	f.proxy = proxy
+	return []byte(`[]`), nil
+}
+
+func TestCheckerLegacyStateDevVersionAndProxySlot(t *testing.T) {
+	if !IsNewer("2.0.1", "2.0.0-dev") || IsNewer("2.0.0", "2.0.0-dev") {
+		t.Fatal("dev version comparison is wrong")
+	}
+	settings := newMemorySettings()
+	settings.data[CheckEnabledKey] = true
+	settings.data[LegacyCheckStateKey] = map[string]any{
+		"last_attempt": float64(1700000000), "last_success": float64(1700000000),
+		"latest_version": "1.2.3",
+	}
+	settings.data[ProxySlotKey] = "slot-1"
+	settings.data["proxy_slots"] = []any{map[string]any{
+		"id": "slot-1", "url": "http://proxy.local:8080", "enabled": true,
+	}}
+	fetcher := &proxyFetcher{}
+	checker := NewChecker("2.0.0-dev", settings, fetcher, time.Now, nil)
+	status := checker.Status()
+	if status.LastAttempt != "2023-11-14 22:13:20" || status.LatestVersion != "1.2.3" {
+		t.Fatalf("legacy state = %#v", status)
+	}
+	if _, ok := settings.data[CheckStateKey]; !ok {
+		t.Fatal("legacy update state was not migrated to update_check")
+	}
+	checker.Check(context.Background(), true)
+	if fetcher.proxy != "http://proxy.local:8080" {
+		t.Fatalf("proxy = %q", fetcher.proxy)
+	}
+}
+
+func TestRedirectValidation(t *testing.T) {
+	client := redirectedClient(&http.Client{})
+	for _, target := range []string{
+		"http://github.com/x", "https://evil.example/x", "https://api.github.com.evil/x",
+	} {
+		req, _ := http.NewRequest(http.MethodGet, target, nil)
+		if err := client.CheckRedirect(req, nil); err == nil {
+			t.Fatalf("redirect accepted %s", target)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://github.com/x/releases/tag/v1.2.3", nil)
+	if err := client.CheckRedirect(req, nil); err != nil {
+		t.Fatalf("valid redirect rejected: %v", err)
 	}
 }

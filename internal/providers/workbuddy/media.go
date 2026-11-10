@@ -51,7 +51,7 @@ func (p *Provider) runImage(ctx context.Context, req providers.MediaRequest, edi
 	excluded := excludedAccounts(req.Params)
 	var lastErr error
 	for attempt := 0; attempt < mediaRotateMax; attempt++ {
-		account, err := p.pickMediaAccount(req.Model, excluded, cost)
+		account, err := p.pickMediaAccount(req.Model, excluded, cost, allowedAccounts(req.Params))
 		if err != nil {
 			if lastErr != nil {
 				return providers.MediaImageResult{}, lastErr
@@ -107,14 +107,24 @@ func (p *Provider) SubmitVideo(ctx context.Context, req providers.MediaRequest) 
 	excluded := excludedAccounts(req.Params)
 	var lastErr error
 	for attempt := 0; attempt < mediaRotateMax; attempt++ {
-		account, err := p.pickMediaAccount(req.Model, excluded, cost)
+		account, err := p.pickMediaAccount(req.Model, excluded, cost, allowedAccounts(req.Params))
 		if err != nil {
 			if lastErr != nil {
 				return providers.MediaVideoSubmit{}, lastErr
 			}
 			return providers.MediaVideoSubmit{}, err
 		}
-		payload, err := p.mediaPost(ctx, account, mediaVideoSubmitPath, body, mediaSubmitTimeout, "submit")
+		bodyForAccount, uploadErr := p.uploadReferenceMaterials(ctx, account, body)
+		if uploadErr != nil {
+			lastErr = uploadErr
+			p.noteMediaFailure(account, uploadErr, req.Model)
+			if mediaRetryable(uploadErr) {
+				excluded[account.UID()] = true
+				continue
+			}
+			return providers.MediaVideoSubmit{}, uploadErr
+		}
+		payload, err := p.mediaPost(ctx, account, mediaVideoSubmitPath, bodyForAccount, mediaSubmitTimeout, "submit")
 		if err != nil {
 			lastErr = err
 			p.noteMediaFailure(account, err, req.Model)
@@ -280,6 +290,23 @@ func mediaRetryable(err error) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func allowedAccounts(params map[string]any) []string {
+	switch typed := params["allowed_accounts"].(type) {
+	case []string:
+		return typed
+	case []any:
+		out := []string{}
+		for _, value := range typed {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

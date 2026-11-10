@@ -3,6 +3,7 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,5 +41,31 @@ func TestBackupsPruneAndStateRoundTrip(t *testing.T) {
 	loaded := loadState(dir)
 	if loaded.Clients["codex"].Files[0].Backup != backup {
 		t.Fatalf("state round-trip = %#v", loaded)
+	}
+}
+
+func TestStatePreservesUnknownKeysAndV1Shape(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, StateFile)
+	if err := os.WriteFile(path, []byte(`{
+  "claude-code": {"applied_at":"2026-01-01 00:00:00","base_url":"http://x","files":[]},
+  "future_metadata": {"keep": true},
+  "version": 7
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := loadState(dir)
+	state.Clients["codex"] = Record{AppliedAt: "2026-01-02 00:00:00", BaseURL: "http://x"}
+	if err := saveState(dir, state); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	for _, want := range []string{`"future_metadata"`, `"keep": true`, `"version": 7`, `"claude-code"`, `"codex"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("state missing %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), `"clients"`) {
+		t.Fatalf("state used non-v1 wrapper:\n%s", raw)
 	}
 }

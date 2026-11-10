@@ -53,9 +53,9 @@ func invalidMedia(message string) *ProtocolError {
 	return &ProtocolError{Code: "invalid_request", Message: message}
 }
 
-// ParseSize parses widthxheight; empty/auto means the default. It rejects
-// dimensions below 16 and totals above 4 MP.
-func ParseSize(value string) (int, int, string, error) {
+// ParseDimensions parses widthxheight without applying the image pixel cap.
+// Video resolution mapping must accept 4K sizes that image generation rejects.
+func ParseDimensions(value string) (int, int, string, error) {
 	text := strings.TrimSpace(value)
 	if text == "" || strings.EqualFold(text, "auto") {
 		text = DefaultImageSize
@@ -69,11 +69,21 @@ func ParseSize(value string) (int, int, string, error) {
 	if width < 16 || height < 16 {
 		return 0, 0, "", invalidMedia(fmt.Sprintf("size 的宽高都得大于 16 像素（给定 %s）", text))
 	}
+	return width, height, fmt.Sprintf("%dx%d", width, height), nil
+}
+
+// ParseSize parses widthxheight; empty/auto means the default. It rejects
+// dimensions below 16 and totals above 4 MP for image generation.
+func ParseSize(value string) (int, int, string, error) {
+	width, height, normalized, err := ParseDimensions(value)
+	if err != nil {
+		return 0, 0, "", err
+	}
 	if width*height > ImageMaxPixels {
 		return 0, 0, "", invalidMedia(fmt.Sprintf("size %dx%d = %.2f MP 超过上限 %.2f MP。上限是按总像素算的：2048x2048、2048x1536、2560x1440、2560x1600 都在限内，2560x2560 起会被上游直接拒绝且不会降级。",
 			width, height, float64(width*height)/1e6, float64(ImageMaxPixels)/1e6))
 	}
-	return width, height, fmt.Sprintf("%dx%d", width, height), nil
+	return width, height, normalized, nil
 }
 
 // CheckSize validates and normalizes an OpenAI image size.
@@ -231,6 +241,14 @@ func CoerceSeconds(value any) (int, bool) {
 			return 0, false
 		}
 		return int(typed), true
+	case json.Number:
+		number, err := strconv.ParseFloat(typed.String(), 64)
+		if err != nil || number != float64(int(number)) {
+			return 0, false
+		}
+		return int(number), true
+	case uint:
+		return int(typed), true
 	default:
 		return 0, false
 	}
@@ -238,7 +256,7 @@ func CoerceSeconds(value any) (int, bool) {
 
 // SizeToResolution maps a size to the model's ladder by short edge.
 func SizeToResolution(size string, resolutions []string, fallback string) (string, string) {
-	width, height, normalized, err := ParseSize(size)
+	width, height, normalized, err := ParseDimensions(size)
 	if err != nil {
 		return fallback, ""
 	}
@@ -262,7 +280,7 @@ func SizeToResolution(size string, resolutions []string, fallback string) (strin
 
 // AspectRatioFromSize is used for text-to-video only.
 func AspectRatioFromSize(size string) string {
-	width, height, _, err := ParseSize(size)
+	width, height, _, err := ParseDimensions(size)
 	if err != nil {
 		return DefaultAspectRatio
 	}
@@ -474,11 +492,13 @@ func ValidateReferenceCounts(request, generation map[string]any) error {
 		{"reference_audios", "maxReferenceAudios", "参考音频"},
 	}
 	total := 0
+	kinds := 0
 	for _, entry := range counts {
 		items := referenceList(request, entry.requestKey)
 		if len(items) == 0 {
 			continue
 		}
+		kinds++
 		if cap, ok := optionalInt(generation[entry.capKey]); ok && len(items) > cap {
 			if cap == 0 {
 				return invalidMedia(fmt.Sprintf("该模型不支持%s（%s = 0）；去掉 %s 再提交", entry.label, entry.capKey, entry.requestKey))
@@ -490,6 +510,14 @@ func ValidateReferenceCounts(request, generation map[string]any) error {
 	if total > 0 {
 		if cap, ok := optionalInt(generation["maxReferenceMaterials"]); ok && total > cap {
 			return invalidMedia(fmt.Sprintf("参考素材合计最多 %d 个（给定 %d 个）", cap, total))
+		}
+		hasFrame := nonEmpty(request["image"]) != "" || nonEmpty(request["input_reference"]) != "" ||
+			nonEmpty(request["last_image"]) != ""
+		if hasFrame && boolValue(generation["framesExclusiveWithReferenceMaterials"]) {
+			return invalidMedia("该模型的首/尾帧与参考素材互斥：要么给首帧（image / input_reference），要么给参考图，不要同时给")
+		}
+		if !boolValue(generation["allowMixedReferenceMaterials"]) && kinds > 1 {
+			return invalidMedia("该模型不允许混用多类参考素材")
 		}
 	}
 	return nil
@@ -632,6 +660,9 @@ func optionalInt(value any) (int, bool) {
 		return int(typed), true
 	case json.Number:
 		number, err := strconv.Atoi(typed.String())
+		return number, err == nil
+	case string:
+		number, err := strconv.Atoi(strings.TrimSpace(typed))
 		return number, err == nil
 	default:
 		return 0, false

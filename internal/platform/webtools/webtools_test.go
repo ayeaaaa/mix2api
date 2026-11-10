@@ -125,7 +125,9 @@ func TestWebFetchGuard(t *testing.T) {
 	for _, target := range []string{
 		"file:///etc/passwd", "http://localhost/x", "http://127.0.0.1/x",
 		"http://10.0.0.1/x", "http://192.168.1.1/x", "http://169.254.1.1/x",
-		"http://[::1]/x", "http://user:pass@example.com/x",
+		"http://100.64.0.1/x", "http://192.0.2.1/x", "http://198.18.0.1/x",
+		"http://198.51.100.1/x", "http://203.0.113.1/x", "http://240.0.0.1/x",
+		"http://[::1]/x", "http://[2001:db8::1]/x", "http://user:pass@example.com/x",
 	} {
 		if got := service.Fetch(context.Background(), target, 0); !strings.HasPrefix(got, "Error:") {
 			t.Fatalf("guard accepted %s: %s", target, got)

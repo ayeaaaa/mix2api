@@ -253,3 +253,15 @@ func TestBackupsLocalSource(t *testing.T) {
 		t.Fatalf("empty inventory = %#v", inventory)
 	}
 }
+
+func TestStatusUpdatedAt(t *testing.T) {
+	_, dir := systemdManager(t)
+	writeStatus(t, dir, map[string]any{
+		"state": "succeeded", "version": "1.2.3", "message": "ok",
+		"updated_at": "2026-01-02 03:04:05",
+	})
+	status, ok := (&Executor{Dir: dir, UnitPath: "/none"}).ReadStatus()
+	if !ok || status.UpdatedAt != "2026-01-02 03:04:05" {
+		t.Fatalf("status = %#v ok=%v", status, ok)
+	}
+}

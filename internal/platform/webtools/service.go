@@ -31,6 +31,8 @@ type Service struct {
 
 	cache *ttlCache
 
+	readyOnce sync.Once
+
 	flightMu sync.Mutex
 	flights  map[string]*flight
 
@@ -68,6 +70,47 @@ func NewService() *Service { return New() }
 
 // Default is the package-level service used by the convenience functions.
 var Default = New()
+
+func (s *Service) ensureReady() {
+	if s == nil {
+		return
+	}
+	s.readyOnce.Do(func() {
+		if s.Client == nil {
+			s.Client = &http.Client{Timeout: HTTPTimeout * time.Second}
+		}
+		if s.Now == nil {
+			s.Now = time.Now
+		}
+		if s.cache == nil {
+			s.cache = newTTLCache(128)
+		}
+		if s.flights == nil {
+			s.flights = map[string]*flight{}
+		}
+		if s.cool == nil {
+			s.cool = map[string]coolEntry{}
+		}
+		if s.CacheTTL <= 0 {
+			s.CacheTTL = 10 * time.Minute
+		}
+		if s.MinInterval <= 0 {
+			s.MinInterval = 500 * time.Millisecond
+		}
+		if s.SearchBudget <= 0 {
+			s.SearchBudget = 25 * time.Second
+		}
+		if s.CooldownBlocked <= 0 {
+			s.CooldownBlocked = 10 * time.Minute
+		}
+		if s.CooldownError <= 0 {
+			s.CooldownError = time.Minute
+		}
+		if len(s.Engines) == 0 {
+			s.Engines = []string{"duckduckgo", "bing", "wikipedia", "stackoverflow", "news"}
+		}
+	})
+}
 
 func (s *Service) now() time.Time {
 	if s != nil && s.Now != nil {
@@ -150,6 +193,7 @@ func (s *Service) ResetState() {
 
 // Search runs the v1 engine fallback chain. It never panics.
 func (s *Service) Search(ctx context.Context, query string, numResults int) string {
+	s.ensureReady()
 	query = strings.TrimSpace(query)
 	if len([]rune(query)) < 2 {
 		return "Error: web_search needs a query of at least 2 characters; got " + quoteRunes(query) + ". Pass it as {\"query\": \"...\"}."
@@ -187,6 +231,7 @@ func (s *Service) Search(ctx context.Context, query string, numResults int) stri
 
 // Fetch returns readable text with v1's pagination header/truncation message.
 func (s *Service) Fetch(ctx context.Context, target string, startIndex int) string {
+	s.ensureReady()
 	guarded, err := s.GuardURL(target, true)
 	if err != nil {
 		return "Error: " + err.Error()

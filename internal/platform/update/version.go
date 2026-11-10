@@ -22,11 +22,18 @@ func ParseVersion(text string) (major, minor, patch int, ok bool) {
 	return major, minor, patch, true
 }
 
-// IsNewer reports strict version ordering.
+// IsNewer reports strict version ordering. Candidate tags must be stable;
+// the running current version may carry a dev/build suffix (2.0.0-dev).
 func IsNewer(candidate, current string) bool {
 	leftMajor, leftMinor, leftPatch, leftOK := ParseVersion(candidate)
 	rightMajor, rightMinor, rightPatch, rightOK := ParseVersion(current)
-	if !leftOK || !rightOK {
+	if !leftOK {
+		return false
+	}
+	if !rightOK {
+		rightMajor, rightMinor, rightPatch, rightOK = ParseVersion(baseVersion(current))
+	}
+	if !rightOK {
 		return false
 	}
 	if leftMajor != rightMajor {
@@ -104,6 +111,14 @@ func PickLatest(releases []any, currentVersion string) *Release {
 		PublishedAt: truncateString(strings.TrimSpace(stringValue(best["published_at"])), 32),
 		Newer:       IsNewer(version, currentVersion),
 	}
+}
+
+func baseVersion(value string) string {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+	if index := strings.IndexAny(value, "-+ "); index >= 0 {
+		value = value[:index]
+	}
+	return value
 }
 
 func stringValue(value any) string {

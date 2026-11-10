@@ -1,6 +1,7 @@
 package probes
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -52,15 +53,8 @@ func (s *QuotaState) load() {
 	if err != nil {
 		return
 	}
-	var payload struct {
-		Version int        `json:"version"`
-		Scans   []QuotaRow `json:"scans"`
-	}
-	if json.Unmarshal(raw, &payload) != nil {
-		return
-	}
 	now := resetTime(s.now())
-	for _, row := range payload.Scans {
+	for _, row := range decodeQuotaRows(raw) {
 		if row.UID == "" || row.Model == "" {
 			continue
 		}
@@ -73,6 +67,57 @@ func (s *QuotaState) load() {
 		}
 		s.scans[windowKey(row.UID, row.Model)] = row
 	}
+}
+
+func decodeQuotaRows(raw []byte) []QuotaRow {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return nil
+	}
+	return decodeQuotaValue(value)
+}
+
+func decodeQuotaValue(value any) []QuotaRow {
+	switch typed := value.(type) {
+	case []any:
+		out := []QuotaRow{}
+		for _, item := range typed {
+			if row, ok := decodeQuotaMap(item); ok {
+				out = append(out, row)
+			}
+		}
+		return out
+	case map[string]any:
+		if nested, ok := typed["scans"]; ok {
+			return decodeQuotaValue(nested)
+		}
+		out := []QuotaRow{}
+		for _, item := range typed {
+			if row, ok := decodeQuotaMap(item); ok {
+				out = append(out, row)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func decodeQuotaMap(value any) (QuotaRow, bool) {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return QuotaRow{}, false
+	}
+	row := QuotaRow{
+		UID: probeString(item["uid"]), Model: probeString(item["model"]),
+		LastScan: probeFloat(item["last_scan"]), NextAt: probeFloat(item["next_at"]),
+		SeenAt: probeFloat(item["seen_at"]), Attempts: probeInt(item["attempts"]),
+		LastTry: probeFloat(item["last_try"]), LastResult: probeString(item["last_result"]),
+		LastDetail: probeString(item["last_detail"]),
+	}
+	return row, row.UID != "" && row.Model != ""
 }
 
 func (s *QuotaState) Ensure(uid, model string, now time.Time, delay time.Duration) bool {

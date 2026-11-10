@@ -93,8 +93,13 @@ func (h *AgentHandlers) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	authRequired := false
+	globalKeySet := false
+	if h.Server != nil {
+		globalKeySet = strings.TrimSpace(h.Server.opts.StaticAPIKey) != ""
+		authRequired = globalKeySet
+	}
 	if h.Server != nil && h.Server.keyStore != nil {
-		authRequired = h.Server.keyStore.AuthRequired()
+		authRequired = h.Server.keyStore.AuthRequired() || globalKeySet
 	}
 	writeJSONResponse(w, http.StatusOK, map[string]any{
 		"enabled": true, "clients": clients,
@@ -270,6 +275,9 @@ func (h *AgentHandlers) resolveAgentKey(payload map[string]any) (string, string)
 		}
 	}
 	if keyID == "__global" {
+		if h.Server != nil && strings.TrimSpace(h.Server.opts.StaticAPIKey) != "" {
+			return h.Server.opts.StaticAPIKey, ""
+		}
 		for _, entry := range entries {
 			if entry.Enabled && entry.Key != "" {
 				return entry.Key, ""
@@ -287,6 +295,9 @@ func (h *AgentHandlers) resolveAgentKey(payload map[string]any) (string, string)
 			}
 		}
 		return "", "no configured key with id " + strconv.Quote(keyID)
+	}
+	if h.Server != nil && strings.TrimSpace(h.Server.opts.StaticAPIKey) != "" {
+		return h.Server.opts.StaticAPIKey, ""
 	}
 	for _, entry := range entries {
 		if entry.Enabled && entry.Key != "" {

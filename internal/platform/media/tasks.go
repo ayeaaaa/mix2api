@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,6 +66,7 @@ type TaskStoreOptions struct {
 	MaxPending   int
 	MaxTasks     int
 	MaxDiskMB    int
+	MaxWaitingMB int
 	TTLDays      int
 	PollInterval time.Duration
 	PollTimeout  time.Duration
@@ -90,20 +92,22 @@ const (
 // TaskStore owns the task table, submit/poll scheduling, artifacts, retention,
 // and signed download tokens. One mutex protects all state transitions.
 type TaskStore struct {
-	mu           sync.Mutex
-	wg           sync.WaitGroup
-	dir          string
-	statePath    string
-	workers      int
-	concurrency  int
-	maxPending   int
-	maxTasks     int
-	maxDiskBytes int64
-	ttl          time.Duration
-	pollInterval time.Duration
-	pollTimeout  time.Duration
-	now          func() time.Time
-	logger       func(string)
+	mu              sync.Mutex
+	wg              sync.WaitGroup
+	dir             string
+	statePath       string
+	workers         int
+	concurrency     int
+	maxPending      int
+	maxTasks        int
+	maxDiskBytes    int64
+	maxWaitingBytes int64
+	waitingBytes    int64
+	ttl             time.Duration
+	pollInterval    time.Duration
+	pollTimeout     time.Duration
+	now             func() time.Time
+	logger          func(string)
 
 	tasks   map[string]*Task
 	order   []string
@@ -144,6 +148,9 @@ func NewTaskStore(opts TaskStoreOptions) *TaskStore {
 	if opts.MaxDiskMB <= 0 {
 		opts.MaxDiskMB = DefaultMaxDiskMB
 	}
+	if opts.MaxWaitingMB <= 0 {
+		opts.MaxWaitingMB = 64
+	}
 	if opts.TTLDays <= 0 {
 		opts.TTLDays = DefaultTTLDays
 	}
@@ -161,25 +168,26 @@ func NewTaskStore(opts TaskStoreOptions) *TaskStore {
 		statePath = filepath.Join(opts.Dir, "tasks.json")
 	}
 	store := &TaskStore{
-		dir:          opts.Dir,
-		statePath:    statePath,
-		workers:      opts.Workers,
-		concurrency:  opts.Concurrency,
-		maxPending:   opts.MaxPending,
-		maxTasks:     opts.MaxTasks,
-		maxDiskBytes: int64(opts.MaxDiskMB) * 1024 * 1024,
-		ttl:          time.Duration(opts.TTLDays) * 24 * time.Hour,
-		pollInterval: opts.PollInterval,
-		pollTimeout:  opts.PollTimeout,
-		now:          opts.Now,
-		logger:       opts.Logger,
-		tasks:        map[string]*Task{},
-		waiting:      map[string]waitingTask{},
-		started:      map[string]bool{},
-		onFinish:     opts.OnFinish,
-		stopCh:       make(chan struct{}),
-		sema:         make(chan struct{}, opts.Workers),
-		secret:       randomSecret(),
+		dir:             opts.Dir,
+		statePath:       statePath,
+		workers:         opts.Workers,
+		concurrency:     opts.Concurrency,
+		maxPending:      opts.MaxPending,
+		maxTasks:        opts.MaxTasks,
+		maxDiskBytes:    int64(opts.MaxDiskMB) * 1024 * 1024,
+		maxWaitingBytes: int64(opts.MaxWaitingMB) * 1024 * 1024,
+		ttl:             time.Duration(opts.TTLDays) * 24 * time.Hour,
+		pollInterval:    opts.PollInterval,
+		pollTimeout:     opts.PollTimeout,
+		now:             opts.Now,
+		logger:          opts.Logger,
+		tasks:           map[string]*Task{},
+		waiting:         map[string]waitingTask{},
+		started:         map[string]bool{},
+		onFinish:        opts.OnFinish,
+		stopCh:          make(chan struct{}),
+		sema:            make(chan struct{}, opts.Workers),
+		secret:          randomSecret(),
 	}
 	store.load()
 	return store
@@ -297,31 +305,43 @@ func (s *TaskStore) Create(model string, params map[string]any, accountUID strin
 	return task, nil
 }
 
-// CreatePending records a locally queued task. body stays in memory only.
+// ErrQueueFull is returned when the in-memory waiting-body budget is full.
+var ErrQueueFull = errors.New("media: video queue is full")
+
+// CreatePending records a locally queued task. body stays in memory only and
+// counts toward MaxWaitingMB so a burst cannot exhaust process memory.
 func (s *TaskStore) CreatePending(model string, params map[string]any, body map[string]any, realm, keyID string) (Task, error) {
 	if s == nil {
 		return Task{}, errors.New("media: nil task store")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	task := s.newTaskLocked(model, params, "", body, realm, keyID, TaskWaiting)
-	s.tasks[task.ID] = &task
-	s.order = append(s.order, task.ID)
+	copied := map[string]any{}
+	size := int64(0)
 	if body != nil {
-		copied := make(map[string]any, len(body))
 		for key, value := range body {
 			copied[key] = value
 		}
-		s.waiting[task.ID] = waitingTask{
-			Task: Task{
-				ID: task.ID, Model: model, Realm: realm, Key: keyID,
-				Seconds: task.Seconds, Resolution: task.Resolution,
-				AspectRatio: task.AspectRatio, EnableAudio: task.EnableAudio,
-				ImageToVideo: task.ImageToVideo, PromptHead: task.PromptHead,
-				PromptLen: task.PromptLen, Warnings: append([]string(nil), task.Warnings...),
-			},
-			Body: copied,
+		if raw, err := json.Marshal(copied); err == nil {
+			size = int64(len(raw))
 		}
+	}
+	if s.maxWaitingBytes > 0 && s.waitingBytes+size > s.maxWaitingBytes {
+		return Task{}, ErrQueueFull
+	}
+	task := s.newTaskLocked(model, params, "", body, realm, keyID, TaskWaiting)
+	s.tasks[task.ID] = &task
+	s.order = append(s.order, task.ID)
+	s.waitingBytes += size
+	s.waiting[task.ID] = waitingTask{
+		Task: Task{
+			ID: task.ID, Model: model, Realm: realm, Key: keyID,
+			Seconds: task.Seconds, Resolution: task.Resolution,
+			AspectRatio: task.AspectRatio, EnableAudio: task.EnableAudio,
+			ImageToVideo: task.ImageToVideo, PromptHead: task.PromptHead,
+			PromptLen: task.PromptLen, Warnings: append([]string(nil), task.Warnings...),
+		},
+		Body: copied,
 	}
 	s.evictLocked()
 	s.persistLocked()
@@ -329,11 +349,31 @@ func (s *TaskStore) CreatePending(model string, params map[string]any, body map[
 	return task, nil
 }
 
+// PendingBody returns the in-memory submit body for a waiting task. It is
+// available only until the task is handed to the submitter.
+func (s *TaskStore) PendingBody(id string) (map[string]any, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.waiting[strings.TrimSpace(id)]
+	if !ok || pending.Body == nil {
+		return nil, false
+	}
+	copied := make(map[string]any, len(pending.Body))
+	for key, value := range pending.Body {
+		copied[key] = value
+	}
+	return copied, true
+}
+
 // waitingTask keeps the prompt-bearing submit body in memory only. It is never
 // serialized with the task table.
 type waitingTask struct {
 	Task
 	Body map[string]any
+	Size int64
 }
 
 func (s *TaskStore) newTaskLocked(model string, params map[string]any, accountUID string, body map[string]any, realm, keyID, status string) Task {
@@ -398,6 +438,12 @@ func (s *TaskStore) List(limit int) []Task {
 		limit = 50
 	}
 	s.mu.Lock()
+	if s.maxTasks > 0 && limit > s.maxTasks {
+		limit = s.maxTasks
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	defer s.mu.Unlock()
 	out := make([]Task, 0, limit)
 	for index := len(s.order) - 1; index >= 0 && len(out) < limit; index-- {
@@ -421,7 +467,17 @@ func (s *TaskStore) ActiveCount() int {
 func (s *TaskStore) activeCountLocked() int {
 	count := 0
 	for _, task := range s.tasks {
-		if task.Status == TaskQueued || task.Status == TaskRunning || task.Status == TaskSubmitting {
+		if task.Status == TaskQueued || task.Status == TaskRunning {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *TaskStore) submittingCountLocked() int {
+	count := 0
+	for _, task := range s.tasks {
+		if task.Status == TaskSubmitting {
 			count++
 		}
 	}
@@ -505,7 +561,10 @@ func (s *TaskStore) Stats() map[string]any {
 		"total": len(s.tasks), "pending": s.activeCountLocked(),
 		"by_status": byStatus, "workers": s.workers,
 		"concurrency": s.concurrency, "active": s.activeCountLocked(),
-		"waiting": s.waitingCountLocked(), "busy_accounts": len(s.busyAccountsLocked()),
+		"submitting": s.submittingCountLocked(),
+		"waiting":    s.waitingCountLocked(), "queue_depth": s.waitingCountLocked(),
+		"busy_accounts": len(s.busyAccountsLocked()),
+		"max_pending":   s.maxPending, "max_tasks": s.maxTasks,
 	}
 }
 
@@ -537,7 +596,10 @@ func (s *TaskStore) Cancel(id string) (bool, error) {
 		task.Error = "cancelled while queued (未提交到上游，未扣费)"
 		now := s.now().Unix()
 		task.CompletedAt = &now
-		delete(s.waiting, task.ID)
+		if pending, ok := s.waiting[task.ID]; ok {
+			s.waitingBytes -= pending.Size
+			delete(s.waiting, task.ID)
+		}
 		s.persistLocked()
 		return true, nil
 	case TaskQueued:
@@ -622,13 +684,25 @@ func (s *TaskStore) startPumpLocked() {
 	}()
 }
 
+// startPump is the unlocked variant used after a state transition has
+// released the mutex. It rechecks stopped under the same lock Stop takes, so
+// wg.Add can never race wg.Wait.
+func (s *TaskStore) startPump() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startPumpLocked()
+}
+
 func (s *TaskStore) pump() {
 	s.mu.Lock()
 	if s.stopped || s.submitter == nil {
 		s.mu.Unlock()
 		return
 	}
-	if s.activeCountLocked() >= s.concurrency {
+	if s.activeCountLocked()+s.submittingCountLocked() >= s.concurrency {
 		s.mu.Unlock()
 		return
 	}
@@ -661,6 +735,9 @@ func (s *TaskStore) pump() {
 	if current == nil || current.Status != TaskSubmitting {
 		return
 	}
+	if pending, ok := s.waiting[candidate]; ok {
+		s.waitingBytes -= pending.Size
+	}
 	delete(s.waiting, candidate)
 	if err != nil {
 		current.Status = TaskRejected
@@ -669,6 +746,7 @@ func (s *TaskStore) pump() {
 		current.CompletedAt = &now
 		s.persistLocked()
 		s.fireFinishLocked(candidate)
+		s.startPumpLocked()
 		return
 	}
 	if strings.TrimSpace(outcome.UpstreamID) == "" {
@@ -678,6 +756,7 @@ func (s *TaskStore) pump() {
 		current.CompletedAt = &now
 		s.persistLocked()
 		s.fireFinishLocked(candidate)
+		s.startPumpLocked()
 		return
 	}
 	current.Status = TaskQueued
@@ -742,7 +821,12 @@ func (s *TaskStore) runTask(id string) {
 			return
 		}
 		if err != nil {
-			s.finish(id, TaskFailed, err.Error(), nil)
+			status := TaskFailed
+			var mediaErr *providers.MediaError
+			if errors.As(err, &mediaErr) && mediaErr != nil && mediaErr.Code == "task_lost" {
+				status = TaskLost
+			}
+			s.finish(id, status, err.Error(), nil)
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(state.Status)) {
@@ -843,7 +927,7 @@ func (s *TaskStore) finishWithVideos(id, status, message string, credit *float64
 	s.pruneLocked()
 	s.fireFinishLocked(id)
 	s.mu.Unlock()
-	s.startPumpLocked()
+	s.startPump()
 }
 
 func (s *TaskStore) fireFinishLocked(id string) {
@@ -988,17 +1072,36 @@ func (s *TaskStore) persistLocked() {
 
 func (s *TaskStore) load() {
 	for _, path := range []string{s.statePath, filepath.Join(s.dir, "tasks.json")} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
+		info, statErr := os.Stat(path)
+		if statErr != nil || info.IsDir() {
 			continue
 		}
+		if info.Size() > 32<<20 {
+			s.log("media tasks: state file too large, ignoring")
+			continue
+		}
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			continue
+		}
+		decoder := json.NewDecoder(io.LimitReader(file, 32<<20))
+		decoder.UseNumber()
 		var payload struct {
 			Tasks []Task `json:"tasks"`
 		}
-		if json.Unmarshal(raw, &payload) != nil {
+		decodeErr := decoder.Decode(&payload)
+		_ = file.Close()
+		if decodeErr != nil {
 			continue
 		}
-		for _, task := range payload.Tasks {
+		limit := s.maxTasks
+		if limit <= 0 {
+			limit = DefaultMaxTasks
+		}
+		for index, task := range payload.Tasks {
+			if index >= limit {
+				break
+			}
 			if strings.TrimSpace(task.ID) == "" {
 				continue
 			}

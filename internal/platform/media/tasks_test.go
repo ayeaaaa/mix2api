@@ -183,3 +183,15 @@ func TestMediaTaskMaxCountAndDiskPrune(t *testing.T) {
 	store.pruneLocked()
 	store.mu.Unlock()
 }
+
+func TestMediaWaitingBodyBudgetAndHugeLimit(t *testing.T) {
+	store := NewTaskStore(TaskStoreOptions{Dir: t.TempDir(), MaxWaitingMB: 1, MaxTasks: 2})
+	t.Cleanup(store.Stop)
+	big := strings.Repeat("x", 2*1024*1024)
+	if _, err := store.CreatePending("m", map[string]any{"seconds": 5}, map[string]any{"prompt": big}, "cn", "k"); err != ErrQueueFull {
+		t.Fatalf("waiting budget err = %v", err)
+	}
+	if tasks := store.List(1 << 30); len(tasks) > 2 {
+		t.Fatalf("huge List allocated/returned %d", len(tasks))
+	}
+}

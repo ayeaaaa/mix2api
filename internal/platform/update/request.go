@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -112,7 +111,7 @@ func (m *RequestManager) Status() Installation {
 		}
 	}
 	if fileExists(filepath.Join(executor.dir(), RequestFile)) && !ActiveStates[installation.State] {
-		installation = Installation{State: "queued", Version: installation.Version}
+		installation = Installation{State: "queued", Version: installation.Version, UpdatedAt: installation.UpdatedAt}
 	}
 	return installation
 }
@@ -254,7 +253,7 @@ func (m *RequestManager) queue(request Request) error {
 		return ErrRequestWrite
 	}
 	path := filepath.Join(dir, RequestFile)
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL | syscall.O_CLOEXEC | syscall.O_NOFOLLOW
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL | secureOpenFlags()
 	fd, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		if os.IsExist(err) {

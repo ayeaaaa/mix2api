@@ -83,3 +83,21 @@ func minIntAPI(a, b int) int {
 	}
 	return b
 }
+
+func TestAgentsStaticKeyUsed(t *testing.T) {
+	home := t.TempDir()
+	service := agents.New(agents.Service{AccountsDir: filepath.Join(home, "accounts"), Home: home})
+	server := New(ServerOptions{Agents: service, PanelAuth: passThroughAuth, StaticAPIKey: "static-key-value"})
+	body := `{"client":"claude-code","base_url":"http://gateway","models":[{"id":"m1"}],"key_id":"__global"}`
+	rec := doAgentRequest(server, http.MethodPost, "/agents/apply", body, "127.0.0.1:5555", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply = %d %s", rec.Code, rec.Body)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "static-key-value") {
+		t.Fatalf("static key not written: %s", data)
+	}
+}

@@ -297,7 +297,8 @@ func yamlRefsUpsert(text, key, value string) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// dshPatchUpsert updates only the two entries this integration owns.
+// dshPatchUpsert updates only the two entries this integration owns, using
+// nested upserts so unrelated keys inside those entries survive.
 func dshPatchUpsert(text string, provider map[string]any, model string) string {
 	lines := strings.Split(text, "\n")
 	filtered := make([]string, 0, len(lines))
@@ -312,24 +313,32 @@ func dshPatchUpsert(text string, provider map[string]any, model string) string {
 		lines = lines[:len(lines)-1]
 	}
 
-	lines = dshReplaceEntry(lines, "llm-pi-ai", func() []string {
-		out := []string{"- id: llm-pi-ai", "  name: @deepseek-ai/dsh-llm-pi-ai", "  config:", "    providers:"}
-		out = append(out, yamlEmit(map[string]any{"wb-proxy": provider}, 6)...)
-		return out
-	})
+	if start, end, ok := dshEntryRange(lines, "llm-pi-ai"); ok {
+		lines = yamlUpsertAt(lines, start+1, end, 2, []string{"config", "providers", ProviderID}, "",
+			func(indent int) []string { return yamlEmit(provider, indent) })
+	} else {
+		entry := []string{"- id: llm-pi-ai", "  name: @deepseek-ai/dsh-llm-pi-ai", "  config:", "    providers:"}
+		entry = append(entry, yamlEmit(map[string]any{ProviderID: provider}, 6)...)
+		lines = append(lines, entry...)
+	}
 	if model != "" {
-		lines = dshReplaceEntry(lines, "agent-default-model", func() []string {
-			return []string{
-				"- id: agent-default-model", "  config:",
-				"    provider: " + yamlScalar("wb-proxy"),
-				"    model: " + yamlScalar(model),
+		if start, end, ok := dshEntryRange(lines, "agent-default-model"); ok {
+			lines = yamlUpsertAt(lines, start+1, end, 2, []string{"config", "provider"}, yamlInline(ProviderID), nil)
+			if start, end, ok = dshEntryRange(lines, "agent-default-model"); ok {
+				lines = yamlUpsertAt(lines, start+1, end, 2, []string{"config", "model"}, yamlInline(model), nil)
 			}
-		})
+		} else {
+			lines = append(lines,
+				"- id: agent-default-model", "  config:",
+				"    provider: "+yamlScalar(ProviderID),
+				"    model: "+yamlScalar(model),
+			)
+		}
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func dshReplaceEntry(lines []string, entryID string, build func() []string) []string {
+func dshEntryRange(lines []string, entryID string) (int, int, bool) {
 	starts := []int{}
 	for index, line := range lines {
 		if strings.HasPrefix(line, "- ") || strings.TrimSpace(line) == "-" {
@@ -353,12 +362,10 @@ func dshReplaceEntry(lines []string, entryID string, build func() []string) []st
 			}
 		}
 		if strings.Trim(id, `"'`) == entryID {
-			return replaceRange(lines, start, end, build())
+			return start, end, true
 		}
 	}
-	result := append([]string(nil), lines...)
-	result = append(result, build()...)
-	return result
+	return 0, 0, false
 }
 
 func dshDefaultModelMerge(text, provider, model string) map[string]any {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/settings"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/update"
 )
 
@@ -109,5 +110,30 @@ func TestUpdateRoutes(t *testing.T) {
 	}
 	if body := decodeBody(t, rec); body["version"] != "0.9.0" {
 		t.Fatalf("rollback body = %#v", body)
+	}
+}
+
+func TestUpdateBackupsKeepBackupsJSONNumber(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{"keep_backups": 2}); err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Join(t.TempDir(), "unit")
+	link := filepath.Join(t.TempDir(), "link")
+	_ = os.WriteFile(unit, []byte("u"), 0o600)
+	_ = os.WriteFile(link, []byte("l"), 0o600)
+	t.Setenv("WB_UPDATE_INSTALL_ENABLED", "1")
+	manager := update.NewRequestManager(update.RequestManagerOptions{
+		Dir: dir, Executor: &update.Executor{Dir: dir, UnitPath: unit, EnabledLink: link},
+	})
+	settingsService := settings.New(settings.Service{Store: store})
+	server := New(ServerOptions{UpdateRequests: manager, Settings: settingsService, PanelAuth: passThroughAuth})
+	rec := doRequest(server, http.MethodGet, "/updates/backups", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backups = %d %s", rec.Code, rec.Body)
+	}
+	if body := decodeBody(t, rec); numberText(body["keep_backups"]) != "2" {
+		t.Fatalf("keep_backups = %#v", body["keep_backups"])
 	}
 }

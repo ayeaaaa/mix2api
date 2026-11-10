@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
@@ -143,7 +144,7 @@ func TestApplyDSH(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(patch), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	original := "- id: other-plugin\n  name: keep-me\n  config:\n    enabled: true\n"
+	original := "- id: other-plugin\n  name: keep-me\n  config:\n    enabled: true\n- id: llm-pi-ai\n  config:\n    keep-inside: yes\n    providers:\n      other-provider:\n        api: keep\n"
 	if err := os.WriteFile(patch, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestApplyDSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, _ := os.ReadFile(patch)
-	for _, want := range []string{"other-plugin", "keep-me", "llm-pi-ai", "wb-proxy", "reasoningEfforts", "contextWindow", "input:", "- text", "- image"} {
+	for _, want := range []string{"other-plugin", "keep-me", "llm-pi-ai", "keep-inside", "other-provider", "wb-proxy", "reasoningEfforts", "contextWindow", "input:", "- text", "- image"} {
 		if !strings.Contains(string(text), want) {
 			t.Fatalf("patch missing %q:\n%s", want, text)
 		}
@@ -287,5 +288,30 @@ func TestMaxAgentModels(t *testing.T) {
 	enriched := Enrich(models, nil)
 	if len(enriched) != MaxModels {
 		t.Fatalf("model cap = %d", len(enriched))
+	}
+}
+
+func TestApplySerialized(t *testing.T) {
+	service, _, home := newAgentService(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.Apply(context.Background(), "opencode", "http://gateway", "k", "", []ModelSpec{{ID: "m1"}})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := loadJSON(filepath.Join(home, ".config", "opencode", "opencode.json"), "opencode")
+	if err != nil || data["provider"] == nil {
+		t.Fatalf("concurrent apply corrupted config: %#v err=%v", data, err)
 	}
 }

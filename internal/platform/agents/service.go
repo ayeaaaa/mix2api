@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
@@ -19,6 +20,13 @@ type Service struct {
 	Home        string
 	Providers   []providers.Provider
 	Now         func() time.Time
+}
+
+var serviceLocks sync.Map
+
+func (s *Service) lock() *sync.Mutex {
+	value, _ := serviceLocks.LoadOrStore(s, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 // New returns a service with the v1 process-home default.
@@ -111,7 +119,9 @@ func (s *Service) Overview(ctx context.Context) map[string]any {
 
 // Apply resolves the model list and integrates one client.
 func (s *Service) Apply(ctx context.Context, clientID, baseURL, apiKey, model string, models []ModelSpec) (map[string]any, error) {
-	_ = ctx
+	mu := s.lock()
+	mu.Lock()
+	defer mu.Unlock()
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, errors.New("base_url must start with http:// or https://")
 	}
@@ -148,6 +158,9 @@ func (s *Service) Apply(ctx context.Context, clientID, baseURL, apiKey, model st
 
 // Restore undoes one client integration.
 func (s *Service) Restore(ctx context.Context, clientID string) (map[string]any, error) {
+	mu := s.lock()
+	mu.Lock()
+	defer mu.Unlock()
 	_ = ctx
 	return s.restoreClient(clientID)
 }
@@ -185,6 +198,9 @@ func (s *Service) Selection() ([]string, bool) {
 
 // SetSelection stores the selected model ids; an empty list is meaningful.
 func (s *Service) SetSelection(models []string) error {
+	mu := s.lock()
+	mu.Lock()
+	defer mu.Unlock()
 	clean := []string{}
 	seen := map[string]bool{}
 	for _, item := range models {

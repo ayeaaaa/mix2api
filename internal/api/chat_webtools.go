@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -9,51 +10,62 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
-// handleChatWithWebTools is the v1 non-stream chat path: declared local web
-// tools are executed by the gateway and their results fed into another round.
-func (s *Server) handleChatWithWebTools(
-	w http.ResponseWriter,
-	r *http.Request,
+// runChatWebRounds executes local web tools for non-stream and stream chat.
+func (s *Server) runChatWebRounds(
+	ctx context.Context,
 	provider providers.Provider,
 	base providers.ChatRequest,
 	request *chatHTTPRequest,
-) bool {
+) (map[string]any, bool, error) {
 	tools := decodeToolsRaw(request.payload["tools"])
 	wants := webtools.WantsFromTools(tools)
 	if !wants.Search && !wants.Fetch {
-		return false
+		return nil, false, nil
 	}
 	chat := map[string]any{}
 	decoder := json.NewDecoder(bytes.NewReader(mustMarshalRawMap(request.payload)))
 	decoder.UseNumber()
 	if decoder.Decode(&chat) != nil {
-		return false
+		return nil, false, localFailure(http.StatusBadRequest, "invalid request")
 	}
 	chat["tools"] = webtools.InstallToolDefs(tools, wants)
 	messages, _ := chat["messages"].([]any)
+	maxRounds := webtools.MaxRounds()
 	var final map[string]any
-	for round := 0; round < webtools.MaxRounds(); round++ {
+	for round := 0; round <= maxRounds; round++ {
+		dropTools := round == maxRounds
+		if dropTools {
+			delete(chat, "tools")
+			messages = append(messages, map[string]any{
+				"role": "system",
+				"content": "The web tools are no longer available. Answer the user now with " +
+					"what you already have. Do not say that you are searching again.",
+			})
+			chat["messages"] = messages
+		}
 		raw, err := chatMapToRaw(chat)
 		if err != nil {
-			writeFailure(w, localFailure(http.StatusBadRequest, "invalid request"))
-			return true
+			return nil, true, localFailure(http.StatusBadRequest, "invalid request")
 		}
 		roundRequest := base
 		roundRequest.Raw = raw
 		roundRequest.Messages = chatMessagesRaw(chat)
-		stream, openErr := provider.OpenChat(r.Context(), roundRequest)
+		stream, openErr := provider.OpenChat(ctx, roundRequest)
 		if openErr != nil {
 			if stream != nil {
 				_ = stream.Close()
 			}
-			writeFailure(w, openErr)
-			return true
+			return nil, true, openErr
 		}
 		completion, aggregateErr := aggregateChatStream(stream, request.model)
 		_ = stream.Close()
 		if aggregateErr != nil {
-			writeFailure(w, aggregateErr)
-			return true
+			return nil, true, aggregateErr
+		}
+		if dropTools {
+			stripInternalToolCalls(completion)
+			final = completion
+			break
 		}
 		calls := internalWebCalls(completion)
 		if len(calls) == 0 {
@@ -67,18 +79,22 @@ func (s *Server) handleChatWithWebTools(
 		}
 		messages = append(messages, message)
 		for _, call := range calls {
-			function, _ := call["function"].(map[string]any)
-			name := stringValue(function["name"])
-			result := s.opts.WebTools.Execute(r.Context(), name, function["arguments"])
+			_, _, result := s.executeWebCall(ctx, call)
 			callID := stringValue(call["id"])
 			if callID == "" {
 				callID = randomChatID("call_")
 			}
 			messages = append(messages, map[string]any{
-				"role": "tool", "tool_call_id": callID, "name": name, "content": result,
+				"role": "tool", "tool_call_id": callID,
+				"name": stringValue(callFunction(call)["name"]), "content": result,
 			})
 		}
 		chat["messages"] = messages
+		if len(clientToolCalls(completion)) > 0 {
+			stripInternalToolCalls(completion)
+			final = completion
+			break
+		}
 	}
 	if final == nil {
 		final = map[string]any{"choices": []any{map[string]any{
@@ -86,7 +102,44 @@ func (s *Server) handleChatWithWebTools(
 			"finish_reason": "stop",
 		}}}
 	}
+	return final, true, nil
+}
+
+func (s *Server) handleChatWithWebTools(
+	w http.ResponseWriter,
+	r *http.Request,
+	provider providers.Provider,
+	base providers.ChatRequest,
+	request *chatHTTPRequest,
+) bool {
+	final, handled, err := s.runChatWebRounds(r.Context(), provider, base, request)
+	if !handled {
+		return false
+	}
+	if err != nil {
+		writeFailure(w, err)
+		return true
+	}
 	writeJSONResponse(w, http.StatusOK, final)
+	return true
+}
+
+func (s *Server) handleChatWithWebToolsStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	provider providers.Provider,
+	base providers.ChatRequest,
+	request *chatHTTPRequest,
+) bool {
+	final, handled, err := s.runChatWebRounds(r.Context(), provider, base, request)
+	if !handled {
+		return false
+	}
+	if err != nil {
+		writeFailure(w, err)
+		return true
+	}
+	writeChatStream(w, r, chatCompletionStream(final), request.model)
 	return true
 }
 

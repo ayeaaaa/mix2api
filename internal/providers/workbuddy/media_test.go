@@ -2,6 +2,8 @@ package workbuddy
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -151,4 +153,50 @@ func errorIsMedia(err error, target **providers.MediaError) bool {
 		break
 	}
 	return false
+}
+
+func TestWorkBuddyReferenceUpload(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "media-ref", realmCN, map[string]any{"accessToken": "token"})
+	provider, _ := newPoolProvider(t, realmCN, dir)
+	var submitBody map[string]any
+	fake, server := newTaskTestUpstream(t, func(fake *taskTestUpstream, r *http.Request, raw []byte) (int, any) {
+		switch r.URL.Path {
+		case mediaPresignPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"items": []any{
+				map[string]any{"upload_url": "http://" + r.Host + "/put", "download_url": "https://cdn.example/uploaded.mp4"},
+			}}}
+		case "/put":
+			return http.StatusOK, map[string]any{"ok": true}
+		case mediaVideoSubmitPath:
+			_ = json.Unmarshal(raw, &submitBody)
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"id": "up-ref"}}
+		default:
+			return http.StatusNotFound, nil
+		}
+	})
+	provider.mediaBaseURL = server.URL
+	payload := base64.StdEncoding.EncodeToString([]byte("video-bytes"))
+	_, err := provider.SubmitVideo(context.Background(), providers.MediaRequest{
+		Model: "vid-1",
+		Body: map[string]any{
+			"model": "vid-1", "prompt": "x",
+			"reference_videos": []map[string]any{{"video_url": "data:video/mp4;base64," + payload}},
+		},
+		Params: map[string]any{"cost_hint": 1, "seconds": 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	references, _ := submitBody["reference_videos"].([]any)
+	if len(references) != 1 {
+		t.Fatalf("submit body = %#v", submitBody)
+	}
+	item, _ := references[0].(map[string]any)
+	if item["video_url"] != "https://cdn.example/uploaded.mp4" {
+		t.Fatalf("reference url = %#v", item["video_url"])
+	}
+	if fake.count(http.MethodPost, mediaPresignPath) != 1 || fake.count(http.MethodPut, "/put") != 1 {
+		t.Fatalf("upload calls = %#v", fake.snapshot())
+	}
 }
