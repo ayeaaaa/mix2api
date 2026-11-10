@@ -13,7 +13,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from wb_fingerprint import derive_id, generate_request_id, session_id
+from wb_fingerprint import (derive_id, generate_request_id, session_id,
+                            web_browser_headers)
 import wb_activity
 import wb_atrest
 import wb_catalog
@@ -2240,16 +2241,22 @@ class Account(object):
         return not str(self.last_activity_report).startswith(today_str)
 
     def web_headers(self):
-        """网页版 app 的出站头：只有 bearer 与 X-User-Id，没有桌面端指纹。"""
-        return {
+        """网页版 app 的出站头：bearer + X-User-Id + 按账号稳定的浏览器画像。
+
+        官方网页端只有这两个凭据头（没有桌面端 X-IDE-* 指纹）；浏览器侧的头
+        由 wb_fingerprint 按 uid 派生，避免所有账号共用同一个 UA/平台。
+        """
+        headers = {
             "Authorization": "Bearer " + self.access_token,
             "X-User-Id": self.uid,
             "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
+            "Accept": "application/json",
+            "X-Request-ID": generate_request_id(self.uid),
             "Origin": WEB_ORIGIN,
             "Referer": WEB_ORIGIN + "/app",
-            "User-Agent": WEB_USER_AGENT,
         }
+        headers.update(web_browser_headers(self.uid, self.realm))
+        return headers
 
     def daily_chat_model(self):
         """Which model the desktop-identity leg of the activity runs on.
@@ -2497,9 +2504,23 @@ class Account(object):
         body = {
             "prompt": chosen_prompt,
             "model": model,
-            # 网页端建会话时固定带上这两项（抓包所得），保持请求形态一致。
-            "conversationOrigin": "workbuddy-app",
-            "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
+            # 按官方网页端抓包（2026-11-10）对齐：agents + addonSelection +
+            # 三个内置插件 + extraInfo；旧实现只有 workbuddy-app + weixinpay。
+            "conversationOrigin": "agents",
+            "addonSelection": {
+                "version": 1,
+                "welcomeMode": "working",
+                "interactionMode": "craft",
+            },
+            "plugins": [
+                {"name": "welcomemode-work", "marketplace": "workbuddy-builtin"},
+                {"name": "interactionmode-craft", "marketplace": "workbuddy-builtin"},
+                {"name": "prompt-common", "marketplace": "workbuddy-builtin"},
+            ],
+            "extraInfo": {
+                "clientCreateRequestId": "cloud-create-" + str(uuid.uuid4()),
+                "traceId": uuid.uuid4().hex,
+            },
         }
         conversation, failure = self._web_conversation_create(body)
         if failure and failure.get("limit"):
