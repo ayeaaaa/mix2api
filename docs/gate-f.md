@@ -28,6 +28,7 @@ requires a manual run.
 | Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
+| v2.1.0 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.1.0>; tag/commit `f998d89`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:33826ba...`; arm64 pulled from GHCR, ran `2.1.0`; local containers healthy: `docs/smoke/2026-11-11-release-2.1.0.md` |
 | v2.0.7 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.7>; tag/commit `ac01e77`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7b54830...`; arm64 pulled from GHCR, ran `2.0.7`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.7.md` |
 | v2.0.7 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.7>; tag/commit `ac01e77`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7b54830...`; arm64 pulled from GHCR, ran `2.0.7`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.7.md` |
 | v2.0.6 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.6>; tag/commit `f7f4904`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:5381e1e...`; arm64 pulled from GHCR, ran `2.0.6`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.6.md` |
@@ -84,6 +85,11 @@ day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
 On a local 19.5k-row ledger the first build takes about 0.64s and later reads
 take about 3ms. `make check` and `make race` pass.
+
+**v2.1.0 addendum:** optional dashboard branding is covered by settings
+validation tests, dashboard contract/hash tests, JS harness tests and a real
+browser smoke (tab title, sidebar title/mark, favicon). API, health and update
+identity are unchanged. `make check` and `make race` pass.
 
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
