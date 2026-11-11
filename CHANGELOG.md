@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.1] - 2026-11-11
+
+Patch release focused on upstream protocol parity, account safety, and request
+fidelity.
+
+### Added
+
+- Persistent `11140` account bans: API dispatch and automatic tasks stop until
+  an operator manually enables the account; restart, token refresh, re-import
+  and successful probes do not clear it.
+- Intl `deepseek-v4.1-flash` outbound alias to `deepseek-v4.1-flash-sg`; the
+  logical id remains in the catalog, API-key checks, responses and
+  `requested_model`. `WB_INTL_MODEL_ALIAS=0` disables it.
+- DSH flow-map `refs:` support for `.credentials.yaml`.
+- CN Kimi `$ref` / `$defs` tool-schema inlining.
+- Browser identity, web headers and ACP request shape aligned with the official
+  web client (per-account browser profiles, `X-Request-ID`, `session/new`,
+  `set_mode`, `set_config_option`, full prompt `_meta`, human pause).
+
+### Fixed
+
+- CodeArts model-ID casing fallback on the same account, role-only preflight
+  frames, and SSE credit-exhaustion parking; manual disable survives terminal
+  credential errors.
+- Complete 11151 empty-text guard for list parts and sniffed string arrays.
+- Billing-header cleanup is scoped to system/developer messages; tool
+  descriptions are sanitized; bare billing keys and `11128` body text no longer
+  get the old rewrites.
+- Reasoning mirror for legacy-reasoning models and Responses replay fidelity
+  (adjacent reasoning merge, inline assistant reasoning/tool calls, tool-boundary
+  clearing).
+- Profile-wrapper compatibility, desktop identity `5.9.4` / CLI `2.165.0`,
+  dashboard `X-Robots-Tag: noindex, nofollow`.
+
+### Verification
+
+- `make check` passes; v1 parity suites and the v2 contract/oracle suites remain
+  green.
+
 ## [2.0.0] - 2026-11-11
 
 Final release. Source is published on branch `v2` of `ayeaaaa/mix2api`; `main`

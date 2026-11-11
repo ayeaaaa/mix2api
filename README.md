@@ -4,7 +4,7 @@ Go rewrite of the mix2api multi-provider AI gateway. One CGO-free binary serves
 OpenAI Chat Completions, Responses, Anthropic Messages, SSE, the dashboard, and
 the provider admin surfaces for WorkBuddy (intl/cn), CodeArts, and Raccoon.
 
-**Status: `2.0.0` final (2026-11-11).** The v2 source is published on branch
+**Status: `2.0.1` final (2026-11-11).** The v2 source is published on branch
 `v2` of `ayeaaaa/mix2api`; `main` remains v1.6.5. Gate F evidence is recorded in
 [`docs/gate-f.md`](docs/gate-f.md); real Windows SCM update execution remains
 the only unverified runtime item.
@@ -59,7 +59,7 @@ SBOM, and `release.json`. Version, commit, and date come from `VERSION`,
 Example release build:
 
 ```sh
-VERSION=2.0.0 \
+VERSION=2.0.1 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
