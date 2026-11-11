@@ -17,10 +17,10 @@ sudo install -d -o mix2api -g mix2api -m 0700 /srv/mix2api/accounts /srv/mix2api
 Set `PANEL_PASSWORD` and `MIX2API_API_KEY` in `/etc/mix2api/env` (mode 0600,
 readable only by root; systemd reads it before dropping privileges). A
 non-loopback `HOST` refuses to start without both. A hardened unit is provided
-at `packaging/systemd/mix2api.service`:
+at the `mix2api.service` file shipped in the release archive:
 
 ```sh
-sudo install -m 0644 packaging/systemd/mix2api.service /etc/systemd/system/mix2api.service
+sudo install -m 0644 mix2api.service /etc/systemd/system/mix2api.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now mix2api
 ```

@@ -6,15 +6,15 @@ binary is shipped as:
 | Asset | Contents |
 | --- | --- |
 | `mix2api-<version>-<os>-<arch>` | binary, `LICENSE`, `README.md`, Linux systemd unit, `release-manifest.json` |
-
-On Linux the unit expects the install root `/srv/mix2api`, a system
-`mix2api` user, and data under `/srv/mix2api/{accounts,usage,media}`; see
-`docs/runbook.md`. `systemd-analyze verify` is exercised by the packaging test.
 | `mix2api-<version>-openwrt-<arch>` | Linux binary, procd init script, UCI config sample, `OPENWRT.md` |
 | `mix2api-<version>-portable-<os>-<arch>` | binary, start/stop launchers, `LICENSE`, `README.md` |
 | `SHA256SUMS` | sha256 for every archive, SBOM, and release metadata file |
 | `sbom.spdx.json` | SPDX 2.3 package inventory from the built binary |
 | `release.json` | version, tag, commit, date, and asset checksums |
+
+On Linux the unit expects the install root `/srv/mix2api`, a system
+`mix2api` user, and data under `/srv/mix2api/{accounts,usage,media}`; see
+`docs/runbook.md`. `systemd-analyze verify` is exercised by the packaging test.
 
 `release-manifest.json` inside each archive lists every payload file with its
 sha256 and mode. The update executor verifies that manifest before replacing
