@@ -18,17 +18,43 @@ issue #90：POST /console/as/conversations/ 只是**排队**了一条会话。ag
 import base64
 import http.client
 import json
+import os
 import queue
+import random
 import threading
 import time
 import urllib.parse
+import uuid
 
 PROTOCOL_VERSION = 1
 
-#: 打卡只需要 agent 自己把话说完，不需要客户端提供文件系统/终端能力。
+#: 拟人停顿：官方网页端是真人打字，网关建完会话立刻发提示词是一个明显的
+#: 自动化信号。在 session/load 与 session/prompt 之间随机停一会儿。
+HUMAN_DELAY_MIN = float(os.environ.get("WB_WEB_HUMAN_DELAY_MIN") or "2")
+HUMAN_DELAY_MAX = float(os.environ.get("WB_WEB_HUMAN_DELAY_MAX") or "8")
+
+
+def _human_pause():
+    """按配置随机停顿；测试里会被替换成空操作。"""
+    low = max(0.0, HUMAN_DELAY_MIN)
+    high = max(low, HUMAN_DELAY_MAX)
+    if high <= 0:
+        return
+    time.sleep(random.uniform(low, high))
+
+
+#: 打卡不需要文件系统/终端；能力声明按官方网页端抓包（2026-11-10）对齐。
 CLIENT_CAPABILITIES = {
     "fs": {"readTextFile": False, "writeTextFile": False},
-    "terminal": False,
+    "_meta": {
+        "codebuddy.ai": {
+            "question": True,
+            "terminalOutput": True,
+            "terminalOutputChunk": True,
+        },
+        "workbuddy.desktop": {"detailedCheckpoint": True},
+    },
+    "elicitation": {"form": {}},
 }
 
 
@@ -218,6 +244,41 @@ def _set_model(channel, session_id, model, log):
         return False
 
 
+def _prompt_meta(conversation_id, prompt, model=None):
+    """session/prompt 的 _meta：按官方网页端抓包（2026-11-10）对齐。"""
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    now_ms = int(time.time() * 1000)
+    timestamp = (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+                 + ".%03dZ" % (now_ms % 1000))
+    return {
+        "codebuddy.ai": {
+            "extra": {"sourceContentBlocks": [{"type": "text", "text": prompt}]},
+            "skillRecommend": {
+                "inputAttemptId": str(uuid.uuid4()),
+                "recommendId": "",
+                "skillId": "",
+                "expertId": "",
+                "skillCount": 0,
+                "totalCount": 0,
+            },
+            "traceparent": "00-%s-%s-01" % (trace_id, span_id),
+            "colorScheme": "light",
+            "traceId": trace_id,
+            "requestId": uuid.uuid4().hex,
+            "promptRequestId": uuid.uuid4().hex,
+            "clientSendTime": now_ms,
+            "conversationId": conversation_id,
+            "model": model or None,
+            "mode": "craft",
+            "expertId": "",
+        },
+        "codebuddy.ai/conversationRequestId": uuid.uuid4().hex,
+        "timestamp": timestamp,
+        "baggage": "buddyId=,buddyName=",
+    }
+
+
 def run_turn(link, token, session_id, cwd, prompt, user_agent, poll_status=None,
              wait_seconds=120, poll_interval=3, log=None, proxy="",
              channel_factory=AcpChannel, model=None):
@@ -245,9 +306,23 @@ def run_turn(link, token, session_id, cwd, prompt, user_agent, poll_status=None,
                          "mcpServers": []}, 2)
         if model:
             _set_model(channel, session_id, model, log)
+        # 官方网页端在 session/load 之后还会 new 会话、设置模式和语言。
+        channel.request("session/new",
+                        {"cwd": cwd or "/workspace", "mcpServers": []}, 4)
+        channel.request("session/set_mode",
+                        {"sessionId": session_id, "modeId": "default"}, 5)
+        channel.request("session/set_config_option",
+                        {"sessionId": session_id, "configId": "language",
+                         "value": "English"}, 6)
+        _human_pause()
         channel.request("session/prompt",
                         {"sessionId": session_id,
-                         "prompt": [{"type": "text", "text": prompt}]}, 4)
+                         "prompt": [{
+                             "type": "text",
+                             "text": prompt,
+                             "_meta": {"codebuddy.ai": {"mode": "craft"}},
+                         }],
+                         "_meta": _prompt_meta(session_id, prompt, model)}, 7)
         deadline = time.time() + max(1, int(wait_seconds))
         while time.time() < deadline:
             if poll_status is not None:

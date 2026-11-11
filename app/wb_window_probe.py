@@ -362,6 +362,7 @@ def _probe(account, model):
       * detail        失败原因，只用于日志与状态展示。
     """
     import wb_proxy  # 函数内导入：wb_proxy 顶层会拉起调度器，避免循环依赖
+    model = wb_proxy.intl_model_alias(model, account.realm)
     url = account.chat_base_url() + wb_proxy.CHAT_PATH
     headers = account.headers(purpose="chat")
     body = {

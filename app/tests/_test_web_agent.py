@@ -46,7 +46,7 @@ class FakeChannel(object):
         self.closed = True
 
 
-def run(statuses, channel_attrs=None, **kwargs):
+def run(statuses, channel_attrs=None, pause=None, **kwargs):
     """用一段状态脚本跑 run_turn，返回 (结果, 通道)。"""
     made = []
 
@@ -62,9 +62,14 @@ def run(statuses, channel_attrs=None, **kwargs):
     def poll():
         return remaining.pop(0) if remaining else "working"
 
-    result = W.run_turn("https://box.example/acp", "tok", "sess-1", "/workspace",
-                        "Hi", "ua", poll_status=poll, poll_interval=0,
-                        channel_factory=factory, **kwargs)
+    old_pause = W._human_pause
+    W._human_pause = pause or (lambda: None)
+    try:
+        result = W.run_turn("https://box.example/acp", "tok", "sess-1",
+                            "/workspace", "Hi", "ua", poll_status=poll,
+                            poll_interval=0, channel_factory=factory, **kwargs)
+    finally:
+        W._human_pause = old_pause
     return result, made[0]
 
 
@@ -74,17 +79,48 @@ class RunTurnTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["status"], "completed")
         self.assertEqual([call[0] for call in channel.calls],
-                         ["open", "initialize", "session/load", "session/prompt"])
+                         ["open", "initialize", "session/load", "session/new",
+                          "session/set_mode", "session/set_config_option",
+                          "session/prompt"])
         load = channel.calls[2][1]
         self.assertEqual(load["sessionId"], "sess-1")
         self.assertEqual(load["cwd"], "/workspace")
         self.assertEqual(load["mcpServers"], [])
-        prompt = channel.calls[3][1]
+        new = channel.calls[3][1]
+        self.assertEqual(new["cwd"], "/workspace")
+        self.assertEqual(new["mcpServers"], [])
+        mode = channel.calls[4][1]
+        self.assertEqual(mode["sessionId"], "sess-1")
+        self.assertEqual(mode["modeId"], "default")
+        config = channel.calls[5][1]
+        self.assertEqual(config["sessionId"], "sess-1")
+        self.assertEqual(config["configId"], "language")
+        self.assertEqual(config["value"], "English")
+        prompt = channel.calls[6][1]
         self.assertEqual(prompt["sessionId"], "sess-1")
-        self.assertEqual(prompt["prompt"], [{"type": "text", "text": "Hi"}])
+        self.assertEqual(prompt["prompt"][0]["text"], "Hi")
+        meta = prompt["_meta"]["codebuddy.ai"]
+        self.assertEqual(meta["conversationId"], "sess-1")
+        self.assertEqual(meta["mode"], "craft")
+        self.assertEqual(meta["extra"]["sourceContentBlocks"],
+                         [{"type": "text", "text": "Hi"}])
+        self.assertRegex(meta["traceId"], r"^[0-9a-f]{32}$")
+        self.assertRegex(meta["traceparent"],
+                         r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
         self.assertTrue(channel.closed)
         self.assertEqual(result["events"], 7)
         self.assertEqual(result["chunks"], 3)
+
+    def test_a_human_pause_happens_before_the_prompt(self):
+        events = []
+        result, channel = run(["completed"], pause=lambda: events.append("pause"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(events, ["pause"], "提示词前应有一次拟人停顿")
+        self.assertEqual(
+            [call[0] for call in channel.calls],
+            ["open", "initialize", "session/load", "session/new",
+             "session/set_mode", "session/set_config_option", "session/prompt"],
+        )
 
     def test_a_conversation_that_never_finishes_is_reported(self):
         result, channel = run(["working"], wait_seconds=1)
@@ -136,10 +172,12 @@ class SseParsingTests(unittest.TestCase):
         self.assertEqual(drained[-1]["id"], 3)
 
     def test_the_client_capabilities_stay_honest(self):
-        # 打卡不需要文件系统/终端：能力声明必须是关的，否则沙箱会等我们回调。
-        self.assertFalse(W.CLIENT_CAPABILITIES["terminal"])
+        # 打卡不需要文件系统/终端回调：fs 能力必须是关的，否则沙箱会等我们回调；
+        # _meta / elicitation 是官方客户端的声明，按抓包补齐。
         self.assertFalse(W.CLIENT_CAPABILITIES["fs"]["readTextFile"])
         self.assertFalse(W.CLIENT_CAPABILITIES["fs"]["writeTextFile"])
+        self.assertTrue(W.CLIENT_CAPABILITIES["_meta"]["codebuddy.ai"]["question"])
+        self.assertIn("elicitation", W.CLIENT_CAPABILITIES)
         self.assertEqual(W.PROTOCOL_VERSION, 1)
 
 

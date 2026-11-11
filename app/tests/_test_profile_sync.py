@@ -67,6 +67,23 @@ class FetchProfileTests(unittest.TestCase):
         self.assertEqual(captured["headers"].get("x-client-platform"), "web")
         self.assertEqual(captured["headers"].get("authorization"), "Bearer tok")
 
+    def test_fetch_accepts_wrapped_console_profile(self):
+        def fake_urlopen(req, timeout=30, proxy=""):
+            return FakeResponse({"code": 0, "data": {
+                "uid": "uid-1", "nickname": "  Wrapped Nick  ",
+                "phoneNumber": "+86-13800000000",
+            }})
+
+        account = wb_accounts.Account(
+            {"uid": "uid-1", "accessToken": "tok", "realm": "cn"})
+        old = wb_accounts.urlopen
+        wb_accounts.urlopen = fake_urlopen
+        try:
+            uid, nickname = wb_accounts.fetch_account_profile(account)
+        finally:
+            wb_accounts.urlopen = old
+        self.assertEqual((uid, nickname), ("uid-1", "Wrapped Nick"))
+
     def test_uid_mismatch_is_rejected(self):
         def fake_urlopen(req, timeout=30, proxy=""):
             return FakeResponse({"uid": "uid-other", "nickname": "X"})

@@ -40,11 +40,14 @@ class DailyChatTests(unittest.TestCase):
         acc.last_daily_chat = "2020-01-01 10:00:00"
         self.assertTrue(acc.can_daily_chat())
 
-        # An upstream 11140 restriction suppresses later scheduler slots until
-        # its persisted window expires.
-        acc.restricted_until = time.time() + 3600
+        # An upstream 11140 ban suppresses later scheduler slots until the
+        # operator explicitly enables the account.
+        acc.account_banned = True
+        acc.enabled = False
+        acc.tasks_enabled = False
         self.assertFalse(acc.can_daily_chat())
-        acc.restricted_until = time.time() - 1
+        acc.clear_account_ban()
+        acc.enabled = True
         self.assertTrue(acc.can_daily_chat())
 
     def test_cn_account_ineligible(self):
@@ -74,11 +77,14 @@ class DailyChatTests(unittest.TestCase):
 
             self.assertFalse(res["ok"])
             self.assertTrue(res["restricted"])
-            self.assertGreater(acc.restricted_until, before)
+            self.assertTrue(acc.account_banned)
+            self.assertFalse(acc.enabled)
+            self.assertFalse(acc.tasks_enabled)
             self.assertFalse(acc.can_daily_chat())
             with open(acc.path, "r", encoding="utf-8") as handle:
                 saved = json.load(handle)
-            self.assertEqual(saved["restrictedUntil"], acc.restricted_until)
+            self.assertTrue(saved["accountBanned"])
+            self.assertEqual(saved["restrictedUntil"], 0.0)
 
             # A manual retry during the restriction window must not pretend the
             # day is complete and must not touch the upstream again.
@@ -88,6 +94,17 @@ class DailyChatTests(unittest.TestCase):
             self.assertFalse(skipped["ok"])
             self.assertTrue(skipped["skipped"])
             self.assertTrue(skipped["restricted"])
+
+            # Only a manual enable clears the ban; then the activity can run.
+            acc.enabled = True
+            acc.clear_account_ban()
+            acc.save(directory)
+            with mock.patch.object(
+                    acc, "_daily_chat_upstream",
+                    return_value={"ok": True, "msg": "ok"}) as retry:
+                ok = acc.daily_chat(web=False, trigger="manual")
+            self.assertTrue(ok["ok"])
+            self.assertTrue(retry.called)
 
 class WebChannelTests(unittest.TestCase):
     UID = "c90a4e93-edad-42fe-aa3a-133fb27cf6b6"
@@ -180,12 +197,24 @@ class WebChannelTests(unittest.TestCase):
         self.assertEqual(headers.get("authorization"), "Bearer dummy-token")
         self.assertEqual(headers.get("x-user-id"), self.UID)
         self.assertEqual(headers.get("origin"), "https://www.workbuddy.ai")
+        self.assertEqual(headers.get("accept"), "application/json")
+        self.assertRegex(headers.get("x-request-id") or "", r"^[0-9a-f]{32}$")
         self.assertFalse([k for k in headers if k.startswith("x-ide")],
                          "the web channel must not carry desktop identity headers")
         body = json.loads(req.data.decode("utf-8"))
         self.assertTrue(body.get("prompt"))
         self.assertEqual(body.get("model"), wb_accounts.DAILY_CHAT_MODEL)
-        self.assertEqual(body.get("conversationOrigin"), "workbuddy-app")
+        self.assertEqual(body.get("conversationOrigin"), "agents")
+        self.assertEqual(body.get("addonSelection"),
+                         {"version": 1, "welcomeMode": "working",
+                          "interactionMode": "craft"})
+        self.assertEqual([p.get("name") for p in body.get("plugins") or []],
+                         ["welcomemode-work", "interactionmode-craft",
+                          "prompt-common"])
+        extra = body.get("extraInfo") or {}
+        self.assertTrue(str(extra.get("clientCreateRequestId") or "")
+                        .startswith("cloud-create-"))
+        self.assertRegex(str(extra.get("traceId") or ""), r"^[0-9a-f]{32}$")
         # 建会话之后必须接沙箱、把这一轮跑起来，否则会话永远停在 CREATING。
         self.assertTrue(any(r.full_url.endswith("/session") for r in calls),
                         [r.full_url for r in calls])

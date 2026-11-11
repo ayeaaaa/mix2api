@@ -124,6 +124,7 @@ upstream = ThreadingHTTPServer(("127.0.0.1", UPSTREAM_PORT), MockUpstream)
 threading.Thread(target=upstream.serve_forever, daemon=True).start()
 
 import wb_identity
+os.environ.setdefault("WB_INTL_MODEL_ALIAS", "0")
 import wb_proxy as P
 
 _ENDPOINTS = dict(wb_identity._ENDPOINTS)

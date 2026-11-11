@@ -33,7 +33,7 @@ import wb_settings  # noqa: E402
 # 指纹基串从模块常量派生，而不是手抄一份字面量：手抄两份必然漂移，
 # 派生值才是唯一可信来源。
 FP = P.SANITIZE_OMO_JUNIOR_RE.pattern
-HDR = P.SANITIZE_BARE_HDR_LOWER
+HDR = P.SANITIZE_BILLING_HDR_NAMES[0]
 # re.I 能匹配 i/s 而 str.lower() 不能的三个 Unicode 字符：İ / ı / ſ。
 SPECIALS = ("\u0130", "\u0131", "\u017f")
 
@@ -116,13 +116,14 @@ class FingerprintFastPathTests(unittest.TestCase):
             text = P.SANITIZE_OMO_JUNIOR_RE.sub(replacement, text)
             for old, new in P.SANITIZE_REWRITES:
                 text = text.replace(old, new)
+            text = P.SANITIZE_HDR_LINE_RE.sub("", text)
             text = P.SANITIZE_HDR_RE.sub("", text)
             if "cc_" in text:
                 prev = ""
                 while prev != text:
                     prev = text
                     text = P.SANITIZE_KV_RE.sub("", text)
-            text = P.SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
+            text = P.SANITIZE_BARE_HDR_RE.sub("anthropic-header", text)
             return text.strip()
 
         for t in fingerprint_cases():
@@ -132,8 +133,11 @@ class FingerprintFastPathTests(unittest.TestCase):
         # 快路径的两个小写字面量必须与正则同源，改一处忘另一处会被这里拦下。
         self.assertEqual(P.SANITIZE_OMO_JUNIOR_RE.pattern.lower(),
                          P.SANITIZE_OMO_JUNIOR_LOWER)
-        self.assertEqual(P.SANITIZE_BARE_HDR_RE.pattern,
-                         "(?i)" + P.SANITIZE_BARE_HDR_LOWER)
+        self.assertTrue(P.SANITIZE_BARE_HDR_RE.search("x-anthropic-billing-header"))
+        self.assertTrue(P.SANITIZE_BARE_HDR_RE.search("x-anthropic-billing-hdr"))
+        self.assertEqual(P.SANITIZE_BARE_HDR_LOWER, "x-anthropic-billing-header")
+        self.assertEqual(set(P.SANITIZE_BARE_HDR_ALIASES),
+                         {"x-anthropic-billing-header", "x-anthropic-billing-hdr"})
 
     def test_unicode_case_specials_follow_re_ignorecase(self):
         # 'ſ' 替 s、'İ'/'ı' 替 i：这三个字符是 re.I 与 lower() 的全部差异点，

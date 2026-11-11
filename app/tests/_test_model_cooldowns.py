@@ -26,6 +26,7 @@ os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import wb_accounts as accounts
+os.environ.setdefault("WB_INTL_MODEL_ALIAS", "0")
 import wb_proxy as proxy
 import wb_settings as settings
 
@@ -566,7 +567,7 @@ class ModelCooldownTests(unittest.TestCase):
     def test_the_free_cap_scope_is_the_confirmed_model_lists(self):
         """范围是用户确认过的口径：intl 三个免费模型，cn 两个（deepseek 收费）。"""
         self.assertEqual(sorted(accounts.FREE_CAP_MODELS["intl"]),
-                         ["deepseek-v4.1-flash", "hy3", "hy4-preview-f"])
+                         ["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg", "hy3", "hy4-preview-f"])
         self.assertEqual(sorted(accounts.FREE_CAP_MODELS["cn"]), ["hy3", "hy4-preview-f"])
         self.assertTrue(accounts.is_free_cap_model("intl", "deepseek-v4.1-flash"))
         self.assertTrue(accounts.is_free_cap_model("cn", "hy4-preview-f"))

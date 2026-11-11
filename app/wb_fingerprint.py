@@ -78,3 +78,72 @@ def get_desktop_fingerprint(uid: str, nickname: str = "", os_name: str = "win32"
         "timestamp": now,
         "presentAt": now,
     }
+
+
+#: 网页版 app 的浏览器画像。官方网页端的请求来自真实浏览器；网关若所有账号都
+#: 发同一个 UA/平台，会把这些账号串成同一台设备。这里按 uid 稳定选一个画像，
+#: 让每个账号看起来像一台独立的浏览器。版本与现有 WEB_USER_AGENT 对齐（140）。
+WEB_PROFILES = (
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "platform": "Windows",
+        "chrome": "140",
+        "brand": "Microsoft Edge",
+        "mobile": "?0",
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "platform": "Windows",
+        "chrome": "140",
+        "brand": "Google Chrome",
+        "mobile": "?0",
+    },
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "platform": "macOS",
+        "chrome": "140",
+        "brand": "Google Chrome",
+        "mobile": "?0",
+    },
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "platform": "macOS",
+        "chrome": "140",
+        "brand": "Microsoft Edge",
+        "mobile": "?0",
+    },
+)
+
+
+def web_profile(uid):
+    """按 uid 稳定选一个浏览器画像（同一账号恒定、账号之间尽量分散）。"""
+    digest = hashlib.sha256(
+        ("web-profile:" + (uid or "anonymous")).encode("utf-8")
+    ).digest()
+    profile = dict(WEB_PROFILES[digest[0] % len(WEB_PROFILES)])
+    profile["ch_ua"] = '"Chromium";v="%s", "Not=A?Brand";v="24", "%s";v="%s"' % (
+        profile["chrome"],
+        profile["brand"],
+        profile["chrome"],
+    )
+    return profile
+
+
+def web_browser_headers(uid, realm="intl"):
+    """网页版 app 的浏览器侧请求头（不含凭据）。"""
+    profile = web_profile(uid)
+    language = "zh-CN,zh;q=0.9,en;q=0.8" if realm == "cn" else "en-US,en;q=0.9"
+    return {
+        "User-Agent": profile["ua"],
+        "Accept-Language": language,
+        "sec-ch-ua": profile["ch_ua"],
+        "sec-ch-ua-mobile": profile["mobile"],
+        "sec-ch-ua-platform": '"%s"' % profile["platform"],
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }

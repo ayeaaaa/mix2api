@@ -515,6 +515,87 @@ class ClaudeCodeIntroFingerprintTests(unittest.TestCase):
         self.assertEqual(body["messages"][1]["content"], "hi")
 
 
+class BillingHeaderSanitizationTests(unittest.TestCase):
+    """Claude Code 2.1.37+ billing attribution header (#853/#854)."""
+
+    FULL = ("x-anthropic-billing-header: cc_version=2.1.37; "
+            "cc_entrypoint=cli; cch=abc123;\nYou are a helpful assistant.")
+    SHORT = ("x-anthropic-billing-hdr: cc_version=2.1.37; "
+             "cc_entrypoint=cli; cch=abc123;\nYou are a helpful assistant.")
+
+    def test_full_header_line_removed(self):
+        out = P.sanitize_text(self.FULL)
+        self.assertNotIn("x-anthropic-billing", out.lower())
+        self.assertNotIn("cch=", out)
+        self.assertIn("You are a helpful assistant.", out)
+
+    def test_abbreviated_header_removed(self):
+        out = P.sanitize_text(self.SHORT)
+        self.assertNotIn("x-anthropic-billing", out.lower())
+        self.assertNotIn("cch=", out)
+        self.assertIn("You are a helpful assistant.", out)
+
+    def test_header_only_system_message_dropped(self):
+        out = P.sanitize_messages([
+            {"role": "system", "content": "x-anthropic-billing-header: cch=abc;"},
+            {"role": "user", "content": "hi"},
+        ])
+        self.assertEqual(len(out), 1, out)
+        self.assertEqual(out[0]["role"], "user")
+
+    def test_system_text_and_header_keeps_text(self):
+        out = P.sanitize_messages([
+            {"role": "system", "content": self.FULL},
+            {"role": "user", "content": "hi"},
+        ])
+        self.assertEqual(out[0]["content"], "You are a helpful assistant.")
+
+    def test_case_insensitive_and_anthropic_body(self):
+        chat = P.messages_to_chat({
+            "model": "deepseek-v4.1-flash",
+            "system": [{"type": "text", "text": self.FULL.upper()}],
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+        })
+        body = P.build_upstream_body(chat)
+        system = body["messages"][0]["content"]
+        self.assertNotIn("x-anthropic-billing", system.lower())
+        self.assertNotIn("cch=", system)
+
+
+class BillingScopeAndToolTests(unittest.TestCase):
+    def test_billing_header_removed_only_from_system_and_developer(self):
+        header = "x-anthropic-billing-header: cch=abc;"
+        out = P.sanitize_messages([
+            {"role": "system", "content": header},
+            {"role": "developer", "content": header},
+            {"role": "assistant", "content": header},
+            {"role": "user", "content": header},
+        ])
+        self.assertEqual([item["role"] for item in out], ["assistant", "user"])
+        self.assertEqual(out[0]["content"], header)
+        self.assertEqual(out[1]["content"], header)
+
+    def test_bare_billing_key_becomes_anthropic_header(self):
+        out = P.sanitize_text("mention x-anthropic-billing-header here",
+                              identity=False)
+        self.assertNotIn("x-anthropic-billing-header", out)
+        self.assertIn("anthropic-header", out)
+
+    def test_tool_descriptions_are_sanitized(self):
+        tools = [{"type": "function", "function": {
+            "name": "run",
+            "description": "You are Claude Code, Anthropic's official CLI for Claude.",
+        }}]
+        cleaned = P.sanitize_tools(tools)
+        self.assertEqual(cleaned[0]["function"]["description"],
+                         "You are a helpful AI assistant.")
+
+    def test_11128_body_text_is_not_rewritten(self):
+        self.assertEqual(P.sanitize_text("error code 11128", identity=False),
+                         "error code 11128")
+
+
 if __name__ == "__main__":
     unittest.main()
 
