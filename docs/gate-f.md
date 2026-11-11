@@ -1,6 +1,6 @@
 # Gate F status
 
-Gate F is the final release gate for **v2.0.0**. This document is intentionally
+Gate F is the final release gate for **v2.0.x**. This document is intentionally
 not a signoff: it records what is proven by automated tests and what still
 requires a manual run.
 
@@ -28,6 +28,7 @@ requires a manual run.
 | Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
+| v2.0.2 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.2>; tag/commit `76e525c`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:6114327...`; arm64 pulled from GHCR, ran `2.0.2`, and `/health` passed: `docs/smoke/2026-11-11-release-2.0.2.md` |
 | v2.0.1 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.1>; tag/commit `f6c500d`; 14 assets checksum-verified; GHCR index `sha256:bba08e0...`; arm64 pulled from GHCR and healthy: `docs/smoke/2026-11-11-release-2.0.1.md` |
 | v2.0.0 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.0>; tag/commit `917f683`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:edb4686...`; arm64 pulled from GHCR and healthy: `docs/smoke/2026-11-11-release.md` |
 
@@ -43,7 +44,13 @@ Wine. CI verify, multi-arch arm64 runtime, and a local registry push/pull
 passed. Dependency scanning found no reachable vulnerabilities. The owner
 explicitly approved the final `2.0.0` release while accepting that real Windows
 SCM/service execution remains unverified. The v2 source is published on branch
-`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.5.
+`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.6 (frozen).
+
+**v2.0.2 addendum:** the patch release publishes the dashboard total-quota
+column and the Raccoon daily-activity check-in ported from PR #3. The new
+behavior is covered by unit, route, scheduler, dashboard-contract, and fake-
+upstream tests; the existing v1.6.5 oracle baseline predates it and was not
+re-recorded for this patch.
 
 ## Required signoff
 
@@ -56,3 +63,4 @@ SCM/service execution remains unverified. The v2 source is published on branch
 | Performance | evidence | 2026-11-11 | PASS |
 | Security review | evidence | 2026-11-11 | PASS (no reachable vulns; 1 unreachable module finding) |
 | Release owner | ayeaaaa | 2026-11-11 | APPROVED final v2.0.0; accepts real Windows SCM gap |
+| Release owner | ayeaaaa | 2026-11-11 | APPROVED v2.0.2 patch (dashboard total quota + Raccoon daily activity) |
