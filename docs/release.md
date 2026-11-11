@@ -99,6 +99,10 @@ zeroes, and build metadata before any build starts. It:
 3. builds/pushes `linux/amd64,linux/arm64` to GHCR;
 4. creates the `v<version>` tag and GitHub release with the dist assets.
 
+`CHANGELOG.md` is used verbatim as the GitHub release notes. Every version
+must include a Chinese `### 中文` section before the English `### English`
+section, so published release notes are always bilingual.
+
 There is no push/tag trigger and no scheduled release.
 
 For this repository layout, the equivalent manual publication is:

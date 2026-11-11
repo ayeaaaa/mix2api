@@ -5,10 +5,29 @@ Keep a Changelog and the project uses semantic versioning.
 
 ## [2.0.2] - 2026-11-11
 
-Patch release adding the v1.6.6 Raccoon daily-activity check-in to v2 and
-restoring the dashboard's total-quota column.
+### 中文
 
-### Added
+本次补丁将 v1.6.6 的 Raccoon（商汤小浣熊）每日活跃打卡移植到 v2，并恢复
+看板的总额度列。
+
+#### 新增
+
+- Raccoon（商汤小浣熊）每日活跃打卡：先读取当天 `daily_grant` 账单，已到账
+  的账号不重复发送对话；需要时发送一次最小对话，最多轮询 6 秒确认 300 积分
+  奖励，并按账号持久化状态。每天最多尝试两次、间隔 1 小时；开启
+  `daily_active` 后默认在本地 09:00 / 21:00 执行，`daily_active_model`
+  可覆盖打卡模型。
+- 新增面板接口 `POST /raccoon/accounts/daily-active`。手动 `force` 可绕过
+  每日次数/间隔限制，但不会重复打卡已到账账号。
+- 看板新增 Raccoon 设置开关、每日活跃任务列、奖励卡和单账号打卡按钮。
+- 看板顶栏恢复总额度列（可用 / 总积分 / 总额度）。
+
+### English
+
+Patch release adding the v1.6.6 Raccoon（商汤小浣熊） daily-activity check-in
+to v2 and restoring the dashboard's total-quota column.
+
+#### Added
 
 - Raccoon daily-activity check-in: reads today's `daily_grant` bill first,
   sends one minimal chat only when needed, verifies the 300-point reward for up

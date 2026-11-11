@@ -1,8 +1,10 @@
 # mix2api v2
 
+[中文](README.md) | [English](README.en.md)
+
 mix2api v2 是一个用 Go 重写的多出口 AI 网关。一个进程、一个二进制，同时提供
 OpenAI Chat Completions、Responses、Anthropic Messages、SSE 和内嵌看板，把
-WorkBuddy 国际版 / 国内版、华为云 CodeArts、商汤小浣熊（Raccoon）收进同一套
+WorkBuddy 国际版 / 国内版、华为云 CodeArts（遥遥领先）、Raccoon（商汤小浣熊）收进同一套
 API Key 和账号池。
 
 当前版本：**2.0.2**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
@@ -26,7 +28,7 @@ v2 的核心变化是把“所有东西放在一个应用里”改成“通用�
 mix2api v2（单二进制）
    ├─ API / SSE / 内嵌看板
    ├─ core：配置、账号状态、传输、调度、用量、日志
-   ├─ providers：WorkBuddy 国际版 / 国内版、CodeArts、Raccoon
+   ├─ providers：WorkBuddy 国际版 / 国内版、CodeArts（遥遥领先）、Raccoon（商汤小浣熊）
    └─ platform：面板、媒体、智能体、定价、更新等服务
 ```
 
@@ -42,7 +44,7 @@ mix2api v2（单二进制）
 
 ## 能力概览
 
-- 四个出口：WorkBuddy 国际版、WorkBuddy 国内版、CodeArts、Raccoon；可按
+- 四个出口：WorkBuddy 国际版、WorkBuddy 国内版、CodeArts（遥遥领先）、Raccoon（商汤小浣熊）；可按
   API Key 绑定出口，也可以跟随看板默认出口。
 - 三类协议：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages，
   以及统一的 SSE 流式输出。
@@ -184,8 +186,8 @@ compose 文件、日志或 Git。
 1. 打开 `http://127.0.0.1:58675/`，用面板密码登录；首次登录后立即修改密码。
 2. 在「设置」中启用需要的出口，再到对应视图导入账号：
    - WorkBuddy：按看板提示完成 OAuth；
-   - CodeArts：华为云 OAuth；
-   - Raccoon：导入桌面客户端 `auth.json` 或走本机回环授权。
+   - CodeArts（遥遥领先）：华为云 OAuth；
+   - Raccoon（商汤小浣熊）：导入桌面客户端 `auth.json` 或走本机回环授权。
 3. 在「设置」中创建 API Key，按需绑定出口和模型。
 4. 用 `/v1/models` 和一次最小聊天请求验证：
 
