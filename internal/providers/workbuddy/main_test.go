@@ -10,5 +10,7 @@ import (
 func TestMain(m *testing.M) {
 	_ = os.Setenv("WB_WEB_HUMAN_DELAY_MIN", "0")
 	_ = os.Setenv("WB_WEB_HUMAN_DELAY_MAX", "0")
+	// Alias tests opt in explicitly; legacy tests use the logical base id.
+	_ = os.Setenv("WB_INTL_MODEL_ALIAS", "0")
 	os.Exit(m.Run())
 }

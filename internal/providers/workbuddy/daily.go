@@ -196,6 +196,8 @@ func (p *Provider) runDailyChatDesktop(ctx context.Context, account *Account, au
 	if err := p.normalizeChatBody(body, model); err != nil {
 		return false, err
 	}
+	upstreamModel := intlModelAlias(model, auth.Realm)
+	body["model"] = upstreamModel
 	product := normalizeProduct(auth.Product)
 	body, err := chatBodyForProduct(body, product)
 	if err != nil {
@@ -215,7 +217,7 @@ func (p *Provider) runDailyChatDesktop(ctx context.Context, account *Account, au
 		}
 	}
 	deviceToken, deviceTokenError := p.chatDeviceToken(auth, product)
-	headers := p.chatHeaders(auth, product, model, "", "", deviceToken, deviceTokenError, p.Config())
+	headers := p.chatHeaders(auth, product, upstreamModel, "", "", deviceToken, deviceTokenError, p.Config())
 	if compressed {
 		headers.Set("Content-Encoding", "gzip")
 	}

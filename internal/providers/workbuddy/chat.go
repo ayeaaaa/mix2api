@@ -569,9 +569,14 @@ func (p *Provider) sendChatOnce(
 	account.mu.RUnlock()
 
 	product := normalizeProduct(auth.Product)
+	upstreamModel := intlModelAlias(model, p.realm)
 	body := baseBody
+	if upstreamModel != model {
+		body = cloneMap(baseBody)
+		body["model"] = upstreamModel
+	}
 	if promptCacheKeyEnabled() {
-		body = injectChatPromptCacheKey(baseBody, auth.UID, req.SessionKey)
+		body = injectChatPromptCacheKey(body, auth.UID, req.SessionKey)
 	}
 	body, err := chatBodyForProduct(body, product)
 	if err != nil {
@@ -596,7 +601,7 @@ func (p *Provider) sendChatOnce(
 		conversationID = conversationIDFor(auth.UID, req.SessionKey)
 	}
 	deviceToken, deviceTokenError := p.chatDeviceToken(auth, product)
-	headers := p.chatHeaders(auth, product, model, conversationID, turnRequestID, deviceToken, deviceTokenError, cfg)
+	headers := p.chatHeaders(auth, product, upstreamModel, conversationID, turnRequestID, deviceToken, deviceTokenError, cfg)
 	if compressed {
 		headers.Set("Content-Encoding", "gzip")
 	}
@@ -675,7 +680,7 @@ func (p *Provider) sendChatOnce(
 			p.Pool(),
 			account,
 			p.realm,
-			model,
+			upstreamModel,
 			chatIdleTimeout(cfg),
 		)
 		if streamErr != nil {
@@ -683,7 +688,7 @@ func (p *Provider) sendChatOnce(
 			return nil, streamErr
 		}
 		stream.usageMu.Lock()
-		stream.usage.Free = p.IsFreeModel(model)
+		stream.usage.Free = p.IsFreeModel(upstreamModel)
 		stream.usageMu.Unlock()
 		return stream, nil
 	}
