@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/agents"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 )
 
 func doAgentRequest(server *Server, method, path, body, remote string, headers map[string]string) *httptest.ResponseRecorder {
@@ -82,6 +84,35 @@ func minIntAPI(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestAgentsAuthRequiredHonorsAuthDisabled(t *testing.T) {
+	home := t.TempDir()
+	accounts := filepath.Join(home, "accounts")
+	if err := os.MkdirAll(accounts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := config.New(filepath.Join(accounts, "settings.json"))
+	keyStore := keys.New(store)
+	if err := keyStore.SetAuthDisabled(true); err != nil {
+		t.Fatal(err)
+	}
+	service := agents.New(agents.Service{AccountsDir: accounts, Home: home})
+	server := New(ServerOptions{
+		Agents: service, KeyStore: keyStore, StaticAPIKey: "static-key-value",
+		PanelAuth: passThroughAuth,
+	})
+	rec := doAgentRequest(server, http.MethodGet, "/agents", "", "127.0.0.1:5555", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["global_key_set"] != true {
+		t.Fatalf("global_key_set = %#v", body["global_key_set"])
+	}
+	if body["auth_required"] != false {
+		t.Fatalf("auth_required = %#v, want false with auth_disabled", body["auth_required"])
+	}
 }
 
 func TestAgentsStaticKeyUsed(t *testing.T) {

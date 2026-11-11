@@ -32,6 +32,42 @@ func logsTestHandler(t *testing.T, store *logs.LogStore, gate func(http.Handler)
 	return mux
 }
 
+func TestServerRecordsRequestLogs(t *testing.T) {
+	store := logsTestStore(t, false)
+	server := New(ServerOptions{LogStore: store, PanelAuth: passThroughAuth})
+	health := httptest.NewRecorder()
+	server.Handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("health status = %d", health.Code)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/logs", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logs status = %d body=%s", rec.Code, rec.Body)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["mode"] != "memory" {
+		t.Fatalf("mode = %#v", payload["mode"])
+	}
+	logsList, _ := payload["logs"].([]any)
+	if len(logsList) == 0 || payload["total"].(float64) == 0 {
+		t.Fatalf("request log store is empty: %#v", payload)
+	}
+	entry, _ := logsList[0].(map[string]any)
+	for _, key := range []string{"id", "ts", "time", "level", "tag", "msg"} {
+		if _, ok := entry[key]; !ok {
+			t.Fatalf("log entry missing %s: %#v", key, entry)
+		}
+	}
+	if msg, _ := entry["msg"].(string); !strings.Contains(msg, "GET /health") {
+		t.Fatalf("first log = %#v, want the /health request line", entry)
+	}
+}
+
 func TestLogsRoutes(t *testing.T) {
 	t.Run("memory", func(t *testing.T) {
 		store := logsTestStore(t, false)

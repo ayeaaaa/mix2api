@@ -549,6 +549,24 @@ func catalogPayload(status raccoonCatalogStatus) map[string]any {
 	}
 }
 
+// CatalogProvenance returns the v1 /v1/models catalog block.
+func (p *Provider) CatalogProvenance() map[string]any {
+	if p == nil {
+		return nil
+	}
+	return catalogPayload(p.catalogStatus())
+}
+
+// RealmAvailable reports whether the Raccoon exit is enabled, matching v1's
+// conditional /realm option.
+func (p *Provider) RealmAvailable() bool {
+	if p == nil {
+		return false
+	}
+	cfg, err := p.applySettings()
+	return err == nil && cfg.Enabled
+}
+
 // invalidateCatalog drops every account's adopted catalog and the shared
 // cache, matching v1 invalidate_models.
 func (p *Provider) invalidateCatalog() {

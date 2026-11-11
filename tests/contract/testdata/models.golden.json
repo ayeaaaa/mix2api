@@ -1,94 +1,135 @@
 {
-  "object": "list",
-  "realm": "raccoon",
+  "catalog": {
+    "accounts": 1,
+    "fetched_at": "\u003ctimestamp\u003e",
+    "source": "raccoon",
+    "warning": ""
+  },
   "data": [
     {
-      "id": "raccoon-090dd3",
-      "object": "model",
-      "created": "<timestamp>",
-      "owned_by": "sensetime",
-      "provider": "raccoon",
-      "name": "Raccoon-Work",
-      "context_window": 1000000,
-      "context_length": 1000000,
-      "max_input_tokens": 1000000,
-      "max_tokens": 100000,
-      "max_output_tokens": 100000,
-      "max_completion_tokens": 100000,
-      "max_output": 100000,
-      "capabilities": {
-        "vision": true,
-        "tool_calls": true,
-        "reasoning": true
-      },
-      "supports_vision": true,
-      "supports_images": true,
-      "supports_tool_calls": true,
-      "supports_reasoning": true,
-      "vision": true,
-      "multimodal": true,
       "abilities": {
-        "vision": true,
         "functionCall": true,
         "function_call": true,
-        "reasoning": true
-      },
-      "input_modalities": ["text", "image"],
-      "output_modalities": ["text"],
-      "modalities": {
-        "input": ["text", "image"],
-        "output": ["text"]
+        "reasoning": true,
+        "vision": true
       },
       "architecture": {
-        "input_modalities": ["text", "image"],
-        "output_modalities": ["text"],
-        "modality": "text+image->text"
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "modality": "text+image-\u003etext",
+        "output_modalities": [
+          "text"
+        ]
       },
-      "tags": ["general", "code", "vision", "reasoning"]
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": true
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "\u003ctimestamp\u003e",
+      "id": "raccoon-090dd3",
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "max_completion_tokens": 100000,
+      "max_input_tokens": 1000000,
+      "max_output": 100000,
+      "max_output_tokens": 100000,
+      "max_tokens": 100000,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": true,
+      "name": "Raccoon-Work",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "sensetime",
+      "provider": "raccoon",
+      "supports_images": true,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": true,
+      "tags": [
+        "general",
+        "code",
+        "vision",
+        "reasoning"
+      ],
+      "vision": true
     },
     {
-      "id": "sn-glm-5-3",
-      "object": "model",
-      "created": "<timestamp>",
-      "owned_by": "sensetime",
-      "provider": "raccoon",
-      "name": "GLM-5-3",
-      "context_window": 1000000,
-      "context_length": 1000000,
-      "max_input_tokens": 1000000,
-      "max_tokens": 100000,
-      "max_output_tokens": 100000,
-      "max_completion_tokens": 100000,
-      "max_output": 100000,
-      "capabilities": {
-        "vision": false,
-        "tool_calls": true,
-        "reasoning": true
-      },
-      "supports_vision": false,
-      "supports_images": false,
-      "supports_tool_calls": true,
-      "supports_reasoning": true,
-      "vision": false,
-      "multimodal": false,
       "abilities": {
-        "vision": false,
         "functionCall": true,
         "function_call": true,
-        "reasoning": true
-      },
-      "input_modalities": ["text"],
-      "output_modalities": ["text"],
-      "modalities": {
-        "input": ["text"],
-        "output": ["text"]
+        "reasoning": true,
+        "vision": false
       },
       "architecture": {
-        "input_modalities": ["text"],
-        "output_modalities": ["text"],
-        "modality": "text->text"
+        "input_modalities": [
+          "text"
+        ],
+        "modality": "text-\u003etext",
+        "output_modalities": [
+          "text"
+        ]
       },
-      "tags": ["code", "reasoning"]
+      "capabilities": {
+        "reasoning": true,
+        "tool_calls": true,
+        "vision": false
+      },
+      "context_length": 1000000,
+      "context_window": 1000000,
+      "created": "\u003ctimestamp\u003e",
+      "id": "sn-glm-5-3",
+      "input_modalities": [
+        "text"
+      ],
+      "max_completion_tokens": 100000,
+      "max_input_tokens": 1000000,
+      "max_output": 100000,
+      "max_output_tokens": 100000,
+      "max_tokens": 100000,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "multimodal": false,
+      "name": "GLM-5-3",
+      "object": "model",
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "sensetime",
+      "provider": "raccoon",
+      "supports_images": false,
+      "supports_reasoning": true,
+      "supports_tool_calls": true,
+      "supports_vision": false,
+      "tags": [
+        "code",
+        "reasoning"
+      ],
+      "vision": false
     }
-  ]
+  ],
+  "object": "list",
+  "realm": "raccoon"
 }

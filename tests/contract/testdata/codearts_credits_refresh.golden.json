@@ -3,7 +3,7 @@
     {
       "credits": {
         "amount": 1000,
-        "end_date": "<timestamp>",
+        "end_date": "\u003ctimestamp\u003e",
         "expiring": 5,
         "package": "体验版",
         "remain": 900,
@@ -17,7 +17,7 @@
     {
       "credits": {
         "amount": 1000,
-        "end_date": "<timestamp>",
+        "end_date": "\u003ctimestamp\u003e",
         "expiring": 5,
         "package": "体验版",
         "remain": 900,

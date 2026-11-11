@@ -30,6 +30,11 @@ type stubProvider struct {
 	health    providers.Health
 	healthErr error
 
+	catalog        map[string]any
+	pickerModels   []providers.Model
+	officialModels []providers.Model
+	realmAvailable bool
+
 	openStream  providers.ChatStream
 	openStreams []providers.ChatStream
 	openErr     error
@@ -88,6 +93,20 @@ func (p *stubProvider) OpenChat(_ context.Context, req providers.ChatRequest) (p
 
 func (p *stubProvider) Routes() []providers.Route { return p.routes }
 func (p *stubProvider) Jobs() []scheduler.Job     { return nil }
+
+func (p *stubProvider) CatalogProvenance() map[string]any {
+	return p.catalog
+}
+
+func (p *stubProvider) AgentPickerModels(context.Context, bool) ([]providers.Model, error) {
+	return p.pickerModels, nil
+}
+
+func (p *stubProvider) AgentOfficialModels() []providers.Model {
+	return p.officialModels
+}
+
+func (p *stubProvider) RealmAvailable() bool { return p.realmAvailable }
 
 func (p *stubProvider) opened() []providers.ChatRequest {
 	p.mu.Lock()
@@ -613,6 +632,12 @@ func TestChatNonStreamingRaccoon(t *testing.T) {
 	}
 	if out["id"] != "chatcmpl-1" || out["model"] != "m1" || out["created"] != float64(100) {
 		t.Fatalf("completion identity = %#v", out)
+	}
+	if _, ok := out["elapsed_ms"].(float64); !ok {
+		t.Fatalf("elapsed_ms = %#v, want a numeric duration", out["elapsed_ms"])
+	}
+	if first, ok := out["first_chunk_at"].(float64); !ok || first <= 0 {
+		t.Fatalf("first_chunk_at = %#v, want a positive epoch", out["first_chunk_at"])
 	}
 	choices, ok := out["choices"].([]any)
 	if !ok || len(choices) != 1 {

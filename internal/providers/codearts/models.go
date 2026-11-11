@@ -322,6 +322,24 @@ func officialModelKeySet() map[string]bool {
 	return out
 }
 
+// AgentOfficialModels returns the v1 picker-only CodeArts ids in official
+// order. v1 appends these after the WorkBuddy catalogue when the exit is
+// configured; it does not read the live CodeArts catalogue on this path.
+func (p *Provider) AgentOfficialModels() []Model {
+	if p == nil {
+		return nil
+	}
+	cfg, err := p.applySettings()
+	if err != nil || !cfg.Enabled {
+		return nil
+	}
+	out := make([]Model, 0, len(codeartsOfficialModels))
+	for _, id := range codeartsOfficialModels {
+		out = append(out, Model{"id": strings.ToLower(id), "name": id})
+	}
+	return out
+}
+
 func (p *Provider) modelsTTL() time.Duration {
 	seconds := defaultModelsTTLSeconds
 	if p != nil && p.pool != nil {

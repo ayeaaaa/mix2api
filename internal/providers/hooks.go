@@ -109,6 +109,32 @@ type AgentModelSpecProvider interface {
 	AgentModelSpecs(ctx context.Context) ([]AgentModelSpec, error)
 }
 
+// AgentPickerModelProvider optionally exposes the provider's v1 one-click
+// picker catalogue. Unlike Models it preserves the picker's order and spelling
+// rules, so the panel does not have to merge every provider catalogue.
+type AgentPickerModelProvider interface {
+	AgentPickerModels(ctx context.Context, force bool) ([]Model, error)
+}
+
+// AgentOfficialModelProvider optionally exposes the provider's official
+// picker-only ids. v1 appends these after the WorkBuddy catalogue when the
+// exit is configured, without fetching the live catalogue.
+type AgentOfficialModelProvider interface {
+	AgentOfficialModels() []Model
+}
+
+// CatalogProvenanceProvider optionally reports the v1 top-level catalog block
+// for /v1/models. Providers without it keep the v2 envelope unchanged.
+type CatalogProvenanceProvider interface {
+	CatalogProvenance() map[string]any
+}
+
+// RealmAvailableProvider reports whether a non-selector provider is configured
+// and should appear in /realm options. WorkBuddy uses RealmSelector instead.
+type RealmAvailableProvider interface {
+	RealmAvailable() bool
+}
+
 // MediaRequest carries one normalized media operation. Body is the provider-
 // shaped upstream body when the platform already built one; Params retains the
 // semantic values used for pricing, validation and task rows.

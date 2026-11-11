@@ -39,6 +39,11 @@ smoke, and CI workflow dry-run are still pending; see `docs/gate-f.md`.
 
 ### Fixed
 
+- v1.6.5 oracle parity: `/agents` picker semantics, `global_key_set`, and Codex
+  path order; `/health` v1 readiness/media/identity fields; `/v1/models`
+  `catalog` provenance; non-stream chat `elapsed_ms`/`first_chunk_at`; `/updates`
+  null/empty defaults; persisted active-realm usage selection; and nonempty
+  request logging for `/logs`.
 - Update journal now records original hashes, existence, old paths, and
   completion state before and after each rename; recovery reconstructs the
   `.mix2api-old` sibling, including the exact original schema that omitted

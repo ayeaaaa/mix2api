@@ -92,8 +92,14 @@ func ModelSpecsFromCatalog(models []providers.Model) []ModelSpec {
 }
 
 // GatewayModels collects agent specs from providers without importing any
-// concrete implementation. Provider failures degrade to an empty section.
+// concrete implementation. The v1 picker uses the current WorkBuddy catalogue
+// only (never Raccoon), then appends configured CodeArts official ids. When no
+// provider exposes the picker hook, the neutral provider scan below remains the
+// fallback for embedders and tests.
 func GatewayModels(ctx context.Context, list []providers.Provider) []ModelSpec {
+	if specs, ok := pickerModels(ctx, list); ok {
+		return specs
+	}
 	rich := []ModelSpec{}
 	catalogs := []ModelSpec{}
 	for _, provider := range list {
@@ -117,6 +123,79 @@ func GatewayModels(ctx context.Context, list []providers.Provider) []ModelSpec {
 		}
 	}
 	return MergeModels(rich, catalogs)
+}
+
+// pickerModels implements v1's _agents_models order: one WorkBuddy realm's
+// bundled/live catalogue, followed by the official CodeArts ids that are not
+// already present. It returns false when the composition has no WorkBuddy
+// picker, so callers keep the neutral fallback.
+func pickerModels(ctx context.Context, list []providers.Provider) ([]ModelSpec, bool) {
+	active := ""
+	for _, provider := range list {
+		if selector, ok := provider.(providers.RealmSelector); ok {
+			active = strings.ToLower(strings.TrimSpace(selector.ActiveRealm(ctx)))
+			break
+		}
+	}
+	var selected providers.AgentPickerModelProvider
+	selectedRealm := ""
+	for _, provider := range list {
+		picker, ok := provider.(providers.AgentPickerModelProvider)
+		if !ok {
+			continue
+		}
+		realm := strings.ToLower(strings.TrimSpace(provider.Realm()))
+		if realm != "intl" && realm != "cn" {
+			continue
+		}
+		if realm == active {
+			selected = picker
+			selectedRealm = realm
+			break
+		}
+		if selected == nil || (selectedRealm != "intl" && realm == "intl") {
+			selected = picker
+			selectedRealm = realm
+		}
+	}
+	if selected == nil {
+		return nil, false
+	}
+
+	out := []ModelSpec{}
+	seen := map[string]bool{}
+	if models, err := selected.AgentPickerModels(ctx, false); err == nil {
+		for _, spec := range ModelSpecsFromCatalog(models) {
+			key := strings.ToLower(strings.TrimSpace(spec.ID))
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, spec)
+		}
+	}
+	for _, provider := range list {
+		official, ok := provider.(providers.AgentOfficialModelProvider)
+		if !ok {
+			continue
+		}
+		for _, model := range official.AgentOfficialModels() {
+			id := strings.ToLower(strings.TrimSpace(stringValue(model["id"])))
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			name := strings.TrimSpace(stringValue(model["name"]))
+			if name == "" {
+				name = id
+			}
+			out = append(out, ModelSpec{ID: id, Name: name})
+		}
+	}
+	if len(out) > MaxModels {
+		out = out[:MaxModels]
+	}
+	return out, true
 }
 
 // Enrich fills id-only payload entries from specs. Explicit fields win.

@@ -72,8 +72,8 @@ These are v2 composition/testing seams, not v1 wire fields:
   diagnostics, tickets, and any document that leaves the host. This default is
   intentional v1 parity, not a v2 hardening claim.
 
-Do not fabricate v1-only fields into the v2 goldens. If full parity for them
-becomes a requirement, implement them first and then add oracle comparisons.
+Do not fabricate values into the v2 goldens. If a field is not implemented,
+implement it first and then add an oracle comparison.
 
 ## Read-only rules
 
@@ -285,11 +285,16 @@ notes:
 - SSE normalization ignores chunk boundaries, comments, and keepalives; it
   merges role/content/reasoning/finish/tool-call/usage and records `[DONE]`.
 
-Known v1-only fields not emitted by the scoped v2 contract:
+Formerly v1-only fields now emitted by v2:
 
-- v1 non-stream chat adds `elapsed_ms` and `first_chunk_at`.
-- v1 `/v1/models` adds a top-level `catalog` block.
-- v1's panel/key-readiness health blocks are larger than the v2 provider block.
+- v1 non-stream chat `elapsed_ms` and `first_chunk_at` (the duration value is
+  normalized).
+- v1 `/v1/models` top-level `catalog` block.
+- v1's top-level `/health` realm/crypto/pool/key/media/identity blocks are
+  restored; the neutral `providers` map remains additive.
+
+Do not fabricate values into the v2 goldens. Stable fields are compared in
+full; only inherently variable durations/timestamps use placeholders.
 
 ## 7. Record and review
 

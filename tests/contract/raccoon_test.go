@@ -782,6 +782,19 @@ func decodeGoldenFile(t *testing.T, name string, target any) {
 // the only per-run substitution is the fake upstream URL in the health golden.
 func assertGoldenJSON(t *testing.T, actual []byte, name string) {
 	t.Helper()
+	if os.Getenv("UPDATE_RACCOON_GOLDENS") == "1" {
+		normalized, err := NormalizeJSON(actual)
+		if err != nil {
+			t.Fatalf("normalize golden %s: %v", name, err)
+		}
+		encoded, err := json.MarshalIndent(normalized, "", "  ")
+		if err != nil {
+			t.Fatalf("encode golden %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join("testdata", name), append(encoded, '\n'), 0o644); err != nil {
+			t.Fatalf("write golden %s: %v", name, err)
+		}
+	}
 	raw, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatalf("read golden %s: %v", name, err)

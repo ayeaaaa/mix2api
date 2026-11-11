@@ -58,6 +58,8 @@ func (s *RealmService) Active(ctx context.Context) string {
 }
 
 // Options returns the union of provider realm options in registration order.
+// WorkBuddy supplies intl/cn; configured Raccoon and CodeArts exits follow,
+// matching v1's conditional option list.
 func (s *RealmService) Options() []string {
 	out := make([]string, 0, 4)
 	seen := map[string]bool{}
@@ -74,6 +76,21 @@ func (s *RealmService) Options() []string {
 			seen[realm] = true
 			out = append(out, realm)
 		}
+	}
+	for _, provider := range s.Providers {
+		if _, ok := provider.(providers.RealmSelector); ok {
+			continue
+		}
+		available, ok := provider.(providers.RealmAvailableProvider)
+		if !ok || !available.RealmAvailable() {
+			continue
+		}
+		realm := normalizeRealm(provider.Realm())
+		if realm == "" || seen[realm] {
+			continue
+		}
+		seen[realm] = true
+		out = append(out, realm)
 	}
 	if len(out) == 0 {
 		return []string{"intl", "cn"}

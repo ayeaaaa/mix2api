@@ -58,9 +58,10 @@ writes credentials into the fixture.
 
 **Gate F status: selected oracle recording is COMPLETE; comparison has a
 documented delta.** The committed fixture covers the Raccoon core matrix and
-the feasible CodeArts provider slice. Against the `2.0.0-rc.1` candidate, 9 of
-24 cases match exactly; 15 differ. The differences are listed with exact
-fields in `recorded/v1.6.5/PROVENANCE.md`; they are not normalized away.
+the feasible CodeArts provider slice. Against the `2.0.0-rc.1` parity-fix
+candidate, 14 of 24 cases match exactly; 10 differ only by documented additive
+v2 fields or running-version/log-store scope. The differences are listed with
+exact fields in `recorded/v1.6.5/PROVENANCE.md`; they are not normalized away.
 WorkBuddy provider cases and failure modes remain pending. The real-account
 checklist is in `REAL-ACCOUNT-SMOKE.md` and must be completed on dedicated
 accounts before any `v2.0.0` tag.
@@ -276,25 +277,25 @@ normalization; `assertGoldenJSON` runs `NormalizeJSON` on both the recorded
 golden and the actual API response and compares the complete normalized maps.
 An extra or missing stable field fails. There is no key projection.
 
-- **Health** (`testdata/health.golden.json`): all v2 health fields: top-level
-  `ok` and `version`, plus `providers.raccoon` with `ok`, `configured`,
-  `accounts`, `healthy`, `base_url`, `catalog_source`, and `models`. v1's
-  top-level `realm`, `crypto_ok`, per-realm/key readiness, media, and panel
-  blocks are not v2 foundation fields and are not fabricated into the golden.
-  `base_url` is recorded as `<upstream>` because the fake port changes; the test
-  substitutes the actual fake URL before normalization. The golden is recorded
-  after a models fetch, so it reflects the live catalog (`catalog_source:
-  raccoon`, two models).
+- **Health** (`testdata/health.golden.json`): all v2 health fields: the v1
+  top-level `ok`, `version`, `realm`, `crypto_ok`, pool readiness,
+  `api_key_required`, `codearts`/`raccoon`, `media`, identity, and key-readiness
+  fields, plus the additive v2 `providers` map. `base_url` is recorded as
+  `<upstream>` because the fake port changes; the test substitutes the actual
+  fake URL before normalization. The golden is recorded after a models fetch,
+  so it reflects the live catalog (`catalog_source: raccoon`, two models).
 - **Models** (`testdata/models.golden.json`): the complete scoped envelope and
   entries, including `object`, `realm`, every model ID, all v1 capability
-  spellings/counts, and `created: "<timestamp>"`. v2 does not emit v1's optional
-  `catalog` provenance block, so it is out of scope.
+  spellings/counts, `created: "<timestamp>"`, and the v1 top-level `catalog`
+  provenance block.
 - **Chat SSE** (`testdata/chat_stream.golden.json`): normalized role, merged
   content, finish reason, usage, and the `[DONE]` marker. Chunk ids and
   timestamps do not enter the semantic event.
 - **Chat non-stream** (`testdata/chat_nonstream.golden.json`): the complete
   scoped completion: `id: "<dynamic>"`, `object`, `created: "<timestamp>"`,
-  `model`, choice message content/role, finish reason, and usage.
+  `model`, choice message content/role, finish reason, usage, and the v1
+  `elapsed_ms`/`first_chunk_at` timing fields (`elapsed_ms` normalizes to
+  `<duration>`).
 
 Run the recorded contract suite with:
 

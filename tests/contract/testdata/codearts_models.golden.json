@@ -1,4 +1,10 @@
 {
+  "catalog": {
+    "accounts": 2,
+    "fetched_at": "\u003ctimestamp\u003e",
+    "source": "codearts",
+    "stale": false
+  },
   "data": [
     {
       "abilities": {
@@ -10,7 +16,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -22,7 +28,7 @@
       },
       "context_length": 131072,
       "context_window": 131072,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.7",
       "credits_offpeak": "x0.7",
       "credits_peak": "x0.7",
@@ -76,7 +82,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -85,7 +91,7 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.18",
       "id": "GLM-4.7",
       "input_modalities": [
@@ -123,7 +129,7 @@
           "text",
           "image"
         ],
-        "modality": "text+image->text",
+        "modality": "text+image-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -135,7 +141,7 @@
       "category": "图片理解",
       "context_length": 131072,
       "context_window": 131072,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "id": "Qwen3-VL-235B",
       "input_modalities": [
         "text",
@@ -178,7 +184,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -190,7 +196,7 @@
       },
       "context_length": 65536,
       "context_window": 65536,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "id": "deepseek-v4-pro-0813",
       "input_modalities": [
         "text"
@@ -231,7 +237,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -242,7 +248,7 @@
       },
       "context_length": 1000000,
       "context_window": 1000000,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x1.63",
       "credits_offpeak": "x1.63",
       "credits_peak": "x1.63",
@@ -287,7 +293,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -300,7 +306,7 @@
       },
       "context_length": 1000000,
       "context_window": 1000000,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.08",
       "credits_offpeak": "x0.08",
       "credits_peak": "x0.08",
@@ -351,7 +357,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -362,7 +368,7 @@
       },
       "context_length": 1000000,
       "context_window": 1000000,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x2.38",
       "credits_offpeak": "x2.38",
       "credits_peak": "x2.38",
@@ -406,7 +412,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -418,8 +424,8 @@
       },
       "context_length": 1000000,
       "context_window": 1000000,
-      "created": "<timestamp>",
-      "credits": "<time_of_day_credits>",
+      "created": "\u003ctimestamp\u003e",
+      "credits": "\u003ctime_of_day_credits\u003e",
       "credits_note": "peak 0.18x / off-peak 0.09x",
       "credits_offpeak": "x0.09",
       "credits_peak": "x0.18",
@@ -472,7 +478,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -482,8 +488,8 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
-      "credits": "<time_of_day_credits>",
+      "created": "\u003ctimestamp\u003e",
+      "credits": "\u003ctime_of_day_credits\u003e",
       "credits_note": "peak 0.18x / off-peak 0.12x",
       "credits_offpeak": "x0.12",
       "credits_peak": "x0.18",
@@ -531,7 +537,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -543,7 +549,7 @@
       },
       "context_length": 1000000,
       "context_window": 1000000,
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.79",
       "credits_offpeak": "x0.79",
       "credits_peak": "x0.79",
@@ -597,7 +603,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -606,7 +612,7 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.32",
       "credits_offpeak": "x0.32",
       "credits_peak": "x0.32",
@@ -645,7 +651,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -654,7 +660,7 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.7",
       "credits_offpeak": "x0.7",
       "credits_peak": "x0.7",
@@ -693,7 +699,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -702,7 +708,7 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "credits": "x0.7",
       "credits_offpeak": "x0.7",
       "credits_peak": "x0.7",
@@ -741,7 +747,7 @@
         "input_modalities": [
           "text"
         ],
-        "modality": "text->text",
+        "modality": "text-\u003etext",
         "output_modalities": [
           "text"
         ]
@@ -751,7 +757,7 @@
         "tool_calls": true,
         "vision": false
       },
-      "created": "<timestamp>",
+      "created": "\u003ctimestamp\u003e",
       "id": "deepseek-v4-flash-0731",
       "input_modalities": [
         "text"

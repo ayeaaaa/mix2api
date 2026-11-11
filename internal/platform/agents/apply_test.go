@@ -45,6 +45,23 @@ func newAgentService(t *testing.T) (*Service, string, string) {
 	return New(Service{AccountsDir: accounts, Home: home, Providers: []providers.Provider{&agentTestProvider{}}}), accounts, home
 }
 
+func TestOverviewCodexConfigPathsMatchV1Order(t *testing.T) {
+	service, _, home := newAgentService(t)
+	overview := service.Overview(context.Background())
+	codex, ok := overview["codex"].(map[string]any)
+	if !ok {
+		t.Fatalf("codex overview = %#v", overview["codex"])
+	}
+	paths, _ := codex["config_paths"].([]string)
+	want := []string{
+		filepath.Join(home, ".codex", "config.toml"),
+		filepath.Join(home, ".codex", "auth.json"),
+	}
+	if len(paths) != len(want) || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("codex config_paths = %#v, want %#v", paths, want)
+	}
+}
+
 func TestApplyClaudeCode(t *testing.T) {
 	service, _, home := newAgentService(t)
 	path := filepath.Join(home, ".claude", "settings.json")

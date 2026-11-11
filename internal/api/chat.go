@@ -598,6 +598,14 @@ func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, mod
 		return chatStreamResult{Outcome: "failed", Status: status, Error: true, Message: message}
 	}
 	usage, _ := completion["usage"].(map[string]any)
+	if tracker, ok := stream.(*usageTracker); ok {
+		// v1 adds these only to the non-stream chat envelope; SSE frames keep
+		// their existing shape.
+		completion["elapsed_ms"] = tracker.ElapsedMS()
+		if first := tracker.FirstChunkAt(); !first.IsZero() {
+			completion["first_chunk_at"] = float64(first.UnixNano()) / float64(time.Second)
+		}
+	}
 	writeJSONResponse(w, http.StatusOK, completion)
 	return chatStreamResult{Outcome: "completed", Status: http.StatusOK, Usage: usage}
 }

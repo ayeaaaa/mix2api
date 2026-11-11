@@ -42,6 +42,37 @@ func TestModelsRealmRaccoon(t *testing.T) {
 	}
 }
 
+func TestModelsCatalogProvenance(t *testing.T) {
+	provider := &stubProvider{
+		id: "raccoon", realm: "raccoon",
+		models: []providers.Model{{"id": "raccoon-090dd3", "object": "model"}},
+		catalog: map[string]any{
+			"source": "raccoon", "fetched_at": 1700000000.5,
+			"accounts": 1, "warning": "",
+		},
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{provider}})
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=raccoon", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	catalog, ok := body["catalog"].(map[string]any)
+	if !ok {
+		t.Fatalf("catalog = %#v", body["catalog"])
+	}
+	if catalog["source"] != "raccoon" || catalog["warning"] != "" ||
+		numberText(catalog["accounts"]) != "1" {
+		t.Fatalf("catalog = %#v", catalog)
+	}
+	if _, ok := catalog["fetched_at"]; !ok {
+		t.Fatalf("catalog has no fetched_at: %#v", catalog)
+	}
+	if data := body["data"].([]any); len(data) != 1 {
+		t.Fatalf("data = %#v", body["data"])
+	}
+}
+
 func TestModelsUnknownRealm404(t *testing.T) {
 	provider := &stubProvider{
 		id: "raccoon", realm: "raccoon",

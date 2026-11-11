@@ -33,10 +33,10 @@ This file is the CodeArts-specific procedure and fixture provenance.
   and off-peak rates differ), timestamps, generated IDs).
 - The selected v1.6.5 CodeArts payloads are now committed under
   `tests/oracle/recorded/v1.6.5/`. They confirm the chat/models/account shapes;
-  the remaining differences are the v1-only `catalog` block, v1-only
-  `elapsed_ms`/`first_chunk_at` chat fields, and two additive v2 fields
-  (`stats.limited`, `credits_refresh.accounts[]`). Full oracle replacement of
-  every `codearts_*` regression fixture is still pending.
+  the parity-fix candidate now emits the v1 `catalog` block and
+  `elapsed_ms`/`first_chunk_at` chat fields. The remaining differences are two
+  additive v2 fields (`stats.limited`, `credits_refresh.accounts[]`). Full
+  oracle replacement of every `codearts_*` regression fixture is still pending.
 
 The procedure below is how to record the real oracle later and validate or
 replace these scoped fixtures.
@@ -61,8 +61,9 @@ oracle output:
 - v1's `drop_missing_bindings` runs only from its panel proxy-slot save route.
   That route is outside the v2 CodeArts surface; v2 preserves the binding and
   resolves a missing/disabled slot to direct like `apply_proxy_slots`.
-- v1-only `elapsed_ms`/`first_chunk_at` chat fields and the models `catalog`
-  block remain excluded from the v2 foundation contract.
+- v2 records v1's `elapsed_ms`/`first_chunk_at` chat fields and the models
+  `catalog` block. `elapsed_ms` is a variable wall-clock duration and normalizes
+  to `<duration>`; the fields themselves are part of the contract.
 
 ## Read-only rules
 
@@ -319,16 +320,16 @@ hand-picked subset. For CodeArts specifically:
 - SSE normalization ignores chunk boundaries, comments, and keepalives; it
   merges role/content/finish/tool-call/usage and records `[DONE]`.
 
-Known v1-only fields not emitted by the v2 foundation:
+Formerly v1-only fields now emitted by v2:
 
-- v1 non-stream chat adds `elapsed_ms` and `first_chunk_at`.
-- v1 `/v1/models?realm=codearts` adds a top-level `catalog` block.
-- v1's panel/media/key-readiness health blocks are larger than the v2 scoped
-  provider health block.
+- v1 non-stream chat `elapsed_ms` and `first_chunk_at` (the duration value is
+  normalized).
+- v1 `/v1/models?realm=codearts` top-level `catalog` block.
+- v1's panel/media/key-readiness health blocks are restored on `/health`; the
+  neutral `providers` map remains additive.
 
-Do not fabricate these v1-only fields into a v2 golden. If full v1 parity for
-them becomes a requirement, add them to the v2 implementation first, then add
-an oracle comparison.
+Do not fabricate values into a v2 golden. Stable fields are still compared in
+full; only inherently variable durations/timestamps use placeholders.
 
 ## 7. Record and review
 

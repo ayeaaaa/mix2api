@@ -1008,6 +1008,24 @@ func (p *Provider) modelsMeta() map[string]any {
 	return meta
 }
 
+// CatalogProvenance returns the v1 /v1/models catalog block.
+func (p *Provider) CatalogProvenance() map[string]any {
+	if p == nil {
+		return nil
+	}
+	return p.modelsMeta()
+}
+
+// RealmAvailable reports whether the CodeArts exit is enabled, matching v1's
+// conditional /realm option.
+func (p *Provider) RealmAvailable() bool {
+	if p == nil {
+		return false
+	}
+	cfg, err := p.applySettings()
+	return err == nil && cfg.Enabled
+}
+
 func (p *Provider) handleConnectionTest(w http.ResponseWriter, r *http.Request) {
 	if _, failure := readAdminPayload(w, r); failure != nil {
 		writeAdminError(w, failure)

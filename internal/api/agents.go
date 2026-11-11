@@ -95,19 +95,17 @@ func (h *AgentHandlers) handleOverview(w http.ResponseWriter, r *http.Request) {
 	authRequired := false
 	globalKeySet := false
 	if h.Server != nil {
-		globalKeySet = strings.TrimSpace(h.Server.opts.StaticAPIKey) != ""
-		authRequired = globalKeySet
-	}
-	if h.Server != nil && h.Server.keyStore != nil {
-		authRequired = h.Server.keyStore.AuthRequired() || globalKeySet
+		globalKeySet = h.Server.globalKeySet()
+		authRequired = h.Server.authRequired()
 	}
 	writeJSONResponse(w, http.StatusOK, map[string]any{
 		"enabled": true, "clients": clients,
 		"models":          agents.GatewayModels(r.Context(), h.Service.Providers),
 		"selected_models": selection, "models_configured": configured,
 		"model_embedding_clients": agents.ModelEmbeddingClients(),
-		"keys":                    keys, "auth_required": authRequired,
-		"gateway": map[string]any{"base_url": h.baseURLHint()},
+		"keys":                    keys, "global_key_set": globalKeySet,
+		"auth_required": authRequired,
+		"gateway":       map[string]any{"base_url": h.baseURLHint()},
 	})
 }
 

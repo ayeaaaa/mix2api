@@ -142,13 +142,17 @@ func TestRecordedV165DocumentsV2Delta(t *testing.T) {
 	text := string(delta)
 	for _, needle := range []string{
 		"2.0.0-rc.1",
-		"15 case(s) differ",
-		"oracle: agents: JSON mismatch:",
+		"10 case(s) differ",
+		"Resolved by this candidate:",
+		"oracle: health: JSON mismatch:",
 		"oracle: logs: JSON mismatch:",
 	} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("V2-DELTA.txt does not contain %q", needle)
 		}
+	}
+	if strings.Contains(text, "oracle: agents: JSON mismatch:") {
+		t.Fatal("V2-DELTA.txt still reports the resolved agents mismatch")
 	}
 	provenance, err := os.ReadFile(filepath.Join(recordedDir, "PROVENANCE.md"))
 	if err != nil {

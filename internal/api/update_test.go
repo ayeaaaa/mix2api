@@ -113,6 +113,43 @@ func TestUpdateRoutes(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusV1Defaults(t *testing.T) {
+	server, _, _, _ := newUpdateFixture(t)
+	rec := doRequest(server, http.MethodGet, "/updates", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	for _, key := range []string{
+		"latest_version", "last_attempt", "last_success",
+	} {
+		value, present := body[key]
+		if !present || value != nil {
+			t.Fatalf("%s = %#v (present=%v), want explicit null", key, value, present)
+		}
+	}
+	for _, key := range []string{
+		"latest_tag", "last_error", "release_url", "published_at",
+	} {
+		value, present := body[key]
+		if !present || value != "" {
+			t.Fatalf("%s = %#v (present=%v), want empty string", key, value, present)
+		}
+	}
+
+	rec = doRequest(server, http.MethodGet, "/updates/backups", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backups status = %d %s", rec.Code, rec.Body)
+	}
+	backups := decodeBody(t, rec)
+	if backups["current_version"] != "1.0.0" {
+		t.Fatalf("backups current_version = %#v, want the running version", backups["current_version"])
+	}
+	if rows, ok := backups["backups"].([]any); !ok || len(rows) != 0 {
+		t.Fatalf("backups = %#v, want an empty array", backups["backups"])
+	}
+}
+
 func TestUpdateBackupsKeepBackupsJSONNumber(t *testing.T) {
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))

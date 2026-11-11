@@ -1465,6 +1465,19 @@ func codeartsAssertGoldenJSON(
 	if prepare != nil {
 		prepared = prepare(actual)
 	}
+	if os.Getenv("UPDATE_CODEARTS_GOLDENS") == "1" {
+		normalized, err := NormalizeJSON(prepared)
+		if err != nil {
+			t.Fatalf("normalize golden %s: %v", name, err)
+		}
+		encoded, err := json.MarshalIndent(normalized, "", "  ")
+		if err != nil {
+			t.Fatalf("encode golden %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join("testdata", name), append(encoded, '\n'), 0o644); err != nil {
+			t.Fatalf("write golden %s: %v", name, err)
+		}
+	}
 	raw, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatalf("read golden %s: %v", name, err)

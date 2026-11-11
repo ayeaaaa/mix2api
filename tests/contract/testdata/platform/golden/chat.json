@@ -10,6 +10,8 @@
     }
   ],
   "created": "\u003ctimestamp\u003e",
+  "elapsed_ms": "\u003cduration\u003e",
+  "first_chunk_at": "\u003ctimestamp\u003e",
   "id": "\u003cdynamic\u003e",
   "model": "contract-model",
   "object": "chat.completion",

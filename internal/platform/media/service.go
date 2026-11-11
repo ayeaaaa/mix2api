@@ -248,6 +248,22 @@ func (s *Service) Config() Config {
 	return cfg
 }
 
+// Slots returns the configured media request semaphore width.
+func (s *Service) Slots() int {
+	if s == nil || s.slots == nil {
+		return 0
+	}
+	return cap(s.slots)
+}
+
+// Inflight returns the number of media requests currently holding a slot.
+func (s *Service) Inflight() int {
+	if s == nil || s.slots == nil {
+		return 0
+	}
+	return len(s.slots)
+}
+
 // Realm resolves the request exit. A key-bound realm wins, but a mismatch with
 // the configured media realm is the v1 user-visible error.
 func (s *Service) Realm(bound string) (string, error) {

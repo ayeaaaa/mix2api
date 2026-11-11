@@ -265,6 +265,54 @@ func contains(value, needle string) bool {
 	})()
 }
 
+type settingsRealmOnlyProvider struct {
+	realm     string
+	available bool
+}
+
+func (p *settingsRealmOnlyProvider) ID() string    { return p.realm }
+func (p *settingsRealmOnlyProvider) Realm() string { return p.realm }
+func (p *settingsRealmOnlyProvider) Overview(context.Context, bool) (any, error) {
+	return nil, nil
+}
+func (p *settingsRealmOnlyProvider) Health(context.Context, bool) (providers.Health, error) {
+	return providers.Health{"ok": true}, nil
+}
+func (p *settingsRealmOnlyProvider) Models(context.Context, bool) ([]providers.Model, error) {
+	return nil, nil
+}
+func (p *settingsRealmOnlyProvider) OpenChat(context.Context, providers.ChatRequest) (providers.ChatStream, error) {
+	return nil, nil
+}
+func (p *settingsRealmOnlyProvider) Routes() []providers.Route { return nil }
+func (p *settingsRealmOnlyProvider) Jobs() []scheduler.Job     { return nil }
+func (p *settingsRealmOnlyProvider) RealmAvailable() bool      { return p.available }
+
+func TestRealmOptionsIncludeConfiguredExits(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	workbuddy := &settingsFakeProvider{realm: "intl", active: "intl"}
+	raccoon := &settingsRealmOnlyProvider{realm: "raccoon", available: true}
+	codearts := &settingsRealmOnlyProvider{realm: "codearts", available: false}
+	service := NewRealm(store, dir, []providers.Provider{workbuddy, raccoon, codearts})
+	options := service.Options()
+	want := []string{"intl", "cn", "raccoon"}
+	if len(options) != len(want) {
+		t.Fatalf("options = %#v, want %#v", options, want)
+	}
+	for index := range want {
+		if options[index] != want[index] {
+			t.Fatalf("options = %#v, want %#v", options, want)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "active_realm.json"), []byte(`{"realm":"raccoon"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.Active(context.Background()); got != "raccoon" {
+		t.Fatalf("active realm = %q, want raccoon", got)
+	}
+}
+
 func TestLimitsScopedMerge(t *testing.T) {
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))

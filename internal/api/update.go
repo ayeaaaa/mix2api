@@ -225,8 +225,17 @@ func statusToMap(status update.Status) map[string]any {
 	if out == nil {
 		out = map[string]any{}
 	}
-	if out["latest_version"] == "" {
-		out["latest_version"] = nil
+	// The v1 panel reads every field even before a successful check; Status
+	// uses omitempty internally, so restore the null/empty defaults here.
+	defaults := map[string]any{
+		"latest_version": nil, "latest_tag": "", "last_attempt": nil,
+		"last_success": nil, "last_error": "", "release_url": "",
+		"published_at": "",
+	}
+	for key, value := range defaults {
+		if _, present := out[key]; !present {
+			out[key] = value
+		}
 	}
 	return out
 }

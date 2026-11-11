@@ -6,7 +6,7 @@
       "cooling": false,
       "credits": {
         "amount": 1000,
-        "end_date": "<timestamp>",
+        "end_date": "\u003ctimestamp\u003e",
         "expiring": 5,
         "package": "体验版",
         "remain": 900,
@@ -16,7 +16,7 @@
       "default_model": "",
       "disabled": false,
       "err_count": 0,
-      "expires_at": "<timestamp>",
+      "expires_at": "\u003ctimestamp\u003e",
       "last_error": "",
       "manual_disabled": false,
       "max_concurrent": 1,
@@ -29,7 +29,7 @@
       "proxy_slot": "",
       "reason": "",
       "tasks_enabled": true,
-      "token_remaining": "<duration>",
+      "token_remaining": "\u003cduration\u003e",
       "uid": "codearts-contract-1",
       "until": "",
       "user_name": "Contract User 1"
@@ -40,7 +40,7 @@
       "cooling": false,
       "credits": {
         "amount": 1000,
-        "end_date": "<timestamp>",
+        "end_date": "\u003ctimestamp\u003e",
         "expiring": 5,
         "package": "体验版",
         "remain": 900,
@@ -50,7 +50,7 @@
       "default_model": "",
       "disabled": false,
       "err_count": 0,
-      "expires_at": "<timestamp>",
+      "expires_at": "\u003ctimestamp\u003e",
       "last_error": "",
       "manual_disabled": false,
       "max_concurrent": 1,
@@ -63,16 +63,16 @@
       "proxy_slot": "",
       "reason": "",
       "tasks_enabled": true,
-      "token_remaining": "<duration>",
+      "token_remaining": "\u003cduration\u003e",
       "uid": "codearts-contract-2",
       "until": "",
       "user_name": "Contract User 2"
     }
   ],
-  "base_url": "<upstream>",
+  "base_url": "\u003cupstream\u003e",
   "health": {
     "accounts": 2,
-    "base_url": "<upstream>",
+    "base_url": "\u003cupstream\u003e",
     "configured": true,
     "healthy": 2,
     "ok": true

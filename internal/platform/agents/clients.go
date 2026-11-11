@@ -33,8 +33,11 @@ type Client struct {
 	Desc     string
 	Protocol string
 	Files    func(home string) map[string]string
-	Probe    func(home string) bool
-	Apply    func(paths map[string]string, ctx Context) (map[string]string, error)
+	// PathOrder preserves v1's map insertion order for the panel's
+	// config_paths list. Keys not named here follow in sorted order.
+	PathOrder []string
+	Probe     func(home string) bool
+	Apply     func(paths map[string]string, ctx Context) (map[string]string, error)
 }
 
 var dshRetryPolicy = map[string]any{
@@ -120,6 +123,7 @@ func Clients() []Client {
 				dir := codexHome(home)
 				return map[string]string{"config": filepath.Join(dir, "config.toml"), "auth": filepath.Join(dir, "auth.json")}
 			},
+			PathOrder: []string{"config", "auth"},
 			Probe: func(home string) bool {
 				dir := codexHome(home)
 				if info, err := os.Stat(dir); err == nil && info.IsDir() {

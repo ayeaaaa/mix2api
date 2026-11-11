@@ -1,21 +1,23 @@
 {
-  "id": "<dynamic>",
-  "object": "chat.completion",
-  "created": "<timestamp>",
-  "model": "raccoon-090dd3",
   "choices": [
     {
+      "finish_reason": "stop",
       "index": 0,
       "message": {
-        "role": "assistant",
-        "content": "你好"
-      },
-      "finish_reason": "stop"
+        "content": "你好",
+        "role": "assistant"
+      }
     }
   ],
+  "created": "\u003ctimestamp\u003e",
+  "elapsed_ms": "\u003cduration\u003e",
+  "first_chunk_at": "\u003ctimestamp\u003e",
+  "id": "\u003cdynamic\u003e",
+  "model": "raccoon-090dd3",
+  "object": "chat.completion",
   "usage": {
-    "prompt_tokens": 3,
     "completion_tokens": 2,
+    "prompt_tokens": 3,
     "total_tokens": 5
   }
 }

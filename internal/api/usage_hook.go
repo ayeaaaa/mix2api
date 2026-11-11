@@ -97,6 +97,28 @@ func (t *usageTracker) Timing(stream bool) (int64, int64, int64) {
 	return elapsed.Milliseconds(), ttft.Milliseconds(), gen.Milliseconds()
 }
 
+// ElapsedMS reports wall time since the request started.
+func (t *usageTracker) ElapsedMS() int64 {
+	if t == nil {
+		return 0
+	}
+	elapsed := t.now().Sub(t.start)
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed.Milliseconds()
+}
+
+// FirstChunkAt reports the first upstream frame time for v1's chat response.
+func (t *usageTracker) FirstChunkAt() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.first
+}
+
 // usageMapFromSnapshot converts a provider snapshot into the raw v1 usage
 // block the recorder understands. Nil means the provider omitted usage.
 func usageMapFromSnapshot(snapshot providers.UsageSnapshot) map[string]any {

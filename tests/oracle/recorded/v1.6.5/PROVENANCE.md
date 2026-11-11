@@ -101,6 +101,9 @@ generic rules used by the selected cases:
 
 - `token_remaining` countdown strings become `<duration>`.
 - `since` is treated as a timestamp key when its value parses as a time.
+- `elapsed_ms` is a wall-clock duration and becomes `<duration>`; its presence
+  and numeric type are still compared. `first_chunk_at` follows the existing
+  timestamp rule.
 
 The harness compares JSON numbers by numeric value, so v1 `0.0` and v2 `0` are
 equal. Generated IDs, timestamps, UUIDs, transport headers, and SSE chunk
@@ -112,9 +115,9 @@ comparison used the same fixed layout. They contain no account data.
 
 ## v2 comparison
 
-Compared against the v2 candidate built from commit
-`b4ede64ec290d0b4d001c1a8ef48d01cb990ad76` (`2.0.0-rc.1`), with the same
-fake upstreams and equivalent synthetic accounts:
+Compared against the parity-fix candidate committed as
+`fix(parity): close v1 oracle differences` (`2.0.0-rc.1`), with the same fake
+upstreams and equivalent synthetic accounts:
 
 ```sh
 /tmp/opencode/oracle compare --all \
@@ -124,55 +127,61 @@ fake upstreams and equivalent synthetic accounts:
   --api-key "$API_KEY"
 ```
 
-Result: 9 cases match, 15 differ. Matching: `chat_stream`, `responses`,
-`responses_stream`, `messages`, `codearts_chat_stream`, `admin_accounts`,
-`media_models` (both 404), `codearts_checkin`, `codearts_models_refresh`.
-The complete path-qualified output is committed as `V2-DELTA.txt`; the summary
-below groups it by cause.
+Result: 14 cases match exactly, 10 differ only by the intentional/additive
+fields below. Matching: `models`, `codearts_models`, `chat`, `chat_stream`,
+`responses`, `responses_stream`, `messages`, `codearts_chat`,
+`codearts_chat_stream`, `admin_accounts`, `media_models` (both 404), `agents`,
+`codearts_checkin`, `codearts_models_refresh`. The complete path-qualified
+output is committed as `V2-DELTA.txt`.
 
-### Documented v2 scope differences
+### Resolved parity gaps
 
-These are intentional v2-foundation exclusions already documented in
-`tests/oracle/README.md` and `tests/oracle/codearts.md`:
+These previously recorded gaps are closed in the candidate:
 
-- `models`, `codearts_models`: v1 adds a top-level `catalog` provenance block;
-  v2 does not emit it.
-- `health`: v1 emits top-level `realm`, `crypto_ok`, pool/key readiness,
-  `media`, and per-provider `codearts`/`raccoon` blocks. v2 emits `ok`,
-  `version`, and a neutral `providers` map. The provider values that exist in
-  both shapes agree (Raccoon accounts/healthy/models/catalog_source and
-  CodeArts accounts/healthy/base_url).
-- `chat`, `codearts_chat`: v1 adds `elapsed_ms` and `first_chunk_at`; v2 does
-  not emit those v1-only fields.
-
-### Behavior differences to review
-
-These are not explained by the scoped-field exclusions above and are recorded
-as candidate gaps, not normalized away:
-
-- `agents`: v2 returns 45 models versus v1's 24. v1's picker uses the bundled
-  WorkBuddy catalog for the current realm; v2 merges every provider catalog
-  (Raccoon, CodeArts, WorkBuddy intl/cn), so IDs, display names, limits, and
-  reasoning-effort sets differ. v2 also omits `global_key_set`, reports
-  `auth_required: true` where v1 reports false with `auth_disabled`, and orders
-  Codex `config_paths` differently.
-- `updates`, `updates_backups`: v2 reports `current_version: 2.0.0-rc.1` (the
-  candidate build) and omits v1's `latest_version`, `latest_tag`,
+- `models`, `codearts_models`: the v1 top-level `catalog` provenance block is
+  emitted (Raccoon, CodeArts, and WorkBuddy through an optional provider hook).
+- `agents`: the picker now uses the current WorkBuddy bundled/live catalogue
+  only (not Raccoon), preserves v1 order and model metadata, appends configured
+  CodeArts official ids in lower case, reports `global_key_set`, honors
+  `auth_disabled` for `auth_required`, and orders Codex `config_paths` as
+  `config.toml` then `auth.json`.
+- `health`: the v1 top-level `realm`, `crypto_ok`, pool readiness,
+  `api_key_required`, `codearts`/`raccoon`, `media`, identity, and key-readiness
+  fields are restored. v2 `providers` and `version` stay additive.
+- `chat`, `codearts_chat`: non-stream responses include v1 `elapsed_ms` and
+  `first_chunk_at`. `elapsed_ms` is normalized to `<duration>` because it is an
+  inherently variable wall-clock value; presence and type are still compared.
+- `updates`: the v1 null/empty defaults for `latest_version`, `latest_tag`,
   `release_url`, `published_at`, `last_attempt`, `last_success`, and
-  `last_error` fields.
-- `usage`: v2's default `/usage` realm is `intl`; v1 defaults to the persisted
-  `raccoon` realm. The explicit `usage_raccoon` and `usage_codearts` cases
-  match v1's request/token/model/account aggregates, but v2 populates
-  `ttft_ms_sum`, `ttft_samples`, `gen_ms_sum`, `gen_samples`, `wall_ms_sum`,
-  and `wall_samples` while v1 emits zero.
-- `logs`: v2 returns an empty store (51 v1 in-memory entries are missing) and
-  adds `mode: db`, `stored`, and `db_bytes`. The v2 candidate does not append
-  API request logs to the log store.
-- `codearts_accounts`, `codearts_overview`: v2 adds `stats.limited: 0`.
-- `codearts_credits_refresh`: v2 adds an `accounts[]` detail array.
+  `last_error` are restored.
+- `usage`: with the same synthetic `active_realm.json` (`raccoon`), v2 now
+  honors the persisted realm instead of collapsing to `intl`; the v1
+  by-model/account/realm aggregates match.
 
-These differences are the current Gate F delta. They must be resolved or
-explicitly accepted before a `v2.0.0` tag.
+### Remaining intentional differences
+
+These are additive v2 fields or documented v2 scope, not normalization
+shortcuts:
+
+- `health`: additive `providers` map and `version` field.
+- `updates`, `updates_backups`: `current_version` is the running v2 build
+  (`2.0.0-rc.1`) rather than the recorded v1 version (`1.6.5`), as expected for
+  a different executable.
+- `codearts_accounts`, `codearts_overview`: additive `stats.limited`.
+- `codearts_credits_refresh`: additive per-account `accounts[]` detail array.
+- `usage`, `usage_raccoon`, `usage_codearts`: v2 measures and reports
+  `ttft_ms_sum`, `ttft_samples`, `gen_ms_sum`, `gen_samples`, `wall_ms_sum`,
+  and `wall_samples`; v1 emits zeros because it does not collect those timing
+  aggregates. The fields are additive and intentionally not zeroed to imitate
+  v1.
+- `logs`: v2 now records request lines, so `/logs` is nonempty and uses the v1
+  entry shape (`id`, `ts`, `time`, `level`, `tag`, `msg`) with `total`,
+  `logs`, and `max_id`. v2 does not reproduce v1's startup/chat text or
+  in-memory mode; it reports its durable store (`mode: db`) and the additive
+  `stored`/`db_bytes` fields. The v1 fixture contains 51 startup and request
+  lines; the v2 comparison contains 25 request lines from the same case run.
+
+No stable field was removed or projected out to make the comparison pass.
 
 ## Pending
 

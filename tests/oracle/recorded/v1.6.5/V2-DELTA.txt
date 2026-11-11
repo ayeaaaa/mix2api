@@ -1,91 +1,38 @@
-# v2 2.0.0-rc.1 (b4ede64) comparison against the v1.6.5 selected oracle
+# v2 2.0.0-rc.1 parity-fix candidate against the v1.6.5 selected oracle
 # Command: /tmp/opencode/oracle compare --all --base http://127.0.0.1:18765 --oracle tests/oracle/recorded/v1.6.5
 # The target and fake upstreams used the same fixed synthetic layout as the recording.
+# Candidate: working tree committed as "fix(parity): close v1 oracle differences".
+#
+# Result: 14 of 24 cases match exactly; 10 differ only by the documented
+# intentional/additive fields below. No normalization rule was added to erase a
+# stable field. `elapsed_ms` is normalized to <duration> because it is an
+# inherently variable wall-clock measurement, matching the existing timestamp
+# rule for first_chunk_at; its shape and presence are still compared.
+#
+# Resolved by this candidate:
+# - models/codearts_models: v1 top-level `catalog` provenance is emitted.
+# - agents: v1 picker semantics (current WorkBuddy bundled/live catalogue only,
+#   v1 order/metadata, configured CodeArts official lowercase ids), explicit
+#   `global_key_set`, auth_disabled-aware `auth_required`, Codex path order.
+# - health: v1 top-level realm/crypto/pool/key/media/identity fields restored;
+#   v2 `providers` and `version` remain additive.
+# - chat/codearts_chat: non-stream `elapsed_ms`/`first_chunk_at` restored.
+# - updates: v1 null/empty default fields restored (current_version remains the
+#   running v2 version, which is the expected difference).
+# - usage default realm: the same synthetic active_realm.json (raccoon) is now
+#   honored instead of collapsing to intl; by-model/account/realm aggregates
+#   match v1. Timing sums remain additive v2 measurements.
+# - logs: the v2 runtime store now records request lines, so `/logs` is nonempty
+#   and shape-compatible. v1's startup/chat text is not reproduced exactly and
+#   the durable `mode: db`/`stored`/`db_bytes` fields remain v2 scope.
 
-oracle: models: JSON mismatch:
-catalog: missing on target (oracle={"accounts":1,"fetched_at":"\u003ctimestamp\u003e","source":"raccoon","warning":""})
-oracle: codearts_models: JSON mismatch:
-catalog: missing on target (oracle={"accounts":1,"fetched_at":"\u003ctimestamp\u003e","source":"codearts","stale":false})
 oracle: health: JSON mismatch:
-accounts: missing on target (oracle=0)
-accounts_by_realm: missing on target (oracle={})
-accounts_ready: missing on target (oracle=0)
-accounts_ready_by_realm: missing on target (oracle={})
-accounts_ready_current_realm: missing on target (oracle=0)
-api_key_required: missing on target (oracle=false)
-codearts: missing on target (oracle={"accounts":1,"base_url":"http://127.0.0.1:18768","configured":true,"healthy":1,"ok":true})
-credential_file: missing on target (oracle=null)
-crypto_ok: missing on target (oracle=true)
-domain: missing on target (oracle=null)
-expires_at: missing on target (oracle=null)
-issuer: missing on target (oracle=null)
-key_accounts_bound: missing on target (oracle=0)
-key_accounts_ready: missing on target (oracle=0)
-media: missing on target (oracle={"enabled":false,"identity":"desktop","inflight":0,"realm":"cn","slots":4,"video_concurrency":3})
-models_ready: missing on target (oracle={})
-providers: extra on target (target={"cn":{"accounts":0,"base_url":"<upstream>","configured":true,"cooling":0,"disabled":0,"healthy":0,"ok":true,"provider":"workbuddy","realm":"cn"},"codearts":{"accounts":1,"base_url":"http://127.0.0.1:18768","configured":tru…)
-raccoon: missing on target (oracle={"accounts":1,"base_url":"http://127.0.0.1:18764","catalog_source":"raccoon","configured":true,"healthy":1,"models":2,"ok":true})
-realm: missing on target (oracle="raccoon")
-uid: missing on target (oracle=null)
+providers: extra on target (target={"cn":{"accounts":0,"base_url":"<workbuddy-cn-url>","configured":true,"cooling":0,"disabled":0,"healthy":0,"ok":true,"provider":"workbuddy","realm":"cn"},"codearts":{"accounts":1,"base_url":"http://127.0.0.1:18768","configured":tru…)
 version: extra on target (target="2.0.0-rc.1")
-oracle: chat: JSON mismatch:
-elapsed_ms: missing on target (oracle=3012)
-first_chunk_at: missing on target (oracle="\u003ctimestamp\u003e")
-oracle: codearts_chat: JSON mismatch:
-elapsed_ms: missing on target (oracle=0)
-first_chunk_at: missing on target (oracle="\u003ctimestamp\u003e")
 oracle: codearts_accounts: JSON mismatch:
 stats.limited: extra on target (target=0)
-oracle: agents: JSON mismatch:
-auth_required: true, want false
-clients[1].config_paths[0]: "/tmp/mix2api-oracle/state/home/.codex/auth.json", want "/tmp/mix2api-oracle/state/home/.codex/config.toml"
-clients[1].config_paths[1]: "/tmp/mix2api-oracle/state/home/.codex/config.toml", want "/tmp/mix2api-oracle/state/home/.codex/auth.json"
-global_key_set: missing on target (oracle=true)
-models: length 45, want 24
-models[0].id: "DeepSeek-V4.1-Flash", want "deepseek-v4.1-flash"
-models[0].name: "DeepSeek-V4.1-Flash", want "Deepseek-V4.1-Flash"
-models[0].reasoning_efforts: length 6, want 3
-models[0].reasoning_efforts[0]: "none", want "low"
-models[0].reasoning_efforts[1]: "low", want "high"
-models[0].reasoning_efforts[2]: "medium", want "max"
-models[0].supports_vision: missing on target (oracle=true)
-models[1].context_window: missing on target (oracle=1000000)
-models[1].id: "DeepSeek-V4.1-Flash-1017", want "deepseek-v4.1-flash-sg"
-models[1].max_output: missing on target (oracle=128000)
-models[1].name: "DeepSeek-V4.1-Flash-1017", want "Deepseek-V4.1-Flash"
-models[1].reasoning_efforts: length 6, want 3
-models[1].reasoning_efforts[0]: "none", want "low"
-models[1].reasoning_efforts[1]: "low", want "high"
-models[1].reasoning_efforts[2]: "medium", want "max"
-models[1].supports_vision: missing on target (oracle=true)
-models[2].context_window: missing on target (oracle=1000000)
-models[2].id: "GLM-4.7", want "hy4-preview"
-models[2].max_output: missing on target (oracle=64000)
-models[2].name: "GLM-4.7", want "Hy4 Preview"
-models[2].reasoning_efforts: missing on target (oracle=["high"])
-models[2].supports_vision: missing on target (oracle=true)
-models[3].context_window: 131072, want 192000
-models[3].id: "GLM-5.2", want "hy3"
-models[3].max_output: 8192, want 64000
-models[3].name: "GLM-5.2", want "Hy3"
-models[3].reasoning_efforts: length 7, want 2
-models[3].reasoning_efforts[0]: "none", want "low"
-models[3].reasoning_efforts[1]: "minimal", want "high"
-models[3].supports_vision: missing on target (oracle=true)
-models[4].context_window: missing on target (oracle=1000000)
-models[4].id: "GLM-5.2-ArkTS-SPARK", want "gpt-6-astra"
-models[4].max_output: missing on target (oracle=128000)
-models[4].name: "GLM-5.2-ArkTS-SPARK", want "GPT-6-Astra"
-models[4].reasoning_efforts: missing on target (oracle=["low","medium","high","xhigh","max"])
 oracle: updates: JSON mismatch:
 current_version: "2.0.0-rc.1", want "1.6.5"
-last_attempt: missing on target (oracle=null)
-last_error: missing on target (oracle="")
-last_success: missing on target (oracle=null)
-latest_tag: missing on target (oracle="")
-latest_version: missing on target (oracle=null)
-published_at: missing on target (oracle="")
-release_url: missing on target (oracle="")
 oracle: updates_backups: JSON mismatch:
 current_version: "2.0.0-rc.1", want "1.6.5"
 oracle: codearts_overview: JSON mismatch:
@@ -93,32 +40,63 @@ stats.limited: extra on target (target=0)
 oracle: codearts_credits_refresh: JSON mismatch:
 accounts: extra on target (target=[{"credits":{"amount":4500,"end_date":"\u003ctimestamp\u003e","expiring":0,"package":"体验版","remain":4499.19,"unit":"credit","used":0.81},"message":"","ok":true,"uid":"u1"}])
 oracle: usage: JSON mismatch:
-by_model.raccoon-090dd3: missing on target (oracle={"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25})
-by_model_acct.raccoon-090dd3: missing on target (oracle={"raccoon":{"pu-raccoon-test":{"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25}}})
-by_model_realm.raccoon-090dd3: missing on target (oracle={"raccoon":{"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25}})
-completion_tokens: 0, want 10
-cost_missing.raccoon-090dd3: missing on target (oracle=5)
-prompt_tokens: 0, want 15
-realm: "intl", want "raccoon"
-requests: 0, want 5
-total_tokens: 0, want 25
+gen_ms_sum: 6034, want 0
+gen_samples: 2, want 0
+ttft_ms_sum: 3, want 0
+ttft_samples: 2, want 0
+wall_ms_sum: 12080, want 0
+wall_samples: 5, want 0
 oracle: usage_raccoon: JSON mismatch:
 gen_ms_sum: 6034, want 0
 gen_samples: 2, want 0
 ttft_ms_sum: 3, want 0
 ttft_samples: 2, want 0
-wall_ms_sum: 12084, want 0
+wall_ms_sum: 12080, want 0
 wall_samples: 5, want 0
 oracle: usage_codearts: JSON mismatch:
 ttft_ms_sum: 2, want 0
 ttft_samples: 1, want 0
-wall_ms_sum: 5, want 0
+wall_ms_sum: 9, want 0
 wall_samples: 2, want 0
 oracle: logs: JSON mismatch:
 db_bytes: extra on target (target=20480)
-logs: length 0, want 51
-max_id: 0, want 51
-mode: "db", want "memory"
-stored: extra on target (target=0)
-total: 0, want 51
-oracle: 15 case(s) differ
+logs: length 25, want 51
+logs[0].msg: "\"GET /health HTTP/1.1\" 200 -", want "panel      : password set from --panel-password"
+logs[1].msg: "\"GET /health HTTP/1.1\" 200 -", want "[调度器] 后台定时调度器已启动"
+logs[1].tag: "system", want "scheduler"
+logs[2].msg: "\"POST /panel/login HTTP/1.1\" 200 -", want "no accounts yet - no desktop credentials found on this machine"
+logs[2].tag: "system", want "accounts"
+logs[3].msg: "\"GET /v1/models?realm=raccoon HTTP/1.1\" 200 -", want "still no accounts - starting anyway so you can log in via the dashboard"
+logs[3].tag: "catalog", want "accounts"
+logs[4].msg: "\"GET /v1/models?realm=codearts HTTP/1.1\" 200 -", want "accounts   : 0 total, 0 usable"
+logs[4].tag: "catalog", want "accounts"
+logs[5].msg: "\"GET /health?force=1 HTTP/1.1\" 200 -", want "store      : /tmp/mix2api-oracle/state/accounts"
+logs[5].tag: "system", want "accounts"
+logs[6].msg: "\"POST /v1/chat/completions?realm=raccoon HTTP/1.1\" 200 -", want "credential : -"
+logs[6].tag: "chat", want "system"
+logs[7].msg: "\"POST /v1/chat/completions?realm=raccoon HTTP/1.1\" 200 -", want "catalog    : app cache not found - will use the model API instead"
+logs[7].tag: "chat", want "catalog"
+logs[8].msg: "\"POST /v1/responses?realm=raccoon HTTP/1.1\" 200 -", want "account    : - @ -"
+logs[8].tag: "chat", want "accounts"
+logs[9].msg: "\"POST /v1/responses?realm=raccoon HTTP/1.1\" 200 -", want "issuer     : -"
+logs[9].tag: "chat", want "system"
+logs[10].msg: "\"POST /v1/messages?realm=raccoon HTTP/1.1\" 200 -", want "realm      : raccoon (copilot.tencent.com)"
+logs[11].msg: "\"POST /v1/chat/completions?realm=codearts HTTP/1.1\" 200 -", want "user-agent : WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
+logs[11].tag: "chat", want "system"
+logs[12].msg: "\"POST /v1/chat/completions?realm=codearts HTTP/1.1\" 200 -", want "listening  : http://127.0.0.1:18765/v1  (api key: off)"
+logs[12].tag: "chat", want "system"
+logs[13].msg: "\"GET /raccoon/accounts HTTP/1.1\" 200 -", want "dashboard  : http://127.0.0.1:18765/"
+logs[13].tag: "accounts", want "system"
+logs[14].msg: "\"GET /codearts/accounts HTTP/1.1\" 200 -", want "\"POST /panel/login HTTP/1.1\" 200 -"
+logs[14].tag: "accounts", want "system"
+logs[15].msg: "\"GET /v1/media/models HTTP/1.1\" 404 -", want "\"GET /v1/models?realm=raccoon HTTP/1.1\" 200 -"
+logs[16].msg: "\"GET /agents HTTP/1.1\" 200 -", want "\"GET /v1/models?realm=codearts HTTP/1.1\" 200 -"
+logs[16].tag: "agents", want "catalog"
+logs[17].msg: "\"GET /updates HTTP/1.1\" 200 -", want "raccoon chat: model=raccoon-090dd3 stream=False msgs=1 key=launcher"
+logs[17].tag: "system", want "chat"
+logs[18].msg: "\"GET /updates/backups HTTP/1.1\" 200 -", want "chat done: model=raccoon-090dd3 acct=pu-racco slot= egress=direct key=launcher 3014ms tokens=5 (in=3 out=2) 0.66t/s"
+logs[18].tag: "system", want "chat"
+logs[19].msg: "\"GET /codearts/overview?force=1 HTTP/1.1\" 200 -", want "\"POST /v1/chat/completions?realm=raccoon HTTP/1.1\" 200 -"
+logs[19].tag: "system", want "chat"
+logs[20].msg: "\"POST /codearts/accounts/checkin HTTP/1.1\" 200 -", want "raccoon chat: model=raccoon-090dd3 stream=True msgs=1 key=launcher"
+oracle: 10 case(s) differ

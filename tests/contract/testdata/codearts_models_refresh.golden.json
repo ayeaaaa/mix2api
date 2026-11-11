@@ -1,7 +1,7 @@
 {
   "catalog": {
     "accounts": 2,
-    "fetched_at": "<timestamp>",
+    "fetched_at": "\u003ctimestamp\u003e",
     "source": "codearts",
     "stale": false
   },

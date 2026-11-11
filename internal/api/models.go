@@ -9,9 +9,10 @@ import (
 )
 
 type modelsResponse struct {
-	Object string            `json:"object"`
-	Data   []providers.Model `json:"data"`
-	Realm  string            `json:"realm"`
+	Object  string            `json:"object"`
+	Data    []providers.Model `json:"data"`
+	Realm   string            `json:"realm"`
+	Catalog map[string]any    `json:"catalog,omitempty"`
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, err)
 			return
 		}
-		writeModelsResponse(w, "all", data)
+		var catalog map[string]any
+		for _, candidate := range candidates {
+			if provenance, ok := candidate.(providers.CatalogProvenanceProvider); ok {
+				if value := provenance.CatalogProvenance(); len(value) > 0 {
+					catalog = value
+					break
+				}
+			}
+		}
+		writeModelsResponse(w, "all", data, catalog)
 		return
 	}
 
@@ -71,17 +81,33 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, err)
 		return
 	}
-	writeModelsResponse(w, providerRealm(provider), data)
+	writeModelsResponse(w, providerRealm(provider), data, catalogProvenance(provider))
 }
 
-func writeModelsResponse(w http.ResponseWriter, realm string, data []providers.Model) {
+func catalogProvenance(provider providers.Provider) map[string]any {
+	if provider == nil {
+		return nil
+	}
+	provenance, ok := provider.(providers.CatalogProvenanceProvider)
+	if !ok {
+		return nil
+	}
+	value := provenance.CatalogProvenance()
+	if len(value) == 0 {
+		return nil
+	}
+	return value
+}
+
+func writeModelsResponse(w http.ResponseWriter, realm string, data []providers.Model, catalog map[string]any) {
 	if data == nil {
 		data = []providers.Model{}
 	}
 	writeJSONResponse(w, http.StatusOK, modelsResponse{
-		Object: "list",
-		Data:   data,
-		Realm:  realm,
+		Object:  "list",
+		Data:    data,
+		Realm:   realm,
+		Catalog: catalog,
 	})
 }
 

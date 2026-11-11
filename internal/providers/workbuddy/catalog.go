@@ -1096,7 +1096,23 @@ func (p *Provider) CatalogDailyRefresh(ctx context.Context) (CatalogResult, bool
 	return result, true, err
 }
 
-// CatalogDailyPass is the v1-named alias for CatalogDailyRefresh.
+// CatalogProvenance returns the v1 /v1/models catalog block.
+func (p *Provider) CatalogProvenance() map[string]any {
+	if p == nil {
+		return nil
+	}
+	meta, ok := p.CatalogMeta()
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"source":     meta.Source,
+		"fetched_at": meta.FetchedAt,
+		"file_mtime": meta.FileMTime,
+	}
+}
+
+// CatalogDailyPass runs the once-per-day bundled fallback refresh.
 func (p *Provider) CatalogDailyPass(ctx context.Context) (CatalogResult, bool, error) {
 	return p.CatalogDailyRefresh(ctx)
 }

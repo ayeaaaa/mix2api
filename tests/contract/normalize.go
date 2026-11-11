@@ -86,6 +86,10 @@ func normalizeJSONValue(value any, key string, parent normalizeContext) any {
 				out[childKey] = normalizeTimestampValue(childValue)
 				continue
 			}
+			if isDurationKey(childKey) {
+				out[childKey] = normalizeDurationValue(childValue)
+				continue
+			}
 			childContext := context
 			if isSemanticCollectionKey(childKey) {
 				childContext.semanticID = true
@@ -291,6 +295,28 @@ func isTimestampKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// isDurationKey recognizes inherently variable elapsed-time values. The shape
+// stays; the numeric value is replaced so two runs of the same endpoint can be
+// compared without pretending the timings are deterministic.
+func isDurationKey(key string) bool {
+	switch canonicalKey(key) {
+	case "elapsedms", "durationms":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeDurationValue(value any) any {
+	switch value.(type) {
+	case json.Number, float32, float64, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return DurationValue
+	default:
+		return value
+	}
 }
 
 func normalizeTimestampValue(value any) any {

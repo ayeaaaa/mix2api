@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"reflect"
@@ -186,11 +187,31 @@ type ProtocolObservation struct {
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}
-// fields stay stable; provider health is additive under a neutral realm map.
+// fields stay stable; v1's pool/key/media blocks are restored beside the v2
+// additive providers map.
 type healthResponse struct {
-	OK        bool           `json:"ok"`
-	Version   string         `json:"version"`
-	Providers map[string]any `json:"providers,omitempty"`
+	OK                        bool           `json:"ok"`
+	Version                   string         `json:"version"`
+	Realm                     string         `json:"realm"`
+	CryptoOK                  bool           `json:"crypto_ok"`
+	Accounts                  int            `json:"accounts"`
+	AccountsReady             int            `json:"accounts_ready"`
+	AccountsByRealm           map[string]int `json:"accounts_by_realm"`
+	AccountsReadyByRealm      map[string]int `json:"accounts_ready_by_realm"`
+	AccountsReadyCurrentRealm int            `json:"accounts_ready_current_realm"`
+	ModelsReady               map[string]any `json:"models_ready"`
+	APIKeyRequired            bool           `json:"api_key_required"`
+	CodeArts                  map[string]any `json:"codearts"`
+	Raccoon                   map[string]any `json:"raccoon"`
+	Media                     map[string]any `json:"media"`
+	UID                       any            `json:"uid"`
+	Domain                    any            `json:"domain"`
+	Issuer                    any            `json:"issuer"`
+	CredentialFile            any            `json:"credential_file"`
+	ExpiresAt                 any            `json:"expires_at"`
+	KeyAccountsReady          int            `json:"key_accounts_ready"`
+	KeyAccountsBound          int            `json:"key_accounts_bound"`
+	Providers                 map[string]any `json:"providers,omitempty"`
 }
 
 // Server owns the generic API mux and its provider set. NewServer returns the
@@ -536,7 +557,71 @@ func (s *Server) Handler() http.Handler {
 	prefixes := append([]string(nil), platformPanelPrefixes...)
 	prefixes = append(prefixes, panelProtectedPrefixes(s.providers)...)
 	panel := wrapPanelAuth(s.mux, prefixes, s.panelGate())
-	return recoveryHandler(platformHeaders(panel, s.opts.Version))
+	handler := recoveryHandler(platformHeaders(panel, s.opts.Version))
+	if store := s.runtimeLogStore(); store != nil {
+		handler = logRequests(handler, store)
+	}
+	return handler
+}
+
+func (s *Server) runtimeLogStore() *logs.LogStore {
+	if s == nil {
+		return nil
+	}
+	if s.opts.LogStore != nil {
+		return s.opts.LogStore
+	}
+	return s.opts.Logs
+}
+
+// logRequests appends one v1-shaped request line after the response completes.
+// The durable/memory store still owns filtering, redaction, and retention.
+func logRequests(next http.Handler, store *logs.LogStore) http.Handler {
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	if store == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracked := &statusResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(tracked, r)
+		status := tracked.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		line := r.Method + " " + r.URL.RequestURI() + " " + r.Proto
+		_ = store.Append(logs.Entry{Msg: fmt.Sprintf("%q %d -", line, status)})
+	})
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 const serverProduct = "mix2api"
@@ -635,26 +720,129 @@ func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	response := healthResponse{OK: true, Version: s.opts.Version}
+	realm := s.activeRealm(r.Context())
+	response := healthResponse{
+		OK: true, Version: s.opts.Version, Realm: realm,
+		CryptoOK:             s.cryptoAvailable(),
+		AccountsByRealm:      map[string]int{},
+		AccountsReadyByRealm: map[string]int{},
+		ModelsReady:          map[string]any{},
+		APIKeyRequired:       s.authRequired(),
+		CodeArts:             map[string]any{"configured": false, "ok": false},
+		Raccoon:              map[string]any{"configured": false, "ok": false},
+		Media:                s.mediaHealth(),
+		UID:                  nil, Domain: nil, Issuer: nil,
+		CredentialFile: nil, ExpiresAt: nil,
+	}
 	if len(s.providers) > 0 {
 		response.Providers = make(map[string]any, len(s.providers))
 		force := queryBool(r, "force")
 		for _, provider := range s.providers {
-			realm := providerRealm(provider)
+			realmName := providerRealm(provider)
 			health, err := provider.Health(r.Context(), force)
 			if err != nil {
 				// A provider failure must not turn /health red or leak the
 				// provider's internal error (which may contain local paths).
-				response.Providers[realm] = map[string]any{"ok": false}
+				response.Providers[realmName] = map[string]any{"ok": false}
 				continue
 			}
 			if health == nil {
 				health = providers.Health{"ok": true}
 			}
-			response.Providers[realm] = health
+			response.Providers[realmName] = health
+			switch realmName {
+			case "codearts":
+				response.CodeArts = copyHealth(health)
+			case "raccoon":
+				response.Raccoon = copyHealth(health)
+			case "intl", "cn":
+				// v1's pool readiness only covers the WorkBuddy pool.
+				accounts := healthInt(health["accounts"])
+				ready := healthInt(health["healthy"])
+				response.Accounts += accounts
+				response.AccountsReady += ready
+				if accounts > 0 {
+					response.AccountsByRealm[realmName] = accounts
+					response.AccountsReadyByRealm[realmName] = ready
+				}
+				if realmName == realm {
+					response.AccountsReadyCurrentRealm = ready
+				}
+			}
 		}
 	}
 	writeJSONResponse(w, http.StatusOK, response)
+}
+
+func copyHealth(value providers.Health) map[string]any {
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
+}
+
+func healthInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		number, _ := typed.Int64()
+		return int(number)
+	default:
+		return 0
+	}
+}
+
+func (s *Server) activeRealm(ctx context.Context) string {
+	if s != nil && s.realm != nil {
+		if realm := strings.TrimSpace(s.realm.Active(ctx)); realm != "" {
+			return realm
+		}
+	}
+	return "intl"
+}
+
+func (s *Server) globalKeySet() bool {
+	return s != nil && strings.TrimSpace(s.opts.StaticAPIKey) != ""
+}
+
+func (s *Server) authRequired() bool {
+	if s == nil {
+		return false
+	}
+	if s.keyStore != nil {
+		return s.keyStore.AuthRequired()
+	}
+	return s.globalKeySet()
+}
+
+func (s *Server) cryptoAvailable() bool {
+	if s == nil || s.password == nil {
+		return true
+	}
+	ok, _ := s.password.CryptoAvailable()
+	return ok
+}
+
+func (s *Server) mediaHealth() map[string]any {
+	cfg := media.DefaultConfig()
+	slots := 4
+	inflight := 0
+	if s != nil && s.opts.Media != nil {
+		cfg = s.opts.Media.Config()
+		slots = s.opts.Media.Slots()
+		inflight = s.opts.Media.Inflight()
+	}
+	return map[string]any{
+		"enabled": cfg.Enabled, "realm": cfg.Realm, "identity": cfg.Identity,
+		"slots": slots, "inflight": inflight,
+		"video_concurrency": cfg.VideoConcurrency,
+	}
 }
 
 // recoveryHandler turns a panic into a 500 error envelope when no response has

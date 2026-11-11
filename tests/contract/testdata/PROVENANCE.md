@@ -38,10 +38,10 @@ Dynamic values are explicit placeholders: `base_url`, per-second
 peak and off-peak rates differ (`DeepSeek-V4.1-Flash` and
 `DeepSeek-V4.1-Flash-1017`), timestamps, and generated IDs. See
 `tests/oracle/codearts.md` for the read-only v1.6.5 oracle procedure. The
-recorded selected CodeArts cases match on models, chat, accounts, overview,
-check-in, and credits refresh except for the documented v1-only `catalog` and
-`elapsed_ms`/`first_chunk_at` fields and two additive v2 fields. Full oracle
-replacement of every CodeArts regression fixture remains **pending**; the
+recorded selected CodeArts cases now match on models (including the v1
+`catalog` block), chat (including `elapsed_ms`/`first_chunk_at`), accounts,
+overview, check-in, and credits refresh except for two additive v2 fields. Full
+oracle replacement of every CodeArts regression fixture remains **pending**; the
 goldens lock down v2's scoped semantics and must be reviewed before being
 replaced by recorded oracle assertions.
 
@@ -101,5 +101,6 @@ Intentional v2 deviations/exclusions (do not encode as v1 output):
   slot-management route is outside the v2 CodeArts surface; v2 therefore keeps
   a missing/disabled slot binding on disk and resolves it to direct, exactly
   like v1's `apply_proxy_slots`.
-- **v1-only chat/model fields:** `elapsed_ms`, `first_chunk_at`, and the models
-  `catalog` block remain out of the v2 foundation contract.
+- **v1 chat/model fields now emitted:** `elapsed_ms`, `first_chunk_at`, and the
+  models `catalog` block are part of the v2 contract; `elapsed_ms` normalizes
+  to `<duration>` because it is a variable wall-clock measurement.

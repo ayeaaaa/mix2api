@@ -1,1 +1,1 @@
-{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"cn-ok","role":"assistant"}}],"created":1700000000,"id":"chatcmpl-contract","model":"hy4-preview","object":"chat.completion","usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5}}
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"cn-ok","role":"assistant"}}],"created":1700000000,"id":"chatcmpl-contract","model":"hy4-preview","object":"chat.completion","usage":{"completion_tokens":2,"prompt_tokens":3,"total_tokens":5},"elapsed_ms":"<duration>","first_chunk_at":"<timestamp>"}

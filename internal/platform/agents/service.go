@@ -80,7 +80,28 @@ func (s *Service) Overview(ctx context.Context) map[string]any {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
+		ordered := make([]string, 0, len(keys))
+		for _, key := range client.PathOrder {
+			for _, candidate := range keys {
+				if candidate == key {
+					ordered = append(ordered, candidate)
+					break
+				}
+			}
+		}
 		for _, key := range keys {
+			present := false
+			for _, chosen := range ordered {
+				if chosen == key {
+					present = true
+					break
+				}
+			}
+			if !present {
+				ordered = append(ordered, key)
+			}
+		}
+		for _, key := range ordered {
 			path := paths[key]
 			pathList = append(pathList, path)
 			if _, err := os.Stat(path); err == nil {
