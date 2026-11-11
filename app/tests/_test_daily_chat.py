@@ -180,12 +180,24 @@ class WebChannelTests(unittest.TestCase):
         self.assertEqual(headers.get("authorization"), "Bearer dummy-token")
         self.assertEqual(headers.get("x-user-id"), self.UID)
         self.assertEqual(headers.get("origin"), "https://www.workbuddy.ai")
+        self.assertEqual(headers.get("accept"), "application/json")
+        self.assertRegex(headers.get("x-request-id") or "", r"^[0-9a-f]{32}$")
         self.assertFalse([k for k in headers if k.startswith("x-ide")],
                          "the web channel must not carry desktop identity headers")
         body = json.loads(req.data.decode("utf-8"))
         self.assertTrue(body.get("prompt"))
         self.assertEqual(body.get("model"), wb_accounts.DAILY_CHAT_MODEL)
-        self.assertEqual(body.get("conversationOrigin"), "workbuddy-app")
+        self.assertEqual(body.get("conversationOrigin"), "agents")
+        self.assertEqual(body.get("addonSelection"),
+                         {"version": 1, "welcomeMode": "working",
+                          "interactionMode": "craft"})
+        self.assertEqual([p.get("name") for p in body.get("plugins") or []],
+                         ["welcomemode-work", "interactionmode-craft",
+                          "prompt-common"])
+        extra = body.get("extraInfo") or {}
+        self.assertTrue(str(extra.get("clientCreateRequestId") or "")
+                        .startswith("cloud-create-"))
+        self.assertRegex(str(extra.get("traceId") or ""), r"^[0-9a-f]{32}$")
         # 建会话之后必须接沙箱、把这一轮跑起来，否则会话永远停在 CREATING。
         self.assertTrue(any(r.full_url.endswith("/session") for r in calls),
                         [r.full_url for r in calls])
