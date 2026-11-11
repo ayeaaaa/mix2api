@@ -139,6 +139,9 @@ func run(direction string, opts Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	if err := rejectSymlinkParents(receiptPath, "receipt"); err != nil {
+		return Summary{}, err
+	}
 	realReceipt, err := canonicalPath(receiptPath)
 	if err != nil {
 		return Summary{}, err
@@ -348,10 +351,48 @@ func cleanDestination(value string) (string, error) {
 	if absolute == string(filepath.Separator) || absolute == "." {
 		return "", errors.New("migrate: refusing filesystem root as destination")
 	}
+	if err := rejectSymlinkParents(absolute, "destination"); err != nil {
+		return "", err
+	}
 	if info, err := os.Lstat(absolute); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("migrate: destination must not be a symlink")
 	}
 	return absolute, nil
+}
+
+// rejectSymlinkParents walks every existing component of path without
+// following it. canonicalPath() alone is insufficient: it resolves the real
+// target for overlap checks, but a destination such as /tmp/link/data would
+// still be created through the symlink. Fail closed instead.
+func rejectSymlinkParents(path, label string) error {
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	rest := strings.TrimPrefix(clean, volume)
+	current := volume + string(filepath.Separator)
+	if volume == "" {
+		current = string(filepath.Separator)
+	}
+	for _, part := range strings.Split(strings.Trim(rest, string(filepath.Separator)), string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			// Nothing below a missing component can exist as a symlink.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("migrate: resolve %s %s: %w", label, clean, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migrate: %s path component %s is a symlink", label, current)
+		}
+		if current != clean && !info.IsDir() {
+			return fmt.Errorf("migrate: %s parent %s is not a directory", label, current)
+		}
+	}
+	return nil
 }
 
 // canonicalPath resolves symlinks in the existing prefix of path. The final
@@ -641,7 +682,13 @@ func countDirs(path string) int {
 	return count
 }
 
-const lockStaleAfter = 24 * time.Hour
+const (
+	lockStaleAfter = 24 * time.Hour
+	// An empty or truncated lock is briefly considered live. acquireLock
+	// creates the file before writing its PID/timestamp, so reclaiming it
+	// immediately would let a second migration race the first one.
+	lockWriteGrace = time.Minute
+)
 
 func acquireLock(path string, now time.Time) (*os.File, error) {
 	for attempt := 0; attempt < 2; attempt++ {
@@ -663,6 +710,13 @@ func acquireLock(path string, now time.Time) (*os.File, error) {
 }
 
 func staleLock(path string, now time.Time) bool {
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -674,7 +728,10 @@ func staleLock(path string, now time.Time) bool {
 		}
 	}
 	if started.IsZero() {
-		return true
+		// Empty, truncated, or hand-edited: use the file timestamp so a
+		// crash during lock creation is recoverable without the full
+		// 24-hour wait, while an in-progress writer keeps its grace period.
+		return now.Sub(info.ModTime()) > lockWriteGrace
 	}
 	return now.Sub(started) > lockStaleAfter
 }

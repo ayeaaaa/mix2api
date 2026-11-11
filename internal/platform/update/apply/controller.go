@@ -57,6 +57,7 @@ func (c *CommandController) run(ctx context.Context, spec CommandSpec, request u
 	defer cancel()
 	program, args := commandProgram(spec, runtime.GOOS)
 	command := exec.CommandContext(runCtx, program, args...)
+	configureBatchCommand(command, spec)
 	command.Dir = request.Root
 	command.Env = append(baseEnv(), "MIX2API_UPDATE_PHASE="+phase,
 		fmt.Sprintf("MIX2API_UPDATE_PORT=%d", request.Port),
@@ -86,11 +87,31 @@ func commandProgram(spec CommandSpec, goos string) (string, []string) {
 	if goos == "windows" {
 		switch strings.ToLower(filepath.Ext(spec.Path)) {
 		case ".cmd", ".bat":
-			args := []string{"/d", "/s", "/c", spec.Path}
-			return "cmd.exe", append(args, spec.Args...)
+			// The whole command is one argument here; Windows uses
+			// batchCommandLine through SysProcAttr so Go's argv quoting cannot
+			// split a path containing spaces.
+			return "cmd.exe", []string{"/d", "/s", "/c", batchCommandLine(spec)}
 		}
 	}
 	return spec.Path, append([]string(nil), spec.Args...)
+}
+
+// batchCommandLine builds the canonical cmd.exe command line. cmd /s strips
+// the outer pair of quotes, leaving each path/argument quoted exactly once:
+//
+//	cmd.exe /d /s /c ""C:\Program Files\mix2api\restart.cmd" "--fast""
+func batchCommandLine(spec CommandSpec) string {
+	parts := []string{quoteCmdArgument(spec.Path)}
+	for _, arg := range spec.Args {
+		parts = append(parts, quoteCmdArgument(arg))
+	}
+	return `cmd.exe /d /s /c "` + strings.Join(parts, " ") + `"`
+}
+
+func quoteCmdArgument(value string) string {
+	// Windows paths cannot contain a quote, but fixed operator args may; cmd
+	// represents an embedded quote by doubling it.
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func baseEnv() []string {

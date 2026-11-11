@@ -1,7 +1,8 @@
 // Package web serves the embedded v1.6.5 dashboard and its static aliases.
-// The asset is copied byte-for-byte from the v1 release and never rewritten by
-// a build step; this package deliberately imports no provider or platform code
-// so the static surface cannot grow a management dependency.
+// The asset is copied from the v1 release with exactly two repository-link
+// replacements (ayeaaaa/mix2api -> ayeaaaa/mix2api-v2); no build step rewrites
+// it. This package deliberately imports no provider or platform code so the
+// static surface cannot grow a management dependency.
 package web
 
 import (
@@ -14,15 +15,21 @@ import (
 	"sync"
 )
 
-// The shipped dashboard. Keep this file byte-identical to v1.6.5; the contract
-// test pins its SHA-256.
+// The shipped dashboard. It is byte-identical to v1.6.5 except for the two
+// repository links documented in tests/oracle/dashboard.md; the contract test
+// pins its SHA-256.
 //
 //go:embed dashboard.html
 var dashboardHTML []byte
 
 // DashboardSHA256 is the lowercase hex digest of the embedded dashboard. It is
 // recorded in tests/oracle/dashboard.md and checked by the contract test.
-const DashboardSHA256 = "70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793"
+const DashboardSHA256 = "2f6be04886285f34af7d739e3f37d06e64d8ea5f60d77f7f2a431394c18522df"
+
+// DashboardV1SHA256 is the original v1.6.5 digest before the repository-link
+// correction. Keeping both hashes makes the single provenance exception
+// auditable.
+const DashboardV1SHA256 = "70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793"
 
 var (
 	etagOnce sync.Once

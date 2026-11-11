@@ -41,19 +41,31 @@ smoke, and CI workflow dry-run are still pending; see `docs/gate-f.md`.
 
 - Update journal now records original hashes, existence, old paths, and
   completion state before and after each rename; recovery reconstructs the
-  `.mix2api-old` sibling, verifies the restored original, and keeps the journal
-  on mismatch.
+  `.mix2api-old` sibling, including the exact original schema that omitted
+  `old_path`/`existed`, persists verified progress per entry, and keeps the
+  journal on mismatch.
 - Final `2.0.0` is offered over a running `2.0.0-rc.N`; rollback to a retained
   RC backup is supported.
+- ARMv7 GOARM spellings (`7`/`v7`/`armv7`) are compared as one family during
+  update extraction, not only in the release helper.
+- Migration rejects symlinked destination and receipt parents, treats fresh
+  empty/truncated locks as live for a grace period, and keeps dry runs free of
+  destination, lock, and receipt writes.
 - Migration rejects symlink/real-path overlap, reclaims stale locks, stages the
   receipt before publishing, and leaves no destination when receipt staging
   fails.
 - Rollback to a manifest-less version removes the newer manifest and
   synthesizes one when the backup version is known.
-- Windows `.cmd`/`.bat` update hooks run through `cmd.exe /d /s /c`; `.exe`
-  hooks run directly.
+- Windows `.cmd`/`.bat` update hooks run through `cmd.exe /d /s /c` with the
+  canonical quoted batch command line, so hook paths containing spaces stay
+  intact; `.exe` hooks run directly.
 - Release identity is unified on `ayeaaaa/mix2api-v2` for GitHub releases,
-  GHCR, compose, and the updater. ARMv7 GOARM is propagated and validated.
+  GHCR, compose, and the updater. The embedded dashboard's two repository links
+  now follow it; the v1 hash is retained beside the documented v2 digest.
+- The release workflow rejects `v`-prefixed, leading-zero, build-metadata, or
+  otherwise non-strict version inputs before building.
+- `SOURCE_DATE_EPOCH` now fixes archive entry timestamps as documented, and an
+  invalid value fails the build instead of silently choosing 1980.
 - OpenWrt packages carry the target `PKGARCH`, append env vars through procd,
   and install the UCI config as `0600`.
 - `SHA256SUMS` now covers the SBOM and release metadata in addition to every

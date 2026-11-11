@@ -37,4 +37,7 @@ func TestUpdateRecoverNoJournalIsIdle(t *testing.T) {
 	if !strings.Contains(out.String(), `"state":"idle"`) || !strings.Contains(out.String(), "没有中断的更新") {
 		t.Fatalf("output = %q", out.String())
 	}
+	if strings.Contains(out.String(), `"state":"restored"`) || strings.Contains(out.String(), "已恢复") {
+		t.Fatalf("no-journal recovery reported restored: %q", out.String())
+	}
 }

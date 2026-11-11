@@ -7,15 +7,17 @@
 ```sh
 tar -xzf mix2api-2.0.0-rc.1-linux-amd64.tar.gz
 cd mix2api-2.0.0-rc.1-linux-amd64
-sudo install -d -m 0750 /srv/mix2api
-sudo install -m 0755 mix2api /srv/mix2api/mix2api
-sudo install -m 0644 LICENSE README.md release-manifest.json /srv/mix2api/
-sudo install -d -m 0700 /srv/mix2api/accounts /srv/mix2api/usage /srv/mix2api/media
+sudo useradd --system --home-dir /srv/mix2api --shell /usr/sbin/nologin mix2api
+sudo install -d -o mix2api -g mix2api -m 0750 /srv/mix2api
+sudo install -o mix2api -g mix2api -m 0755 mix2api /srv/mix2api/mix2api
+sudo install -o mix2api -g mix2api -m 0644 LICENSE README.md release-manifest.json mix2api.service /srv/mix2api/
+sudo install -d -o mix2api -g mix2api -m 0700 /srv/mix2api/accounts /srv/mix2api/usage /srv/mix2api/media
 ```
 
-Set `PANEL_PASSWORD` and `MIX2API_API_KEY` in `/etc/mix2api/env` (mode 0600).
-A non-loopback `HOST` refuses to start without both. A hardened unit is
-provided at `packaging/systemd/mix2api.service`:
+Set `PANEL_PASSWORD` and `MIX2API_API_KEY` in `/etc/mix2api/env` (mode 0600,
+readable only by root; systemd reads it before dropping privileges). A
+non-loopback `HOST` refuses to start without both. A hardened unit is provided
+at `packaging/systemd/mix2api.service`:
 
 ```sh
 sudo install -m 0644 packaging/systemd/mix2api.service /etc/systemd/system/mix2api.service
@@ -23,10 +25,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now mix2api
 ```
 
-The unit runs as `mix2api`, keeps `/usr/local/bin` read-only, and only permits
-writes under `/var/lib/mix2api`. For the privileged update executor, run
-`mix2api update run` as the owner of the install directory, not through the
-gateway unit.
+The unit runs the binary and all data from `/srv/mix2api` as the `mix2api`
+user, keeps the rest of the filesystem read-only, and only permits writes under
+`/srv/mix2api`. For the privileged update executor, run `mix2api update run` as
+`mix2api` (the owner of the install directory), not through the gateway unit.
+If the update hook needs `systemctl`, grant that command through a reviewed
+wrapper or run the executor from a root-owned path unit.
 
 ### Docker
 

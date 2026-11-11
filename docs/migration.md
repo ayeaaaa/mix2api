@@ -10,7 +10,9 @@ directory remain untouched.
   by the source snapshot check and aborts the migration, but stopping first is
   still required for a consistent copy.
 - Use a dedicated destination that does not already contain data.
-- The destination's parent directory must exist and be writable.
+- The destination's parent directory must exist, be writable, and must not be
+  reached through a symlink; migration rejects symlinked destination or
+  receipt parents instead of writing through them.
 - Run with enough free space for the whole data tree.
 
 ## Migrate
@@ -33,14 +35,19 @@ The command validates every file it copies:
 - account/state/settings/usage/media/agent/update/pricing files are copied with
   their permissions and checked against a source SHA-256 snapshot.
 
-A destination lock (`<to>.migration.lock`) prevents concurrent copies. The
-copy is assembled in `<to>.partial-*` and published with one rename only after
-the destination passes the same validation. Failures leave no destination and
-no staging directory.
+A destination lock (`<to>.migration.lock`) prevents concurrent copies. A lock
+that is recent and valid blocks the copy; a lock older than 24 hours is
+reclaimed. Empty or truncated locks are treated as live for one minute (the
+window between create and the fsynced PID write) before their mtime makes them
+reclaimable. The copy is assembled in `<to>.partial-*` and published with one
+rename only after the destination passes the same validation. Failures leave no
+destination and no staging directory.
 
 The receipt (`<to>.migration.json`, mode `0600`) lists every file, its sha256,
-mode, and size. Store it with the migration record; it is outside the data
-directory, so v1 and v2 never see it.
+mode, and size. It is staged before the destination is published. A dry run
+validates and prints the same summary but writes neither the destination, lock,
+nor receipt. Store the receipt with the migration record; it is outside the
+data directory, so v1 and v2 never see it.
 
 ## Start v2
 

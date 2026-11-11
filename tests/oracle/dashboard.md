@@ -1,10 +1,11 @@
 # Dashboard oracle (Gate E)
 
-The v2 binary serves the shipped v1.6.5 dashboard unchanged. This document
-records the asset provenance, the static contract, the API inventory the page
-uses, and the Gate E checks. The original repository
-`/root/opencode/mix2api` is read-only; the copy below is the only committed
-asset.
+The v2 binary serves the shipped v1.6.5 dashboard with one documented
+exception: both repository links now point at `ayeaaaa/mix2api-v2`. This
+document records the asset provenance, that single byte-level exception, the
+static contract, the API inventory the page uses, and the Gate E checks. The
+original repository `/root/opencode/mix2api` is read-only; the copy below is
+the only committed asset.
 
 ## Asset provenance
 
@@ -13,15 +14,20 @@ asset.
 | v1 release | `mix2api 1.6.5` |
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
-| Size | 1,284,387 bytes |
-| SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
+| v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
+| v2 SHA-256 | `2f6be04886285f34af7d739e3f37d06e64d8ea5f60d77f7f2a431394c18522df` |
+| v1 size | 1,284,387 bytes |
+| v2 size | 1,284,393 bytes |
+| Delta | two replacements of `https://github.com/ayeaaaa/mix2api` with `https://github.com/ayeaaaa/mix2api-v2` (+3 bytes each) |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
-`internal/web/assets.go` exposes the same digest as
-`web.DashboardSHA256`; `internal/web/assets_test.go`,
-`tests/dashboard/contract_test.go`, and the JS harness input all re-check it.
-The asset is never generated or rewritten by a build step.
+`internal/web/assets.go` exposes `web.DashboardSHA256` and the original
+`web.DashboardV1SHA256`; `internal/web/assets_test.go`,
+`tests/dashboard/contract_test.go`, and the JS harness input all re-check the
+served digest. The repository-link correction is the only permitted divergence
+from v1.6.5. Any other change must fail review: the v1 hash is kept beside the
+v2 hash so an accidental larger rewrite cannot masquerade as provenance.
 
 ## Static contract
 
@@ -45,8 +51,9 @@ responses are same-origin and deliberately carry no
 The v1 server substituted the instance `ui_language` into the
 `data-ui-language` placeholder. v2 serves the embedded bytes exactly as shipped;
 the page's own settings load still drives the language selector, and the
-placeholder is the documented zh default for the first paint. Changing the
-asset in place would break the byte-fidelity contract above.
+placeholder is the documented zh default for the first paint. Patches beyond the
+documented repository-link correction would break the provenance contract
+above.
 
 ## Dashboard API inventory
 
@@ -109,8 +116,10 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 
 ## Gate E checklist
 
-- [x] Dashboard SHA-256 matches v1.6.5
-      (`70aa3ddf...e0a96793`); HTML is embedded, not generated.
+- [x] Dashboard SHA-256 matches the documented v2 digest
+      (`2f6be048...c18522df`) and the v1 digest is retained as provenance
+      (`70aa3ddf...e0a96793`); the only delta is two repository links. HTML is
+      embedded, not generated.
 - [x] `/`, `/dashboard.html`, and the v1 aliases serve identical bytes with
       `text/html`, `no-cache`, strong `ETag`/`304`, and no CORS.
 - [x] Every dashboard `fetch`/`getJSON`/`postJSON` path has a registered route;

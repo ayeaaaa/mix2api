@@ -185,3 +185,57 @@ func TestLoadRejectsIncompleteProvenanceAndUnsafeCasePaths(t *testing.T) {
 		t.Fatal("unsafe fixture filename accepted")
 	}
 }
+
+func TestProvenanceAndCaseValidationMatrix(t *testing.T) {
+	valid := Provenance{
+		TargetVersion: "1.6.5", TargetCommit: "e40c4e8", FakeUpstream: true,
+		Network: "loopback-only", RecordedAt: "2026-11-08T00:00:00Z",
+		BaseURL: "http://127.0.0.1:18765",
+	}
+	if err := validateProvenance(valid); err != nil {
+		t.Fatalf("valid provenance rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Provenance){
+		"missing version":      func(p *Provenance) { p.TargetVersion = " " },
+		"missing commit":       func(p *Provenance) { p.TargetCommit = "" },
+		"real upstream":        func(p *Provenance) { p.FakeUpstream = false },
+		"network case":         func(p *Provenance) { p.Network = "Loopback-Only" },
+		"network whitespace":   func(p *Provenance) { p.Network = "loopback-only " },
+		"recorded at not time": func(p *Provenance) { p.RecordedAt = "yesterday" },
+		"remote base url":      func(p *Provenance) { p.BaseURL = "https://github.com" },
+		"file base url":        func(p *Provenance) { p.BaseURL = "file:///tmp/oracle" },
+		"empty base url":       func(p *Provenance) { p.BaseURL = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := validateProvenance(candidate); err == nil {
+				t.Fatalf("invalid provenance accepted: %#v", candidate)
+			}
+		})
+	}
+
+	hash := strings.Repeat("a", 64)
+	for name, item := range map[string]Case{
+		"bad method":  {Name: "one", Method: "", Path: "/x", Kind: "json", Status: 200, File: "x.json", SHA256: hash},
+		"relative":    {Name: "one", Method: "GET", Path: "x", Kind: "json", Status: 200, File: "x.json", SHA256: hash},
+		"url path":    {Name: "one", Method: "GET", Path: "http://evil", Kind: "json", Status: 200, File: "x.json", SHA256: hash},
+		"kind case":   {Name: "one", Method: "GET", Path: "/x", Kind: "JSON", Status: 200, File: "x.json", SHA256: hash},
+		"status zero": {Name: "one", Method: "GET", Path: "/x", Kind: "json", Status: 0, File: "x.json", SHA256: hash},
+		"no name":     {Name: "", Method: "GET", Path: "/x", Kind: "json", Status: 200, File: "x.json", SHA256: hash},
+		"upper hash":  {Name: "one", Method: "GET", Path: "/x", Kind: "json", Status: 200, File: "x.json", SHA256: strings.Repeat("A", 64)},
+	} {
+		t.Run("case "+name, func(t *testing.T) {
+			if err := validateCases([]Case{item}); err == nil {
+				t.Fatalf("invalid case accepted: %#v", item)
+			}
+		})
+	}
+	duplicate := []Case{
+		{Name: "dup", Method: "GET", Path: "/x", Kind: "json", Status: 200, File: "x.json", SHA256: hash},
+		{Name: "dup", Method: "GET", Path: "/y", Kind: "json", Status: 200, File: "y.json", SHA256: hash},
+	}
+	if err := validateCases(duplicate); err == nil {
+		t.Fatal("duplicate case names accepted")
+	}
+}

@@ -57,6 +57,10 @@ jobs:
             echo "checked-out $actual != requested ${{ inputs.commit }}" >&2
             exit 1
           }
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: ./scripts/validate-release-version.sh "$VERSION"
       - name: Format, vet, tests
         run: make check
       - name: Race tests

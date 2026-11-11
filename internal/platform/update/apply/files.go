@@ -315,7 +315,9 @@ func (a *Applier) pruneBackups() {
 	}
 	complete := make([]*backupRecord, 0, len(records))
 	for _, record := range records {
-		if record.Complete {
+		// Unknown/0.0.0 backups are diagnostic artifacts, not rollback
+		// targets, so they must not count against the retained release set.
+		if record.Complete && releaseVersion(record.Version) {
 			complete = append(complete, record)
 		}
 	}
@@ -338,6 +340,10 @@ type journalEntry struct {
 	NewSHA256      string `json:"new_sha256,omitempty"`
 	NewSize        int64  `json:"new_size,omitempty"`
 	Complete       bool   `json:"complete"`
+	// Restored marks one entry whose original state has been re-established
+	// and verified. Recovery persists the journal after every entry so a crash
+	// during recovery resumes instead of replaying already-restored files.
+	Restored bool `json:"restored,omitempty"`
 }
 
 type transactionJournal struct {
@@ -394,6 +400,7 @@ func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup 
 			if err := os.Rename(entry.Target, entry.OldPath); err != nil {
 				return a.abortApply(journal, err)
 			}
+			_ = syncDir(filepath.Dir(entry.Target))
 			// Persist the rename before writing the replacement so a crash
 			// between these steps can always reconstruct the original.
 			if err := a.writeJournal(journal); err != nil {
@@ -414,6 +421,7 @@ func (a *Applier) applyFiles(stageRoot string, files []corerelease.File, backup 
 			_ = os.Remove(temp)
 			return a.abortApply(journal, err)
 		}
+		_ = syncDir(filepath.Dir(entry.Target))
 		entry.Complete = true
 		if err := a.writeJournal(journal); err != nil {
 			return a.abortApply(journal, err)
@@ -521,73 +529,141 @@ func (a *Applier) writeJournal(journal *transactionJournal) error {
 func (a *Applier) restoreJournal(journal *transactionJournal) error {
 	var firstErr error
 	for index := len(journal.Entries) - 1; index >= 0; index-- {
-		entry := journal.Entries[index]
-		// Reconstruct state from the journal and the .mix2api-old sibling.
-		// Older journals wrote Existed=false, so the sibling is authoritative
-		// evidence that the original was moved before a crash.
-		oldExists := false
-		if entry.OldPath != "" {
-			if _, err := os.Lstat(entry.OldPath); err == nil {
-				oldExists = true
-			}
-		}
-		existed := entry.Existed || oldExists
-		if existed {
-			if oldExists {
-				if info, err := os.Lstat(entry.Target); err == nil {
-					if info.Mode().IsRegular() {
-						if err := os.Remove(entry.Target); err != nil && firstErr == nil {
-							firstErr = err
-						}
-					} else if firstErr == nil {
-						firstErr = fmt.Errorf("apply: recovery target %s is not a regular file", entry.Path)
-					}
-				}
-				if err := os.Rename(entry.OldPath, entry.Target); err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					continue
-				}
-				_ = syncDir(filepath.Dir(entry.Target))
-			}
-			if entry.OriginalSHA256 != "" {
-				sum, size, err := corerelease.FileSHA256(entry.Target)
-				if err != nil || !strings.EqualFold(sum, entry.OriginalSHA256) || (entry.OriginalSize != 0 && size != entry.OriginalSize) {
-					if firstErr == nil {
-						firstErr = fmt.Errorf("apply: recovered file %s does not match its original checksum", entry.Path)
-					}
-				}
+		entry := &journal.Entries[index]
+		if entry.Restored {
+			if err := verifyRestoredJournalEntry(*entry); err != nil && firstErr == nil {
+				firstErr = err
 			}
 			continue
 		}
-		// A file that did not exist before is removed only when the current
-		// target is the exact file this transaction wrote. An untouched
-		// directory (or unrelated file) at the same path must survive.
-		info, err := os.Lstat(entry.Target)
-		if err != nil {
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		if entry.NewSHA256 != "" {
-			sum, _, hashErr := corerelease.FileSHA256(entry.Target)
-			if hashErr != nil || !strings.EqualFold(sum, entry.NewSHA256) {
-				continue
+		if err := a.restoreJournalEntry(entry); err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
+			continue
 		}
-		if err := os.Remove(entry.Target); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
-			firstErr = err
+		// Persist progress per entry. A crash after this write skips the
+		// entry above, so recovery never mistakes an already-restored file
+		// for a file the abandoned transaction introduced.
+		entry.Restored = true
+		if err := a.writeJournal(journal); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
-	}
-	for _, entry := range journal.Entries {
-		_ = os.Remove(entry.Target + ".mix2api-new")
+		_ = syncDir(filepath.Dir(entry.Target))
 	}
 	if firstErr == nil {
 		_ = syncDir(a.root)
 	}
 	return firstErr
+}
+
+// journalOldPath returns the sibling used by this entry. Journals written
+// before OldPath was persisted (the original schema) omitted both OldPath and
+// Existed, so Target+".mix2api-old" is the only evidence that the previous
+// file was moved before the crash.
+func journalOldPath(entry journalEntry) string {
+	if strings.TrimSpace(entry.OldPath) != "" {
+		return entry.OldPath
+	}
+	if strings.TrimSpace(entry.Target) != "" {
+		return entry.Target + ".mix2api-old"
+	}
+	return ""
+}
+
+func (a *Applier) restoreJournalEntry(entry *journalEntry) error {
+	oldPath := journalOldPath(*entry)
+	oldExists := false
+	if oldPath != "" {
+		if info, err := os.Lstat(oldPath); err == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("apply: recovery sibling %s is not a regular file", oldPath)
+			}
+			oldExists = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	existed := entry.Existed || oldExists
+	if existed {
+		if oldExists {
+			entry.Existed = true
+			if info, err := os.Lstat(entry.Target); err == nil {
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("apply: recovery target %s is not a regular file", entry.Path)
+				}
+				if err := os.Remove(entry.Target); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if err := os.Rename(oldPath, entry.Target); err != nil {
+				return err
+			}
+			_ = syncDir(filepath.Dir(entry.Target))
+		}
+		_ = os.Remove(entry.Target + ".mix2api-new")
+		return verifyRestoredJournalEntry(*entry)
+	}
+	// A file that did not exist before is removed only when the current
+	// target is the exact file this transaction wrote. An untouched
+	// directory (or unrelated file) at the same path must survive.
+	info, err := os.Lstat(entry.Target)
+	if errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(entry.Target + ".mix2api-new")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if entry.NewSHA256 != "" {
+		sum, _, hashErr := corerelease.FileSHA256(entry.Target)
+		if hashErr != nil {
+			return hashErr
+		}
+		if !strings.EqualFold(sum, entry.NewSHA256) {
+			return nil
+		}
+	}
+	if err := os.Remove(entry.Target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = os.Remove(entry.Target + ".mix2api-new")
+	return nil
+}
+
+// verifyRestoredJournalEntry checks the state a finished recovery must leave:
+// the original content when the journal recorded a hash, or at least a regular
+// file when it predates hashes.
+func verifyRestoredJournalEntry(entry journalEntry) error {
+	if !entry.Existed {
+		return nil
+	}
+	info, err := os.Lstat(entry.Target)
+	if err != nil {
+		return fmt.Errorf("apply: recovered file %s is missing: %w", entry.Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("apply: recovered file %s is not a regular file", entry.Path)
+	}
+	if entry.OriginalSHA256 == "" {
+		return nil
+	}
+	sum, size, err := corerelease.FileSHA256(entry.Target)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(sum, entry.OriginalSHA256) || (entry.OriginalSize != 0 && size != entry.OriginalSize) {
+		return fmt.Errorf("apply: recovered file %s does not match its original checksum", entry.Path)
+	}
+	return nil
 }
 
 func (a *Applier) removeJournal() error {

@@ -143,14 +143,15 @@ func TestMigrateCopiesEverythingAndPreservesUnknownKeys(t *testing.T) {
 func TestDryRunWritesNothing(t *testing.T) {
 	root := fixtureRoot(t)
 	dest := filepath.Join(t.TempDir(), "out")
-	summary, err := Migrate(Options{From: root, To: dest, DryRun: true})
+	receipt := filepath.Join(t.TempDir(), "dry-run-receipt.json")
+	summary, err := Migrate(Options{From: root, To: dest, Receipt: receipt, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !summary.DryRun || summary.Files == 0 {
 		t.Fatalf("summary = %#v", summary)
 	}
-	for _, path := range []string{dest, dest + ".migration.json", dest + lockSuffix} {
+	for _, path := range []string{dest, receipt, dest + lockSuffix} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("dry run created %s: %v", path, err)
 		}
@@ -257,6 +258,33 @@ func TestLockConflictAndStaleLockCleanup(t *testing.T) {
 	}
 }
 
+func TestEmptyAndMalformedLocksUseGracePeriod(t *testing.T) {
+	root := fixtureRoot(t)
+	now := time.Now().UTC()
+	for name, contents := range map[string]string{
+		"empty":     "",
+		"truncated": "pid=1\nstarted=",
+		"garbage":   "not-a-lock\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "out")
+			lockPath := dest + lockSuffix
+			if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Migrate(Options{From: root, To: dest, Now: func() time.Time { return now }}); err == nil {
+				t.Fatal("fresh empty/malformed lock was reclaimed")
+			}
+			if err := os.Chtimes(lockPath, now.Add(-48*time.Hour), now.Add(-48*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Migrate(Options{From: root, To: dest, Now: func() time.Time { return now }}); err != nil {
+				t.Fatalf("stale %s lock was not reclaimed: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestAccountsOnlyMigration(t *testing.T) {
 	root := fixtureRoot(t)
 	accounts := filepath.Join(root, "accounts")
@@ -346,6 +374,29 @@ func TestSymlinkOverlapIsRejected(t *testing.T) {
 	}
 	if _, err := Migrate(Options{From: root, To: destLink}); err == nil {
 		t.Fatal("symlinked destination accepted")
+	}
+}
+
+func TestSymlinkedDestinationParentIsRejected(t *testing.T) {
+	root := fixtureRoot(t)
+	realParent := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "parent-link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	dest := filepath.Join(linkParent, "data")
+	if _, err := Migrate(Options{From: root, To: dest}); err == nil {
+		t.Fatal("destination through a symlinked parent accepted")
+	}
+	if _, err := os.Stat(filepath.Join(realParent, "data")); !os.IsNotExist(err) {
+		t.Fatalf("migration wrote through the symlink: %v", err)
+	}
+	receipt := filepath.Join(linkParent, "receipt.json")
+	if _, err := Migrate(Options{From: root, To: filepath.Join(t.TempDir(), "out"), Receipt: receipt}); err == nil {
+		t.Fatal("receipt through a symlinked parent accepted")
+	}
+	if _, err := os.Stat(filepath.Join(realParent, "receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("receipt written through the symlink: %v", err)
 	}
 }
 

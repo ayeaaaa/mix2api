@@ -14,7 +14,7 @@ requires a manual run.
 | Reproducible binary for fixed metadata | PASS | two fixed-ldflags builds are byte-identical |
 | Dockerfile multi-stage CGO=0 non-root healthcheck | PASS | local `docker build` + healthcheck as UID 10001; `/app` is read-only |
 | Compose assets + data volumes | PASS (inspect) | root/deploy compose files |
-| Update install/backup/rollback + journal recovery | PASS (fake) | journal crash-state, initial-journal, legacy `.mix2api-old`, RC→final, manifest-less rollback, and prune tests |
+| Update install/backup/rollback + journal recovery | PASS (fake) | exact original-schema journal (no `old_path`/`existed`), per-entry persisted recovery, crash-state, initial-journal, RC→final, manifest-less rollback, and prune tests |
 | Update on a real service + real archive | **PENDING** | requires dedicated host |
 | Migration fixture round-trip, unknown keys, partial failure | PASS | `internal/core/migrate` tests |
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
@@ -23,7 +23,7 @@ requires a manual run.
 | Real-account smoke on dedicated accounts | **PARTIAL** | Chat/stream passed on all exits: intl, CN, CodeArts, Raccoon; CN Responses/Messages/usage passed. See `docs/smoke/2026-11-11-all-exits.md` and `docs/smoke/2026-11-11-workbuddy-cn.md`. Mutable task/media/update smoke still pending |
 | 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` recorded p95 162 ms, p99 163 ms, 0 failures, threshold 2000 ms |
 | v1.6.5 performance baseline comparison | **PENDING** | no captured baseline |
-| Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; `v`-prefixed image/tag identity tested |
+| Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | **PENDING** | workflow added; GitHub Actions run not executed here |
 | v2.0.0 tag / GitHub release / GHCR push | **NOT DONE (by design)** | requires explicit user approval after signoff |
 

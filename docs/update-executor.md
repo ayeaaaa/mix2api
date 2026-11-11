@@ -5,7 +5,10 @@ document covers the privileged command that consumes them.
 
 ## Requirements
 
-- Run as the owner of the install directory (root for systemd deployments).
+- Run as the owner of the install directory. The packaged systemd unit owns
+  `/srv/mix2api` as the unprivileged `mix2api` user, so run the executor as
+  that user (or as root only when the deployment deliberately root-owns the
+  tree). The executor never needs to run inside the gateway process.
 - The install root contains `mix2api`/`mix2api.exe`, `LICENSE`, `README.md`,
   and `release-manifest.json`.
 - The request directory is writable by the executor and by the gateway account
@@ -55,7 +58,11 @@ wrapper scripts when shell syntax is needed.
   `backup.json` is marked complete only after every copied file is hashed.
 - Replacement uses same-directory temp files and renames. A journal is written
   before the first replacement; failures and crashes restore every file that
-  was moved. Rollback verifies all backup hashes again before changing files.
+  was moved. Recovery also understands the original journal schema that omitted
+  `old_path`/`existed` by using the `Target+".mix2api-old"` sibling, persists
+  progress after each verified entry, and deletes the journal only when every
+  entry verifies. Rollback verifies all backup hashes again before changing
+  files.
 - The executor removes `request.json` only after the request validates.
 - Status and backup inventory files stay mode `0600`; status messages never
   contain credentials or absolute paths.
@@ -85,6 +92,9 @@ mix2api.exe update run --request-dir C:\ProgramData\mix2api\updates `
 
 Use `.exe` hooks directly, or `.cmd`/`.bat` wrappers. Windows cannot execute a
 batch file through `CreateProcess`, so the executor runs `.cmd`/`.bat` through
-`cmd.exe /d /s /c <fixed path>`; `.exe` hooks run directly. Arguments are fixed
-operator values, never request fields. Ensure hooks report failure with a
-non-zero exit status so the executor can restore the previous version.
+`cmd.exe /d /s /c ""<fixed path>" <fixed args>"`; `.exe` hooks run directly.
+The batch line is handed to CreateProcess verbatim, so a hook path containing
+spaces stays one quoted token instead of being split by Go's argv quoting.
+Arguments are fixed operator values, never request fields. Ensure hooks report
+failure with a non-zero exit status so the executor can restore the previous
+version.

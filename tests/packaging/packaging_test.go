@@ -93,10 +93,56 @@ func TestOpenWrtAssets(t *testing.T) {
 
 func TestSystemdUnitIsHardened(t *testing.T) {
 	unit := repoFile(t, "packaging/systemd/mix2api.service")
-	for _, want := range []string{"User=mix2api", "EnvironmentFile=-/etc/mix2api/env", "ExecStart=/usr/local/bin/mix2api", "NoNewPrivileges=true", "ProtectSystem=strict", "ReadWritePaths=/var/lib/mix2api"} {
+	for _, want := range []string{
+		"User=mix2api", "Group=mix2api", "WorkingDirectory=/srv/mix2api",
+		"EnvironmentFile=-/etc/mix2api/env", "ExecStart=/srv/mix2api/mix2api",
+		"ACCOUNTS_DIR=/srv/mix2api/accounts", "USAGE_DIR=/srv/mix2api/usage",
+		"WB_MEDIA_DIR=/srv/mix2api/media", "NoNewPrivileges=true",
+		"ProtectSystem=strict", "ReadWritePaths=/srv/mix2api",
+	} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("systemd unit missing %q", want)
 		}
+	}
+}
+
+func TestSystemdUnitMatchesRunbookAndAnalyzes(t *testing.T) {
+	unit := repoFile(t, "packaging/systemd/mix2api.service")
+	runbook := repoFile(t, "docs/runbook.md")
+	for _, want := range []string{
+		"ExecStart=/srv/mix2api/mix2api",
+		"ReadWritePaths=/srv/mix2api",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("unit missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"useradd --system", "/srv/mix2api/mix2api",
+		"/srv/mix2api/accounts",
+	} {
+		if !strings.Contains(runbook, want) {
+			t.Fatalf("runbook missing %q", want)
+		}
+	}
+	if strings.Contains(runbook, "/var/lib/mix2api") {
+		t.Fatal("runbook still documents the old /var/lib layout")
+	}
+
+	systemdAnalyze, err := exec.LookPath("systemd-analyze")
+	if err != nil {
+		t.Skip("systemd-analyze not installed")
+	}
+	// verify checks ExecStart exists; substitute a harmless existing binary
+	// while retaining every directive and the /srv layout in the copy.
+	verified := strings.ReplaceAll(unit, "ExecStart=/srv/mix2api/mix2api", "ExecStart=/bin/true")
+	path := filepath.Join(t.TempDir(), "mix2api.service")
+	if err := os.WriteFile(path, []byte(verified), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(systemdAnalyze, "verify", path)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("systemd-analyze verify: %v\n%s", err, output)
 	}
 }
 

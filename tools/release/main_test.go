@@ -128,6 +128,37 @@ func TestBuildDateFromSourceEpoch(t *testing.T) {
 	}
 }
 
+func TestArchiveDateFromSourceEpoch(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1762560000")
+	got, err := defaultArchiveDate()
+	if err != nil || got != "2025-11-08T00:00:00Z" {
+		t.Fatalf("defaultArchiveDate = %q err=%v", got, err)
+	}
+	t.Setenv("SOURCE_DATE_EPOCH", "")
+	got, err = defaultArchiveDate()
+	if err != nil || got != "1980-01-01T00:00:00Z" {
+		t.Fatalf("defaultArchiveDate without epoch = %q err=%v", got, err)
+	}
+	t.Setenv("SOURCE_DATE_EPOCH", "not-a-number")
+	if _, err := defaultArchiveDate(); err == nil {
+		t.Fatal("invalid SOURCE_DATE_EPOCH accepted")
+	}
+
+	// --archive-date still wins over the environment for reproducibility
+	// checks that keep BUILD_DATE independent.
+	t.Setenv("SOURCE_DATE_EPOCH", "1762560000")
+	opts, err := parseOptions([]string{"--repo-root", t.TempDir(), "--version", "2.0.0", "--archive-date", "1980-01-01T00:00:00Z"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := opts.resolve(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if opts.SourceDate != "1980-01-01T00:00:00Z" {
+		t.Fatalf("explicit archive date overridden: %q", opts.SourceDate)
+	}
+}
+
 func TestSummaryShape(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "release.json")
 	sums := map[string]string{"asset.tar.gz": strings.Repeat("a", 64)}

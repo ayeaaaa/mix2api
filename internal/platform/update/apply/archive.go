@@ -92,7 +92,7 @@ func (a *Applier) extractVerified(archivePath, checksumPath, version string) (*s
 		_ = os.RemoveAll(dir)
 		return nil, errors.New("manifest kind is not a standard update")
 	}
-	if manifest.GOOS != a.goos || manifest.GOARCH != a.goarch || manifest.GOARM != a.goarm {
+	if !corerelease.PlatformMatches(manifest, a.goos, a.goarch, a.goarm) {
 		_ = os.RemoveAll(dir)
 		return nil, errors.New("manifest platform does not match this executor")
 	}

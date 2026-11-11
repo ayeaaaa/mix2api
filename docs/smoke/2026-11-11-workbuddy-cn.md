@@ -25,8 +25,9 @@ Scope: one dedicated WorkBuddy CN OAuth account copied to a temporary v2 account
 ## Observations
 
 - A bare `/usage` request in this temporary setup defaulted to the empty intl realm, so it reported 0; `realm=cn` or `realm=all` returned the rows. This is a default-realm/configuration observation, not a lost-write: the JSONL and realm-filtered APIs contain all 5 rows.
+- The default `/usage` realm is v1-compatible, not a v2 regression. v1.6.5 `_get_v1_usage` resolves an omitted `realm` as `_request_realm() or CURRENT_REALM` (the persisted global switch); v2 `UsageHandlers.realm` resolves it through `Service.DefaultRealmValue`, which reads the live active realm set by the panel. Both hide rows belonging to another realm unless `realm=all` (or a per-provider realm) is requested.
+- Free CN model credit is also v1-compatible. v1.6.5 `_extract_usage` copies the upstream `usage.credit` (default `0`) without filtering free catalogue models; v2 stores the same upstream value and adds `free=true` only as an attribution marker. The observed 0.02–0.08 is upstream-provided, so no v2 credit adjustment is warranted.
 - Logs returned empty because this temporary configuration did not enable/initialize a log SQLite store; chat/usage behavior was unaffected.
-- The free CN model still reported a small `usage.credit` value (0.02–0.08) while `free=true`; this matches upstream quota reporting seen in the captured rows and is worth checking against v1 before final parity signoff.
 
 ## Gate F status
 

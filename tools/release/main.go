@@ -133,7 +133,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if opts.DryRun {
-		fmt.Fprintf(stdout, "version=%s commit=%s date=%s out=%s\n", opts.Version, opts.Commit, opts.Date, opts.Out)
+		fmt.Fprintf(stdout, "version=%s commit=%s date=%s archive_date=%s out=%s\n", opts.Version, opts.Commit, opts.Date, opts.SourceDate, opts.Out)
 		for _, item := range targets {
 			fmt.Fprintf(stdout, "%s -> %s\n", item.Name, item.assetName(opts.Version))
 		}
@@ -151,7 +151,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseOptions(args []string, stderr io.Writer) (options, error) {
-	opts := options{Out: "dist", SourceDate: "1980-01-01T00:00:00Z"}
+	opts := options{Out: "dist"}
 	flags := flag.NewFlagSet("release", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&opts.Out, "out", opts.Out, "output directory")
@@ -163,7 +163,7 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	flags.BoolVar(&opts.List, "list", false, "list selected targets and exit")
 	flags.BoolVar(&opts.DryRun, "dry-run", false, "print the plan and exit")
 	flags.BoolVar(&opts.SkipBuild, "skip-build", false, "reuse binaries under <out>/.build (development only)")
-	flags.StringVar(&opts.SourceDate, "archive-date", opts.SourceDate, "archive entry timestamp RFC3339")
+	flags.StringVar(&opts.SourceDate, "archive-date", "", "archive entry timestamp RFC3339 (default: SOURCE_DATE_EPOCH or 1980-01-01)")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -204,6 +204,12 @@ func (o *options) resolve(stderr io.Writer) error {
 		return fmt.Errorf("invalid --date %q (want RFC3339)", o.Date)
 	}
 	o.Date = parsed.Format(time.RFC3339)
+	if strings.TrimSpace(o.SourceDate) == "" {
+		o.SourceDate, err = defaultArchiveDate()
+		if err != nil {
+			return err
+		}
+	}
 	if _, ok := version.ParseDate(o.SourceDate); !ok {
 		return fmt.Errorf("invalid --archive-date %q", o.SourceDate)
 	}
@@ -255,6 +261,22 @@ func defaultBuildDate() string {
 		}
 	}
 	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+// defaultArchiveDate maps SOURCE_DATE_EPOCH to archive entry timestamps. A
+// fixed 1980 epoch keeps output deterministic when the variable is absent.
+// An explicitly invalid epoch is an error rather than silently choosing 1980,
+// because the operator asked for reproducible timestamps.
+func defaultArchiveDate() (string, error) {
+	value := strings.TrimSpace(os.Getenv("SOURCE_DATE_EPOCH"))
+	if value == "" {
+		return "1980-01-01T00:00:00Z", nil
+	}
+	seconds, err := parseEpoch(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid SOURCE_DATE_EPOCH %q", value)
+	}
+	return time.Unix(seconds, 0).UTC().Format(time.RFC3339), nil
 }
 
 func parseEpoch(value string) (int64, error) {

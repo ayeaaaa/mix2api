@@ -10,9 +10,10 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/web"
 )
 
-// TestDashboardContract pins the Gate E surface: the embedded asset is the v1
-// dashboard byte-for-byte, the static aliases are public and non-CORS, the API
-// route inventory is complete, and the management gate fails closed.
+// TestDashboardContract pins the Gate E surface: the embedded asset matches
+// the documented v1.6.5 provenance (two repository-link replacements), the
+// static aliases are public and non-CORS, the API route inventory is complete,
+// and the management gate fails closed.
 func TestDashboardContract(t *testing.T) {
 	body := web.DashboardHTML()
 	if got := web.BodyHash(body); got != web.DashboardSHA256 {

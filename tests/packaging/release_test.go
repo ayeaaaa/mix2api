@@ -2,6 +2,7 @@ package packaging_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,8 @@ func TestReleaseWorkflowIsManualAndGateFGuarded(t *testing.T) {
 		`RELEASE_REPOSITORY: "ayeaaaa/mix2api-v2"`,
 		`IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api-v2"`,
 		`tags: ${{ env.IMAGE_REPOSITORY }}:v${{ inputs.version }}`,
+		"Validate version input", "VERSION: ${{ inputs.version }}",
+		`./scripts/validate-release-version.sh "$VERSION"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("release workflow missing %q", want)
@@ -77,5 +80,54 @@ func TestReadmeDescribesPackagingAndVersion(t *testing.T) {
 		if !strings.Contains(readme, want) {
 			t.Fatalf("README missing %q", want)
 		}
+	}
+}
+
+func TestValidateReleaseVersionScript(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "validate-release-version.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatal("release version script is not executable")
+	}
+	for _, good := range []string{"2.0.0", "2.0.0-rc.1", "10.20.30", "0.1.0-alpha.1"} {
+		if output, err := exec.Command(script, good).CombinedOutput(); err != nil {
+			t.Fatalf("version %q rejected: %v\n%s", good, err, output)
+		}
+	}
+	for _, bad := range []string{"", "v2.0.0", "V2.0.0", "2.0", "2.0.0+build", "01.2.3", "latest", "2.0.0\nrm -rf /", "2.0.0 ", "2.0.0;id"} {
+		if output, err := exec.Command(script, bad).CombinedOutput(); err == nil {
+			t.Fatalf("version %q accepted: %s", bad, output)
+		}
+	}
+}
+
+func TestReleaseWorkflowYAMLParses(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	workflow, err := filepath.Abs(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+assert isinstance(doc, dict), doc
+jobs = doc.get("jobs") or {}
+assert {"verify", "container", "publish"} <= set(jobs), jobs.keys()
+`
+	command := exec.Command(python, "-c", script, workflow)
+	if output, err := command.CombinedOutput(); err != nil {
+		if strings.Contains(string(output), "No module named 'yaml'") {
+			t.Skip("PyYAML not installed")
+		}
+		t.Fatalf("release workflow YAML invalid: %v\n%s", err, output)
 	}
 }

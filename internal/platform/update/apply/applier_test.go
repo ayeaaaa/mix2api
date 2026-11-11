@@ -95,6 +95,9 @@ func TestInstallBackupRollbackAndPublish(t *testing.T) {
 	if status["state"] != "succeeded" || status["version"] != "2.0.0" {
 		t.Fatalf("status = %#v", status)
 	}
+	if status["updated_at"] == "" {
+		t.Fatalf("status missing updated_at: %#v", status)
+	}
 	rawBackups, err := os.ReadFile(filepath.Join(requestDir, update.BackupsFile))
 	if err != nil {
 		t.Fatal(err)
@@ -299,12 +302,17 @@ func buildTestRelease(t *testing.T, root, version string, files map[string][]byt
 
 func buildRawArchive(t *testing.T, version string, files map[string]tarEntry, extraManifest string) (archive, checksums string, manifest corerelease.Manifest) {
 	t.Helper()
+	return buildRawArchiveFor(t, version, files, extraManifest, runtime.GOOS, runtime.GOARCH, os.Getenv("GOARM"))
+}
+
+func buildRawArchiveFor(t *testing.T, version string, files map[string]tarEntry, extraManifest, goos, goarch, goarm string) (archive, checksums string, manifest corerelease.Manifest) {
+	t.Helper()
 	dir := t.TempDir()
-	rootName := "mix2api-" + version + "-" + runtime.GOOS + "-" + runtime.GOARCH
+	rootName := corerelease.ArchiveRoot(version, corerelease.KindStandard, goos, goarch, goarm)
 	manifest = corerelease.Manifest{
 		Format: corerelease.Format, Version: version, Tag: corerelease.Tag(version),
 		Commit: "test", Date: "2026-11-08T00:00:00Z",
-		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOARM: os.Getenv("GOARM"),
+		GOOS: goos, GOARCH: goarch, GOARM: goarm,
 		Kind: corerelease.KindStandard, Repository: corerelease.Repository,
 	}
 	for name, entry := range files {
@@ -321,7 +329,7 @@ func buildRawArchive(t *testing.T, version string, files map[string]tarEntry, ex
 	if extraManifest != "" {
 		rawManifest = []byte(extraManifest)
 	}
-	archive = filepath.Join(dir, corerelease.AssetName(version, corerelease.KindStandard, runtime.GOOS, runtime.GOARCH, os.Getenv("GOARM")))
+	archive = filepath.Join(dir, corerelease.AssetName(version, corerelease.KindStandard, goos, goarch, goarm))
 	file, err := os.Create(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -521,6 +529,131 @@ func TestRecoverReconstructsLegacyJournalFromOldSibling(t *testing.T) {
 	}
 }
 
+func TestRecoverExactLegacyJournalWithoutOldPathOrExisted(t *testing.T) {
+	for _, beforeReplacement := range []bool{false, true} {
+		name := "after-replacement"
+		if beforeReplacement {
+			name = "before-replacement"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "mix2api")
+			oldPath := target + ".mix2api-old"
+			writeFile(t, oldPath, "old-binary", 0o755)
+			if !beforeReplacement {
+				writeFile(t, target, "new-binary", 0o755)
+			}
+			// The original journal schema omitted old_path and existed
+			// entirely. Marshal a map so this test cannot silently start
+			// writing the newer fields.
+			raw, err := json.Marshal(map[string]any{
+				"format": transactionFormat, "version": "2.0.0",
+				"root": root, "phase": "applying",
+				"entries": []any{map[string]any{
+					"path": "mix2api", "target": target, "mode": 0o755,
+					"new_sha256": strings.Repeat("0", 64), "new_size": 10,
+					"complete": true,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, JournalName), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recovery, err := applier.RecoverOnce(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !recovery.Found || !recovery.Restored {
+				t.Fatalf("recovery = %#v", recovery)
+			}
+			if got := readString(t, target); got != "old-binary" {
+				t.Fatalf("recovered file = %q", got)
+			}
+			if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+				t.Fatalf("old sibling remained: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, JournalName)); !os.IsNotExist(err) {
+				t.Fatalf("journal remained: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoveryPersistsVerifiedEntriesAndKeepsJournalOnFailure(t *testing.T) {
+	root := t.TempDir()
+	goodTarget := filepath.Join(root, "mix2api")
+	goodOld := goodTarget + ".mix2api-old"
+	writeFile(t, goodTarget, "new-binary", 0o755)
+	writeFile(t, goodOld, "old-binary", 0o755)
+
+	badTarget := filepath.Join(root, "README.md")
+	badOld := badTarget + ".mix2api-old"
+	writeFile(t, badOld, "old-readme", 0o644)
+	if err := os.Mkdir(badTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := transactionJournal{
+		Format: transactionFormat, Version: "2.0.0", Root: root, Phase: "applying",
+		Entries: []journalEntry{
+			{Path: "README.md", Target: badTarget, OldPath: badOld, Existed: true},
+			{Path: "mix2api", Target: goodTarget, OldPath: goodOld, Existed: true},
+		},
+	}
+	raw, _ := json.Marshal(journal)
+	journalPath := filepath.Join(root, JournalName)
+	if err := os.WriteFile(journalPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applier, err := New(Options{Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.RecoverOnce(context.Background()); err == nil {
+		t.Fatal("recovery with a non-regular target succeeded")
+	}
+	if got := readString(t, goodTarget); got != "old-binary" {
+		t.Fatalf("first entry was not restored: %q", got)
+	}
+	if info, err := os.Stat(badTarget); err != nil || !info.IsDir() {
+		t.Fatalf("failing target changed: %v", err)
+	}
+	raw, err = os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("journal must survive failed recovery: %v", err)
+	}
+	var persisted transactionJournal
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Entries) != 2 || !persisted.Entries[1].Restored || persisted.Entries[0].Restored {
+		t.Fatalf("per-entry recovery progress not persisted: %s", raw)
+	}
+	// Remove the obstruction and resume. The already-restored entry is
+	// skipped; the journal is removed only after both entries verify.
+	if err := os.Remove(badTarget); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := applier.RecoverOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Restored {
+		t.Fatalf("recovery = %#v", recovery)
+	}
+	if got := readString(t, badTarget); got != "old-readme" {
+		t.Fatalf("second entry was not restored: %q", got)
+	}
+	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+		t.Fatalf("journal remained after verified restore: %v", err)
+	}
+}
+
 func TestRecoverAfterNewFileAppliedRestoresOriginal(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "mix2api")
@@ -571,12 +704,73 @@ func TestARMExecutorNormalizesGOARM(t *testing.T) {
 	}
 }
 
+func TestExtractVerifiedUsesARMFamilyMatching(t *testing.T) {
+	for _, spelling := range []string{"7", "v7", "armv7"} {
+		t.Run(spelling, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "mix2api"), "old-binary", 0o755)
+			archive, checksums, _ := buildRawArchiveFor(t, "2.0.0", map[string]tarEntry{
+				"mix2api": {data: []byte("new-binary"), mode: 0o755},
+			}, "", "linux", "arm", spelling)
+			applier, err := New(Options{
+				Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir(),
+				CurrentVersion: "1.0.0", GOOS: "linux", GOARCH: "arm", GOARM: "7",
+				ArchivePath: archive, Checksums: checksums, Controller: &fakeController{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := applier.Run(context.Background(), update.Request{
+				Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root,
+			}); err != nil {
+				t.Fatalf("install with manifest GOARM=%q: %v", spelling, err)
+			}
+			if got := readString(t, filepath.Join(root, "mix2api")); got != "new-binary" {
+				t.Fatalf("binary = %q", got)
+			}
+			manifest, err := readInstalledManifest(root)
+			if err != nil || manifest.GOARM != spelling {
+				t.Fatalf("installed manifest = %#v err=%v", manifest, err)
+			}
+		})
+	}
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mix2api"), "old-binary", 0o755)
+	archive, checksums, _ := buildRawArchiveFor(t, "2.0.0", map[string]tarEntry{
+		"mix2api": {data: []byte("new-binary"), mode: 0o755},
+	}, "", "linux", "arm", "7")
+	applier, err := New(Options{
+		Root: root, BackupDir: filepath.Join(t.TempDir(), "backups"), RequestDir: t.TempDir(),
+		CurrentVersion: "1.0.0", GOOS: "linux", GOARCH: "arm", GOARM: "6",
+		ArchivePath: archive, Checksums: checksums, Controller: &fakeController{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applier.Run(context.Background(), update.Request{
+		Action: "install", Version: "2.0.0", Tag: "v2.0.0", Root: root,
+	}); err == nil {
+		t.Fatal("GOARM=6 executor accepted an armv7 archive")
+	}
+	if got := readString(t, filepath.Join(root, "mix2api")); got != "old-binary" {
+		t.Fatalf("mismatched install changed the binary: %q", got)
+	}
+}
+
 func TestWindowsBatchHooksUseCmdExe(t *testing.T) {
-	spec := CommandSpec{Path: `C:\hooks\restart.cmd`, Args: []string{"--fast"}}
+	spec := CommandSpec{Path: `C:\Program Files\mix2api\restart.cmd`, Args: []string{"--fast", `C:\data dir`}}
 	program, args := commandProgram(spec, "windows")
-	if program != "cmd.exe" || len(args) != 5 || args[0] != "/d" || args[1] != "/s" || args[2] != "/c" ||
-		args[3] != spec.Path || args[4] != "--fast" {
+	wantLine := `cmd.exe /d /s /c ""C:\Program Files\mix2api\restart.cmd" "--fast" "C:\data dir""`
+	if program != "cmd.exe" || len(args) != 4 || args[0] != "/d" || args[1] != "/s" || args[2] != "/c" ||
+		args[3] != wantLine {
 		t.Fatalf("batch program = %q args=%v", program, args)
+	}
+	if got := batchCommandLine(spec); got != wantLine {
+		t.Fatalf("batch command line = %q, want %q", got, wantLine)
+	}
+	if got := batchCommandLine(CommandSpec{Path: `C:\hooks\restart.cmd`}); got != `cmd.exe /d /s /c ""C:\hooks\restart.cmd""` {
+		t.Fatalf("no-arg command line = %q", got)
 	}
 	program, args = commandProgram(CommandSpec{Path: `C:\hooks\restart.exe`, Args: []string{"--fast"}}, "windows")
 	if program != `C:\hooks\restart.exe` || len(args) != 1 || args[0] != "--fast" {
@@ -729,5 +923,59 @@ func TestPruneKeepsIncompleteBackupsForDiagnosis(t *testing.T) {
 	}
 	if complete != keepBackups || incomplete != 1 {
 		t.Fatalf("after prune complete=%d incomplete=%d records=%d", complete, incomplete, len(records))
+	}
+}
+
+func TestPruneDoesNotCountUnknownCompleteBackups(t *testing.T) {
+	backupDir := t.TempDir()
+	applier, err := New(Options{Root: t.TempDir(), BackupDir: backupDir, RequestDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeRecord := func(version, created string, complete bool) *backupRecord {
+		dir := filepath.Join(backupDir, version+"-"+strings.ReplaceAll(created, ":", ""))
+		if err := os.MkdirAll(filepath.Join(dir, backupFilesDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		record := &backupRecord{Format: BackupFormat, Version: version, CreatedAt: created, Complete: complete, Dir: dir}
+		if err := writeBackupMeta(record); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	makeRecord("1.0.0", "2026-11-01 00:00:00", true)
+	makeRecord("1.1.0", "2026-11-02 00:00:00", true)
+	makeRecord("1.2.0", "2026-11-03 00:00:00", true)
+	makeRecord("0.0.0", "2026-11-04 00:00:00", true)
+	makeRecord("unknown", "2026-11-05 00:00:00", false)
+	applier.pruneBackups()
+	records, err := applier.listBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := map[string]bool{}
+	for _, record := range records {
+		versions[record.Version] = true
+	}
+	for _, want := range []string{"1.0.0", "1.1.0", "1.2.0", "0.0.0", "unknown"} {
+		if !versions[want] {
+			t.Fatalf("prune removed %s; records=%#v", want, versions)
+		}
+	}
+	// Adding one more valid complete backup must retire only the oldest valid
+	// release, leaving 0.0.0/unknown diagnostics on disk.
+	makeRecord("1.3.0", "2026-11-06 00:00:00", true)
+	applier.pruneBackups()
+	records, err = applier.listBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions = map[string]bool{}
+	for _, record := range records {
+		versions[record.Version] = true
+	}
+	if versions["1.0.0"] || !versions["1.1.0"] || !versions["1.2.0"] || !versions["1.3.0"] ||
+		!versions["0.0.0"] || !versions["unknown"] {
+		t.Fatalf("unexpected prune result: %#v", versions)
 	}
 }

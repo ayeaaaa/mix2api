@@ -44,8 +44,9 @@ The update executor verifies that manifest and `SHA256SUMS` before replacing
 anything. `SHA256SUMS` covers every deliverable except itself.
 
 `SOURCE_DATE_EPOCH` (or `--archive-date`) fixes archive entry timestamps; when
-unset the tool uses `1980-01-01T00:00:00Z`, never "now". `BUILD_DATE` is the
-injected build identity and must be the commit timestamp for reproducibility.
+unset the tool uses `1980-01-01T00:00:00Z`, never "now". An invalid
+`SOURCE_DATE_EPOCH` is an error rather than a silent fallback. `BUILD_DATE` is
+the injected build identity and must be the commit timestamp for reproducibility.
 
 ## Verify
 
@@ -80,7 +81,10 @@ The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
 ## Publish (only after Gate F)
 
 The release workflow (`.github/workflows/release.yml`) is manual and refuses to
-publish unless `publish=true` and `gate_f_signed=yes`. It:
+publish unless `publish=true` and `gate_f_signed=yes`. The `version` input must
+be a strict semantic version **without** a leading `v` (`2.0.0-rc.1`, not
+`v2.0.0-rc.1`); a dedicated validation step rejects `v`/`V` prefixes, leading
+zeroes, and build metadata before any build starts. It:
 
 1. verifies the requested commit matches the checkout;
 2. runs `make check`, race tests, Windows/macOS cross-builds, `make dist`, and
