@@ -1,6 +1,8 @@
 package oracle_test
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,7 +19,24 @@ const (
 	recordedDir          = "recorded/v1.6.5"
 	workBuddyRecordedDir = "recorded/v1.6.5-workbuddy"
 	failuresRecordedDir  = "recorded/v1.6.5-failures"
+	mediaRecordedDir     = "recorded/v1.6.5-media"
 )
+
+var expectedMediaCases = []string{
+	"media_models",
+	"media_image_generation",
+	"media_image_edit",
+	"media_image_b64",
+	"media_video_wait",
+	"media_video_status",
+	"media_video_content",
+	"media_video_running",
+	"media_video_queued",
+	"media_video_cancel",
+	"media_tasks",
+	"media_usage",
+	"media_usage_recent",
+}
 
 var expectedWorkBuddyCases = []string{
 	"wb_models_intl",
@@ -140,10 +159,10 @@ func TestRecordedV165OracleIntegrity(t *testing.T) {
 			t.Fatalf("duplicate case %q", item.Name)
 		}
 		seen[item.Name] = true
-		if item.Kind != "json" && item.Kind != "sse" {
+		if item.Kind != "json" && item.Kind != "sse" && item.Kind != "raw" {
 			t.Fatalf("%s kind = %q", item.Name, item.Kind)
 		}
-		if strings.Contains(item.Path, "://") || !strings.HasPrefix(item.Path, "/") {
+		if strings.Contains(item.Path, "://") || (!strings.HasPrefix(item.Path, "/") && !strings.HasPrefix(item.Path, "{{")) {
 			t.Fatalf("%s path is not a local route: %q", item.Name, item.Path)
 		}
 		if item.Status < 200 || item.Status > 599 {
@@ -285,6 +304,10 @@ func TestRecordedV165PayloadsNormalize(t *testing.T) {
 			if _, err := contract.NormalizeJSON(body); err != nil {
 				t.Fatalf("%s: %v", item.Name, err)
 			}
+		case "raw":
+			if len(body) == 0 {
+				t.Fatalf("%s: empty raw body", item.Name)
+			}
 		default:
 			t.Fatalf("%s: unknown kind %q", item.Name, item.Kind)
 		}
@@ -333,6 +356,225 @@ func TestRecordedWorkBuddyOracleIntegrity(t *testing.T) {
 		"oracle: wb_health: JSON mismatch:",
 		"oracle: wb_usage_intl: JSON mismatch:",
 	})
+}
+
+// TestRecordedMediaOracleIntegrity verifies the committed v1.6.5 media
+// fixture without contacting any target. It checks the manifest, every
+// checksum, the raw video body, the image/video semantics, the usage row
+// kinds, and the desensitization scan.
+func TestRecordedMediaOracleIntegrity(t *testing.T) {
+	document, err := harness.Load(mediaRecordedDir)
+	if err != nil {
+		t.Fatalf("load media oracle: %v", err)
+	}
+	provenance := document.Provenance
+	if provenance.TargetVersion != "1.6.5" {
+		t.Fatalf("target_version = %q", provenance.TargetVersion)
+	}
+	if provenance.TargetCommit != "e40c4e8994f9cc6ace3457e350466cdd5d422a37" {
+		t.Fatalf("target_commit = %q", provenance.TargetCommit)
+	}
+	if !provenance.FakeUpstream || provenance.Network != "loopback-only" {
+		t.Fatalf("provenance = %#v", provenance)
+	}
+	if provenance.BaseURL != "http://127.0.0.1:18780" {
+		t.Fatalf("base_url = %q", provenance.BaseURL)
+	}
+	if provenance.FakeControl != "http://127.0.0.1:40391" {
+		t.Fatalf("fake_control_url = %q", provenance.FakeControl)
+	}
+	if !strings.Contains(strings.ToLower(provenance.Note), "loopback") {
+		t.Fatalf("note does not mention loopback: %q", provenance.Note)
+	}
+	assertCaseSet(t, document, expectedMediaCases)
+	for _, item := range document.Cases {
+		switch item.Name {
+		case "media_video_wait", "media_video_running", "media_video_queued":
+			if item.Status != 202 {
+				t.Fatalf("%s status = %d, want 202", item.Name, item.Status)
+			}
+		case "media_video_content":
+			if item.Kind != "raw" {
+				t.Fatalf("media_video_content kind = %q", item.Kind)
+			}
+			if item.Status != 200 {
+				t.Fatalf("media_video_content status = %d", item.Status)
+			}
+		default:
+			if item.Status != 200 {
+				t.Fatalf("%s status = %d", item.Name, item.Status)
+			}
+		}
+	}
+	assertFixturePayloads(t, mediaRecordedDir, document)
+	assertFixtureIsDesensitized(t, mediaRecordedDir)
+
+	models := mediaJSON(t, "media_models")
+	modelList, _ := models["models"].([]any)
+	modelIDs := map[string]map[string]any{}
+	for _, raw := range modelList {
+		model, _ := raw.(map[string]any)
+		id, _ := model["id"].(string)
+		modelIDs[id] = model
+	}
+	for _, id := range []string{
+		"hunyuan-image-alpha", "gemini-image-oracle",
+		"hunyuan-image-alpha-edit", "kling-video-v3",
+	} {
+		if modelIDs[id] == nil {
+			t.Fatalf("media_models is missing %q: %v", id, modelIDs)
+		}
+	}
+	video := modelIDs["kling-video-v3"]
+	generation, _ := video["videoGeneration"].(map[string]any)
+	if generation == nil {
+		t.Fatalf("kling-video-v3 has no videoGeneration: %v", video)
+	}
+	for _, key := range []string{"minSeconds", "maxSeconds", "defaultSeconds", "resolutions", "defaultResolution", "aspectRatios"} {
+		if _, ok := generation[key]; !ok {
+			t.Fatalf("videoGeneration is missing %q: %v", key, generation)
+		}
+	}
+	if fmt.Sprint(video["creditPerSecondCeiling"]) != "26.0" {
+		t.Fatalf("creditPerSecondCeiling = %v", video["creditPerSecondCeiling"])
+	}
+
+	image := mediaJSON(t, "media_image_generation")
+	imageData, _ := image["data"].([]any)
+	imageItem, _ := imageData[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(imageItem["url"]), "/oracle/media/image.png") {
+		t.Fatalf("image generation url = %v", imageItem["url"])
+	}
+	if fmt.Sprint(image["credit"]) != "5.71" {
+		t.Fatalf("image generation credit = %v", image["credit"])
+	}
+
+	edit := mediaJSON(t, "media_image_edit")
+	editData, _ := edit["data"].([]any)
+	editItem, _ := editData[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(editItem["url"]), "/oracle/media/image-edit.png") {
+		t.Fatalf("image edit url = %v", editItem["url"])
+	}
+	if fmt.Sprint(edit["credit"]) != "6.14" {
+		t.Fatalf("image edit credit = %v", edit["credit"])
+	}
+
+	b64 := mediaJSON(t, "media_image_b64")
+	b64Data, _ := b64["data"].([]any)
+	b64Item, _ := b64Data[0].(map[string]any)
+	decoded, err := base64.StdEncoding.DecodeString(fmt.Sprint(b64Item["b64_json"]))
+	if err != nil || string(decoded) != "oracle-image" {
+		t.Fatalf("b64 image = %q (%v)", decoded, err)
+	}
+
+	wait := mediaJSON(t, "media_video_wait")
+	if fmt.Sprint(wait["status"]) != "completed" || fmt.Sprint(wait["credit"]) != "128.57" {
+		t.Fatalf("video wait = %v", wait)
+	}
+	if !strings.HasPrefix(fmt.Sprint(wait["url"]), "/v1/videos/") || !strings.Contains(fmt.Sprint(wait["url"]), "/content?i=0&t=") {
+		t.Fatalf("video wait url = %v", wait["url"])
+	}
+	status := mediaJSON(t, "media_video_status")
+	if fmt.Sprint(status["id"]) != fmt.Sprint(wait["id"]) || fmt.Sprint(status["status"]) != "completed" {
+		t.Fatalf("video status = %v, wait = %v", status, wait)
+	}
+
+	queued := mediaJSON(t, "media_video_queued")
+	if fmt.Sprint(queued["status"]) != "queued" || fmt.Sprint(queued["queue_position"]) != "1" {
+		t.Fatalf("video queued = %v", queued)
+	}
+	if !strings.Contains(fmt.Sprint(queued["hint"]), "/v1/videos/") {
+		t.Fatalf("video queued hint = %v", queued["hint"])
+	}
+	cancelled := mediaJSON(t, "media_video_cancel")
+	errorBlock, _ := cancelled["error"].(map[string]any)
+	if fmt.Sprint(cancelled["status"]) != "failed" || fmt.Sprint(errorBlock["code"]) != "cancelled" {
+		t.Fatalf("video cancel = %v", cancelled)
+	}
+
+	tasks := mediaJSON(t, "media_tasks")
+	taskRows, _ := tasks["tasks"].([]any)
+	if len(taskRows) != 3 {
+		t.Fatalf("media_tasks rows = %d, want 3", len(taskRows))
+	}
+	stats, _ := tasks["stats"].(map[string]any)
+	if fmt.Sprint(stats["total"]) != "3" {
+		t.Fatalf("media_tasks stats = %v", stats)
+	}
+	byStatus, _ := stats["by_status"].(map[string]any)
+	for _, statusName := range []string{"completed", "running", "cancelled"} {
+		if fmt.Sprint(byStatus[statusName]) != "1" {
+			t.Fatalf("by_status[%s] = %v", statusName, byStatus[statusName])
+		}
+	}
+
+	usage := mediaJSON(t, "media_usage")
+	if fmt.Sprint(usage["requests"]) != "4" || fmt.Sprint(usage["credit"]) != "146.13" {
+		t.Fatalf("media usage = %v", usage)
+	}
+	byModel, _ := usage["by_model"].(map[string]any)
+	for _, id := range []string{
+		"hunyuan-image-alpha", "gemini-image-oracle",
+		"hunyuan-image-alpha-edit", "kling-video-v3",
+	} {
+		if byModel[id] == nil {
+			t.Fatalf("media usage is missing %q: %v", id, byModel)
+		}
+	}
+
+	recent := mediaJSON(t, "media_usage_recent")
+	rows, _ := recent["rows"].([]any)
+	if len(rows) != 4 {
+		t.Fatalf("media_usage_recent rows = %d, want 4", len(rows))
+	}
+	kinds := map[string]int{}
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		kinds[fmt.Sprint(row["kind"])]++
+		if fmt.Sprint(row["key"]) != "oracle-media-key" {
+			t.Fatalf("usage row key = %v", row["key"])
+		}
+		if fmt.Sprint(row["cost_policy"]) != "media" {
+			t.Fatalf("usage row cost_policy = %v", row["cost_policy"])
+		}
+	}
+	if kinds["image"] != 3 || kinds["video"] != 1 {
+		t.Fatalf("usage row kinds = %v", kinds)
+	}
+
+	rawVideo, err := os.ReadFile(filepath.Join(mediaRecordedDir, "media_video_content.raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rawVideo) != "oracle-media-video-bytes-v1\n" {
+		t.Fatalf("video content = %q", rawVideo)
+	}
+
+	assertDocumentedDelta(t, mediaRecordedDir, "V2-DELTA.txt", []string{
+		"11 of 13 cases match exactly",
+		"2 case(s) differ",
+		"oracle: media_tasks: JSON mismatch:",
+		"oracle: media_usage_recent: JSON mismatch:",
+		"stats.workers",
+		"rows[1].resolution",
+	})
+}
+
+func mediaJSON(t *testing.T, name string) map[string]any {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(mediaRecordedDir, name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := contract.NormalizeJSON(body)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	object, _ := value.(map[string]any)
+	if object == nil {
+		t.Fatalf("%s is not a JSON object", name)
+	}
+	return object
 }
 
 // TestRecordedFailureOracleIntegrity verifies each failure suite, including
@@ -398,10 +640,10 @@ func assertCaseSet(t *testing.T, document *harness.Document, expected []string) 
 		}
 		seen[item.Name] = true
 		names = append(names, item.Name)
-		if item.Kind != "json" && item.Kind != "sse" {
+		if item.Kind != "json" && item.Kind != "sse" && item.Kind != "raw" {
 			t.Fatalf("%s kind = %q", item.Name, item.Kind)
 		}
-		if strings.Contains(item.Path, "://") || !strings.HasPrefix(item.Path, "/") {
+		if strings.Contains(item.Path, "://") || (!strings.HasPrefix(item.Path, "/") && !strings.HasPrefix(item.Path, "{{")) {
 			t.Fatalf("%s path is not a local route: %q", item.Name, item.Path)
 		}
 		if item.Status < 200 || item.Status > 599 {
@@ -435,6 +677,10 @@ func assertFixturePayloads(t *testing.T, dir string, document *harness.Document)
 		case "json":
 			if _, err := contract.NormalizeJSON(body); err != nil {
 				t.Fatalf("%s: %v", item.Name, err)
+			}
+		case "raw":
+			if len(body) == 0 {
+				t.Fatalf("%s: empty raw body", item.Name)
 			}
 		default:
 			t.Fatalf("%s: unknown kind %q", item.Name, item.Kind)

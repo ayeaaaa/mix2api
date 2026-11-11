@@ -29,6 +29,9 @@ Selected cases:
 | admin_accounts | `GET /raccoon/accounts` (panel token) |
 | codearts_accounts | `GET /codearts/accounts` (panel token) |
 | media_models | `GET /v1/media/models` (API key) |
+| media_image_generation / media_image_edit / media_image_b64 | WorkBuddy image success paths |
+| media_video_wait / status / content / running / queued / cancel | WorkBuddy video task lifecycle |
+| media_tasks / media_usage / media_usage_recent | media task list and usage rows |
 | agents | `GET /agents` (panel token) |
 | updates / updates_backups | `GET /updates`, `GET /updates/backups` |
 | codearts_overview / checkin / credits_refresh / models_refresh | CodeArts panel routes |
@@ -55,6 +58,14 @@ tests/oracle/run.sh record --suite workbuddy \
   --fake-upstream --fake-control "$CONTROL" \
   --panel-token "$PANEL" --api-key "$API_KEY"
 
+# The media success suite uses the same fake with a fixed WorkBuddy port so
+# result URLs are reproducible; see recorded/v1.6.5-media/PROVENANCE.md.
+tests/oracle/run.sh record --suite media \
+  --base http://127.0.0.1:18780 --out /tmp/mix2api-oracle-media \
+  --version 1.6.5 --commit e40c4e8994f9cc6ace3457e350466cdd5d422a37 \
+  --fake-upstream --fake-control "$CONTROL" \
+  --panel-token "$PANEL" --api-key "$API_KEY"
+
 # Against the v2 candidate with the same fake-upstream accounts. --all reports
 # every mismatched case; the committed fixture is under tests/oracle/recorded.
 tests/oracle/run.sh compare --all \
@@ -64,8 +75,9 @@ tests/oracle/run.sh compare --all \
 ```
 
 The WorkBuddy procedure (including the test-only patch of the ignored v1 copy)
-is in `workbuddy.md`. The failure matrices and their setup/observe hooks are
-documented in `recorded/v1.6.5-failures/PROVENANCE.md`.
+is in `workbuddy.md`. The media success procedure is in `media.md`. The failure
+matrices and their setup/observe hooks are documented in
+`recorded/v1.6.5-failures/PROVENANCE.md`.
 
 Normalization uses `tests/contract/normalize.go`: transport metadata is
 dropped, generated IDs/timestamps are replaced only in identifier contexts,
@@ -75,13 +87,16 @@ writes credentials into the fixture.
 
 **Gate F status: selected oracle recording is COMPLETE; comparison has
 documented deltas.** The committed fixtures cover the Raccoon core matrix, the
-feasible CodeArts provider slice, the WorkBuddy intl/cn slice, and deterministic
-failure matrices for Raccoon, CodeArts, and WorkBuddy.
+feasible CodeArts provider slice, the WorkBuddy intl/cn slice, the WorkBuddy
+media success matrix, and deterministic failure matrices for Raccoon, CodeArts,
+and WorkBuddy.
 
 - `recorded/v1.6.5/`: 24 core cases. Against `2.0.0-rc.1`, 14 match exactly and
   10 differ by documented additive fields or running-version/log-store scope.
 - `recorded/v1.6.5-workbuddy/`: 18 WorkBuddy cases. 12 match exactly and 6
   differ only by documented additive model/usage fields or the log-store scope.
+- `recorded/v1.6.5-media/`: 13 WorkBuddy media success cases. 11 match exactly
+  and 2 differ by documented additive task-stats and media-usage-row fields.
 - `recorded/v1.6.5-failures/`: 15 failure cases. Raccoon 5/5 exact; CodeArts
   5/5 exact; WorkBuddy 5/5 exact.
 

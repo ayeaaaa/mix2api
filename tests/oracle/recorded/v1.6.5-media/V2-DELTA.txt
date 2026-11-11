@@ -1,0 +1,49 @@
+v1.6.5 media oracle vs mix2api v2 2.0.0-rc.1
+================================================
+
+Comparison command:
+  tests/oracle/run.sh compare --all \
+    --base http://127.0.0.1:18781 \
+    --oracle tests/oracle/recorded/v1.6.5-media \
+    --fake-control "$CONTROL" \
+    --panel-token "$PANEL" \
+    --api-key "$API_KEY"
+
+Result: 11 of 13 cases match exactly; 2 case(s) differ.
+
+Exact cases:
+  media_models
+  media_image_generation
+  media_image_edit
+  media_image_b64
+  media_video_wait
+  media_video_status
+  media_video_content
+  media_video_running
+  media_video_queued
+  media_video_cancel
+  media_usage
+
+Differences (path-qualified, no normalization of stable fields):
+
+oracle: media_tasks: JSON mismatch:
+stats.max_pending: extra on target (target=20)
+stats.max_tasks: extra on target (target=200)
+stats.submitting: extra on target (target=0)
+stats.workers: 3, want 1
+
+oracle: media_usage_recent: JSON mismatch:
+rows[0].elapsed_ms: "<duration>", want null
+rows[0].gen_ms: 0, want null
+rows[0].ttft_ms: 0, want null
+rows[1].gen_ms: 0, want null
+rows[1].resolution: extra on target (target="1024x1024")
+rows[1].ttft_ms: 0, want null
+rows[2].gen_ms: 0, want null
+rows[2].resolution: extra on target (target="1024x1024")
+rows[2].ttft_ms: 0, want null
+rows[3].gen_ms: 0, want null
+rows[3].resolution: extra on target (target="1024x1024")
+rows[3].ttft_ms: 0, want null
+
+oracle: 2 case(s) differ

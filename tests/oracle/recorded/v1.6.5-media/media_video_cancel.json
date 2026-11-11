@@ -1,0 +1,1 @@
+{"id": "vid_6dd0efe4607518f2", "object": "video", "status": "failed", "model": "kling-video-v3", "created_at": 1794369118, "completed_at": 1794369118, "seconds": "5", "resolution": "720P", "error": {"code": "cancelled", "message": "cancelled while queued (未提交到上游，未扣费)"}}

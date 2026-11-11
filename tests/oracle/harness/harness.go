@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,6 +70,14 @@ type Case struct {
 	Observe       string `json:"observe,omitempty"`
 	ObserveFile   string `json:"observe_file,omitempty"`
 	ObserveSHA256 string `json:"observe_sha256,omitempty"`
+	// Capture names values extracted from a JSON response so later cases can
+	// address resources the target generated (a video task id, its signed
+	// content URL). Keys are template names; values are dotted paths such as
+	// "id" or "data.0.url". Templates use {{name}} in Path or Observe.
+	Capture map[string]string `json:"capture,omitempty"`
+	// DelayMS waits before the request. It is only used for asynchronous
+	// resources whose background worker must reach a stable state first.
+	DelayMS int `json:"delay_ms,omitempty"`
 }
 
 // Provenance is the honesty record stored beside every oracle fixture.
@@ -183,6 +192,55 @@ func WorkBuddyCases() []Case {
 	}
 }
 
+// MediaCases is the v1.6.5 WorkBuddy media success slice: image generation,
+// image edit, image b64 passthrough, asynchronous video submit/status/content,
+// local queue cancellation, the task list, and usage rows. The fake toggles
+// media catalog entries and video completion from the same control hook used
+// by the WorkBuddy failure matrix.
+func MediaCases() []Case {
+	mediaSetup := func(scenario string) *ControlRequest {
+		return &ControlRequest{
+			Method: http.MethodPost, Path: "/__setup",
+			Body: json.RawMessage(`{"provider":"workbuddy","scenario":"` + scenario + `"}`),
+		}
+	}
+	imageBody := func(model string) json.RawMessage {
+		raw, _ := json.Marshal(map[string]any{
+			"model": model, "prompt": "oracle image", "size": "1024x1024",
+		})
+		return raw
+	}
+	videoBody := func() json.RawMessage {
+		raw, _ := json.Marshal(map[string]any{
+			"model": "kling-video-v3", "prompt": "oracle video",
+			"seconds": 5, "resolution": "720P",
+		})
+		return raw
+	}
+	// 1x1 transparent PNG. The edit path must receive a data URL, never a
+	// server path, and the fake never decodes it.
+	const tinyPNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0xQAAAAASUVORK5CYII="
+	editBody, _ := json.Marshal(map[string]any{
+		"model": "hunyuan-image-alpha-edit", "prompt": "oracle edit",
+		"size": "1024x1024", "image": tinyPNG,
+	})
+	return []Case{
+		{Name: "media_models", Method: http.MethodGet, Path: "/v1/media/models", Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_image_generation", Method: http.MethodPost, Path: "/v1/images/generations", Body: imageBody("hunyuan-image-alpha"), Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_image_edit", Method: http.MethodPost, Path: "/v1/images/edits", Body: editBody, Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_image_b64", Method: http.MethodPost, Path: "/v1/images/generations", Body: imageBody("gemini-image-oracle"), Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_video_wait", Method: http.MethodPost, Path: "/v1/videos?wait=1", Body: videoBody(), Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media"), Capture: map[string]string{"video_task_id": "id", "video_url": "url"}},
+		{Name: "media_video_status", Method: http.MethodGet, Path: "/v1/videos/{{video_task_id}}", Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_video_content", Method: http.MethodGet, Path: "{{video_url}}", Auth: AuthNone, Kind: "raw", Group: "media", Setup: mediaSetup("media")},
+		{Name: "media_video_running", Method: http.MethodPost, Path: "/v1/videos", Body: videoBody(), Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media_running"), Capture: map[string]string{"video_running_id": "id"}},
+		{Name: "media_video_queued", Method: http.MethodPost, Path: "/v1/videos", Body: videoBody(), Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media_running"), Capture: map[string]string{"video_queue_id": "id"}},
+		{Name: "media_video_cancel", Method: http.MethodPost, Path: "/v1/videos/{{video_queue_id}}/cancel", Auth: AuthAPI, Kind: "json", Group: "media", Setup: mediaSetup("media_running")},
+		{Name: "media_tasks", Method: http.MethodGet, Path: "/v1/media/tasks", Auth: AuthAPI, Kind: "json", Group: "media", DelayMS: 1000},
+		{Name: "media_usage", Method: http.MethodGet, Path: "/usage?realm=intl", Auth: AuthPanel, Kind: "json", Group: "media"},
+		{Name: "media_usage_recent", Method: http.MethodGet, Path: "/usage/recent?realm=intl&limit=10", Auth: AuthPanel, Kind: "json", Group: "media"},
+	}
+}
+
 func failureCase(name, path string, body json.RawMessage, kind, provider, scenario string) Case {
 	return Case{
 		Name: name, Method: http.MethodPost, Path: path, Body: body,
@@ -278,6 +336,8 @@ func CasesForSuite(name string) ([]Case, error) {
 		return DefaultCases(), nil
 	case "workbuddy":
 		return WorkBuddyCases(), nil
+	case "media":
+		return MediaCases(), nil
 	case "raccoon-failures", "raccoon_failures":
 		return RaccoonFailureCases(), nil
 	case "codearts-failures", "codearts_failures":
@@ -346,15 +406,22 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 	if err := validateProvenance(document.Provenance); err != nil {
 		return err
 	}
+	vars := map[string]string{}
 	for _, item := range r.Cases {
+		if item.DelayMS > 0 {
+			time.Sleep(time.Duration(item.DelayMS) * time.Millisecond)
+		}
 		if item.Setup != nil {
-			if err := r.runControl(ctx, *item.Setup); err != nil {
+			if err := r.runControl(ctx, *item.Setup, vars); err != nil {
 				return fmt.Errorf("oracle: setup %s: %w", item.Name, err)
 			}
 		}
-		status, body, err := r.fetch(ctx, item)
+		status, body, err := r.fetch(ctx, item, vars)
 		if err != nil {
 			return fmt.Errorf("oracle: record %s: %w", item.Name, err)
+		}
+		if err := captureValues(body, item.Capture, vars); err != nil {
+			return fmt.Errorf("oracle: capture %s: %w", item.Name, err)
 		}
 		item.Status = status
 		item.File = item.Name + "." + item.Kind
@@ -364,7 +431,7 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 			return err
 		}
 		if item.Observe != "" {
-			observed, err := r.fetchControl(ctx, item.Observe)
+			observed, err := r.fetchControl(ctx, item.Observe, vars)
 			if err != nil {
 				return fmt.Errorf("oracle: observe %s: %w", item.Name, err)
 			}
@@ -471,25 +538,33 @@ func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 		return []CaseError{{Name: "fixture", Err: err}}
 	}
 	var failures []CaseError
+	vars := map[string]string{}
 	for _, item := range document.Cases {
 		want, err := os.ReadFile(filepath.Join(c.Dir, item.File))
 		if err != nil {
 			failures = append(failures, CaseError{Name: item.Name, Err: err})
 			continue
 		}
+		if item.DelayMS > 0 {
+			time.Sleep(time.Duration(item.DelayMS) * time.Millisecond)
+		}
 		if item.Setup != nil {
 			if c.FakeControl == "" {
 				failures = append(failures, CaseError{Name: item.Name, Err: errors.New("fake control URL is required")})
 				continue
 			}
-			if err := c.runControl(ctx, *item.Setup); err != nil {
+			if err := c.runControl(ctx, *item.Setup, vars); err != nil {
 				failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("setup: %w", err)})
 				continue
 			}
 		}
-		status, got, err := c.fetch(ctx, item)
+		status, got, err := c.fetch(ctx, item, vars)
 		if err != nil {
 			failures = append(failures, CaseError{Name: item.Name, Err: err})
+			continue
+		}
+		if err := captureValues(got, item.Capture, vars); err != nil {
+			failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("capture: %w", err)})
 			continue
 		}
 		if status != item.Status {
@@ -507,7 +582,7 @@ func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 				failures = append(failures, CaseError{Name: item.Name, Err: err})
 				continue
 			}
-			gotObserved, err := c.fetchControl(ctx, item.Observe)
+			gotObserved, err := c.fetchControl(ctx, item.Observe, vars)
 			if err != nil {
 				failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("observe: %w", err)})
 				continue
@@ -520,29 +595,29 @@ func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 	return failures
 }
 
-func (r *Recorder) runControl(ctx context.Context, control ControlRequest) error {
-	_, _, err := doControl(ctx, r.FakeControl, control)
+func (r *Recorder) runControl(ctx context.Context, control ControlRequest, vars map[string]string) error {
+	_, _, err := doControl(ctx, r.FakeControl, control, vars)
 	return err
 }
 
-func (r *Recorder) fetchControl(ctx context.Context, path string) ([]byte, error) {
-	return getControl(ctx, r.FakeControl, path)
+func (r *Recorder) fetchControl(ctx context.Context, path string, vars map[string]string) ([]byte, error) {
+	return getControl(ctx, r.FakeControl, path, vars)
 }
 
-func (c *Comparer) runControl(ctx context.Context, control ControlRequest) error {
-	_, _, err := doControl(ctx, c.FakeControl, control)
+func (c *Comparer) runControl(ctx context.Context, control ControlRequest, vars map[string]string) error {
+	_, _, err := doControl(ctx, c.FakeControl, control, vars)
 	return err
 }
 
-func (c *Comparer) fetchControl(ctx context.Context, path string) ([]byte, error) {
-	return getControl(ctx, c.FakeControl, path)
+func (c *Comparer) fetchControl(ctx context.Context, path string, vars map[string]string) ([]byte, error) {
+	return getControl(ctx, c.FakeControl, path, vars)
 }
 
-func doControl(ctx context.Context, baseURL string, control ControlRequest) (int, []byte, error) {
+func doControl(ctx context.Context, baseURL string, control ControlRequest, vars map[string]string) (int, []byte, error) {
 	if baseURL == "" {
 		return 0, nil, errors.New("oracle: fake control URL is required")
 	}
-	target, err := joinURL(baseURL, control.Path)
+	target, err := joinURL(baseURL, expandVariables(control.Path, vars))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -571,11 +646,11 @@ func doControl(ctx context.Context, baseURL string, control ControlRequest) (int
 	return status, raw, nil
 }
 
-func getControl(ctx context.Context, baseURL, path string) ([]byte, error) {
+func getControl(ctx context.Context, baseURL, path string, vars map[string]string) ([]byte, error) {
 	if baseURL == "" {
 		return nil, errors.New("oracle: fake control URL is required")
 	}
-	target, err := joinURL(baseURL, path)
+	target, err := joinURL(baseURL, expandVariables(path, vars))
 	if err != nil {
 		return nil, err
 	}
@@ -593,28 +668,28 @@ func getControl(ctx context.Context, baseURL, path string) ([]byte, error) {
 	return raw, nil
 }
 
-func (r *Recorder) fetch(ctx context.Context, item Case) (int, []byte, error) {
-	request, err := r.build(ctx, item)
+func (r *Recorder) fetch(ctx context.Context, item Case, vars map[string]string) (int, []byte, error) {
+	request, err := r.build(ctx, item, vars)
 	if err != nil {
 		return 0, nil, err
 	}
 	return doRequest(r.Client, request)
 }
 
-func (c *Comparer) fetch(ctx context.Context, item Case) (int, []byte, error) {
-	request, err := buildRequest(ctx, c.BaseURL, c.Creds, item)
+func (c *Comparer) fetch(ctx context.Context, item Case, vars map[string]string) (int, []byte, error) {
+	request, err := buildRequest(ctx, c.BaseURL, c.Creds, item, vars)
 	if err != nil {
 		return 0, nil, err
 	}
 	return doRequest(c.Client, request)
 }
 
-func (r *Recorder) build(ctx context.Context, item Case) (*http.Request, error) {
-	return buildRequest(ctx, r.BaseURL, r.Creds, item)
+func (r *Recorder) build(ctx context.Context, item Case, vars map[string]string) (*http.Request, error) {
+	return buildRequest(ctx, r.BaseURL, r.Creds, item, vars)
 }
 
-func buildRequest(ctx context.Context, baseURL string, creds Credentials, item Case) (*http.Request, error) {
-	target, err := joinURL(baseURL, item.Path)
+func buildRequest(ctx context.Context, baseURL string, creds Credentials, item Case, vars map[string]string) (*http.Request, error) {
+	target, err := joinURL(baseURL, expandVariables(item.Path, vars))
 	if err != nil {
 		return nil, err
 	}
@@ -719,6 +794,22 @@ func loopbackClient() *http.Client {
 // replaces it here instead of changing the shared rule.
 var tokenRemainingPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]`)
 
+// mediaContentURLPattern matches a video download URL. The task id and signed
+// token are generated per run; the route, index, and token query key are
+// stable contract fields and survive.
+var mediaContentURLPattern = regexp.MustCompile(`^/v1/videos/[^/]+/content\?i=([0-9]+)&t=[^&]+$`)
+
+// mediaHintTaskPattern matches the task id embedded in the queued-submit hint.
+var mediaHintTaskPattern = regexp.MustCompile(`(/v1/videos/)[A-Za-z0-9_-]+`)
+
+func normalizeMediaContentURL(value string) (string, bool) {
+	match := mediaContentURLPattern.FindStringSubmatch(value)
+	if match == nil {
+		return "", false
+	}
+	return "/v1/videos/" + contract.DynamicValue + "/content?i=" + match[1] + "&t=" + contract.DynamicValue, true
+}
+
 func normalizeOracleJSON(data []byte) (any, error) {
 	value, err := contract.NormalizeJSON(data)
 	if err != nil {
@@ -738,6 +829,20 @@ func normalizeOracleValues(value any) any {
 					continue
 				}
 			}
+			if strings.EqualFold(strings.TrimSpace(key), "url") {
+				if text, ok := child.(string); ok {
+					if normalized, matched := normalizeMediaContentURL(text); matched {
+						typed[key] = normalized
+						continue
+					}
+				}
+			}
+			if strings.EqualFold(strings.TrimSpace(key), "hint") {
+				if text, ok := child.(string); ok {
+					typed[key] = mediaHintTaskPattern.ReplaceAllString(text, "${1}"+contract.DynamicValue)
+					continue
+				}
+			}
 			typed[key] = normalizeOracleValues(child)
 		}
 		return typed
@@ -749,6 +854,75 @@ func normalizeOracleValues(value any) any {
 	default:
 		return value
 	}
+}
+
+func expandVariables(text string, vars map[string]string) string {
+	if len(vars) == 0 || !strings.Contains(text, "{{") {
+		return text
+	}
+	for key, value := range vars {
+		text = strings.ReplaceAll(text, "{{"+key+"}}", value)
+	}
+	return text
+}
+
+// captureValues extracts named values from a JSON response. It is used for
+// resources the target generates during a recording (video task ids and their
+// signed content URLs) so later cases can address the same resource.
+func captureValues(body []byte, capture map[string]string, vars map[string]string) error {
+	if len(capture) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var root any
+	if err := decoder.Decode(&root); err != nil {
+		return fmt.Errorf("response is not JSON: %w", err)
+	}
+	for name, path := range capture {
+		value, ok := lookupPath(root, path)
+		if !ok {
+			return fmt.Errorf("capture %q: path %q not found", name, path)
+		}
+		switch typed := value.(type) {
+		case string:
+			vars[name] = typed
+		case json.Number:
+			vars[name] = typed.String()
+		case bool:
+			vars[name] = strconv.FormatBool(typed)
+		default:
+			return fmt.Errorf("capture %q: path %q is not a scalar", name, path)
+		}
+	}
+	return nil
+}
+
+func lookupPath(root any, path string) (any, bool) {
+	current := root
+	for _, segment := range strings.Split(strings.TrimSpace(path), ".") {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			return nil, false
+		}
+		switch typed := current.(type) {
+		case map[string]any:
+			value, ok := typed[segment]
+			if !ok {
+				return nil, false
+			}
+			current = value
+		case []any:
+			index, err := strconv.Atoi(segment)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 func compareBody(kind string, want, got []byte) error {
@@ -776,6 +950,10 @@ func compareBody(kind string, want, got []byte) error {
 		}
 		if !semanticEqual(wantValue, gotValue) {
 			return fmt.Errorf("JSON mismatch:\n%s", describeDifferences(wantValue, gotValue))
+		}
+	case "raw":
+		if !bytes.Equal(want, got) {
+			return fmt.Errorf("raw body mismatch: %d bytes, want %d", len(got), len(want))
 		}
 	default:
 		if !bytes.Equal(bytes.TrimSpace(want), bytes.TrimSpace(got)) {
@@ -996,11 +1174,19 @@ func validateCases(cases []Case) error {
 			return fmt.Errorf("oracle: empty or duplicate case name %q", item.Name)
 		}
 		names[name] = true
-		if item.Method == "" || !strings.HasPrefix(item.Path, "/") || strings.Contains(item.Path, "://") {
+		if item.Method == "" || (!strings.HasPrefix(item.Path, "/") && !strings.HasPrefix(item.Path, "{{")) || strings.Contains(item.Path, "://") {
 			return fmt.Errorf("oracle: invalid request for %s", name)
 		}
-		if item.Kind != "json" && item.Kind != "sse" {
+		if item.Kind != "json" && item.Kind != "sse" && item.Kind != "raw" {
 			return fmt.Errorf("oracle: invalid kind for %s", name)
+		}
+		if item.DelayMS < 0 {
+			return fmt.Errorf("oracle: negative delay for %s", name)
+		}
+		for captureName, capturePath := range item.Capture {
+			if strings.TrimSpace(captureName) == "" || strings.TrimSpace(capturePath) == "" {
+				return fmt.Errorf("oracle: empty capture for %s", name)
+			}
 		}
 		if item.Status < 200 || item.Status > 599 {
 			return fmt.Errorf("oracle: invalid status for %s", name)

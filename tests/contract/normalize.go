@@ -215,6 +215,7 @@ var dynamicIDPrefixes = []string{
 	"evt_", "evt-",
 	"toolu_", "toolu-",
 	"cmpl_", "cmpl-",
+	"vid_", "vid-",
 }
 
 func normalizeStringValue(value, key string, context normalizeContext) string {
@@ -280,7 +281,7 @@ func isTimestampKey(key string) bool {
 		"startedat", "finished", "finishedat", "deletedat", "requestedat",
 		"completedat", "expires", "expiresat", "fetchedat", "retryafter",
 		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil", "until",
-		"since",
+		"since", "at", "iso",
 		// WorkBuddy panel views emit both epoch fields and their local-wire
 		// presentation forms; activity rows use the short "ts" spelling.
 		"addedat", "updatediso", "lastcheckin", "lastactivityreport",

@@ -58,6 +58,13 @@ class WorkBuddyState(object):
         self.chat_calls = 0
         self.refresh_calls = 0
         self.catalog_calls = 0
+        self.media_catalog = False
+        self.video_scenario = "completed"
+        self.image_calls = 0
+        self.edit_calls = 0
+        self.video_submit_calls = 0
+        self.video_task_calls = 0
+        self.media_asset_calls = 0
         self.requests = []
         self.initial_token = make_jwt("pu-raccoon-test")
         self.token = self.initial_token
@@ -73,6 +80,13 @@ class WorkBuddyState(object):
             self.chat_calls = 0
             self.refresh_calls = 0
             self.catalog_calls = 0
+            self.media_catalog = scenario.startswith("media")
+            self.video_scenario = "running" if scenario == "media_running" else "completed"
+            self.image_calls = 0
+            self.edit_calls = 0
+            self.video_submit_calls = 0
+            self.video_task_calls = 0
+            self.media_asset_calls = 0
             self.requests = []
             self.accepted_tokens = set()
 
@@ -81,27 +95,80 @@ class WorkBuddyState(object):
             self.requests.append({"method": method, "path": path, "status": status})
 
 
-CATALOG = {
-    "code": 0,
-    "data": {
-        "agents": {
-            "cli": {
-                "models": ["hy4-preview"],
-            }
-        },
-        "models": [
-            {
-                "id": "hy4-preview",
-                "name": "Hy4 Preview",
-                "descriptionEn": "Oracle WorkBuddy model",
-                "credits": "x0.00",
-                "supportsToolCall": True,
-                "supportsReasoning": True,
-                "supportsImages": False,
-            }
-        ],
+CHAT_MODELS = [
+    {
+        "id": "hy4-preview",
+        "name": "Hy4 Preview",
+        "descriptionEn": "Oracle WorkBuddy model",
+        "credits": "x0.00",
+        "supportsToolCall": True,
+        "supportsReasoning": True,
+        "supportsImages": False,
+    }
+]
+
+#: Media catalog entries. Only fields v1's read_video_generation projection
+#: preserves are present, so the recorded /v1/media/models body is stable.
+MEDIA_MODELS = [
+    {
+        "id": "hunyuan-image-alpha",
+        "name": "Hunyuan Image Alpha",
+        "tags": ["text-to-image"],
     },
-}
+    {
+        "id": "gemini-image-oracle",
+        "name": "Gemini Image Oracle",
+        "tags": ["text-to-image"],
+    },
+    {
+        "id": "hunyuan-image-alpha-edit",
+        "name": "Hunyuan Image Alpha Edit",
+        "tags": ["image-to-image"],
+    },
+    {
+        "id": "kling-video-v3",
+        "name": "Kling-Video-V3",
+        "tags": ["text-to-video", "image-to-video"],
+        "videoGeneration": {
+            "minSeconds": 3,
+            "maxSeconds": 15,
+            "defaultSeconds": 5,
+            "resolutions": ["720P", "1080P", "4K"],
+            "defaultResolution": "720P",
+            "aspectRatios": ["16:9", "9:16", "1:1"],
+            "defaultAspectRatio": "16:9",
+            "maxPromptLength": 2500,
+            "audioMode": "switchable",
+            "defaultEnableAudio": True,
+        },
+    },
+]
+
+
+def catalog_payload(include_media=False):
+    models = list(CHAT_MODELS)
+    if include_media:
+        models.extend(MEDIA_MODELS)
+    return {
+        "code": 0,
+        "data": {
+            "agents": {
+                "cli": {
+                    "models": ["hy4-preview"],
+                }
+            },
+            "models": models,
+        },
+    }
+
+
+#: Deterministic media assets. The video bytes are asserted by the fixture
+#: integrity test; the PNG is a 1x1 transparent image.
+IMAGE_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0xQAAAAASUVORK5CYII="
+)
+VIDEO_BYTES = b"oracle-media-video-bytes-v1\n"
+IMAGE_B64 = base64.b64encode(b"oracle-image").decode("ascii")
 
 
 def _sse_chunk(model, delta, finish=None, usage=None):
@@ -149,16 +216,40 @@ class WorkBuddyHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         self.state.record(self.command, self.path.split("?")[0], status)
 
+    def _bytes(self, raw, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+        self.state.record(self.command, self.path.split("?")[0], status)
+
+    def _base(self):
+        return "http://127.0.0.1:%d" % self.server.server_address[1]
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/v3/config":
             with self.state.lock:
                 self.state.catalog_calls += 1
-            return self._json(200, CATALOG)
+                include_media = self.state.media_catalog
+            return self._json(200, catalog_payload(include_media))
         if path in ("/v2/activity/growth/tasks", "/activity/growth/streak",
                     "/activity/growth/energy", "/v2/activity/growth/energy"):
             return self._json(200, {"code": 0, "data": {}})
+        if path == "/oracle/media/image.png":
+            return self._media_asset(IMAGE_BYTES, "image/png")
+        if path == "/oracle/media/image-edit.png":
+            return self._media_asset(IMAGE_BYTES, "image/png")
+        if path == "/oracle/media/video.mp4":
+            return self._media_asset(VIDEO_BYTES, "video/mp4")
         return self._json(404, {"code": 404, "msg": "not found"})
+
+    def _media_asset(self, raw, content_type):
+        with self.state.lock:
+            self.state.media_asset_calls += 1
+        return self._bytes(raw, content_type)
 
     def do_POST(self):
         path = self.path.split("?")[0]
@@ -169,6 +260,14 @@ class WorkBuddyHandler(BaseHTTPRequestHandler):
             payload = {}
         if path == "/v2/chat/completions":
             return self._chat(payload)
+        if path == "/v2/images/generations":
+            return self._image(payload, edit=False)
+        if path == "/v2/images/edits":
+            return self._image(payload, edit=True)
+        if path == "/v2/videos/generations":
+            return self._video_submit(payload)
+        if path == "/v2/videos/tasks":
+            return self._video_task(payload)
         if path == "/v2/plugin/auth/token/refresh":
             with self.state.lock:
                 self.state.refresh_calls += 1
@@ -258,6 +357,56 @@ class WorkBuddyHandler(BaseHTTPRequestHandler):
         ).encode("utf-8")
         return self._sse(raw)
 
+    def _image(self, payload, edit):
+        model = str(payload.get("model") or "")
+        with self.state.lock:
+            if edit:
+                self.state.edit_calls += 1
+            else:
+                self.state.image_calls += 1
+        item = {}
+        if model.startswith("gemini-"):
+            # The gateway forwards b64_json unchanged; no product fetch is
+            # involved, so this path is identical on both targets.
+            item["b64_json"] = IMAGE_B64
+        else:
+            suffix = "image-edit.png" if edit else "image.png"
+            item["url"] = self._base() + "/oracle/media/" + suffix
+        item["revised_prompt"] = "oracle revised prompt"
+        credit = 6.14 if edit else 5.71
+        return self._json(200, {
+            "code": 0,
+            "data": {
+                "created": 1700000001,
+                "data": [item],
+                "usage": {"credit": credit},
+            },
+        })
+
+    def _video_submit(self, payload):
+        with self.state.lock:
+            self.state.video_submit_calls += 1
+            task_id = "task-oracle-video-%d" % self.state.video_submit_calls
+        return self._json(200, {"code": 0, "data": {"id": task_id}})
+
+    def _video_task(self, payload):
+        with self.state.lock:
+            self.state.video_task_calls += 1
+            scenario = self.state.video_scenario
+        if scenario == "running":
+            return self._json(200, {
+                "code": 0,
+                "data": {"status": "running", "data": []},
+            })
+        return self._json(200, {
+            "code": 0,
+            "data": {
+                "status": "completed",
+                "data": [{"url": self._base() + "/oracle/media/video.mp4"}],
+                "usage": {"credit": 128.57},
+            },
+        })
+
 
 class ControlHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -307,10 +456,10 @@ class ControlHandler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": True})
 
 
-def start_workbuddy():
+def start_workbuddy(port=0):
     state = WorkBuddyState()
     handler = type("FakeWorkBuddy", (WorkBuddyHandler,), {"state": state})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, "http://127.0.0.1:%d" % server.server_address[1], state
@@ -425,20 +574,32 @@ def observe_workbuddy(state):
             "chat_calls": state.chat_calls,
             "refresh_calls": state.refresh_calls,
             "catalog_calls": state.catalog_calls,
+            "image_calls": state.image_calls,
+            "edit_calls": state.edit_calls,
+            "video_submit_calls": state.video_submit_calls,
+            "video_task_calls": state.video_task_calls,
+            "media_asset_calls": state.media_asset_calls,
             "requests": [
                 item for item in state.requests
                 if item.get("path") in (
                     "/v2/chat/completions",
                     "/v2/plugin/auth/token/refresh",
                     "/v3/config",
+                    "/v2/images/generations",
+                    "/v2/images/edits",
+                    "/v2/videos/generations",
+                    "/v2/videos/tasks",
+                    "/oracle/media/image.png",
+                    "/oracle/media/image-edit.png",
+                    "/oracle/media/video.mp4",
                 )
             ],
         }
 
 
-def start_control(providers):
+def start_control(providers, port=0):
     handler = type("FakeControl", (ControlHandler,), {"providers": providers})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, "http://127.0.0.1:%d" % server.server_address[1]
@@ -447,12 +608,16 @@ def start_control(providers):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--info", required=True, help="write the loopback bases here")
+    parser.add_argument("--workbuddy-port", type=int, default=0,
+                        help="fixed WorkBuddy fake port (0 picks a free port)")
+    parser.add_argument("--control-port", type=int, default=0,
+                        help="fixed control port (0 picks a free port)")
     args = parser.parse_args()
 
     raccoon_server, raccoon_base, raccoon_state = _fake_raccoon.start_server()
     raccoon_state.initial_token = raccoon_state.token
     codearts_server, codearts_base, codearts_state = _fake_codearts.start_server()
-    wb_server, wb_base, wb_state = start_workbuddy()
+    wb_server, wb_base, wb_state = start_workbuddy(args.workbuddy_port)
     providers = {
         "raccoon": {
             "setup": lambda scenario: setup_raccoon(raccoon_state, scenario),
@@ -467,7 +632,7 @@ def main():
             "observe": lambda: observe_workbuddy(wb_state),
         },
     }
-    control_server, control_base = start_control(providers)
+    control_server, control_base = start_control(providers, args.control_port)
     info = {
         "raccoon": raccoon_base,
         "codearts": codearts_base,

@@ -154,6 +154,90 @@ func TestValidateLoopbackAndJoinURL(t *testing.T) {
 	}
 }
 
+func TestRecordCompareCaptureRawAndDelay(t *testing.T) {
+	var run atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/create":
+			writeTestJSON(w, map[string]any{
+				"id": fmt.Sprintf("vid_%d", run.Load()), "url": "/raw",
+			})
+		case r.URL.Path == "/raw":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("fixed-bytes\n"))
+		case strings.HasPrefix(r.URL.Path, "/item/vid_"):
+			writeTestJSON(w, map[string]any{"ok": true, "path": r.URL.Path})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cases := []Case{
+		{Name: "create", Method: http.MethodGet, Path: "/create", Auth: AuthNone, Kind: "json",
+			Capture: map[string]string{"task_id": "id", "raw_url": "url"}},
+		{Name: "raw", Method: http.MethodGet, Path: "{{raw_url}}", Auth: AuthNone, Kind: "raw", DelayMS: 1},
+		{Name: "item", Method: http.MethodGet, Path: "/item/{{task_id}}", Auth: AuthNone, Kind: "json"},
+	}
+	dir := t.TempDir() + "/oracle"
+	recorder := &Recorder{
+		BaseURL: server.URL, Cases: cases,
+		Provenance: Provenance{TargetVersion: "1.6.5", TargetCommit: "abc", FakeUpstream: true},
+		Now:        func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) },
+	}
+	if err := recorder.Record(context.Background(), dir); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	document, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Cases[0].Capture["task_id"] != "id" {
+		t.Fatalf("capture spec was not persisted: %#v", document.Cases[0].Capture)
+	}
+	if document.Cases[1].Kind != "raw" || document.Cases[1].DelayMS != 1 {
+		t.Fatalf("raw/delay metadata = %#v", document.Cases[1])
+	}
+	comparer := &Comparer{BaseURL: server.URL, Dir: dir}
+	if diffs := comparer.CompareAll(context.Background()); len(diffs) != 0 {
+		t.Fatalf("compare: %v", diffs)
+	}
+
+	// A changed raw body must fail even though the JSON cases still match.
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/create":
+			writeTestJSON(w, map[string]any{"id": "vid_changed", "url": "/raw"})
+		case r.URL.Path == "/raw":
+			_, _ = w.Write([]byte("different-bytes\n"))
+		default:
+			writeTestJSON(w, map[string]any{"ok": true})
+		}
+	})
+	diffs := comparer.CompareAll(context.Background())
+	if len(diffs) != 2 || !strings.Contains(diffs[0].Error(), "raw body mismatch") {
+		t.Fatalf("raw mismatch not reported first: %v", diffs)
+	}
+}
+
+func TestCaptureRequiresJSONScalar(t *testing.T) {
+	dir := t.TempDir() + "/oracle"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{"object": map[string]any{"id": "x"}})
+	}))
+	defer server.Close()
+	recorder := &Recorder{
+		BaseURL: server.URL,
+		Cases: []Case{{Name: "one", Method: http.MethodGet, Path: "/one", Auth: AuthNone, Kind: "json",
+			Capture: map[string]string{"value": "missing.path"}}},
+		Provenance: Provenance{TargetVersion: "1.6.5", TargetCommit: "abc", FakeUpstream: true},
+		Now:        func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) },
+	}
+	if err := recorder.Record(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing capture path error = %v", err)
+	}
+}
+
 func writeTestJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
