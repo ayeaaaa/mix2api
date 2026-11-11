@@ -1491,6 +1491,7 @@ func (p *Provider) normalizeChatBody(body map[string]any, model string) error {
 	clampGPTMaxTokens(body, model)
 	normalizeChatToolChoice(body)
 	normalizeChatTools(body)
+	inlineKimiToolSchemas(body, model)
 	normalizeChatStop(body)
 	if _, exists := body["max_tokens"]; !exists {
 		if limit := p.defaultMaxOutputTokens(model); limit > 0 {

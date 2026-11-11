@@ -542,7 +542,7 @@ func TestCatalogModelsLiveHeadersWireShapeAndTiers(t *testing.T) {
 	if got := header.Get("Referer"); got != "https://www.workbuddy.ai/" {
 		t.Fatalf("Referer = %q", got)
 	}
-	if got := header.Get("User-Agent"); !strings.Contains(got, "workbuddy-ai/5.8.4") {
+	if got := header.Get("User-Agent"); !strings.Contains(got, "workbuddy-ai/5.9.4") {
 		t.Fatalf("User-Agent = %q", got)
 	}
 	if got := header.Get("X-API-Key"); got != "" {

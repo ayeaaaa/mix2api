@@ -132,19 +132,19 @@ func TestIdentityDesktopUAVersions(t *testing.T) {
 	t.Setenv("WB_VSCODE_IDE_VERSION", "")
 	t.Setenv("WB_IDENTITY_NODE_VERSION", "")
 
-	if got, want := desktopUA("intl"), "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"; got != want {
+	if got, want := desktopUA("intl"), "WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0"; got != want {
 		t.Fatalf("desktopUA(intl) = %q, want %q", got, want)
 	}
-	if got, want := desktopUA("cn"), "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"; got != want {
+	if got, want := desktopUA("cn"), "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.165.0"; got != want {
 		t.Fatalf("desktopUA(cn) = %q, want %q", got, want)
 	}
-	if got := desktopVersion("intl"); got != "5.8.4" {
+	if got := desktopVersion("intl"); got != "5.9.4" {
 		t.Fatalf("desktopVersion(intl) = %q", got)
 	}
 	if got := desktopVersion("cn"); got != "5.8.3" {
 		t.Fatalf("desktopVersion(cn) = %q", got)
 	}
-	if got := desktopVersion("nonsense"); got != "5.8.4" {
+	if got := desktopVersion("nonsense"); got != "5.9.4" {
 		t.Fatalf("desktopVersion(nonsense) = %q", got)
 	}
 
@@ -267,11 +267,11 @@ func TestIdentityDesktopHeaders(t *testing.T) {
 		"X-Agent-Type":      "main",
 		"X-IDE-Name":        "WorkBuddy",
 		"X-IDE-Type":        "WorkBuddy",
-		"X-IDE-Version":     "5.8.4",
+		"X-IDE-Version":     "5.9.4",
 		"X-Private-Data":    "true",
 		"X-Product":         "SaaS",
 		"X-Domain":          "www.workbuddy.ai",
-		"User-Agent":        "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+		"User-Agent":        "WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0",
 		"X-User-Id":         "uid-1",
 		"Authorization":     "Bearer tok-1",
 		"X-Root-Request-ID": h.Get("X-Conversation-Request-ID"),
@@ -313,7 +313,7 @@ func TestIdentityDesktopHeaders(t *testing.T) {
 		Realm: "cn", Product: "workbuddy", UID: "uid-1", Token: "tok-1",
 	})
 	if cn.Get("X-IDE-Version") != "5.8.3" ||
-		cn.Get("User-Agent") != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0" ||
+		cn.Get("User-Agent") != "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.165.0" ||
 		cn.Get("X-Domain") != "copilot.tencent.com" {
 		t.Fatalf("cn desktop identity = %#v", cn)
 	}
@@ -710,7 +710,7 @@ func TestProviderNewRealmAndIdentityHelpers(t *testing.T) {
 	if p.ID() != "workbuddy-intl" || p.Realm() != "intl" {
 		t.Fatalf("provider identity = %q/%q", p.ID(), p.Realm())
 	}
-	if got, want := p.DesktopUA(), "WorkBuddy/9.9.9 workbuddy-ai/9.9.9 CLI/2.161.0"; got != want {
+	if got, want := p.DesktopUA(), "WorkBuddy/9.9.9 workbuddy-ai/9.9.9 CLI/2.165.0"; got != want {
 		t.Fatalf("Provider.DesktopUA() = %q, want %q", got, want)
 	}
 	if got := p.DesktopVersion(); got != "9.9.9" {
@@ -808,7 +808,7 @@ func TestIdentityVersionSettingsRoundTrip(t *testing.T) {
 	if resolved.DesktopCN != "9.9.9" || resolved.Node != "v23.0.0" {
 		t.Fatalf("resolved versions = %#v", resolved)
 	}
-	if resolved.DesktopIntl != "5.8.4" || resolved.CLI != "2.168.2" {
+	if resolved.DesktopIntl != "5.9.4" || resolved.CLI != "2.168.2" {
 		t.Fatalf("defaults were not filled: %#v", resolved)
 	}
 	// The stored config must contain only overrides, not a frozen copy of every

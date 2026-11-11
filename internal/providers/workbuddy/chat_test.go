@@ -273,7 +273,7 @@ func TestChatIntlDesktopHeadersAndBody(t *testing.T) {
 	checks := map[string]string{
 		"Authorization":       "Bearer access-intl-1",
 		"X-Domain":            "www.workbuddy.ai",
-		"User-Agent":          "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+		"User-Agent":          "WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0",
 		"Origin":              "https://www.workbuddy.ai",
 		"Referer":             "https://www.workbuddy.ai/",
 		"X-CodeBuddy-Request": "1",
