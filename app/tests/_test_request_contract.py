@@ -237,5 +237,57 @@ class RequestContractTests(unittest.TestCase):
             self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "intl"),
                              "deepseek-v4.1-flash")
 
+    def test_responses_replay_joins_adjacent_reasoning(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "first"},
+                {"type": "summary_text", "text": "second"},
+            ]},
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "third"},
+            ]},
+            {"type": "message", "role": "assistant", "content": "answer"},
+        ]})
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["reasoning_content"], "first\nsecond\nthird")
+
+    def test_responses_replay_preserves_inline_assistant_fields(self):
+        messages = P._responses_input_to_messages({"input": [{
+            "type": "message", "role": "assistant", "content": "hello",
+            "reasoning_content": "think",
+            "tool_calls": [{"id": "call-1", "type": "function",
+                            "function": {"name": "run", "arguments": "{}"}}],
+        }]})
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["reasoning_content"], "think")
+        self.assertEqual(len(messages[0]["tool_calls"]), 1)
+
+    def test_responses_replay_reasoning_before_tool_call_starts_new_assistant(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "message", "role": "assistant", "content": "earlier"},
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "tool thinking"},
+            ]},
+            {"type": "function_call", "call_id": "call-1",
+             "name": "run", "arguments": "{}"},
+        ]})
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["content"], "earlier")
+        self.assertNotIn("reasoning_content", messages[0])
+        self.assertEqual(messages[1]["reasoning_content"], "tool thinking")
+        self.assertEqual(len(messages[1]["tool_calls"]), 1)
+
+    def test_responses_replay_tool_output_clears_pending_reasoning(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "orphan thinking"},
+            ]},
+            {"type": "function_call_output", "call_id": "",
+             "output": "next instruction"},
+            {"type": "message", "role": "assistant", "content": "done"},
+        ]})
+        self.assertEqual(len(messages), 2)
+        self.assertNotIn("reasoning_content", messages[1])
+
 if __name__ == "__main__":
     unittest.main()
