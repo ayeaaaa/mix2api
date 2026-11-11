@@ -241,6 +241,7 @@ func BuildPlatform(setup *Setup, opts PlatformOptions) (*Platform, error) {
 	}
 
 	usageService := usage.NewService(usageStore, pricingSnapshot, usageCache)
+	usageService.Rollup = usage.NewRollup(usagePaths.Dir, pricingSnapshot)
 	usageService.Now = opts.Now
 	usageService.StartedAt = opts.Now()
 	usageService.AccountsFunc, usageService.CurrentAccountFunc = usageAccountInventory(providerList)

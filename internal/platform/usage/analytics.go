@@ -354,6 +354,12 @@ func (s *Service) analyticsAllTime(ctx context.Context, realm string) (analytics
 	if maps, ok := s.adoptAnalytics(ctx, realm); ok {
 		return maps, nil
 	}
+	if s.Rollup != nil {
+		if maps, offset, ok := s.Rollup.Analytics(ctx, s, realm); ok {
+			s.saveAnalytics(realm, maps, offset)
+			return maps, nil
+		}
+	}
 	maps := newAnalyticsMaps()
 	pricer := s.newRowPricer()
 	offset, err := s.scanAll(ctx, func(row Row) error {
