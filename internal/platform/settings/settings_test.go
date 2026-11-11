@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -477,5 +478,63 @@ func TestRuntimeSettingsDefaultsAndValidation(t *testing.T) {
 	enabled, rows, days, bytes := service.LogCaps()
 	if enabled || rows != 0 || days != 0 || bytes != 0 {
 		t.Fatalf("LogCaps after clear = %v %d %d %d", enabled, rows, days, bytes)
+	}
+}
+
+func TestSiteBrandingSettings(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	service := New(Service{Store: store, AccountsDir: dir})
+	view, err := service.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["site_title"] != "" || view["site_icon"] != "" {
+		t.Fatalf("default branding = %#v / %#v", view["site_title"], view["site_icon"])
+	}
+	title := strings.Repeat("x", 100)
+	icon := "data:image/png;base64,iVBORw0KGgo="
+	saved, err := service.Save(context.Background(), map[string]any{
+		"site_title": "  My Gateway  ",
+		"site_icon":  icon,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved["site_title"]; got != "My Gateway" {
+		t.Fatalf("saved title = %#v", got)
+	}
+	view, err = service.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["site_title"] != "My Gateway" || view["site_icon"] != icon {
+		t.Fatalf("branding view = %#v / %#v", view["site_title"], view["site_icon"])
+	}
+	saved, err = service.Save(context.Background(), map[string]any{"site_title": title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []rune(saved["site_title"].(string)); len(got) != siteTitleMaxRunes {
+		t.Fatalf("clamped title length = %d", len(got))
+	}
+	saved, err = service.Save(context.Background(), map[string]any{"site_icon": "javascript:alert(1)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved["site_icon"] != "" {
+		t.Fatalf("unsafe icon = %#v", saved["site_icon"])
+	}
+	for _, tc := range []struct {
+		name  string
+		patch map[string]any
+		want  string
+	}{
+		{"title type", map[string]any{"site_title": 1}, "site_title must be a string"},
+		{"icon type", map[string]any{"site_icon": true}, "site_icon must be a string"},
+	} {
+		if _, err := service.Save(context.Background(), tc.patch); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s error = %v, want %q", tc.name, err, tc.want)
+		}
 	}
 }

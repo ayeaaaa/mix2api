@@ -5,6 +5,7 @@ package settings
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,9 @@ const (
 	defaultLogMaxDays            = 7
 	maxLogMaxRows                = 100000000
 	maxLogMaxDays                = 36500
+	siteTitleMaxRunes            = 80
+	siteIconMaxBytes             = 512 * 1024
+	siteIconURLMaxRunes          = 2048
 )
 
 // maxLogMaxBytes is v1's 100 GiB cap on 64-bit platforms. 32-bit targets
@@ -189,6 +193,8 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"pricing_enabled":             boolDefaultTrue(data["pricing_enabled"]),
 		"credits_refresh_hours":       creditsRefreshHours(data),
 		"section_max_height":          sectionMaxHeight(data),
+		"site_title":                  siteTitleValue(data["site_title"]),
+		"site_icon":                   siteIconValue(data["site_icon"]),
 		"media":                       mediaView(data),
 		"media_limits":                mediaLimits(),
 		"media_minimums":              mediaMinimums(),
@@ -504,6 +510,22 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 		}
 		platformPatch["section_max_height"] = value
 		reply["section_max_height"] = value
+	}
+	if raw, present := patch["site_title"]; present {
+		if _, ok := raw.(string); !ok {
+			return nil, errors.New("site_title must be a string")
+		}
+		value := siteTitleValue(raw)
+		platformPatch["site_title"] = value
+		reply["site_title"] = value
+	}
+	if raw, present := patch["site_icon"]; present {
+		if _, ok := raw.(string); !ok {
+			return nil, errors.New("site_icon must be a string")
+		}
+		value := siteIconValue(raw)
+		platformPatch["site_icon"] = value
+		reply["site_icon"] = value
 	}
 	if raw, present := patch["keep_backups"]; present {
 		value, ok := strictInt(raw)
@@ -1574,4 +1596,62 @@ func SortedContributorKeys(values map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// siteTitleValue clamps the user-facing brand title to a small display string.
+// An empty value means "use the built-in title".
+func siteTitleValue(value any) string {
+	text, _ := value.(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) > siteTitleMaxRunes {
+		text = string(runes[:siteTitleMaxRunes])
+	}
+	return text
+}
+
+// siteIconValue accepts a small image data URI or an http(s) icon URL. Data
+// URIs are decoded only to enforce the size cap; the stored value keeps the
+// exact bytes the browser will load. Anything else is treated as unset.
+func siteIconValue(value any) string {
+	text, _ := value.(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, "data:") {
+		comma := strings.Index(text, ",")
+		if comma <= 0 {
+			return ""
+		}
+		head := strings.ToLower(text[:comma])
+		const prefix = "data:image/"
+		if !strings.HasPrefix(head, prefix) || !strings.HasSuffix(head, ";base64") {
+			return ""
+		}
+		mime := strings.TrimSuffix(strings.TrimPrefix(head, prefix), ";base64")
+		switch mime {
+		case "png", "jpeg", "gif", "webp", "svg+xml", "x-icon", "vnd.microsoft.icon", "avif":
+		default:
+			return ""
+		}
+		payload := strings.ReplaceAll(text[comma+1:], "\n", "")
+		payload = strings.ReplaceAll(payload, "\r", "")
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil || len(decoded) == 0 || len(decoded) > siteIconMaxBytes {
+			return ""
+		}
+		return text
+	}
+	if len([]rune(text)) > siteIconURLMaxRunes {
+		return ""
+	}
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return ""
+	}
+	return text
 }

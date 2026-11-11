@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>mix2api 控制台</title>
+<link id="siteFavicon" rel="icon" href="data:,">
 <!-- 首帧判定：必须留在 <head>、在任何页面内容之前同步执行。
      没有面板会话令牌（无痕 / 首次访问 / 已登出）→ 不动 markup 上的 display:flex，
      登录闸门随首帧一起出现，看板骨架不会被先画出来再盖住。
@@ -2491,6 +2492,21 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '移动登录': 'Mobile login',
     '专属任务': 'Exclusive tasks',
     '已领完': 'All claimed',
+    '品牌外观': 'Branding',
+    '只影响浏览器标签、侧栏品牌名和图标，不改 API、健康检查或更新检查里的项目名。': 'Only the browser tab, sidebar brand and icon; API, health and update checks are unchanged.',
+    '显示标题': 'Display title',
+    '图标 URL（http/https）': 'Icon URL (http/https)',
+    '或上传图标': 'Or upload an icon',
+    '未设置图标': 'No icon set',
+    '已设置图标': 'Icon set',
+    '保存品牌外观': 'Save branding',
+    '清除图标': 'Clear icon',
+    '品牌外观已保存': 'Branding saved',
+    '保存品牌外观失败: ': 'Saving branding failed: ',
+    '恢复默认品牌失败: ': 'Restoring default branding failed: ',
+    '图标不能超过 512KB': 'Icon must be at most 512KB',
+    '图标已载入，保存后生效': 'Icon loaded; save to apply',
+    '图标已移除，保存后生效': 'Icon removed; save to apply',
     '每日活跃': 'Daily activity',
     '每日活跃打卡': 'Daily activity check-in',
     '今日活跃奖励': "Today's activity reward",
@@ -4734,6 +4750,7 @@ html[data-ui="next"] .next-brand-mark{
   display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;
   letter-spacing:-.04em;box-shadow:0 5px 12px rgba(79,70,229,.24);flex:0 0 31px;
 }
+html[data-ui="next"] .next-brand-mark img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
 html[data-ui="next"] .next-brand-text{display:flex;flex-direction:column;min-width:0}
 html[data-ui="next"] .next-brand-text b{font-size:14px;letter-spacing:-.02em;font-weight:750}
 html[data-ui="next"] .next-brand-text span{font-size:9.5px;color:var(--dim-light);letter-spacing:.02em;margin-top:1px}
@@ -6338,6 +6355,39 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
                  style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
         </div>
         <button onclick="savePanelPassword(this)">修改密码</button>
+      </div>
+    </section>
+
+    <section data-cat="access">
+      <h2>品牌外观 <em id="setBrandState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        只影响浏览器标签、侧栏品牌名和图标，不改 API、健康检查或更新检查里的项目名。
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:end">
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">显示标题</div>
+          <input id="setSiteTitle" maxlength="80" placeholder="mix2api 控制台"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">图标 URL（http/https）</div>
+          <input id="setSiteIconUrl" placeholder="https://example.com/icon.png"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">或上传图标</div>
+          <input id="setSiteIconFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/x-icon,image/avif"
+                 onchange="readBrandingIcon(this)" style="width:100%;font-size:12px;color:var(--dim)">
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;min-height:40px">
+          <img id="setSiteIconPreview" alt="" style="width:32px;height:32px;border-radius:8px;object-fit:cover;display:none;background:var(--panel2)">
+          <span id="setSiteIconState" style="font-size:12px;color:var(--dim)">未设置图标</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button onclick="saveBranding(this)">保存品牌外观</button>
+        <button class="sec" onclick="clearBrandingIcon(this)">清除图标</button>
+        <button class="sec" onclick="resetBranding(this)">恢复默认</button>
       </div>
     </section>
 
@@ -15836,6 +15886,109 @@ async function saveWinMaxHeight(btn){
 }
 // ==== 面板窗口限高结束 ====
 
+let SITE_ICON_VALUE = '';
+
+function setBrandIconState(icon, title){
+  const preview = document.getElementById('setSiteIconPreview');
+  const state = document.getElementById('setSiteIconState');
+  const url = document.getElementById('setSiteIconUrl');
+  SITE_ICON_VALUE = String(icon || '').trim();
+  if(url) url.value = SITE_ICON_VALUE.startsWith('data:') ? '' : SITE_ICON_VALUE;
+  if(preview){
+    if(SITE_ICON_VALUE){ preview.src = SITE_ICON_VALUE; preview.style.display = 'block'; }
+    else { preview.removeAttribute('src'); preview.style.display = 'none'; }
+  }
+  if(state) state.textContent = SITE_ICON_VALUE ? '已设置图标' : '未设置图标';
+  if(title !== undefined){
+    const titleInput = document.getElementById('setSiteTitle');
+    if(titleInput) titleInput.value = title;
+  }
+}
+
+function applyBranding(data){
+  const rawTitle = data && typeof data.site_title === 'string' ? data.site_title.trim() : '';
+  const rawIcon = data && typeof data.site_icon === 'string' ? data.site_icon.trim() : '';
+  const tabTitle = rawTitle || 'mix2api 控制台';
+  document.title = tabTitle;
+  const brandTitle = document.querySelector('#nextSidebar .next-brand-text b');
+  if(brandTitle) brandTitle.textContent = rawTitle || 'mix2api';
+  const mark = document.querySelector('#nextSidebar .next-brand-mark');
+  if(mark){
+    mark.textContent = '';
+    if(rawIcon){
+      const img = document.createElement('img');
+      img.alt = ''; img.decoding = 'async'; img.src = rawIcon;
+      mark.appendChild(img);
+    } else {
+      mark.textContent = 'm';
+    }
+  }
+  let favicon = document.getElementById('siteFavicon');
+  if(!favicon){
+    favicon = document.createElement('link');
+    favicon.id = 'siteFavicon'; favicon.rel = 'icon';
+    document.head.appendChild(favicon);
+  }
+  favicon.href = rawIcon || 'data:,';
+  const state = document.getElementById('setBrandState');
+  if(state) state.textContent = (rawTitle || rawIcon) ? '(已自定义)' : '(默认)';
+  setBrandIconState(rawIcon, rawTitle);
+}
+
+function readBrandingIcon(input){
+  const file = input && input.files && input.files[0];
+  if(!file) return;
+  if(file.size > 512 * 1024){ toast('图标不能超过 512KB', 'warn'); input.value = ''; return; }
+  const reader = new FileReader();
+  reader.onload = function(){
+    const value = String(reader.result || '');
+    if(!/^data:image\//i.test(value)){ toast('请选择图片文件', 'warn'); return; }
+    setBrandIconState(value);
+    toast('图标已载入，保存后生效', 'ok');
+  };
+  reader.onerror = function(){ toast('读取图标失败', 'bad'); };
+  reader.readAsDataURL(file);
+}
+
+function clearBrandingIcon(btn){
+  const file = document.getElementById('setSiteIconFile'); if(file) file.value = '';
+  setBrandIconState('', undefined);
+  toast('图标已移除，保存后生效', 'ok');
+  if(btn) btn.disabled = false;
+}
+
+async function saveBranding(btn){
+  const titleEl = document.getElementById('setSiteTitle');
+  const urlEl = document.getElementById('setSiteIconUrl');
+  const title = titleEl ? titleEl.value.trim() : '';
+  const url = urlEl ? urlEl.value.trim() : '';
+  const icon = url || SITE_ICON_VALUE;
+  if(btn) btn.disabled = true;
+  try{
+    const res = await postJSON('/settings/save', {site_title: title, site_icon: icon});
+    applyBranding(res);
+    toast('品牌外观已保存', 'ok');
+  }catch(e){
+    toast('保存品牌外观失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function resetBranding(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const res = await postJSON('/settings/save', {site_title: '', site_icon: ''});
+    const file = document.getElementById('setSiteIconFile'); if(file) file.value = '';
+    applyBranding(res);
+    toast('已恢复默认品牌', 'ok');
+  }catch(e){
+    toast('恢复默认品牌失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 async function loadSettings(showToast){
   try {
     const data = await getJSON('/settings');
@@ -15853,6 +16006,7 @@ async function loadSettings(showToast){
 
     applyLimits(data);
     applyUiLanguageSelect(data.ui_language || 'zh');
+    applyBranding(data);
 
     // 账号区折叠：服务端没存过、存坏了，或后端根本没这个字段，都按展开算。
     applyAccountsCollapsed(data.accounts_collapsed === true);

@@ -16,10 +16,10 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `bf758a8801b7adef14505610b067128867218f648a34e77ec933abb68dcfcd7d` |
+| v2 SHA-256 | `80daa14aae870d1c810c652b5454bc9339806635018c0cd079691fc93183f70d` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,289,367 bytes |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`) and Raccoon daily-activity settings/task controls; otherwise identical to v1.6.5 |
+| v2 size | 1,296,574 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls and panel branding controls; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
@@ -27,8 +27,8 @@ asset.
 `web.DashboardV1SHA256`; `internal/web/assets_test.go`,
 `tests/dashboard/contract_test.go`, and the JS harness input all re-check the
 served digest. The v1 hash is kept beside the v2 hash; the intentional
-deltas from v1.6.5 are the top-bar total-quota columns and Raccoon
-daily-activity controls.
+deltas from v1.6.5 are the top-bar total-quota columns, Raccoon
+daily-activity controls and panel branding controls.
 
 ## Static contract
 
@@ -117,7 +117,8 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 ## Gate E checklist
 
 - [x] Dashboard SHA-256 matches the documented v2 digest
-      (`86efb00a...`); the v2 asset adds the top-bar total-quota columns. HTML is
+      (`80daa14a...`); the v2 asset adds the top-bar total-quota columns,
+daily-activity and branding controls. HTML is
       embedded, not generated.
 - [x] `/`, `/dashboard.html`, and the v1 aliases serve identical bytes with
       `text/html`, `no-cache`, strong `ETag`/`304`, and no CORS.

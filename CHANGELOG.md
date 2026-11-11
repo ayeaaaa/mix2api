@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.1.0] - 2026-11-11
+
+### 中文
+
+#### 新增
+
+- 设置页新增「品牌外观」：可自定义浏览器标签标题、侧栏品牌名和图标
+  （favicon + 侧栏品牌图标），支持 http(s) 图标 URL 或不超过 512KB 的图片
+  上传。设置保存在 `settings.json`，只影响看板显示；API、健康检查和更新检查
+  里的项目名不变。
+
+### English
+
+#### Added
+
+- Add a Settings → Branding section for the browser tab title, sidebar brand
+  name and icon (favicon plus sidebar mark). It accepts an http(s) icon URL or
+  an uploaded image up to 512KB. Values live in `settings.json` and affect the
+  dashboard only; API, health and update-check project identity stay unchanged.
+
 ## [2.0.7] - 2026-11-11
 
 ### 中文
