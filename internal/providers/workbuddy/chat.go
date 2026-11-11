@@ -1206,6 +1206,7 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 
 	messages, _ := body["messages"].([]any)
 	messages = normalizeChatRoles(messages)
+	messages = fillEmptyChatTextParts(messages)
 	messages = sanitizeChatMessages(messages)
 	messages = backfillChatReasoning(messages, model, chatThinkingEnabled(body, model))
 	if len(messages) == 0 {
@@ -1269,6 +1270,49 @@ func (p *Provider) canonicalModelID(model string) string {
 		}
 	}
 	return model
+}
+
+// fillEmptyChatTextParts replaces empty text parts with one space. Upstream
+// validates every type:"text" part and answers 400 / 11151 for empty text,
+// retiring the conversation. Unknown types, non-array content, and non-empty
+// parts are preserved byte-for-byte.
+func fillEmptyChatTextParts(messages []any) []any {
+	out := make([]any, 0, len(messages))
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		parts, ok := message["content"].([]any)
+		if !ok {
+			out = append(out, message)
+			continue
+		}
+		copied := cloneMap(message)
+		filled := make([]any, len(parts))
+		for index, part := range parts {
+			item, ok := part.(map[string]any)
+			if !ok {
+				filled[index] = part
+				continue
+			}
+			if creditText(item["type"]) != "text" {
+				filled[index] = part
+				continue
+			}
+			if text, ok := item["text"].(string); ok && text == "" {
+				partCopy := cloneMap(item)
+				partCopy["text"] = " "
+				filled[index] = partCopy
+				continue
+			}
+			filled[index] = part
+		}
+		copied["content"] = filled
+		out = append(out, copied)
+	}
+	return out
 }
 
 func normalizeChatRoles(messages []any) []any {

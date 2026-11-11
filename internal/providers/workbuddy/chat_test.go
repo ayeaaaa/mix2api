@@ -2479,3 +2479,27 @@ func minInt(left, right int) int {
 	}
 	return right
 }
+
+func TestFillEmptyChatTextParts(t *testing.T) {
+	messages := fillEmptyChatTextParts([]any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": ""},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:x"}},
+			map[string]any{"type": "text", "text": "hi"},
+		}},
+		map[string]any{"role": "user", "content": "plain"},
+	})
+	parts := messages[0].(map[string]any)["content"].([]any)
+	if parts[0].(map[string]any)["text"] != " " {
+		t.Fatalf("empty text part = %#v", parts[0])
+	}
+	if parts[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("image part changed: %#v", parts[1])
+	}
+	if parts[2].(map[string]any)["text"] != "hi" {
+		t.Fatalf("non-empty text changed: %#v", parts[2])
+	}
+	if messages[1].(map[string]any)["content"] != "plain" {
+		t.Fatalf("string content changed: %#v", messages[1])
+	}
+}
