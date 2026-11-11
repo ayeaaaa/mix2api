@@ -19,7 +19,7 @@ requires a manual run.
 | Migration fixture round-trip, unknown keys, partial failure | PASS | `internal/core/migrate` tests |
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
-| Selected v1.6.5 oracle recording + v2 comparison | **PENDING** | no captured fixture committed |
+| Selected v1.6.5 oracle recording + v2 comparison | **PARTIAL** | 24 cases recorded; 14 exact, 10 documented differences; fixture `tests/oracle/recorded/v1.6.5/`. WorkBuddy/failure/media cases still pending |
 | Real-account smoke on dedicated accounts | **PARTIAL** | Chat/stream passed on all exits: intl, CN, CodeArts, Raccoon; CN Responses/Messages/usage passed. See `docs/smoke/2026-11-11-all-exits.md` and `docs/smoke/2026-11-11-workbuddy-cn.md`. Mutable task/media/update smoke still pending |
 | 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` recorded p95 162 ms, p99 163 ms, 0 failures, threshold 2000 ms |
 | v1.6.5 performance baseline comparison | **PENDING** | no captured baseline |
