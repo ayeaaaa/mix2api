@@ -1,8 +1,9 @@
 # Dashboard oracle (Gate E)
 
-The v2 binary serves the shipped v1.6.5 dashboard byte-for-byte. This
-document records the asset provenance, the static contract, the API inventory
-the page uses, and the Gate E checks. The original repository
+The v2 binary serves the v1.6.5 dashboard plus the top-bar total-quota
+columns (`tabIntlTotal` / `tabCnTotal`). This document records the asset
+provenance, the static contract, the API inventory the page uses, and the
+Gate E checks. The original repository
 `/root/opencode/mix2api` is read-only; the copy below is the only committed
 asset.
 
@@ -14,18 +15,18 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
+| v2 SHA-256 | `86efb00ab64ecd4954b0fee0926710ec4b79a875f3a6ee4a267832def9fd4153` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,284,387 bytes |
-| Delta | none; byte-identical to v1.6.5 |
+| v2 size | 1,285,253 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`); otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
 `internal/web/assets.go` exposes `web.DashboardSHA256` and the original
 `web.DashboardV1SHA256`; `internal/web/assets_test.go`,
 `tests/dashboard/contract_test.go`, and the JS harness input all re-check the
-served digest. Any change from v1.6.5 must fail review: the v1 hash is kept
-beside the v2 hash so an accidental rewrite cannot masquerade as provenance.
+served digest. The v1 hash is kept beside the v2 hash; the only intentional
+delta from v1.6.5 is the top-bar total-quota columns.
 
 ## Static contract
 
@@ -49,8 +50,8 @@ responses are same-origin and deliberately carry no
 The v1 server substituted the instance `ui_language` into the
 `data-ui-language` placeholder. v2 serves the embedded bytes exactly as shipped;
 the page's own settings load still drives the language selector, and the
-placeholder is the documented zh default for the first paint. Any patch would
-break the byte-identical provenance contract above.
+placeholder is the documented zh default for the first paint. Runtime patching
+would still break the provenance contract above.
 
 ## Dashboard API inventory
 
@@ -113,9 +114,9 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 
 ## Gate E checklist
 
-- [x] Dashboard SHA-256 matches the documented v1.6.5 digest
-      (`70aa3ddf...e0a96793`); the v2 asset has no delta. HTML is embedded, not
-      generated.
+- [x] Dashboard SHA-256 matches the documented v2 digest
+      (`86efb00a...`); the v2 asset adds the top-bar total-quota columns. HTML is
+      embedded, not generated.
 - [x] `/`, `/dashboard.html`, and the v1 aliases serve identical bytes with
       `text/html`, `no-cache`, strong `ETag`/`304`, and no CORS.
 - [x] Every dashboard `fetch`/`getJSON`/`postJSON` path has a registered route;

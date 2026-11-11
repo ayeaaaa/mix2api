@@ -5417,7 +5417,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
           <span id="tabIntlAvailCred" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px" title="可用积分：只算启用且未触发保留/限额护栏的账号之和，与「N/M 账号」同一口径">0</span>
-          <span style="font-size:12px;color:var(--dim)">/ <span id="tabIntlCredits" style="color:var(--fg);font-weight:600" title="总积分：全部账号（含停用）之和">0</span> 总积分 · <span id="tabIntlAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabIntlCredits" style="color:var(--fg);font-weight:600" title="总积分：全部账号（含停用）之和">0</span> 总积分 / <span id="tabIntlTotal" style="color:var(--fg);font-weight:600" title="总额度：全部账号（含停用）的积分额度之和">0</span> 总额度 · <span id="tabIntlAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
         </div>
         <span id="tabIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -5434,7 +5434,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
           <span id="tabCnAvailCred" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px" title="可用积分：只算启用且未触发保留/限额护栏的账号之和，与「N/M 账号」同一口径">0</span>
-          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCnCredits" style="color:var(--fg);font-weight:600" title="总积分：全部账号（含停用）之和">0</span> 总积分 · <span id="tabCnAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCnCredits" style="color:var(--fg);font-weight:600" title="总积分：全部账号（含停用）之和">0</span> 总积分 / <span id="tabCnTotal" style="color:var(--fg);font-weight:600" title="总额度：全部账号（含停用）的积分额度之和">0</span> 总额度 · <span id="tabCnAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
         </div>
         <span id="tabCnKeyBadge" class="badge warn mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -8324,17 +8324,25 @@ function updateUI(){
   const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
 
   let intlCred = 0, hasIntlCred = false, intlAvailCred = 0, hasIntlAvail = false;
+  let intlSize = 0, hasIntlSize = false;
   intlAccts.forEach(a => {
     if(a.credits && a.credits.remain != null){
       intlCred += a.credits.remain; hasIntlCred = true;
       if(isAcctActive(a)){ intlAvailCred += a.credits.remain; hasIntlAvail = true; }
     }
+    if(a.credits && a.credits.size != null){
+      intlSize += a.credits.size; hasIntlSize = true;
+    }
   });
   let cnCred = 0, hasCnCred = false, cnAvailCred = 0, hasCnAvail = false;
+  let cnSize = 0, hasCnSize = false;
   cnAccts.forEach(a => {
     if(a.credits && a.credits.remain != null){
       cnCred += a.credits.remain; hasCnCred = true;
       if(isAcctActive(a)){ cnAvailCred += a.credits.remain; hasCnAvail = true; }
+    }
+    if(a.credits && a.credits.size != null){
+      cnSize += a.credits.size; hasCnSize = true;
     }
   });
 
@@ -8346,6 +8354,8 @@ function updateUI(){
   // 含停用）。数字各挂各的节点，样式（大字/小字）由 HTML 决定。
   const elIntlCred = document.getElementById("tabIntlCredits");
   if(elIntlCred) elIntlCred.textContent = hasIntlCred ? fmt(intlCred) : "—";
+  const elIntlTotal = document.getElementById("tabIntlTotal");
+  if(elIntlTotal) elIntlTotal.textContent = hasIntlSize ? fmt(intlSize) : "—";
   const elIntlAvail = document.getElementById("tabIntlAvailCred");
   if(elIntlAvail) elIntlAvail.innerHTML = '<span class="credit-kind">可用</span> ' + (hasIntlAvail ? fmt(intlAvailCred) : "—");
   const elIntlAcct = document.getElementById("tabIntlAccts");
@@ -8353,6 +8363,8 @@ function updateUI(){
 
   const elCnCred = document.getElementById("tabCnCredits");
   if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
+  const elCnTotal = document.getElementById("tabCnTotal");
+  if(elCnTotal) elCnTotal.textContent = hasCnSize ? fmt(cnSize) : "—";
   const elCnAvail = document.getElementById("tabCnAvailCred");
   if(elCnAvail) elCnAvail.innerHTML = '<span class="credit-kind">可用</span> ' + (hasCnAvail ? fmt(cnAvailCred) : "—");
   const elCnAcct = document.getElementById("tabCnAccts");

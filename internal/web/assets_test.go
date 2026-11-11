@@ -24,9 +24,13 @@ func TestDashboardAssetHash(t *testing.T) {
 	if !strings.Contains(string(body), "data-ui-language=") {
 		t.Fatal("embedded dashboard does not look like the v1 page")
 	}
-	// The v2 asset keeps the v1 repository links byte-for-byte.
-	if DashboardV1SHA256 != DashboardSHA256 {
-		t.Fatal("v2 dashboard must remain byte-identical to v1.6.5")
+	// DashboardV1SHA256 pins the original v1.6.5 asset; the v2 dashboard
+	// intentionally adds the top-bar total-quota columns.
+	if DashboardV1SHA256 != "70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793" {
+		t.Fatal("v1 dashboard digest changed")
+	}
+	if DashboardSHA256 == DashboardV1SHA256 {
+		t.Fatal("v2 dashboard should differ from v1.6.5")
 	}
 	if strings.Contains(string(body), `github.com/ayeaaaa/mix2api-v2"`) {
 		t.Fatal("dashboard still links to the retired v2 repository")
