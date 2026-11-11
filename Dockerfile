@@ -10,13 +10,15 @@ FROM golang:1.22-alpine AS build
 ARG VERSION=2.0.0-rc.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# Declare without defaults so buildx's automatic platform args are inherited.
+# Defaults are applied in the RUN fallback for non-buildx builds.
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -buildvcs=false -buildmode=exe \
     -ldflags "-s -w -buildid= \
       -X github.com/ayeaaaa/mix2api-v2/internal/core/version.Version=${VERSION} \

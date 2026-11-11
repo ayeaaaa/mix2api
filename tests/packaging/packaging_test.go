@@ -49,6 +49,16 @@ func TestDockerfileIsMultiStageCGOFreeNonRootAndHealthchecked(t *testing.T) {
 	}
 }
 
+func TestDockerfileDoesNotShadowBuildxTargetPlatform(t *testing.T) {
+	dockerfile := repoFile(t, "Dockerfile")
+	if strings.Contains(dockerfile, "ARG TARGETARCH=") || strings.Contains(dockerfile, "ARG TARGETOS=") {
+		t.Fatal("Dockerfile must not give TARGETOS/TARGETARCH a default; that shadows buildx automatic platform args")
+	}
+	if !strings.Contains(dockerfile, "${TARGETARCH:-amd64}") || !strings.Contains(dockerfile, "${TARGETOS:-linux}") {
+		t.Fatal("Dockerfile must fall back to amd64/linux only when buildx platform args are absent")
+	}
+}
+
 func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 	for _, name := range []string{"docker-compose.yml", "deploy/docker-compose.yml", "deploy/docker-compose.image.yml"} {
 		text := repoFile(t, name)
