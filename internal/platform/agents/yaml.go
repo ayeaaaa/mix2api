@@ -281,6 +281,47 @@ func yamlRefsUpsert(text, key, value string) (string, error) {
 			return "", fmt.Errorf("cannot upsert into refs: %s", after)
 		}
 		end := yamlBlockEnd(lines, index, 0)
+		body := append([]string(nil), lines[index+1:end]...)
+		if updated, changed := yamlFlowMapLines(body, key, value); changed {
+			lines = replaceRange(lines, index+1, end, updated)
+			return strings.Join(lines, "\n"), nil
+		}
+		if len(body) > 0 && strings.HasPrefix(strings.TrimSpace(body[0]), "{") {
+			close := -1
+			for cursor, candidate := range body {
+				trimmed := strings.TrimSpace(candidate)
+				if trimmed == "}" || strings.HasSuffix(trimmed, "}") {
+					close = cursor
+					break
+				}
+			}
+			if close >= 0 {
+				indent := -1
+				for cursor := close - 1; cursor >= 0; cursor-- {
+					trimmed := strings.TrimSpace(body[cursor])
+					if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "{") {
+						indent = yamlIndent(body[cursor])
+						break
+					}
+				}
+				if indent < 0 {
+					indent = yamlIndent(body[close]) + 2
+				}
+				for cursor := close - 1; cursor >= 0; cursor-- {
+					trimmed := strings.TrimSpace(body[cursor])
+					if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "{") {
+						if !strings.HasSuffix(trimmed, ",") {
+							body[cursor] = strings.TrimRight(body[cursor], " \t") + ","
+						}
+						break
+					}
+				}
+				insert := []string{strings.Repeat(" ", indent) + key + ": " + value}
+				body = replaceRange(body, close, close, insert)
+				lines = replaceRange(lines, index+1, end, body)
+				return strings.Join(lines, "\n"), nil
+			}
+		}
 		for cursor := index + 1; cursor < end; cursor++ {
 			if strings.TrimSpace(lines[cursor]) != "" && yamlIndent(lines[cursor]) == 2 && yamlKey(lines[cursor]) == key {
 				lines[cursor] = "  " + key + ": " + value
@@ -295,6 +336,50 @@ func yamlRefsUpsert(text, key, value string) (string, error) {
 	}
 	lines = append(lines, "refs:", "  "+key+": "+value)
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// yamlFlowMapLines replaces key inside a multi-line flow mapping (DSH writes
+// refs as "{ ... }"). It returns changed=true when the key was replaced; an
+// absent key is inserted by the caller before the closing brace.
+func yamlFlowMapLines(block []string, key, value string) ([]string, bool) {
+	open, close := -1, -1
+	for index, line := range block {
+		trimmed := strings.TrimSpace(line)
+		if open < 0 && strings.HasPrefix(trimmed, "{") {
+			open = index
+		}
+		if trimmed == "}" || strings.HasSuffix(trimmed, "}") {
+			close = index
+			break
+		}
+	}
+	if open < 0 || close < 0 {
+		return block, false
+	}
+	for index := open + 1; index < close; index++ {
+		trimmed := strings.TrimSpace(block[index])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || yamlKey(trimmed) != key {
+			continue
+		}
+		entryEnd := index + 1
+		for cursor := index + 1; cursor < close; cursor++ {
+			next := strings.TrimSpace(block[cursor])
+			if next != "" && !strings.HasPrefix(next, "#") && yamlKey(next) != "" {
+				break
+			}
+			entryEnd = cursor + 1
+		}
+		last := strings.TrimSpace(block[entryEnd-1])
+		hadComma := strings.HasSuffix(last, ",")
+		suffix := ""
+		if hadComma || entryEnd < close {
+			suffix = ","
+		}
+		indent := yamlIndent(block[index])
+		replacement := []string{strings.Repeat(" ", indent) + key + ": " + value + suffix}
+		return replaceRange(block, index, entryEnd, replacement), true
+	}
+	return block, false
 }
 
 // dshPatchUpsert updates only the two entries this integration owns, using
