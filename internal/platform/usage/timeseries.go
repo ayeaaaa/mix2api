@@ -223,6 +223,7 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 			continue
 		}
 		raw, ok := entry["data"].(map[string]any)
+		v2 := ok
 		var state seriesState
 		if ok {
 			encoded, err := json.Marshal(raw)
@@ -252,7 +253,9 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 		if err != nil {
 			return seriesState{}, false
 		}
-		s.saveSeries(realm, state, newOffset)
+		if newOffset != offset || !v2 {
+			s.saveSeries(realm, state, newOffset)
+		}
 		return state, true
 	}
 	return seriesState{}, false
