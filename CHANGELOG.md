@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.6] - 2026-11-11
+
+### 中文
+
+#### 性能
+
+- usage 聚合扫描改用紧凑的 `scanRow` 结构解码，避免每行创建 `json.Decoder`
+  和大部分 interface boxing；保留 `Row` map 作为兼容边界。本机 19.5k 行全量
+  `/usage` 从约 0.82 秒进一步降到约 0.60 秒。
+
+### English
+
+#### Performance
+
+- Decode aggregation scans through a compact `scanRow` struct instead of a
+  per-line `json.Decoder` into `map[string]any`, keeping `Row` as the
+  compatibility boundary. A local 19.5k-row full `/usage` scan drops from about
+  0.82s to about 0.60s.
+
 ## [2.0.5] - 2026-11-11
 
 ### 中文
