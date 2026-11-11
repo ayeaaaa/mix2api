@@ -354,8 +354,8 @@ print()
 print("[8] the desktop / CLI identities are untouched")
 d = wb_identity.build_identity_headers("workbuddy", "intl", "u1", "tok",
                                        model="ignored")
-check("desktop UA stays the 5.8.4 capture",
-      d.get("User-Agent") == "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+check("desktop UA stays the 5.9.4 capture",
+      d.get("User-Agent") == "WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0",
       d.get("User-Agent"))
 check("desktop keeps Request-ID = Message-ID",
       d.get("X-Request-ID") == d.get("X-Conversation-Message-ID"))

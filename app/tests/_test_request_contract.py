@@ -289,5 +289,40 @@ class RequestContractTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertNotIn("reasoning_content", messages[1])
 
+    def test_kimi_tool_schema_refs_are_inlined(self):
+        body = P.build_upstream_body({
+            "model": "kimi-k3.1-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "$defs": {"Item": {"type": "object", "properties": {
+                        "value": {"type": "string"}}}},
+                    "properties": {"item": {"$ref": "#/$defs/Item"}},
+                },
+            }}],
+        })
+        params = body["tools"][0]["function"]["parameters"]
+        self.assertNotIn("$ref", params["properties"]["item"])
+        self.assertNotIn("$defs", params)
+        self.assertEqual(params["properties"]["item"]["type"], "object")
+        self.assertEqual(
+            params["properties"]["item"]["properties"]["value"]["type"], "string")
+
+    def test_kimi_literal_ref_data_is_not_inlined(self):
+        body = P.build_upstream_body({
+            "model": "kimi-k3.1-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {
+                    "value": {"type": "string", "default": {"$ref": "keep"}},
+                }},
+            }}],
+        })
+        params = body["tools"][0]["function"]["parameters"]
+        self.assertEqual(params["properties"]["value"]["default"], {"$ref": "keep"})
+
 if __name__ == "__main__":
     unittest.main()

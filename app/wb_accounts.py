@@ -261,10 +261,13 @@ def fetch_account_profile(account, timeout=15):
         data = json.loads(resp.read().decode("utf-8"))
     if not isinstance(data, dict):
         raise RuntimeError("profile response is not an object")
-    uid = str(data.get("uid") or "")
+    # The console endpoint now wraps the profile in {"code": 0, "data": {...}};
+    # older responses put uid/nickname at the top level. Accept both.
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    uid = str(payload.get("uid") or "")
     if uid and account.uid and uid != account.uid:
         raise RuntimeError("profile uid mismatch")
-    nickname = data.get("nickname")
+    nickname = payload.get("nickname")
     return uid, nickname.strip() if isinstance(nickname, str) else ""
 
 

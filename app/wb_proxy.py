@@ -13896,6 +13896,124 @@ def _normalize_tool_parameters(fn):
     fn["parameters"] = p
 
 
+def _schema_contains_ref(node):
+    if isinstance(node, dict):
+        if "$ref" in node:
+            return True
+        return any(_schema_contains_ref(value) for key, value in node.items()
+                   if key not in ("default", "examples", "example", "enum", "const"))
+    if isinstance(node, list):
+        return any(_schema_contains_ref(value) for value in node)
+    return False
+
+
+def _inline_kimi_schema_node(node, defs, seen=None, depth=0, budget=None):
+    if budget is None:
+        budget = [10000]
+    if depth > 64:
+        return {}
+    if budget[0] <= 0:
+        budget[0] = -1
+        return {}
+    budget[0] -= 1
+    if isinstance(node, list):
+        out = []
+        for value in node:
+            expanded = _inline_kimi_schema_node(
+                value, defs, seen=seen, depth=depth + 1, budget=budget)
+            if budget[0] < 0:
+                return {}
+            out.append(expanded)
+        return out
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        name = None
+        for prefix in ("#/$defs/", "#/definitions/"):
+            if ref.startswith(prefix):
+                name = ref[len(prefix):].replace("~1", "/").replace("~0", "~")
+                break
+        if name is None:
+            return dict(node)
+        active = set(seen or ())
+        if not name or name not in defs:
+            return {"type": "object"}
+        if name in active:
+            return {}
+        active.add(name)
+        expanded = _inline_kimi_schema_node(
+            defs[name], defs, seen=active, depth=depth + 1, budget=budget)
+        if budget[0] < 0:
+            return {}
+        siblings = {}
+        root = depth == 0
+        for key, value in node.items():
+            if key == "$ref" or (root and key in ("$defs", "definitions", "$schema")):
+                continue
+            child = _inline_kimi_schema_node(
+                value, defs, seen=active, depth=depth + 1, budget=budget)
+            if budget[0] < 0:
+                return {}
+            siblings[key] = child
+        if siblings and isinstance(expanded, dict):
+            expanded = dict(expanded)
+            expanded.update(siblings)
+        return expanded
+    out = {}
+    root = depth == 0
+    for key, value in node.items():
+        if root and key in ("$defs", "definitions", "$schema"):
+            continue
+        if key in ("default", "examples", "example", "enum", "const"):
+            out[key] = value
+            continue
+        child = _inline_kimi_schema_node(
+            value, defs, seen=seen, depth=depth + 1, budget=budget)
+        if budget[0] < 0:
+            return {}
+        out[key] = child
+    return out
+
+
+def inline_kimi_tool_schemas(body):
+    """Inline local JSON Schema refs for CN Kimi tool declarations."""
+    if not isinstance(body, dict):
+        return body
+    model = str(body.get("model") or "").strip().lower()
+    if model.startswith("cn:"):
+        model = model[3:].strip()
+    if not model.startswith("kimi") or not isinstance(body.get("tools"), list):
+        return body
+    for tool in body["tools"]:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            continue
+        if not ("$defs" in params or "definitions" in params
+                or _schema_contains_ref(params)):
+            continue
+        defs = {}
+        for key in ("definitions", "$defs"):
+            values = params.get(key)
+            if isinstance(values, dict):
+                defs.update(values)
+        budget = [10000]
+        expanded = _inline_kimi_schema_node(
+            params, defs, seen=set(), depth=0, budget=budget)
+        if budget[0] < 0 or not isinstance(expanded, dict):
+            expanded = {"type": "object"}
+        fn = dict(fn)
+        fn["parameters"] = expanded
+        _normalize_tool_parameters(fn)
+        tool["function"] = fn
+    return body
+
+
 def normalize_tools(obj):
     # Older clients might still send root-level `functions`
     if "functions" in obj and "tools" not in obj:
@@ -14837,6 +14955,7 @@ def build_upstream_body(payload):
     normalize_tools(body)
     if "tools" in body:
         body["tools"] = sanitize_tools(body["tools"])
+    inline_kimi_tool_schemas(body)
     normalize_stop(body)
     if "max_tokens" not in body:
         default_max = model_default_max_output_tokens(model)
@@ -20608,6 +20727,7 @@ class Handler(BaseHTTPRequestHandler):
                 # （RFC 7232 §4.1），否则缓存会丢掉状态、下次又整份重取。
                 self.send_response(304)
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Robots-Tag", "noindex, nofollow")
                 self.send_header("ETag", etag)
                 self.end_headers()
                 return
@@ -22025,12 +22145,14 @@ class Handler(BaseHTTPRequestHandler):
                 # Cache-Control 必须原样重发（RFC 7232 §4.1），否则缓存会丢掉状态。
                 self.send_response(304)
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Robots-Tag", "noindex, nofollow")
                 self.send_header("ETag", etag)
                 self.end_headers()
                 return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
         # no-cache 而不是 no-store：允许存储，但每次使用前必须回源校验；配合
         # 上面的校验符，校验命中的代价是一次 304 而不是整页约 470KB。不加
         # max-age：没有它浏览器每次打开都会校验，应用更新后新版页面立即生效。
