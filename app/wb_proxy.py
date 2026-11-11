@@ -14648,34 +14648,62 @@ def apply_prompt_mode(messages):
     return messages
 
 
-def fill_empty_text_parts(messages):
-    """Fill empty text parts before they reach the upstream (400 / 11151).
+EMPTY_TEXT_PART_FILL = " "
 
-    Unknown part types, non-array content, and non-empty text parts are kept
-    byte-for-byte. The upstream validates every type:"text" part and retires
-    the conversation when one is empty.
+
+def _fill_empty_text_parts(parts):
+    """Give empty/null text parts a placeholder; return True when changed."""
+    changed = False
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if text is None or text == "":
+            part["text"] = EMPTY_TEXT_PART_FILL
+            changed = True
+    return changed
+
+
+def _sniffed_parts(content):
+    """Return parsed parts when a string content would be read as a part list."""
+    if not isinstance(content, str):
+        return None
+    stripped = content.lstrip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        parts = json.loads(stripped)
+    except Exception:
+        return None
+    if not parts or not isinstance(parts, list):
+        return None
+    if not all(isinstance(part, dict) for part in parts):
+        return None
+    return parts
+
+
+def guard_empty_text_parts(messages):
+    """Fill empty text parts in real part lists and sniffer-parsed strings.
+
+    Upstream validates every type:"text" part and answers 400 / 11151 for an
+    empty or missing text value. The common trigger is a tool-result string
+    such as ``[{"type":"text","text":""}]`` that upstream parses as parts.
     """
-    out = []
     for m in messages or []:
         if not isinstance(m, dict):
-            out.append(m)
             continue
-        item = dict(m)
-        content = item.get("content")
+        content = m.get("content")
         if isinstance(content, list):
-            parts = []
-            for part in content:
-                if (isinstance(part, dict)
-                        and str(part.get("type") or "") == "text"
-                        and part.get("text") == ""):
-                    copied = dict(part)
-                    copied["text"] = " "
-                    parts.append(copied)
-                else:
-                    parts.append(part)
-            item["content"] = parts
-        out.append(item)
-    return out
+            parts = [dict(part) if isinstance(part, dict)
+                     and part.get("type") == "text" else part
+                     for part in content]
+            if _fill_empty_text_parts(parts):
+                m["content"] = parts
+        else:
+            parts = _sniffed_parts(content)
+            if parts is not None and _fill_empty_text_parts(parts):
+                m["content"] = json.dumps(parts, ensure_ascii=False)
+    return messages
 
 
 def build_upstream_body(payload):
@@ -14698,7 +14726,6 @@ def build_upstream_body(payload):
         elif thinking_type != "disabled" and str(effort or "").strip().lower() != "none":
             thinking_enabled = True
     messages = normalize_roles(payload.get("messages") or [])
-    messages = fill_empty_text_parts(messages)
     # Prompt mode runs before sanitize/backfill so the gateway prompt is the
     # one the upstream sees, with the client's fingerprint-y system text gone.
     messages = apply_prompt_mode(messages)
@@ -14726,6 +14753,7 @@ def build_upstream_body(payload):
     repaired, _merged = merge_adjacent_tool_calls(body["messages"])
     repaired, _repacked = repack_tool_result_blocks(repaired)
     repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
+    repaired = guard_empty_text_parts(repaired)
     body["messages"] = mirror_upstream_reasoning(repaired, model)
     translate_max_completion_tokens(body)
     # Upstream GPT-family models enforce a minimum max_output_tokens >= 16;
@@ -16915,11 +16943,14 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 last_error = exc
                 continue
             if exc.code == 400:
-                # A 400 is passed through unchanged. `11158` (model not allowed
-                # for this user type) used to be recorded here for the model
-                # catalogue label; the tier map from `/v3/config` now drives
-                # both the scheduler and that label, so the request never gets
-                # this far for a gated model.
+                # A 400 is passed through unchanged. Release the in-flight seat
+                # first: this path exits open_upstream, so the post-loop cleanup
+                # never runs and one 400 would otherwise park the account until
+                # restart. `11158` (model not allowed for this user type) is
+                # handled by the tier map before reaching this point.
+                if slot_held is not None:
+                    account_slot_release(slot_held)
+                    slot_held = None
                 raise
             if exc.code >= 500:
                 detail = http_error_detail(exc)
@@ -16960,6 +16991,9 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 continue
+            if slot_held is not None:
+                account_slot_release(slot_held)
+                slot_held = None
             raise
         except Exception as exc:
             if wb_accounts.is_tls_verify_error(exc):

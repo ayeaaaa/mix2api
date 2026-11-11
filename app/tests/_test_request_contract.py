@@ -190,6 +190,23 @@ class RequestContractTests(unittest.TestCase):
         self.assertEqual(parts[1]["type"], "image_url")
         self.assertEqual(parts[2]["text"], "hi")
 
+    def test_empty_text_parts_in_sniffed_string_content(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content":
+                 '[{"type":"text","text":null},{"type":"text"}]'},
+            ],
+        })
+        content = body["messages"][1]["content"]
+        parts = json.loads(content)
+        self.assertEqual(parts[0]["text"], " ")
+        self.assertEqual(parts[1]["text"], " ")
+        # Second pass is idempotent.
+        again = P.guard_empty_text_parts([{"role": "user", "content": content}])
+        self.assertEqual(again[0]["content"], content)
+
 
     def test_reasoning_mirror_for_models_that_read_it(self):
         messages = [
