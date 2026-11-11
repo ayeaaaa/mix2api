@@ -13,10 +13,10 @@ requires a manual run.
 | SHA256SUMS + SPDX SBOM + release manifest | PASS | checksums cover all archives, SBOM, and `release.json`; `sha256sum -c` passes |
 | Reproducible binary for fixed metadata | PASS | two fixed-ldflags builds are byte-identical |
 | Dockerfile multi-stage CGO=0 non-root healthcheck | PASS | local `docker build` + healthcheck as UID 10001; `/app` is read-only |
-| Multi-arch image / arm64 runtime | PASS (local) | real `linux/arm64` build has AArch64 ELF, runs under QEMU, healthcheck `healthy`; multi-platform OCI index contains amd64+arm64: `docs/smoke/2026-11-11-ci-multiarch.md` |
+| Multi-arch image / arm64 runtime | PASS (local) | real `linux/arm64` build has AArch64 ELF, runs under QEMU, healthcheck `healthy`; multi-platform OCI index contains amd64+arm64; local registry push/pull and arm64 pull/run passed: `docs/smoke/2026-11-11-ci-multiarch.md`, `docs/smoke/2026-11-11-local-registry-multiarch.md` |
 | Compose assets + data volumes | PASS (inspect) | root/deploy compose files |
 | Update install/backup/rollback + journal recovery | PASS (fake) | exact original-schema journal (no `old_path`/`existed`), per-entry persisted recovery, crash-state, initial-journal, RC→final, manifest-less rollback, and prune tests |
-| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally; real systemd stop/start + install/rollback passed: `docs/smoke/2026-11-11-systemd-update.md`; Windows service execution still pending |
+| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally; real systemd stop/start + install/rollback passed: `docs/smoke/2026-11-11-systemd-update.md`; Windows amd64 binary + `.cmd` hooks install/rollback passed under Wine, but real Windows SCM execution is still pending: `docs/smoke/2026-11-11-windows-wine-update.md` |
 | Migration fixture round-trip, unknown keys, partial failure | PASS | `internal/core/migrate` tests |
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
@@ -24,6 +24,7 @@ requires a manual run.
 | Real-account smoke on dedicated accounts | **PARTIAL (media waived)** | Chat/stream passed on all exits; CN Responses/Messages/usage passed; mutable WorkBuddy CN checkin/growth/streak, CodeArts checkin, Raccoon credits/reward passed idempotently. Real media smoke explicitly waived by owner on 2026-11-11; fake media oracle covers success paths. |
 | 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` 3-round p95 313–328 ms, p99 324–338 ms, 0 failures, threshold 2000 ms; earlier in-process-fake run p95 162 ms |
 | v1.6.5 performance baseline comparison | PASS (local fake) | `tests/load/v1-baseline.json` + `v2-baseline.json`: v1 p95 1520–1571 ms, v2 p95 313–328 ms, ratio 0.208 (target ≤1.2), 3 rounds each, 0 failures |
+| Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
 | v2.0.0 tag / GitHub release / GHCR push | **NOT DONE (by design)** | requires explicit user approval after signoff |
@@ -34,10 +35,12 @@ requires a manual run.
 complete, and the v1/v2 fake-upstream performance baseline meets the 1.2x p95
 target (ratio 0.208; local evidence only). Real-account chat/stream and mutable
 flows passed; real media smoke is waived. Real-archive install/rollback passed
-on a local root and on a temporary systemd service. CI verify and multi-arch
-arm64 container validation passed locally. Remaining manual work: Windows
-service/hook update execution, GHCR publication + arm64 registry pull, and
-final human signoff. The tree is a `2.0.0-rc.1` release candidate only.
+on a local root, on a temporary systemd service, and with the Windows binary +
+`.cmd` hooks under Wine. CI verify, multi-arch arm64 runtime, and a local
+registry push/pull passed. Dependency scanning found no reachable
+vulnerabilities. Remaining manual work: real Windows SCM/service execution,
+actual GHCR publication + arm64 registry pull, and final human signoff. The
+tree is a `2.0.0-rc.1` release candidate only.
 
 ## Required signoff
 
@@ -48,6 +51,6 @@ final human signoff. The tree is a `2.0.0-rc.1` release candidate only.
 | Oracle/parity | PENDING | | |
 | Real-account smoke | PENDING | | |
 | Performance | PENDING | | |
-| Security review | PENDING | | |
+| Security review | PENDING (scan clean; 1 unreachable module finding) | | |
 
 Do not create `v2.0.0` or push an image until every row is signed.
