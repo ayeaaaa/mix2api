@@ -237,6 +237,43 @@ try:
           result)
     stream.close()
 
+    print("== credit exhaustion and manual disable ==")
+    embedded = C.CodeArtsStream(
+        io.BytesIO('data: {"code":400,"message":"你的积分已耗尽，请充值"}\n\n'.encode('utf-8')),
+        "GLM-5.2", acct, acct.pool)
+    try:
+        embedded.preflight()
+        check("SSE credit exhaustion is a 429", False)
+    except C.CodeArtsUpstreamError as exc:
+        check("SSE credit exhaustion is a 429", exc.status == 429 and
+              str(exc.code) == "CREDIT_EXHAUSTED", exc)
+    finally:
+        embedded.close()
+
+    pool.disable("u1", reason="manual disable")
+    pool.note_error(acct, "terminal credential error", terminal=True)
+    check("terminal error keeps manual disable",
+          acct.manual_disabled is True and acct.disabled is True)
+    pool.enable("u1")
+    check("manual enable clears the flag", acct.manual_disabled is False)
+
+    state.embedded_error = {"code": 400, "message": "你的积分已耗尽，请充值"}
+    try:
+        body = C.build_chat_body({
+            "model": "GLM-5.2",
+            "messages": [{"role": "user", "content": "hi"}],
+        }, "sess-credit-sse")
+        C.open_chat(C.load_config(ACCOUNTS), body, "sess-credit-sse")
+        check("SSE credit exhaustion fails the request", False)
+    except C.CodeArtsUpstreamError:
+        check("SSE credit exhaustion fails the request", True)
+    finally:
+        state.embedded_error = None
+    check("SSE credit exhaustion parks the account",
+          acct.cool_until > time.time() + 500, acct.cool_until)
+    acct.cool_until = 0
+    acct.err_count = 0
+
     print("== proxy slots ==")
     import urllib.request
     import wb_settings

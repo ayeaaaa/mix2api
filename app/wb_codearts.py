@@ -935,7 +935,8 @@ class CodeArtsPool(object):
         acct.last_error = str(message or "")[:200]
         if terminal:
             acct.disabled = True
-            acct.manual_disabled = False
+            # A terminal credential error must not silently clear an
+            # operator's manual disable; only enable() clears that flag.
             acct.disabled_reason = acct.last_error
         elif soft:
             acct.cool_until = time.time() + SOFT_COOLDOWN
@@ -1941,6 +1942,12 @@ class CodeArtsStream(object):
             message = str(payload.get("error_msg") or payload.get("message")
                           or text)[:300]
             lowered = message.lower()
+            if _is_credit_exhausted_message(message):
+                # Recoverable account-level credit exhaustion: rotate and park
+                # this account for ten minutes instead of treating it as a
+                # generic upstream fault.
+                raise CodeArtsUpstreamError(message, status=429,
+                                            code="CREDIT_EXHAUSTED")
             if ("request param is invalid" in lowered
                     or "request model is not multimodal" in lowered
                     or "tool function cannot empty" in lowered):
@@ -2319,6 +2326,14 @@ def open_chat(config, body, session_key=None, allowed_accounts=None):
             exclude.add(acct.uid)
             last_error = exc
         except CodeArtsUpstreamError as exc:
+            if str(exc.code or "") == "CREDIT_EXHAUSTED":
+                acct.cool_until = max(acct.cool_until, time.time() + 600)
+                acct.err_count = 0
+                pool.save_state()
+                pool.release(acct)
+                exclude.add(acct.uid)
+                last_error = exc
+                continue
             soft = (exc.status == 429 or "429" in str(exc.code or ""))
             pool.note_error(acct, str(exc), soft=soft)
             pool.release(acct)
