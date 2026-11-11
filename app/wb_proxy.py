@@ -24100,6 +24100,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/raccoon/accounts/test",
                 "/raccoon/accounts/grant-desktop",
                 "/raccoon/accounts/grant-mobile",
+                "/raccoon/accounts/daily-active",
                 "/raccoon/accounts/enable",
                 "/raccoon/accounts/disable",
                 "/raccoon/accounts/delete",
@@ -24125,6 +24126,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = wb_raccoon.grant_desktop_login_points(cfg, uid)
             elif path == "/raccoon/accounts/grant-mobile":
                 result = wb_raccoon.grant_mobile_login_points(cfg, uid)
+            elif path == "/raccoon/accounts/daily-active":
+                result = wb_raccoon.daily_active(
+                    cfg, uid, force=bool(payload.get("force"))
+                )
             elif path == "/raccoon/accounts/enable":
                 result = wb_raccoon.enable(cfg, uid)
             elif path == "/raccoon/accounts/disable":

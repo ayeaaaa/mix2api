@@ -16,8 +16,9 @@ const html = dashboardHtml();
 const script = dashboardScript();
 
 /* ---- 1. 结构 ---- */
-for(const id of ['raccoonEnabled', 'raccoonTimeout', 'raccoonStreamTimeout',
-                 'raccoonMaxConcurrent', 'setRaccoonState', 'setRaccoonHint']){
+for(const id of ['raccoonEnabled', 'raccoonDailyActive', 'raccoonTimeout',
+                 'raccoonStreamTimeout', 'raccoonMaxConcurrent',
+                 'setRaccoonState', 'setRaccoonHint']){
   assert.ok(html.includes('id="' + id + '"'), '缺少 #' + id);
 }
 assert.ok(/renderRaccoonSettings/.test(script), '缺少设置回填函数');
@@ -123,6 +124,8 @@ const byId = id => document.getElementById(id);
     max_concurrent: 2, accounts: 2, healthy: 1,
   });
   assert.equal(byId('raccoonEnabled').checked, true, '启用开关应回填');
+  assert.equal(byId('raccoonDailyActive').checked, false,
+    '未开启每日活跃打卡时复选框应关闭');
   assert.equal(byId('raccoonTimeout').value, 45, '管理超时应回填');
   assert.equal(byId('raccoonStreamTimeout').value, 600, '流式超时应回填');
   assert.equal(byId('raccoonMaxConcurrent').value, 2, '单账号并发应回填');
@@ -135,6 +138,7 @@ const byId = id => document.getElementById(id);
   GETS = [];
   global.__updateUiCalls = 0;
   byId('raccoonEnabled').checked = true;
+  byId('raccoonDailyActive').checked = true;
   byId('raccoonTimeout').value = '90';
   byId('raccoonStreamTimeout').value = '1200';
   byId('raccoonMaxConcurrent').value = '4';
@@ -142,9 +146,9 @@ const byId = id => document.getElementById(id);
   const saved = POSTS.filter(p => p.url === '/settings/save');
   assert.equal(saved.length, 1, '保存应只发一条 /settings/save');
   assert.deepEqual(saved[0].body, {
-    raccoon: {enabled: true, timeout_seconds: 90,
+    raccoon: {enabled: true, daily_active: true, timeout_seconds: 90,
               stream_timeout_seconds: 1200, max_concurrent: 4},
-  }, '保存载荷必须只有 raccoon 的四个字段');
+  }, '保存载荷必须只有 raccoon 的五个字段');
   assert.ok(GETS.includes('/realm'), '保存后应刷新出口选项');
   assert.ok(global.__updateUiCalls > 0, '保存后应刷新界面');
   assert.ok(toasts.some(t => t[1] === 'ok'), '保存成功应给出成功提示');
@@ -225,6 +229,10 @@ const byId = id => document.getElementById(id);
   assert.equal(api.i18n.translate('移动登录'), 'Mobile login', '移动任务表头');
   assert.equal(api.i18n.translate('专属任务'), 'Exclusive tasks', '专属任务表头');
   assert.equal(api.i18n.translate('已领完'), 'All claimed', '已领完状态');
+  assert.equal(api.i18n.translate('每日活跃'), 'Daily activity', '每日活跃列');
+  assert.equal(api.i18n.translate('每日活跃打卡'), 'Daily activity check-in', '每日活跃开关');
+  assert.equal(api.i18n.translate('今日活跃奖励'), "Today's activity reward",
+    '今日活跃奖励卡');
   assert.equal(api.i18n.translate('自动领取登录奖励'), 'Auto-claim login rewards', '自动领取');
   assert.equal(api.i18n.translate('已开启自动领取登录奖励'), 'Auto-claim login rewards on', '自动领取开启');
   assert.equal(api.i18n.translate('已关闭自动领取登录奖励'), 'Auto-claim login rewards off', '自动领取关闭');

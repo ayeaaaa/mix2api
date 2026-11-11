@@ -98,6 +98,11 @@ DEFAULTS = {
     "models_ttl_seconds": 600.0,
     "max_concurrent": 1,
     "auto_claim_login": False,
+    # Daily-activity check-in: the upstream grants ~300 points to an account
+    # that was active that day. Opt-in, because a ping is a real chat request
+    # (a few points) and changes what an upgraded install does every day.
+    "daily_active": False,
+    "daily_active_model": "",
 }
 
 _LOCK = threading.RLock()
@@ -216,6 +221,8 @@ def load_config(accounts_dir):
             raw.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 10
         ),
         "auto_claim_login": raw.get("auto_claim_login") is True,
+        "daily_active": raw.get("daily_active") is True,
+        "daily_active_model": str(raw.get("daily_active_model") or "").strip(),
         "accounts_dir": accounts_dir,
     }
 
@@ -254,6 +261,10 @@ def save_config(accounts_dir, patch):
             merged.get("max_concurrent"), DEFAULTS["max_concurrent"], 1, 10
         )
         merged["auto_claim_login"] = merged.get("auto_claim_login") is True
+        merged["daily_active"] = merged.get("daily_active") is True
+        merged["daily_active_model"] = str(
+            merged.get("daily_active_model") or ""
+        ).strip()
 
         data = wb_settings.load(accounts_dir)
         stored = data.get("raccoon")
@@ -904,10 +915,14 @@ class RaccoonAccount(object):
         self.auth_generation = 0
         self.deleted = False
         self.auto_claim_at = 0.0
+        #: Today's daily-activity result: {date, ok, points, attempts, at, message}.
+        #: Persisted with the rest of the pool state so a restart keeps the day.
+        self.daily_active = {}
         self._lock = threading.RLock()
         self._refresh_lock = threading.RLock()
         self._credits_lock = threading.Lock()
         self._auto_claim_lock = threading.Lock()
+        self._daily_active_lock = threading.Lock()
 
     def live(self):
         """True while this object is still the pool's current entry for its uid."""
@@ -1025,6 +1040,7 @@ class RaccoonAccount(object):
             "models": len(self.models),
             "credits": _public_credits(self.credits),
             "points_tasks": _public_point_tasks(self.points_tasks),
+            "daily_active": self.daily_active,
             "guard": self.guard_blocked(),
             "reserve_credits": int(self.reserve_credits or 0),
             "reserve_blocked": self.reserve_blocked(),
@@ -1172,6 +1188,8 @@ class RaccoonPool(object):
             acct.last_error = str(entry.get("last_error") or "")
             acct.note = str(entry.get("note") or "")[:200]
             acct.tasks_enabled = bool(entry.get("tasks_enabled", True))
+            daily = entry.get("daily_active")
+            acct.daily_active = dict(daily) if isinstance(daily, dict) else {}
             accounts.append(acct)
         with self._lock:
             self.accounts = accounts
@@ -1215,6 +1233,7 @@ class RaccoonPool(object):
                 "last_error": acct.last_error,
                 "note": acct.note,
                 "tasks_enabled": bool(acct.tasks_enabled),
+                "daily_active": acct.daily_active,
             }
         try:
             _atomic_write(self.state_file, state)
@@ -3172,6 +3191,251 @@ def auto_claim_login(acct, force=False):
         if errors:
             result["errors"] = errors
         return result
+
+
+# ---------------------------------------------------------------------------
+# 每日活跃打卡（每日活跃奖励 = 上游按天发放的 daily_grant 账单）
+#
+# 小浣熊没有签到 / 领取接口：账号当天「活跃」之后，上游自己记一笔
+# `biz_type=daily_grant` 的正积分账单（实测 300 分）。所以这里的「打卡」=
+# 发一次最小对话让账号当天算活跃，再读账单核对奖励是否真的到账；已经到账的
+# 账号不会再发对话，避免白扣积分。
+# ---------------------------------------------------------------------------
+
+#: 当天两次尝试之间的最短间隔；失败后留给下一个时段（默认 09:00 / 21:00）。
+DAILY_ACTIVE_RETRY_GAP = 3600.0
+#: 每个账号每天最多主动打卡几次（「已到账、直接跳过」不计入）。
+DAILY_ACTIVE_MAX_ATTEMPTS = 2
+#: 打卡用的最小提示词与输出上限：只为产生一次真实对话。
+DAILY_ACTIVE_PROMPT = "Hi"
+DAILY_ACTIVE_MAX_TOKENS = 16
+
+
+def _today_text(now=None):
+    return time.strftime(
+        "%Y-%m-%d", time.localtime(now if now is not None else time.time())
+    )
+
+
+def daily_grant_today(acct, timeout=8.0):
+    """Today's daily-activity grant in points, or 0 when none has landed.
+
+    Reads one page of bills. The upstream books the reward as a positive
+    `daily_grant` entry (`event_name` 每日积分发放); other positive entries
+    (login rewards, invite rewards) are not the daily-activity reward.
+    """
+    data = fetch_bills(acct, limit=20, timeout=timeout)
+    today = datetime.datetime.now().astimezone().date()
+    total = 0
+    for item in data.get("items") or ():
+        if not isinstance(item, dict):
+            continue
+        points = _as_points(item.get("points"))
+        if points <= 0:
+            continue
+        biz = str(item.get("biz_type") or "").strip().lower()
+        name = str(item.get("event_name") or "")
+        if biz != "daily_grant" and "每日" not in name:
+            continue
+        when = _parse_points_time(item.get("created_at"))
+        if when is None or when.astimezone().date() != today:
+            continue
+        total += points
+    return total
+
+
+def _daily_active_model(acct, config=None):
+    """Model for the ping: explicit setting, then the account catalog, then seed."""
+    configured = str((config or {}).get("daily_active_model") or "").strip()
+    if configured:
+        return configured
+    for item in acct.models or ():
+        if isinstance(item, dict):
+            mid = str(item.get("id") or "").strip()
+            if mid:
+                return mid
+    for item in _cached_catalog().get("models") or ():
+        if isinstance(item, dict):
+            mid = str(item.get("id") or "").strip()
+            if mid:
+                return mid
+    return str(SEED_MODELS[0]["id"]) if SEED_MODELS else ""
+
+
+def _daily_active_ping(acct, model):
+    """Send one minimal chat and drain the stream; returns the model used."""
+    if not model:
+        raise RaccoonBadRequest("没有可用的模型，无法打卡")
+    if not acct.pool.acquire(acct):
+        raise RaccoonUnavailable("账号正忙，稍后再试")
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": DAILY_ACTIVE_PROMPT}],
+        "max_completion_tokens": DAILY_ACTIVE_MAX_TOKENS,
+        "stream": True,
+    }
+    stream = None
+    try:
+        stream, used = _client_chat(acct, body, "raccoon-daily-active")
+        for _line in stream:
+            pass
+        return used or model
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        else:
+            try:
+                acct.pool.release(acct)
+            except Exception:
+                pass
+
+
+def _verify_daily_grant(acct, attempts=3, gap=2.0):
+    """Poll the bill list briefly: upstream books the reward asynchronously."""
+    landed = 0
+    for index in range(max(1, int(attempts))):
+        landed = daily_grant_today(acct)
+        if landed:
+            return landed
+        if index + 1 < attempts:
+            time.sleep(gap)
+    return landed
+
+
+def daily_active(config, uid="", force=False):
+    """Daily-activity check-in for one account (`uid`) or the whole pool.
+
+    Skips accounts that already received today's grant (no wasted chat),
+    disabled accounts and accounts whose task toggle is off. A failed check-in
+    stays retryable at most `DAILY_ACTIVE_MAX_ATTEMPTS` times a day, at least
+    `DAILY_ACTIVE_RETRY_GAP` apart, so a scheduler slot cannot burn points in
+    a loop. `force=True` (the panel button) bypasses those two limits but still
+    skips an account that already has today's grant.
+    """
+    config = _config_or_load(config)
+    pool = pool_for(config["accounts_dir"])
+    targets = [pool.get(uid)] if uid else list(pool.accounts)
+    if uid and targets[0] is None:
+        raise RaccoonNotFound("account not found")
+    today = _today_text()
+    results = []
+    granted = 0
+    total_points = 0
+    for acct in targets:
+        if acct is None:
+            continue
+        if acct.disabled:
+            results.append({
+                "uid": acct.uid, "ok": False, "skipped": True, "points": 0,
+                "message": "账号已停用",
+            })
+            continue
+        if not bool(getattr(acct, "tasks_enabled", True)):
+            results.append({
+                "uid": acct.uid, "ok": False, "skipped": True, "points": 0,
+                "message": "任务开关已关闭",
+            })
+            continue
+        with acct._daily_active_lock:
+            state = acct.daily_active if isinstance(acct.daily_active, dict) else {}
+            same_day = state.get("date") == today
+            attempts = int(state.get("attempts") or 0) if same_day else 0
+            last_at = float(state.get("last_attempt") or 0.0) if same_day else 0.0
+
+            # 1) 已经到账：不打卡，只把状态刷新成今天的记录。
+            try:
+                landed = daily_grant_today(acct)
+            except RaccoonError:
+                landed = None
+            if landed:
+                acct.daily_active = {
+                    "date": today, "ok": True, "points": int(landed),
+                    "attempts": attempts, "last_attempt": last_at,
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "message": "今日每日活跃奖励已到账 %d 积分" % landed,
+                }
+                acct.pool.save_state()
+                granted += 1
+                total_points += int(landed)
+                results.append({
+                    "uid": acct.uid, "ok": True, "granted": True,
+                    "points": int(landed), "chat": False,
+                    "message": acct.daily_active["message"],
+                })
+                continue
+
+            # 2) 今天已经打过卡：按间隔与次数决定是否再试。
+            if not force:
+                if attempts >= DAILY_ACTIVE_MAX_ATTEMPTS:
+                    results.append({
+                        "uid": acct.uid, "ok": False, "skipped": True,
+                        "points": 0,
+                        "message": "今日已打卡 %d 次，奖励未到账，明天再试"
+                        % attempts,
+                    })
+                    continue
+                if last_at and time.time() - last_at < DAILY_ACTIVE_RETRY_GAP:
+                    results.append({
+                        "uid": acct.uid, "ok": False, "skipped": True,
+                        "points": 0,
+                        "message": "距上次打卡不足 %d 分钟，稍后再试"
+                        % int(DAILY_ACTIVE_RETRY_GAP // 60),
+                    })
+                    continue
+
+            # 3) 打卡：一次最小对话。
+            model = _daily_active_model(acct, config)
+            error = ""
+            try:
+                _daily_active_ping(acct, model)
+            except RaccoonError as exc:
+                error = _redact(str(exc), _auth_secrets(acct.auth))[:200]
+
+            # 4) 核对到账（上游记账有延迟，短暂轮询几次）。
+            try:
+                landed = _verify_daily_grant(acct)
+            except RaccoonError:
+                landed = None
+            ok = bool(landed)
+            if ok:
+                granted += 1
+                total_points += int(landed)
+                message = "已打卡，今日每日活跃奖励 %d 积分已到账" % landed
+            elif error:
+                message = "打卡失败：%s" % error
+            elif landed is None:
+                message = "已打卡，但账单校验失败，稍后自动重试"
+            else:
+                message = "已打卡，但今日每日活跃奖励尚未到账，稍后自动重试"
+            acct.daily_active = {
+                "date": today, "ok": ok, "points": int(landed or 0),
+                "attempts": attempts + 1, "last_attempt": time.time(),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model,
+                "message": message,
+            }
+            acct.pool.save_state()
+            results.append({
+                "uid": acct.uid, "ok": ok, "granted": ok,
+                "points": int(landed or 0), "chat": True, "model": model,
+                "message": message,
+            })
+    checked = len([r for r in results if not r.get("skipped")])
+    return {
+        "ok": (
+            all(r.get("ok") for r in results if not r.get("skipped"))
+            if checked else True
+        ),
+        "accounts": len([a for a in targets if a is not None]),
+        "checked": checked,
+        "granted": granted,
+        "points": total_points,
+        "results": results,
+        "message": "已处理 %d 个账号，到账 %d 个，共 %d 积分"
+        % (checked, granted, total_points),
+    }
 
 
 def _grant_login_points(config, uid, grant, reward_name):

@@ -48,6 +48,7 @@ try {
       renderRaccoonTasks: renderRaccoonTasks,
       raccoonGrantDesktop: raccoonGrantDesktop,
       raccoonGrantMobile: raccoonGrantMobile,
+      raccoonDailyActive: raccoonDailyActive,
       saveRaccoonAutoClaim: saveRaccoonAutoClaim,
       loadRaccoonTasks: loadRaccoonTasks
     };
@@ -184,6 +185,41 @@ assert.equal(autoClaim.checked, false, 'auto_claim_login=false 应取消勾选')
   await api.raccoonGrantDesktop('u2', null);
   assert.ok(POSTS.some(p => p.url.indexOf('/raccoon/accounts/grant-desktop') >= 0),
     '桌面按钮应 POST grant-desktop');
+
+  // 每日活跃列：未打卡 / 已到账 / 未到账，以及手动打卡按钮。
+  render([{
+    uid: 'd1', nickname: '未打卡', credits: {available: 1},
+    points_tasks: {new_user: []},
+  }]);
+  assert.ok(table.innerHTML.includes('今日未打卡'), '无状态应显示今日未打卡');
+  assert.ok(table.innerHTML.includes("raccoonDailyActive('d1'"),
+    '应提供每日活跃打卡按钮');
+
+  const now = new Date();
+  const today = now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-'
+    + String(now.getDate()).padStart(2, '0');
+  render([{
+    uid: 'd2', nickname: '已到账', credits: {available: 1},
+    points_tasks: {new_user: []},
+    daily_active: {date: today, ok: true, points: 300, attempts: 1},
+  }]);
+  assert.ok(table.innerHTML.includes('已到账 300'), '到账应显示积分');
+  assert.ok(cards.innerHTML.includes('今日活跃奖励'), '应有今日活跃奖励卡');
+
+  render([{
+    uid: 'd3', nickname: '未到账', credits: {available: 1},
+    points_tasks: {new_user: []},
+    daily_active: {date: today, ok: false, points: 0, attempts: 2},
+  }]);
+  assert.ok(table.innerHTML.includes('未到账'), '未到账应显示提示');
+
+  POSTS = [];
+  await api.raccoonDailyActive('d1', null);
+  const dailyPost = POSTS.find(
+    p => p.url.indexOf('/raccoon/accounts/daily-active') >= 0);
+  assert.ok(dailyPost, '打卡按钮应 POST daily-active');
+  assert.equal(dailyPost.body.uid, 'd1', '打卡应带账号 uid');
 
   console.log('raccoon task page assertions passed');
 })().catch(error => {

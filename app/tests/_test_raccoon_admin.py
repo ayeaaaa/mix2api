@@ -898,6 +898,44 @@ def test_auto_claim_login_setting():
     )
 
 
+def test_daily_active_endpoint():
+    """`/raccoon/accounts/daily-active`: panel gate, uid required, grant check."""
+    print("== daily active ==")
+    reset_accounts()
+    reset_fake()
+    state.reset_bills()
+    before_chat = state.chat_calls
+    body = import_current_account(expires_in=3600)
+    uid = body.get("uid")
+
+    status, result = call("POST", "/raccoon/accounts/daily-active", {"uid": uid})
+    check("daily active needs a panel session", status == 401, (status, result))
+
+    status, result = call("POST", "/raccoon/accounts/daily-active", {}, token=TOKEN)
+    check("daily active requires uid", status == 400, (status, result))
+
+    status, result = call(
+        "POST", "/raccoon/accounts/daily-active", {"uid": uid}, token=TOKEN
+    )
+    check(
+        "daily active reports today's grant",
+        status == 200 and result.get("granted") == 1 and result.get("points") == 300,
+        (status, result),
+    )
+    check(
+        "daily active skips the ping when the grant already landed",
+        state.chat_calls == before_chat,
+        state.chat_calls,
+    )
+    overview = call("GET", "/raccoon/overview", token=TOKEN)[1]
+    account = (overview.get("accounts") or [{}])[0]
+    check(
+        "overview carries daily_active",
+        (account.get("daily_active") or {}).get("ok") is True,
+        account,
+    )
+
+
 def test_models_refresh_and_keepalive():
     print("== refresh/keepalive ==")
     reset_accounts()
@@ -1310,6 +1348,7 @@ try:
     test_desktop_login_grant_and_tasks()
     test_mobile_login_grant_and_tasks()
     test_auto_claim_login_setting()
+    test_daily_active_endpoint()
     test_models_refresh_and_keepalive()
     test_admin_errors_are_readable_and_secret_free()
     test_callback_requests_are_redacted_and_nostore()

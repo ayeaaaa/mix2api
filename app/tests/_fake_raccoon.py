@@ -79,6 +79,43 @@ def points_tasks_fixture():
     }
 
 
+def bills_fixture():
+    """Point bills: today's daily-activity grant plus a few consumptions."""
+    now = datetime.datetime.now().astimezone()
+
+    def when(days=0):
+        return (now - datetime.timedelta(days=days)).isoformat(timespec="seconds")
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "items": [
+                {"event_name": "桌面端 LLM 对话消耗", "points": -1,
+                 "biz_type": "desktop", "client_type": "desktop",
+                 "created_at": when(0)},
+                {"event_name": "桌面端 LLM 对话消耗", "points": -2,
+                 "biz_type": "desktop", "client_type": "desktop",
+                 "created_at": when(0)},
+                {"event_name": "三天前对话消耗", "points": -4,
+                 "biz_type": "desktop", "client_type": "desktop",
+                 "created_at": when(3)},
+                {"event_name": "八天前对话消耗", "points": -5,
+                 "biz_type": "desktop", "client_type": "desktop",
+                 "created_at": when(8)},
+                {"event_name": "每日积分发放", "points": 300,
+                 "biz_type": "daily_grant", "client_type": "web",
+                 "created_at": when(0)},
+                {"event_name": "奖励积分", "points": 1000,
+                 "biz_type": "reward_grant", "client_type": "web",
+                 "created_at": when(2)},
+            ],
+            "has_more": False,
+            "next_cursor": "",
+        },
+    }
+
+
 def _b64url(raw):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -131,6 +168,10 @@ class FakeState(object):
         self.chat_calls = 0
         self.chat_text = "你好"
         self.chat_bill_points = 0
+        #: When set, a chat also books today's daily-activity grant bill, which
+        #: is how the real upstream rewards an account that was active.
+        self.daily_grant_on_chat = False
+        self.daily_grant_points = 300
         self.reasoning_text = ""
         self.tool_calls = None
         self.truncate_after = None
@@ -159,9 +200,6 @@ class FakeState(object):
         self.mobile_grant_status = 200
         self.mobile_granted = False
         self.mobile_grant_points = 3000
-        now = datetime.datetime.now().astimezone()
-        def when(days=0):
-            return (now - datetime.timedelta(days=days)).isoformat(timespec="seconds")
         self.balance = {
             "code": 0,
             "message": "success",
@@ -176,34 +214,7 @@ class FakeState(object):
                 "topup_frozen": False,
             },
         }
-        self.bills = {
-            "code": 0,
-            "message": "success",
-            "data": {
-                "items": [
-                    {"event_name": "桌面端 LLM 对话消耗", "points": -1,
-                     "biz_type": "desktop", "client_type": "desktop",
-                     "created_at": when(0)},
-                    {"event_name": "桌面端 LLM 对话消耗", "points": -2,
-                     "biz_type": "desktop", "client_type": "desktop",
-                     "created_at": when(0)},
-                    {"event_name": "三天前对话消耗", "points": -4,
-                     "biz_type": "desktop", "client_type": "desktop",
-                     "created_at": when(3)},
-                    {"event_name": "八天前对话消耗", "points": -5,
-                     "biz_type": "desktop", "client_type": "desktop",
-                     "created_at": when(8)},
-                    {"event_name": "每日积分发放", "points": 300,
-                     "biz_type": "daily_grant", "client_type": "web",
-                     "created_at": when(0)},
-                    {"event_name": "奖励积分", "points": 1000,
-                     "biz_type": "reward_grant", "client_type": "web",
-                     "created_at": when(2)},
-                ],
-                "has_more": False,
-                "next_cursor": "",
-            },
-        }
+        self.bills = bills_fixture()
         self.last_header_names = None
         self.lock = threading.Lock()
 
@@ -229,6 +240,10 @@ class FakeState(object):
         data["available_points"] = 1234
         data["reward_points"] = 1000
         data["total_chargeable_points"] = 1234
+
+    def reset_bills(self):
+        """Restore the bill fixture (today's daily grant included)."""
+        self.bills = bills_fixture()
 
     def token_payload(self):
         return {
@@ -631,6 +646,24 @@ class _Handler(BaseHTTPRequestHandler):
                 }
                 with state.lock:
                     state.bills.setdefault("data", {}).setdefault("items", []).insert(0, item)
+            if state.daily_grant_on_chat:
+                points = abs(int(state.daily_grant_points))
+                item = {
+                    "event_name": "每日积分发放",
+                    "points": points,
+                    "biz_type": "daily_grant",
+                    "client_type": "web",
+                    "created_at": datetime.datetime.now().astimezone().isoformat(
+                        timespec="seconds"
+                    ),
+                }
+                with state.lock:
+                    state.bills.setdefault("data", {}).setdefault("items", []).insert(0, item)
+                    data = state.balance.setdefault("data", {})
+                    data["available_points"] = int(
+                        data.get("available_points") or 0
+                    ) + points
+                    data["daily_points"] = int(data.get("daily_points") or 0) + points
             token = _bearer_token(self)
             with state.lock:
                 status = state.chat_status_by_token.get(token, state.chat_status)

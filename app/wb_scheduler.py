@@ -421,7 +421,8 @@ class Scheduler:
         accounts = list(self.pool.accounts)
         if not accounts and not (
                 self._codearts_checkin_pending(run_checkin)
-                or self._codearts_keepalive_pending(run_keepalive)):
+                or self._codearts_keepalive_pending(run_keepalive)
+                or self._raccoon_daily_active_pending(run_checkin)):
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
         # 时段永远存在（面板留空时是「今天随机抽的两个」），所以国际版活跃只按
@@ -555,7 +556,8 @@ class Scheduler:
 
         codearts_checkin_count = self._run_codearts_checkin(run_checkin)
         codearts_keepalive_count = self._run_codearts_keepalive(run_keepalive)
-        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，CodeArts 签到 {codearts_checkin_count} 个，CodeArts 保活 {codearts_keepalive_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+        raccoon_daily_count = self._run_raccoon_daily_active(run_checkin)
+        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，CodeArts 签到 {codearts_checkin_count} 个，CodeArts 保活 {codearts_keepalive_count} 个，小浣熊每日活跃 {raccoon_daily_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
 
     def _codearts_keepalive_pending(self, run_keepalive):
         """Whether any enabled CodeArts account needs a token refresh now."""
@@ -668,6 +670,68 @@ class Scheduler:
                          f"{res.get('message') or ''}")
             time.sleep(1.0)
         return checked
+
+    def _raccoon_daily_active_pending(self, run_checkin):
+        """Whether this cycle should enter the Raccoon daily-activity path."""
+        if not run_checkin:
+            return False
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return False
+        try:
+            import wb_raccoon
+            cfg = wb_raccoon.load_config(directory)
+            if not cfg.get("enabled") or not cfg.get("daily_active"):
+                return False
+            pool = wb_raccoon.pool_for(directory)
+        except Exception:
+            return False
+        return any(
+            not acct.disabled and getattr(acct, "tasks_enabled", True)
+            for acct in pool.accounts
+        )
+
+    def _run_raccoon_daily_active(self, run_checkin):
+        """Daily-activity check-in: one minimal chat, then verify the 300 grant.
+
+        The upstream books the daily reward as a `daily_grant` bill; an account
+        that already has today's grant is skipped without another chat, so the
+        second slot (21:00) only re-runs accounts that missed it at 09:00.
+        """
+        if not run_checkin:
+            return 0
+        directory = getattr(self.pool, "dir", "") or ""
+        if not directory:
+            return 0
+        try:
+            import wb_raccoon
+            cfg = wb_raccoon.load_config(directory)
+        except Exception as exc:
+            self.log(f"小浣熊每日活跃读取配置失败: {exc}")
+            return 0
+        if not cfg.get("enabled") or not cfg.get("daily_active"):
+            return 0
+        try:
+            res = wb_raccoon.daily_active(cfg)
+        except Exception as exc:
+            self.log(f"小浣熊每日活跃打卡失败: {exc}")
+            return 0
+        checked = int(res.get("checked") or 0)
+        granted = int(res.get("granted") or 0)
+        if checked:
+            self.log(
+                f"小浣熊每日活跃：处理 {checked} 个账号，到账 {granted} 个，"
+                f"共 {int(res.get('points') or 0)} 积分"
+            )
+        for item in res.get("results") or []:
+            if item.get("skipped"):
+                continue
+            uid8 = str(item.get("uid") or "?")[:8]
+            mark = "✓" if item.get("ok") else "!"
+            self.log(
+                f"{mark} 小浣熊账号 [{uid8}] 每日活跃: {item.get('message') or ''}"
+            )
+        return granted
 
     def _daily_activity_on(self):
         """Read the daily-activity master switch; anything unreadable keeps it on."""
