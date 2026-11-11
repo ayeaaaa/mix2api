@@ -13015,8 +13015,11 @@ def normalize_roles(messages):
 # ---------------------------------------------------------------------------
 # Fingerprint Sanitization (immunizes against Codex / Claude Code WAF patterns)
 # ---------------------------------------------------------------------------
-SANITIZE_FEATURES = (
+SANITIZE_BILLING_HDR_NAMES = (
     "x-anthropic-billing-header",
+    "x-anthropic-billing-hdr",
+)
+SANITIZE_FEATURES = SANITIZE_BILLING_HDR_NAMES + (
     "cc_entrypoint=",
     "You are Claude Code",
     "Main branch (",
@@ -13046,8 +13049,13 @@ SANITIZE_CLAUDE_CODE_INTRO_RE = re.compile(
     r"(?: tool)? for Claude(?: Code)?\.?")
 SANITIZE_CLAUDE_CODE_INTRO_REPLACEMENT = "You are a helpful AI assistant."
 SANITIZE_CLAUDE_CODE_LOWER = "you are claude code,"
-SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
-SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
+# The real wire value is one full line with trailing cch= parameters; delete the
+# whole line, not just the first semicolon-delimited value.
+SANITIZE_HDR_LINE_RE = re.compile(
+    r"(?im)^[ \t]*x-anthropic-billing-(?:header|hdr)[ \t]*:[^\r\n]*(?:\r?\n|$)")
+SANITIZE_HDR_RE = re.compile(
+    r"(?i)x-anthropic-billing-(?:header|hdr)\s*:\s*[^;\r\n]*(?:;\s*)?")
+SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-(?:header|hdr)")
 SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
 # WorkBuddy upstream returns 11128 ("Illegal API invocation from an unapproved
 # channel") when this exact OmO identity fingerprint appears as a contiguous
@@ -13142,9 +13150,10 @@ SANITIZE_REI_FOLD = str.maketrans({0x130: "i", 0x131: "i", 0x17F: "s"})
 # 两个小写字面量直接从正则派生，保证与正则永远同源：手抄第二份迟早漂移，
 # 派生出来的值不存在这个问题。pattern 里的 (?i) 是内联旗标，剥掉后就是
 # 字面量本体。
-SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_RE.pattern
-if SANITIZE_BARE_HDR_LOWER.startswith("(?i)"):
-    SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_LOWER[4:]
+# The two accepted spellings are checked literally on the lowercased text; the
+# regex below still decides the actual rewrite.
+SANITIZE_BARE_HDR_LOWER = SANITIZE_BILLING_HDR_NAMES[0]
+SANITIZE_BARE_HDR_ALIASES = SANITIZE_BILLING_HDR_NAMES
 SANITIZE_OMO_JUNIOR_LOWER = SANITIZE_OMO_JUNIOR_RE.pattern.lower()
 SANITIZE_IDENTITY_LOWER = SANITIZE_IDENTITY_VERBS
 def has_fingerprint(text, identity=True):
@@ -13159,7 +13168,7 @@ def has_fingerprint(text, identity=True):
         low = text.translate(SANITIZE_REI_FOLD).lower()
     else:
         low = text.lower()
-    if (SANITIZE_BARE_HDR_LOWER in low
+    if (any(name in low for name in SANITIZE_BARE_HDR_ALIASES)
             or SANITIZE_OMO_JUNIOR_LOWER in low):
         return True
     if not identity:
@@ -13211,6 +13220,7 @@ def sanitize_text(text, identity=True):
         text = SANITIZE_BRAND_RE.sub(SANITIZE_BRAND_REPLACEMENT, text)
     for old, new in SANITIZE_REWRITES:
         text = text.replace(old, new)
+    text = SANITIZE_HDR_LINE_RE.sub("", text)
     text = SANITIZE_HDR_RE.sub("", text)
     if "cc_" in text:
         prev = ""
@@ -13287,8 +13297,16 @@ def sanitize_messages(messages):
             # 仍是用户数据，不改写。
             identity = item.get("role") in ("system", "developer", "assistant")
             if "content" in item and not preserve_tool_result:
+                before = item.get("content")
                 item["content"] = sanitize_content(item["content"],
                                                    identity=identity)
+                # A system message may contain only the billing header. Drop it
+                # after sanitization instead of sending an empty text block
+                # (upstream 400 / 11151).
+                if (item.get("role") in ("system", "developer")
+                        and isinstance(before, str) and before.strip()
+                        and item["content"] == ""):
+                    continue
             if isinstance(item.get("reasoning_content"), str):
                 item["reasoning_content"] = sanitize_text(
                     item["reasoning_content"], identity=False)
