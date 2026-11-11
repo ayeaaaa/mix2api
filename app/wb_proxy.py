@@ -13051,19 +13051,16 @@ SANITIZE_BILLING_HDR_NAMES = (
     "x-anthropic-billing-hdr",
 )
 SANITIZE_FEATURES = SANITIZE_BILLING_HDR_NAMES + (
-    "cc_entrypoint=",
     "You are Claude Code",
     "Main branch (",
     "You are a coding agent running in the Codex CLI",
     "github.com/anthropics/",
-    "11128",
 )
 SANITIZE_REWRITES = (
     ("Main branch (you will usually use this for PRs)",
      "Default branch (you will usually use this for PRs)"),
     ("To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
      "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
-    ("11128", "11-128"),
 )
 # Codex CLI 的自述首段（#743）：上游按「身份句 + Codex CLI」判 11-128。
 # 旧规则把中性句改写成这段自述，反过来把指纹注入出站 body；这里整句中性化，
@@ -13187,10 +13184,13 @@ SANITIZE_BARE_HDR_LOWER = SANITIZE_BILLING_HDR_NAMES[0]
 SANITIZE_BARE_HDR_ALIASES = SANITIZE_BILLING_HDR_NAMES
 SANITIZE_OMO_JUNIOR_LOWER = SANITIZE_OMO_JUNIOR_RE.pattern.lower()
 SANITIZE_IDENTITY_LOWER = SANITIZE_IDENTITY_VERBS
-def has_fingerprint(text, identity=True):
+def has_fingerprint(text, identity=True, billing=True):
     if not isinstance(text, str) or not text:
         return False
+    billing_lower = tuple(name.lower() for name in SANITIZE_BILLING_HDR_NAMES)
     for f in SANITIZE_FEATURES:
+        if not billing and f.lower() in billing_lower:
+            continue
         if f in text:
             return True
     # 三个特例字符几乎从不出现：先做三次 C 速度探测，命中才走归一化副本，
@@ -13199,8 +13199,9 @@ def has_fingerprint(text, identity=True):
         low = text.translate(SANITIZE_REI_FOLD).lower()
     else:
         low = text.lower()
-    if (any(name in low for name in SANITIZE_BARE_HDR_ALIASES)
-            or SANITIZE_OMO_JUNIOR_LOWER in low):
+    if ((billing and any(name in low for name in SANITIZE_BARE_HDR_ALIASES))
+            or SANITIZE_OMO_JUNIOR_LOWER in low
+            or (billing and "cc_" in low)):
         return True
     if not identity:
         return False
@@ -13226,10 +13227,10 @@ def has_fingerprint(text, identity=True):
     if not any(needle in low for needle in SANITIZE_IDENTITY_LOWER):
         return False
     return SANITIZE_IDENTITY_RE.search(text) is not None
-def sanitize_text(text, identity=True):
+def sanitize_text(text, identity=True, billing=True):
     if not isinstance(text, str) or not text:
         return text
-    if not has_fingerprint(text, identity=identity):
+    if not has_fingerprint(text, identity=identity, billing=billing):
         return text
     # Keep the rewrite deliberately narrow: do not globally remove
     # "OhMyOpenCode" or "Sisyphus-Junior", because either token alone is
@@ -13258,17 +13259,20 @@ def sanitize_text(text, identity=True):
         while prev != text:
             prev = text
             text = SANITIZE_KV_RE.sub("", text)
-    text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
+    text = SANITIZE_BARE_HDR_RE.sub("anthropic-header", text)
     return text.strip()
-def sanitize_content(content, identity=True):
+def sanitize_content(content, identity=True, billing=False):
     if isinstance(content, str):
-        return sanitize_text(content, identity=identity)
+        return sanitize_text(content, identity=identity, billing=billing)
     if isinstance(content, list):
         out = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text" and "text" in part:
                 p = dict(part)
-                p["text"] = sanitize_text(p["text"], identity=identity)
+                p["text"] = sanitize_text(p["text"], identity=identity,
+                                          billing=billing)
+                if billing and not p["text"]:
+                    continue
                 out.append(p)
             else:
                 out.append(part)
@@ -13280,6 +13284,28 @@ def preserve_request_contract_enabled():
     """Opt-in field/data preservation; does not enforce upstream constraints."""
     return os.environ.get("WB_PRESERVE_REQUEST_CONTRACT", "0").strip().lower() in (
         "1", "true", "yes", "on")
+
+
+def sanitize_tools(tools):
+    """Remove channel fingerprints from function descriptions."""
+    if not isinstance(tools, list):
+        return tools
+    out = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            out.append(tool)
+            continue
+        item = dict(tool)
+        fn = item.get("function")
+        if isinstance(fn, dict):
+            fn = dict(fn)
+            desc = fn.get("description")
+            if isinstance(desc, str):
+                fn["description"] = sanitize_text(desc, identity=True,
+                                                  billing=False)
+            item["function"] = fn
+        out.append(item)
+    return out
 
 
 def sanitize_tool_calls(tool_calls):
@@ -13300,7 +13326,8 @@ def sanitize_tool_calls(tool_calls):
                 raw_args = fn.get("arguments")
                 if isinstance(raw_args, str):
                     fn["arguments"] = (raw_args if preserve
-                                       else sanitize_text(raw_args, identity=False))
+                                       else sanitize_text(raw_args, identity=False,
+                                                          billing=False))
                 elif raw_args is None:
                     fn["arguments"] = "{}"
                 else:
@@ -13326,21 +13353,30 @@ def sanitize_messages(messages):
             # assistant 历史里的身份句同样是已确认的指纹（#574：同一句放在
             # assistant 里 400/400/400，放在 user 里 200/200/200）。user / tool
             # 仍是用户数据，不改写。
-            identity = item.get("role") in ("system", "developer", "assistant")
+            role = item.get("role")
+            identity = role in ("system", "developer", "assistant")
+            billing = role in ("system", "developer")
             if "content" in item and not preserve_tool_result:
                 before = item.get("content")
+                had_text = ((isinstance(before, str) and bool(before.strip()))
+                            or (isinstance(before, list) and any(
+                                isinstance(part, dict)
+                                and part.get("type") == "text"
+                                and str(part.get("text") or "").strip()
+                                for part in before)))
                 item["content"] = sanitize_content(item["content"],
-                                                   identity=identity)
-                # A system message may contain only the billing header. Drop it
+                                                   identity=identity,
+                                                   billing=billing)
+                # A system message may contain only billing metadata; drop it
                 # after sanitization instead of sending an empty text block
                 # (upstream 400 / 11151).
-                if (item.get("role") in ("system", "developer")
-                        and isinstance(before, str) and before.strip()
-                        and item["content"] == ""):
+                if billing and had_text and (
+                        item["content"] == ""
+                        or item["content"] == []):
                     continue
             if isinstance(item.get("reasoning_content"), str):
                 item["reasoning_content"] = sanitize_text(
-                    item["reasoning_content"], identity=False)
+                    item["reasoning_content"], identity=False, billing=False)
             if "tool_calls" in item:
                 item["tool_calls"] = sanitize_tool_calls(item["tool_calls"])
             out.append(item)
@@ -14799,6 +14835,8 @@ def build_upstream_body(payload):
             pass
     normalize_tool_choice(body)
     normalize_tools(body)
+    if "tools" in body:
+        body["tools"] = sanitize_tools(body["tools"])
     normalize_stop(body)
     if "max_tokens" not in body:
         default_max = model_default_max_output_tokens(model)

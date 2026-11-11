@@ -563,6 +563,39 @@ class BillingHeaderSanitizationTests(unittest.TestCase):
         self.assertNotIn("cch=", system)
 
 
+class BillingScopeAndToolTests(unittest.TestCase):
+    def test_billing_header_removed_only_from_system_and_developer(self):
+        header = "x-anthropic-billing-header: cch=abc;"
+        out = P.sanitize_messages([
+            {"role": "system", "content": header},
+            {"role": "developer", "content": header},
+            {"role": "assistant", "content": header},
+            {"role": "user", "content": header},
+        ])
+        self.assertEqual([item["role"] for item in out], ["assistant", "user"])
+        self.assertEqual(out[0]["content"], header)
+        self.assertEqual(out[1]["content"], header)
+
+    def test_bare_billing_key_becomes_anthropic_header(self):
+        out = P.sanitize_text("mention x-anthropic-billing-header here",
+                              identity=False)
+        self.assertNotIn("x-anthropic-billing-header", out)
+        self.assertIn("anthropic-header", out)
+
+    def test_tool_descriptions_are_sanitized(self):
+        tools = [{"type": "function", "function": {
+            "name": "run",
+            "description": "You are Claude Code, Anthropic's official CLI for Claude.",
+        }}]
+        cleaned = P.sanitize_tools(tools)
+        self.assertEqual(cleaned[0]["function"]["description"],
+                         "You are a helpful AI assistant.")
+
+    def test_11128_body_text_is_not_rewritten(self):
+        self.assertEqual(P.sanitize_text("error code 11128", identity=False),
+                         "error code 11128")
+
+
 if __name__ == "__main__":
     unittest.main()
 

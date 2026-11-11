@@ -155,18 +155,18 @@ class RequestContractTests(unittest.TestCase):
         parts = [{"type": "text", "text": DATA}]
         self.assertEqual(P.sanitize_messages([{"role": "tool", "content": parts}])[0]["content"], parts)
 
-    def test_other_role_fingerprint_rules_are_unchanged(self):
+    def test_11128_is_not_rewritten_in_message_data(self):
         for role in ("system", "user", "assistant"):
             with self.subTest(role=role):
                 out = P.sanitize_messages([{"role": role, "content": "11128"}])
-                self.assertEqual(out[0]["content"], "11-128")
+                self.assertEqual(out[0]["content"], "11128")
 
     def test_legacy_tool_sanitization_is_unchanged(self):
         with mock.patch.dict(os.environ, {FLAG: "0"}):
             out = P.sanitize_messages(self.tool_turn())
-            self.assertEqual(out[2]["content"], DATA.replace("11128", "11-128"))
+            self.assertEqual(out[2]["content"], DATA)
             self.assertEqual(out[1]["tool_calls"][0]["function"]["arguments"],
-                             DATA.replace("11128", "11-128"))
+                             DATA)
 
     def test_malformed_tool_calls_remain_tolerated(self):
         for calls in (None, [], "fixture", [None, {}]):
