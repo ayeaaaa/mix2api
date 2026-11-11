@@ -503,6 +503,61 @@ func TestValidateCachePositionAcceptsCopiedLog(t *testing.T) {
 	}
 }
 
+func TestCacheAdoptionSkipsUnchangedSave(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	env := newTestEnv(t, []map[string]any{
+		row(float64(now.Unix())-3600, "m", "intl", "a", 100, 10, map[string]any{"credit": 1.0}),
+		row(float64(now.Unix())-1800, "m", "cn", "b", 200, 20, map[string]any{"credit": 2.0}),
+	})
+	t.Setenv("WB_USAGE_CACHE", "1")
+	cases := []struct {
+		name string
+		kind string
+		call func(context.Context, *Service) error
+	}{
+		{"snapshot", "snapshot", func(ctx context.Context, service *Service) error {
+			_, err := service.Snapshot(ctx, SnapshotOptions{})
+			return err
+		}},
+		{"series", "series", func(ctx context.Context, service *Service) error {
+			_, err := service.Timeseries(ctx, SeriesOptions{
+				Range: "custom", Since: ptrTime(now.Add(-2 * time.Hour)), Until: ptrTime(now),
+			})
+			return err
+		}},
+		{"analytics", "analytics", func(ctx context.Context, service *Service) error {
+			_, err := service.Analytics(ctx, AnalyticsOptions{})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service := env.service()
+			service.Now = func() time.Time { return now }
+			if err := tc.call(context.Background(), service); err != nil {
+				t.Fatal(err)
+			}
+			path := env.Cache.Path(tc.kind)
+			old := time.Now().Add(-time.Hour).Truncate(time.Second)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			fresh := env.service()
+			fresh.Now = func() time.Time { return now }
+			if err := tc.call(context.Background(), fresh); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.ModTime().Equal(old) {
+				t.Fatalf("%s cache rewritten although the log did not advance: mtime=%v want %v", tc.kind, info.ModTime(), old)
+			}
+		})
+	}
+}
+
 func TestCacheSavePreservesOtherRealms(t *testing.T) {
 	for _, kind := range []string{"snapshot", "series", "analytics"} {
 		t.Run(kind, func(t *testing.T) {

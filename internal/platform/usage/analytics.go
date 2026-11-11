@@ -404,6 +404,7 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 			continue
 		}
 		raw, ok := entry["data"].(map[string]any)
+		v2 := ok
 		if !ok {
 			raw, ok = entry["maps"].(map[string]any)
 		}
@@ -481,7 +482,9 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 		if err != nil {
 			return analyticsMaps{}, false
 		}
-		s.saveAnalytics(realm, maps, newOffset)
+		if newOffset != offset || !v2 {
+			s.saveAnalytics(realm, maps, newOffset)
+		}
 		return maps, true
 	}
 	return analyticsMaps{}, false

@@ -261,6 +261,7 @@ func (s *Service) adoptSnapshot(ctx context.Context, realm string) (map[string]a
 			continue
 		}
 		raw, ok := entry["data"].(map[string]any)
+		v2 := ok
 		if !ok {
 			raw, ok = entry["snap"].(map[string]any)
 		}
@@ -295,7 +296,9 @@ func (s *Service) adoptSnapshot(ctx context.Context, realm string) (map[string]a
 		if err != nil {
 			return nil, false
 		}
-		s.saveSnapshotAt(realm, stats, newOffset)
+		if newOffset != offset || !v2 {
+			s.saveSnapshotAt(realm, stats, newOffset)
+		}
 		return s.snapshotMap(stats, realm), true
 	}
 	return nil, false
