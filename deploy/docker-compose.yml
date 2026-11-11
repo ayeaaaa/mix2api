@@ -4,7 +4,7 @@ services:
   mix2api:
     build:
       context: ..
-    image: ghcr.io/ayeaaaa/mix2api:${MIX2API_VERSION:-v2.0.2}
+    image: ghcr.io/ayeaaaa/mix2api:${MIX2API_VERSION:-v2.0.3}
     container_name: mix2api
     restart: unless-stopped
     ports:

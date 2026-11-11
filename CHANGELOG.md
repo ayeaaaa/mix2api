@@ -3,9 +3,11 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.0.3] - 2026-11-11
 
 ### 中文
+
+#### 修复
 
 - 修复迁移后用量缓存失效：`ValidateCachePosition` 改为按 size/offset/tail
   内容校验，不再依赖原文件 inode/path；v1 全局（`realm: null`）
