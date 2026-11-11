@@ -3,9 +3,15 @@
 ## Current status
 
 This tree is **`2.0.0`** final. The v2 source is published on branch `v2` of
-`ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.5. Release assets
-and the GHCR image use `v2.0.0`. Gate F evidence is in `docs/gate-f.md`; real
+`ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.5. The release is
+<https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.0> and the GHCR image is
+`ghcr.io/ayeaaaa/mix2api:v2.0.0`. Gate F evidence is in `docs/gate-f.md`; real
 Windows SCM update execution remains the only unverified runtime item.
+
+Note: v1.6.5 update checks point at the same repository and will see `v2.0.0` as
+a newer stable release. v1's installer expects a `workbuddy2api-hub-v2.0.0.zip`
+asset that v2 does not publish, so a v1 deployment with update checks enabled
+may see an update it cannot install.
 
 ## Prerequisites
 
