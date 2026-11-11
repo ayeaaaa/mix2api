@@ -554,7 +554,7 @@ func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
 	if fake.count(http.MethodPost, "/console/as/conversations/") != 2 {
 		t.Fatalf("create calls = %d, want 2", fake.count(http.MethodPost, "/console/as/conversations/"))
 	}
-	if methods := acp.methods(); strings.Join(methods, ",") != "initialize,session/load,session/set_model,session/prompt" {
+	if methods := acp.methods(); strings.Join(methods, ",") != "initialize,session/load,session/set_model,session/new,session/set_mode,session/set_config_option,session/prompt" {
 		t.Fatalf("ACP methods = %v", methods)
 	}
 	account := accountByUID(t, pool, "web-daily")
@@ -1698,46 +1698,57 @@ func TestTasksDailyChatPersists403Restriction(t *testing.T) {
 	}
 	account := accountByUID(t, pool, "intl-403")
 	account.mu.RLock()
-	until := taskRestrictedUntil(account.Auth)
+	banned := taskBanned(account.Auth)
+	enabled := account.Auth.Enabled
+	tasks := account.Auth.TasksEnabled
+	disabled := account.State.Disabled
 	coolUntil := account.State.CoolUntil
 	account.mu.RUnlock()
-	if until <= float64(time.Now().Unix()) {
-		t.Fatalf("restrictedUntil = %v, want future", until)
+	if !banned || enabled || tasks || !disabled {
+		t.Fatalf("daily 403 state: banned=%v enabled=%v tasks=%v disabled=%v",
+			banned, enabled, tasks, disabled)
 	}
-	if !coolUntil.After(time.Now()) {
-		t.Fatalf("runtime coolUntil = %v, want future", coolUntil)
+	if !coolUntil.IsZero() {
+		t.Fatalf("banned account kept a timed cooldown: %v", coolUntil)
 	}
+
 	restarted, restartedPool := setupTaskProvider(t, realmIntl, dir, server.URL)
 	if rows, err := restarted.DailyChatAll(context.Background()); err != nil || len(rows) != 0 {
 		t.Fatalf("DailyChatAll after 403 = %+v, %v", rows, err)
 	}
-	blocked = false
 	manual, err := restarted.DailyChat(context.Background(), "intl-403")
 	if err != nil {
-		t.Fatalf("manual restricted DailyChat: %v", err)
+		t.Fatalf("manual banned DailyChat: %v", err)
 	}
 	if manual.OK || !manual.Skipped || !manual.Restricted {
-		t.Fatalf("manual restricted DailyChat = %+v, want restricted skip", manual)
+		t.Fatalf("manual banned DailyChat = %+v, want restricted skip", manual)
 	}
-	account = accountByUID(t, restartedPool, "intl-403")
-	account.mu.Lock()
-	account.Auth.Extra["restrictedUntil"] = json.RawMessage(`1`)
-	account.State.CoolUntil = time.Time{}
-	account.mu.Unlock()
+
+	blocked = false
 	manual, err = restarted.DailyChat(context.Background(), "intl-403")
 	if err != nil {
-		t.Fatalf("expired manual DailyChat: %v", err)
+		t.Fatalf("manual still-banned DailyChat: %v", err)
+	}
+	if manual.OK || !manual.Skipped {
+		t.Fatalf("manual still-banned DailyChat = %+v, want skip", manual)
+	}
+	if err := restartedPool.Enable("intl-403"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	manual, err = restarted.DailyChat(context.Background(), "intl-403")
+	if err != nil {
+		t.Fatalf("manual after Enable: %v", err)
 	}
 	if !manual.OK {
-		t.Fatalf("expired manual DailyChat = %+v, want success", manual)
+		t.Fatalf("manual after Enable = %+v, want success", manual)
 	}
 	account = accountByUID(t, restartedPool, "intl-403")
 	account.mu.RLock()
-	until = taskRestrictedUntil(account.Auth)
-	coolUntil = account.State.CoolUntil
+	banned = taskBanned(account.Auth)
+	enabled = account.Auth.Enabled
 	account.mu.RUnlock()
-	if until != 0 || !coolUntil.IsZero() {
-		t.Fatalf("successful forced DailyChat did not clear restriction state: extra=%v runtime=%v", until, coolUntil)
+	if banned || !enabled {
+		t.Fatalf("Enable did not clear ban: banned=%v enabled=%v", banned, enabled)
 	}
 }
 
@@ -2187,9 +2198,14 @@ func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
 	dir := t.TempDir()
 	writeChatAccount(t, dir, "cn-chat403", realmCN, map[string]any{"product": productDesktop})
 	provider := setupChatProvider(t, realmCN, dir, map[string]any{})
+	blocked := true
 	fake := &chatTestFake{respond: func(*http.Request, []byte) (int, http.Header, []byte) {
-		return http.StatusForbidden, http.Header{"Content-Type": []string{"application/json"}},
-			[]byte(`{"code":11140,"msg":"账号存在异常行为，已被限制使用"}`)
+		if blocked {
+			return http.StatusForbidden, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"code":11140,"msg":"账号存在异常行为，已被限制使用"}`)
+		}
+		return 200, http.Header{"Content-Type": []string{"text/event-stream"}},
+			[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
 	}}
 	server := newChatTestServer(t, fake)
 	provider.chatBaseURL = server.URL
@@ -2202,24 +2218,30 @@ func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
 	}
 	account := accountByUID(t, provider.Pool(), "cn-chat403")
 	account.mu.RLock()
-	until := taskRestrictedUntil(account.Auth)
+	banned := taskBanned(account.Auth)
+	bannedAt := taskBannedAt(account.Auth)
+	enabled := account.Auth.Enabled
+	tasks := account.Auth.TasksEnabled
+	disabled := account.State.Disabled
 	coolUntil := account.State.CoolUntil
 	account.mu.RUnlock()
-	if until <= float64(time.Now().Unix()) || !coolUntil.After(time.Now()) {
-		t.Fatalf("chat 403 restriction not unified: extra=%v runtime=%v", until, coolUntil)
+	if !banned || enabled || tasks || !disabled {
+		t.Fatalf("chat 403 state: banned=%v enabled=%v tasks=%v disabled=%v",
+			banned, enabled, tasks, disabled)
 	}
-	// A repeated probe refreshes runtime from the same persisted window but
-	// must not extend either clock.
+	if !coolUntil.IsZero() {
+		t.Fatalf("chat 403 kept a timed cooldown: %v", coolUntil)
+	}
 	if err := provider.Pool().NoteRestricted(account, "repeated 403"); err != nil {
 		t.Fatalf("repeated NoteRestricted: %v", err)
 	}
 	account.mu.RLock()
-	repeatedUntil := taskRestrictedUntil(account.Auth)
-	repeatedCool := account.State.CoolUntil
+	if got := taskBannedAt(account.Auth); got != bannedAt {
+		t.Fatalf("repeated 403 moved bannedAt: %v -> %v", bannedAt, got)
+	}
 	account.mu.RUnlock()
-	if repeatedUntil != until || !repeatedCool.Equal(coolUntil) {
-		t.Fatalf("repeated 403 extended restriction: first=%v/%v repeated=%v/%v",
-			until, coolUntil, repeatedUntil, repeatedCool)
+	if accounts := provider.Pool().TaskAccounts(); len(accounts) != 0 {
+		t.Fatalf("TaskAccounts after chat 403 = %+v", accounts)
 	}
 	if rows, err := provider.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
 		t.Fatalf("CheckinAll after chat 403 = %+v, %v", rows, err)
@@ -2227,72 +2249,48 @@ func TestTasksChat403RestrictionSharedWithTaskSelectors(t *testing.T) {
 	if rows, err := provider.GrowthTasksAll(context.Background(), true); err != nil || len(rows) != 0 {
 		t.Fatalf("GrowthTasksAll after chat 403 = %+v, %v", rows, err)
 	}
-	if accounts := provider.Pool().TaskAccounts(); len(accounts) != 0 {
-		t.Fatalf("TaskAccounts after chat 403 = %+v", accounts)
-	}
+
 	restarted, restartedPool := setupTaskProvider(t, realmCN, dir, server.URL)
 	restartedAccount := accountByUID(t, restartedPool, "cn-chat403")
 	restartedAccount.mu.RLock()
-	persistedUntil := taskRestrictedUntil(restartedAccount.Auth)
-	seededCool := restartedAccount.State.CoolUntil
+	persisted := taskBanned(restartedAccount.Auth)
+	persistedDisabled := restartedAccount.State.Disabled
 	restartedAccount.mu.RUnlock()
-	if persistedUntil <= float64(time.Now().Unix()) {
-		t.Fatalf("chat 403 restriction not persisted across restart: %v", persistedUntil)
+	if !persisted || !persistedDisabled {
+		t.Fatalf("chat 403 ban did not survive restart: banned=%v disabled=%v",
+			persisted, persistedDisabled)
 	}
-	if !seededCool.After(time.Now()) {
-		t.Fatalf("restart did not seed runtime restriction: %v", seededCool)
-	}
-	// Even if the runtime cooldown is emptied, a repeated restricted-account
-	// probe must refresh it from the persisted window, not extend the clock.
-	restartedAccount.mu.Lock()
-	restartedAccount.State.CoolUntil = time.Time{}
-	restartedAccount.mu.Unlock()
-	if err := restarted.Pool().NoteRestricted(restartedAccount, "reseed"); err != nil {
-		t.Fatalf("reseed NoteRestricted: %v", err)
-	}
-	restartedAccount.mu.RLock()
-	reseededCool := restartedAccount.State.CoolUntil
-	reseededUntil := taskRestrictedUntil(restartedAccount.Auth)
-	restartedAccount.mu.RUnlock()
-	if !reseededCool.After(time.Now()) || reseededUntil != persistedUntil {
-		t.Fatalf("restriction reseed failed: cool=%v until=%v want-%v", reseededCool, reseededUntil, persistedUntil)
-	}
-	if rows, err := restarted.CheckinAll(context.Background()); err != nil || len(rows) != 0 {
-		t.Fatalf("CheckinAll after chat 403 restart = %+v, %v", rows, err)
-	}
-	restarted.chatBaseURL = server.URL
-	beforeCalls := len(fake.snapshot())
-	if _, err := restarted.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
-		"model": "deepseek-v4.1-flash", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	})); err == nil {
-		t.Fatal("restarted restricted account served a chat request")
-	}
-	if len(fake.snapshot()) != beforeCalls {
-		t.Fatal("restarted restricted account hot-probed upstream")
-	}
-	// NoteSuccess is the chat-path proof that the restriction is gone; it must
-	// clear both runtime and persisted state.
-	if err := provider.Pool().NoteSuccess(account); err != nil {
+	if err := restartedPool.NoteSuccess(restartedAccount); err != nil {
 		t.Fatalf("NoteSuccess: %v", err)
 	}
-	account.mu.RLock()
-	until = taskRestrictedUntil(account.Auth)
-	coolUntil = account.State.CoolUntil
-	account.mu.RUnlock()
-	if until != 0 || !coolUntil.IsZero() {
-		t.Fatalf("NoteSuccess did not clear restriction: extra=%v runtime=%v", until, coolUntil)
+	restartedAccount.mu.RLock()
+	if !taskBanned(restartedAccount.Auth) {
+		t.Fatal("NoteSuccess cleared an upstream ban")
 	}
-	cleared, clearedPool := setupTaskProvider(t, realmCN, dir, server.URL)
-	clearedAccount := accountByUID(t, clearedPool, "cn-chat403")
-	clearedAccount.mu.RLock()
-	until = taskRestrictedUntil(clearedAccount.Auth)
-	clearedAccount.mu.RUnlock()
-	if until != 0 {
-		t.Fatalf("NoteSuccess did not persist cleared restriction: %v", until)
+	restartedAccount.mu.RUnlock()
+	if err := restartedPool.Enable("cn-chat403"); err != nil {
+		t.Fatalf("Enable: %v", err)
 	}
-	if accounts := cleared.Pool().TaskAccounts(); len(accounts) != 1 {
-		t.Fatalf("TaskAccounts after NoteSuccess = %+v", accounts)
+	restartedAccount = accountByUID(t, restartedPool, "cn-chat403")
+	restartedAccount.mu.RLock()
+	cleared := !taskBanned(restartedAccount.Auth)
+	restartedAccount.mu.RUnlock()
+	if !cleared {
+		t.Fatal("manual Enable did not clear the ban")
 	}
+	if accounts := restartedPool.TaskAccounts(); len(accounts) != 1 {
+		t.Fatalf("TaskAccounts after Enable = %+v", accounts)
+	}
+	blocked = false
+	restarted.chatBaseURL = server.URL
+	stream, err := restarted.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+		"model":    "deepseek-v4.1-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("chat after Enable: %v", err)
+	}
+	_ = stream.Close()
 }
 
 func TestTasksMPClaimableRequiresTargetProgress(t *testing.T) {

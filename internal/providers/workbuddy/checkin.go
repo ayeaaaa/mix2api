@@ -423,8 +423,16 @@ func taskRestrictedUntil(auth Auth) float64 {
 	return authExtraFloat(auth, "restrictedUntil")
 }
 
+func taskBanned(auth Auth) bool {
+	return authExtraBool(auth, "accountBanned")
+}
+
+func taskBannedAt(auth Auth) float64 {
+	return authExtraFloat(auth, "bannedAt")
+}
+
 func (p *Provider) taskRestricted(auth Auth, now time.Time) bool {
-	return taskRestrictedUntil(auth) > float64(now.Unix())
+	return taskBanned(auth) || taskRestrictedUntil(auth) > float64(now.Unix())
 }
 
 func (p *Provider) persistTaskRestriction(account *Account, now time.Time, detail string) {
@@ -437,19 +445,23 @@ func (p *Provider) persistTaskRestriction(account *Account, now time.Time, detai
 		return
 	}
 	auth := taskAuthSnapshot(account)
-	if taskRestrictedUntil(auth) > float64(now.Unix()) {
+	if taskBanned(auth) {
 		return
 	}
-	until := now.Add(taskRestrictedCooldown)
-	raw, _ := json.Marshal(float64(until.Unix()))
 	account.mu.Lock()
 	if account.Auth.Extra == nil {
 		account.Auth.Extra = make(map[string]json.RawMessage)
 	}
-	account.Auth.Extra["restrictedUntil"] = raw
-	if until.After(account.State.CoolUntil) {
-		account.State.CoolUntil = until
-	}
+	raw, _ := json.Marshal(true)
+	account.Auth.Extra["accountBanned"] = raw
+	at, _ := json.Marshal(float64(now.Unix()))
+	account.Auth.Extra["bannedAt"] = at
+	account.Auth.SetEnabled(false)
+	account.Auth.SetTasksEnabled(false)
+	account.State.Disabled = true
+	account.State.ManualDisabled = false
+	account.State.TasksEnabled = false
+	account.State.CoolUntil = time.Time{}
 	account.mu.Unlock()
 }
 
@@ -919,10 +931,15 @@ func (p *Provider) taskWebHeaders(account *Account) http.Header {
 	headers.Set("Authorization", "Bearer "+auth.AccessToken)
 	headers.Set("X-User-Id", strings.TrimSpace(auth.UID))
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "application/json, text/plain, */*")
+	headers.Set("Accept", "application/json")
+	headers.Set("X-Request-ID", randomHex(16))
 	headers.Set("Origin", origins)
 	headers.Set("Referer", origins+"/app")
-	headers.Set("User-Agent", taskWebUserAgent)
+	for key, values := range webBrowserHeaders(auth.UID, auth.Realm) {
+		for _, value := range values {
+			headers.Set(key, value)
+		}
+	}
 	return headers
 }
 

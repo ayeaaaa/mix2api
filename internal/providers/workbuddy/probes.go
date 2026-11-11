@@ -93,8 +93,9 @@ func (p *Provider) Probe(ctx context.Context, kind providers.ProbeKind, target p
 			_, _ = p.ensureToken(ctx, account, tokenRefreshRequestPath)
 		}
 	}
+	upstreamModel := intlModelAlias(target.Model, p.realm)
 	body := map[string]any{
-		"model": target.Model,
+		"model": upstreamModel,
 		"messages": []any{map[string]any{
 			"role": "user", "content": probePrompt,
 		}},

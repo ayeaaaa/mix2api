@@ -273,7 +273,7 @@ func TestChatIntlDesktopHeadersAndBody(t *testing.T) {
 	checks := map[string]string{
 		"Authorization":       "Bearer access-intl-1",
 		"X-Domain":            "www.workbuddy.ai",
-		"User-Agent":          "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+		"User-Agent":          "WorkBuddy/5.9.4 workbuddy-ai/5.9.4 CLI/2.165.0",
 		"Origin":              "https://www.workbuddy.ai",
 		"Referer":             "https://www.workbuddy.ai/",
 		"X-CodeBuddy-Request": "1",
@@ -1481,8 +1481,12 @@ func TestChat403RestrictedRotatesButContentDoesNot(t *testing.T) {
 			t.Fatalf("restricted rotation calls = %d, want 2", len(calls))
 		}
 		account := accountByUID(t, provider.Pool(), "a-403")
-		if !account.State.CoolUntil.After(time.Now()) {
-			t.Fatalf("restricted cooldown = %v", account.State.CoolUntil)
+		account.mu.RLock()
+		banned := taskBanned(account.Auth)
+		enabled := account.Auth.Enabled
+		account.mu.RUnlock()
+		if !banned || enabled {
+			t.Fatalf("restricted account not banned: banned=%v enabled=%v", banned, enabled)
 		}
 	})
 
@@ -2478,4 +2482,69 @@ func minInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func TestFillEmptyChatTextParts(t *testing.T) {
+	messages := fillEmptyChatTextParts([]any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": ""},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:x"}},
+			map[string]any{"type": "text", "text": "hi"},
+		}},
+		map[string]any{"role": "user", "content": "plain"},
+	})
+	parts := messages[0].(map[string]any)["content"].([]any)
+	if parts[0].(map[string]any)["text"] != " " {
+		t.Fatalf("empty text part = %#v", parts[0])
+	}
+	if parts[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("image part changed: %#v", parts[1])
+	}
+	if parts[2].(map[string]any)["text"] != "hi" {
+		t.Fatalf("non-empty text changed: %#v", parts[2])
+	}
+	if messages[1].(map[string]any)["content"] != "plain" {
+		t.Fatalf("string content changed: %#v", messages[1])
+	}
+}
+
+func TestFillEmptyChatTextPartsSniffsStringArrays(t *testing.T) {
+	messages := fillEmptyChatTextParts([]any{
+		map[string]any{"role": "user", "content": `[{"type":"text","text":null},{"type":"text"},{"type":"text","text":"hi"}]`},
+	})
+	var parts []any
+	if err := json.Unmarshal([]byte(messages[0].(map[string]any)["content"].(string)), &parts); err != nil {
+		t.Fatalf("sniffed content is not JSON: %v", err)
+	}
+	if parts[0].(map[string]any)["text"] != " " || parts[1].(map[string]any)["text"] != " " {
+		t.Fatalf("empty/null parts = %#v", parts)
+	}
+	if parts[2].(map[string]any)["text"] != "hi" {
+		t.Fatalf("non-empty part = %#v", parts[2])
+	}
+	again := fillEmptyChatTextParts(messages)
+	if again[0].(map[string]any)["content"] != messages[0].(map[string]any)["content"] {
+		t.Fatal("fill is not idempotent")
+	}
+}
+
+func TestMirrorUpstreamReasoning(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "assistant", "content": "a", "reasoning_content": "think"},
+		map[string]any{"role": "assistant", "content": "b", "reasoning_content": "new", "reasoning": "keep"},
+		map[string]any{"role": "user", "content": "hi"},
+	}
+	out := mirrorUpstreamReasoning(messages, "kimi-k3")
+	if out[0].(map[string]any)["reasoning"] != "think" {
+		t.Fatalf("mirrored reasoning = %#v", out[0])
+	}
+	if out[1].(map[string]any)["reasoning"] != "keep" {
+		t.Fatalf("existing reasoning overwritten: %#v", out[1])
+	}
+	if _, exists := out[2].(map[string]any)["reasoning"]; exists {
+		t.Fatalf("user message gained reasoning: %#v", out[2])
+	}
+	if got := mirrorUpstreamReasoning(messages, "deepseek-v4.1-flash")[0].(map[string]any)["reasoning"]; got != nil {
+		t.Fatalf("deepseek message was mirrored: %#v", got)
+	}
 }

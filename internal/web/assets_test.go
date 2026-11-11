@@ -54,6 +54,9 @@ func TestDashboardServedAtV1Paths(t *testing.T) {
 		if got := rec.Header().Get("ETag"); got != DashboardETag() || got == "" {
 			t.Fatalf("%s etag = %q", path, got)
 		}
+		if got := rec.Header().Get("X-Robots-Tag"); got != "noindex, nofollow" {
+			t.Fatalf("%s robots = %q", path, got)
+		}
 		if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
 			t.Fatalf("%s content-length = %q want %d", path, got, len(body))
 		}
@@ -72,6 +75,9 @@ func TestDashboardConditionalGetAndMethods(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotModified {
 		t.Fatalf("conditional status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Robots-Tag"); got != "noindex, nofollow" {
+		t.Fatalf("conditional robots = %q", got)
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("304 body = %q", rec.Body.String())

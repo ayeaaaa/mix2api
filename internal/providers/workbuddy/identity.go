@@ -22,9 +22,9 @@ import (
 // Verified default versions. These are the values pinned by v1's captures and
 // unpacked official packages; panel overrides change only the emitted strings.
 const (
-	defaultDesktopVersionIntl = "5.8.4"
+	defaultDesktopVersionIntl = "5.9.4"
 	defaultDesktopVersionCN   = "5.8.3"
-	defaultDesktopCLI         = "2.161.0"
+	defaultDesktopCLI         = "2.165.0"
 	defaultVSCodeProduct      = "4.12.39997873"
 	defaultVSCodeIDE          = "1.119.0"
 	defaultCLI                = "2.168.2"

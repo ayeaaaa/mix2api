@@ -93,6 +93,7 @@ func (s *CodeArtsStream) currentAuth() Auth {
 // any event is not an error: v1's iterator synthesizes the terminal finish,
 // usage, and [DONE] frames exactly as it does for a mid-stream EOF.
 func (s *CodeArtsStream) preflight() error {
+	sawRole := false
 	for {
 		data, err := s.readData()
 		if err != nil {
@@ -107,12 +108,61 @@ func (s *CodeArtsStream) preflight() error {
 			return nil
 		}
 		if embeddedErr := embeddedChatError(data, s.currentAuth()); embeddedErr != nil {
-			return embeddedErr
+			// A role-only chunk can precede a model rejection. Keep that
+			// chunk queued and inspect the next event, but surface a model-ID
+			// error immediately so the caller can retry the alternate spelling.
+			if !sawRole || isCodeArtsModelIDError(embeddedErr) {
+				return embeddedErr
+			}
+			s.pending = data
+			s.hasPending = true
+			return nil
+		}
+		if !sawRole && isRoleOnlyChatData(data) {
+			s.handleEvent(data)
+			sawRole = true
+			continue
 		}
 		s.pending = data
 		s.hasPending = true
 		return nil
 	}
+}
+
+// isRoleOnlyChatData reports a single assistant role delta with no content,
+// tool calls, finish reason, or other non-zero field. Upstream can emit this
+// before an in-band error, so preflight must look past it.
+func isRoleOnlyChatData(data []byte) bool {
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return false
+	}
+	choices := chatList(payload["choices"])
+	if len(choices) != 1 {
+		return false
+	}
+	choice, _ := choices[0].(map[string]any)
+	if choice == nil {
+		return false
+	}
+	delta, _ := choice["delta"].(map[string]any)
+	if delta == nil || modelText(delta["role"]) != "assistant" {
+		return false
+	}
+	if !chatZeroValue(choice["finish_reason"]) {
+		return false
+	}
+	for key, value := range delta {
+		if key == "role" {
+			continue
+		}
+		if !chatZeroValue(value) {
+			return false
+		}
+	}
+	return true
 }
 
 // Next returns one complete SSE frame. Upstream events are normalized into

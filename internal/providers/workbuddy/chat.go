@@ -569,9 +569,14 @@ func (p *Provider) sendChatOnce(
 	account.mu.RUnlock()
 
 	product := normalizeProduct(auth.Product)
+	upstreamModel := intlModelAlias(model, p.realm)
 	body := baseBody
+	if upstreamModel != model {
+		body = cloneMap(baseBody)
+		body["model"] = upstreamModel
+	}
 	if promptCacheKeyEnabled() {
-		body = injectChatPromptCacheKey(baseBody, auth.UID, req.SessionKey)
+		body = injectChatPromptCacheKey(body, auth.UID, req.SessionKey)
 	}
 	body, err := chatBodyForProduct(body, product)
 	if err != nil {
@@ -596,7 +601,7 @@ func (p *Provider) sendChatOnce(
 		conversationID = conversationIDFor(auth.UID, req.SessionKey)
 	}
 	deviceToken, deviceTokenError := p.chatDeviceToken(auth, product)
-	headers := p.chatHeaders(auth, product, model, conversationID, turnRequestID, deviceToken, deviceTokenError, cfg)
+	headers := p.chatHeaders(auth, product, upstreamModel, conversationID, turnRequestID, deviceToken, deviceTokenError, cfg)
 	if compressed {
 		headers.Set("Content-Encoding", "gzip")
 	}
@@ -675,7 +680,7 @@ func (p *Provider) sendChatOnce(
 			p.Pool(),
 			account,
 			p.realm,
-			model,
+			upstreamModel,
 			chatIdleTimeout(cfg),
 		)
 		if streamErr != nil {
@@ -683,7 +688,7 @@ func (p *Provider) sendChatOnce(
 			return nil, streamErr
 		}
 		stream.usageMu.Lock()
-		stream.usage.Free = p.IsFreeModel(model)
+		stream.usage.Free = p.IsFreeModel(upstreamModel)
 		stream.usageMu.Unlock()
 		return stream, nil
 	}
@@ -1206,7 +1211,10 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 
 	messages, _ := body["messages"].([]any)
 	messages = normalizeChatRoles(messages)
+	messages = sanitizeChatMessages(messages)
+	messages = fillEmptyChatTextParts(messages)
 	messages = backfillChatReasoning(messages, model, chatThinkingEnabled(body, model))
+	messages = mirrorUpstreamReasoning(messages, model)
 	if len(messages) == 0 {
 		messages = []any{map[string]any{"role": "system", "content": defaultChatSystemPrompt}}
 	} else {
@@ -1219,6 +1227,9 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 
 	if err := p.normalizeChatBody(body, model); err != nil {
 		return nil, "", err
+	}
+	if tools, exists := body["tools"]; exists {
+		body["tools"] = sanitizeTools(tools)
 	}
 	return body, model, nil
 }
@@ -1268,6 +1279,80 @@ func (p *Provider) canonicalModelID(model string) string {
 		}
 	}
 	return model
+}
+
+// fillEmptyChatTextParts replaces empty, null, or missing text parts with one
+// space. Upstream validates every type:"text" part and answers 400 / 11151 for
+// an empty text, retiring the conversation. It also handles the common
+// tool-result shape where a string content starts with "[" and upstream sniffs
+// it as a parts array. Unknown types, non-array content, and non-empty parts
+// are preserved byte-for-byte.
+func fillEmptyChatTextParts(messages []any) []any {
+	out := make([]any, 0, len(messages))
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		copied := cloneMap(message)
+		switch content := message["content"].(type) {
+		case []any:
+			parts, changed := fillEmptyTextPartList(content)
+			if changed {
+				copied["content"] = parts
+			}
+		case string:
+			if parts, ok := sniffedTextParts(content); ok {
+				if filled, changed := fillEmptyTextPartList(parts); changed {
+					if encoded, err := json.Marshal(filled); err == nil {
+						copied["content"] = string(encoded)
+					}
+				}
+			}
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func fillEmptyTextPartList(parts []any) ([]any, bool) {
+	out := make([]any, len(parts))
+	changed := false
+	for index, part := range parts {
+		item, ok := part.(map[string]any)
+		if !ok || creditText(item["type"]) != "text" {
+			out[index] = part
+			continue
+		}
+		text, exists := item["text"]
+		if exists && text != nil && creditText(text) != "" {
+			out[index] = part
+			continue
+		}
+		copied := cloneMap(item)
+		copied["text"] = " "
+		out[index] = copied
+		changed = true
+	}
+	return out, changed
+}
+
+func sniffedTextParts(content string) ([]any, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "[") {
+		return nil, false
+	}
+	var parts []any
+	if err := json.Unmarshal([]byte(trimmed), &parts); err != nil || len(parts) == 0 {
+		return nil, false
+	}
+	for _, part := range parts {
+		if _, ok := part.(map[string]any); !ok {
+			return nil, false
+		}
+	}
+	return parts, true
 }
 
 func normalizeChatRoles(messages []any) []any {
@@ -1361,6 +1446,41 @@ func backfillChatReasoning(messages []any, model string, thinkingEnabled bool) [
 	return out
 }
 
+// mirrorUpstreamReasoning copies a non-empty reasoning_content into the
+// `reasoning` field for models whose upstream reads that legacy field. It does
+// not overwrite an existing non-empty reasoning value and never adds a blank
+// placeholder.
+func mirrorUpstreamReasoning(messages []any, model string) []any {
+	prefixes := []string{"kimi", "glm", "minimax", "mimo", "step", "space-bunny"}
+	name := strings.ToLower(strings.TrimSpace(model))
+	matched := false
+	for _, prefix := range prefixes {
+		if name == prefix || strings.HasPrefix(name, prefix+"-") {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return messages
+	}
+	out := make([]any, 0, len(messages))
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			out = append(out, raw)
+			continue
+		}
+		copied := cloneMap(message)
+		reasoningContent, _ := copied["reasoning_content"].(string)
+		reasoning, _ := copied["reasoning"].(string)
+		if strings.TrimSpace(reasoningContent) != "" && strings.TrimSpace(reasoning) == "" {
+			copied["reasoning"] = reasoningContent
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
 func (p *Provider) normalizeChatBody(body map[string]any, model string) error {
 	if body == nil {
 		return newAPIError(KindInvalid, http.StatusBadRequest, "invalid chat body")
@@ -1371,6 +1491,7 @@ func (p *Provider) normalizeChatBody(body map[string]any, model string) error {
 	clampGPTMaxTokens(body, model)
 	normalizeChatToolChoice(body)
 	normalizeChatTools(body)
+	inlineKimiToolSchemas(body, model)
 	normalizeChatStop(body)
 	if _, exists := body["max_tokens"]; !exists {
 		if limit := p.defaultMaxOutputTokens(model); limit > 0 {

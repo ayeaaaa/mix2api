@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -253,6 +256,67 @@ func (c *acpTurnChannel) counts() (int, int) {
 	return c.updates, c.chunks
 }
 
+func acpPromptMeta(conversationID, prompt, model string) map[string]any {
+	traceID := randomHex(16)
+	spanID := randomHex(8)
+	now := time.Now().UTC()
+	var modelValue any
+	if strings.TrimSpace(model) != "" {
+		modelValue = model
+	}
+	return map[string]any{
+		"codebuddy.ai": map[string]any{
+			"extra": map[string]any{"sourceContentBlocks": []any{
+				map[string]any{"type": "text", "text": prompt},
+			}},
+			"skillRecommend": map[string]any{
+				"inputAttemptId": uuid7(), "recommendId": "", "skillId": "",
+				"expertId": "", "skillCount": 0, "totalCount": 0,
+			},
+			"traceparent":     "00-" + traceID + "-" + spanID + "-01",
+			"colorScheme":     "light",
+			"traceId":         traceID,
+			"requestId":       uuid7(),
+			"promptRequestId": uuid7(),
+			"clientSendTime":  now.UnixMilli(),
+			"conversationId":  conversationID,
+			"model":           modelValue,
+			"mode":            "craft",
+			"expertId":        "",
+		},
+		"codebuddy.ai/conversationRequestId": uuid7(),
+		"timestamp":                          now.Format("2006-01-02T15:04:05.000Z"),
+		"baggage":                            "buddyId=,buddyName=",
+	}
+}
+
+func webHumanDelay() time.Duration {
+	minimum := envSeconds("WB_WEB_HUMAN_DELAY_MIN", 2)
+	maximum := envSeconds("WB_WEB_HUMAN_DELAY_MAX", 8)
+	if maximum < minimum {
+		maximum = minimum
+	}
+	if maximum <= 0 {
+		return 0
+	}
+	return time.Duration((minimum + rand.Float64()*(maximum-minimum)) * float64(time.Second))
+}
+
+func envSeconds(name string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed < 0 {
+		return 0
+	}
+	return parsed
+}
+
 // runACPTurn drives one web conversation turn exactly like v1's minimal
 // wb_webagent: open the sandbox SSE stream, initialize, load the session, pin
 // the model when supplied, send the prompt, then poll the console status until
@@ -289,8 +353,16 @@ func runACPTurn(
 		return result
 	}
 	capabilities := map[string]any{
-		"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
-		"terminal": false,
+		"fs": map[string]any{"readTextFile": false, "writeTextFile": false},
+		"_meta": map[string]any{
+			"codebuddy.ai": map[string]any{
+				"question":            true,
+				"terminalOutput":      true,
+				"terminalOutputChunk": true,
+			},
+			"workbuddy.desktop": map[string]any{"detailedCheckpoint": true},
+		},
+		"elicitation": map[string]any{"form": map[string]any{}},
 	}
 	if err := channel.request(ctx, "initialize", map[string]any{
 		"protocolVersion": acpProtocolVersion, "clientCapabilities": capabilities,
@@ -298,8 +370,9 @@ func runACPTurn(
 		result.Error = err.Error()
 		return result
 	}
+	sessionCWD := firstNonEmpty(cwd, "/workspace")
 	if err := channel.request(ctx, "session/load", map[string]any{
-		"sessionId": sessionID, "cwd": firstNonEmpty(cwd, "/workspace"), "mcpServers": []any{},
+		"sessionId": sessionID, "cwd": sessionCWD, "mcpServers": []any{},
 	}, 2); err != nil {
 		result.Error = err.Error()
 		return result
@@ -311,10 +384,42 @@ func runACPTurn(
 			"sessionId": sessionID, "modelId": model,
 		}, 3)
 	}
+	// The official web client creates a fresh session, sets the default mode,
+	// and pins the UI language after loading the conversation.
+	if err := channel.request(ctx, "session/new", map[string]any{
+		"cwd": sessionCWD, "mcpServers": []any{},
+	}, 4); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := channel.request(ctx, "session/set_mode", map[string]any{
+		"sessionId": sessionID, "modeId": "default",
+	}, 5); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := channel.request(ctx, "session/set_config_option", map[string]any{
+		"sessionId": sessionID, "configId": "language", "value": "English",
+	}, 6); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if delay := webHumanDelay(); delay > 0 {
+		select {
+		case <-ctx.Done():
+			result.Error = ctx.Err().Error()
+			return result
+		case <-time.After(delay):
+		}
+	}
 	if err := channel.request(ctx, "session/prompt", map[string]any{
 		"sessionId": sessionID,
-		"prompt":    []any{map[string]any{"type": "text", "text": prompt}},
-	}, 4); err != nil {
+		"prompt": []any{map[string]any{
+			"type": "text", "text": prompt,
+			"_meta": map[string]any{"codebuddy.ai": map[string]any{"mode": "craft"}},
+		}},
+		"_meta": acpPromptMeta(sessionID, prompt, model),
+	}, 7); err != nil {
 		result.Error = err.Error()
 		return result
 	}

@@ -574,8 +574,8 @@ func jobAccountActive(account *Account, now time.Time) bool {
 	}
 	account.mu.RLock()
 	defer account.mu.RUnlock()
-	if account.removed || !account.Auth.Enabled || account.State.Disabled ||
-		account.State.ManualDisabled || !account.Auth.TasksEnabled {
+	if account.removed || taskBanned(account.Auth) || !account.Auth.Enabled ||
+		account.State.Disabled || account.State.ManualDisabled || !account.Auth.TasksEnabled {
 		return false
 	}
 	if account.State.CoolUntil.After(now) {

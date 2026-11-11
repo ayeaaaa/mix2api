@@ -256,11 +256,6 @@ func (p *Provider) openChatAccount(
 	if clampErr := clampChatOutputTokens(account, model, body); clampErr != nil {
 		return nil, clampErr
 	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
-			Message: "codearts: chat request body is not valid JSON"}
-	}
 
 	sessionID := chatSHA256Hex32("codearts-session:" + build.ChatID)
 	delay := p.chatRetryDelay
@@ -270,7 +265,7 @@ func (p *Provider) openChatAccount(
 
 	var lastErr error
 	for attempt := 0; attempt < chatConcurrencyAttempts; attempt++ {
-		stream, attemptErr := p.sendChatAttempt(ctx, account, model, build.ChatID, sessionID, raw, streamTimeout)
+		stream, attemptErr := p.sendModelChatAttempt(ctx, account, model, build.ChatID, sessionID, body, streamTimeout)
 		if attemptErr == nil {
 			return stream, nil
 		}
@@ -297,6 +292,93 @@ func currentAccountAuth(account *Account) Auth {
 	account.mu.Lock()
 	defer account.mu.Unlock()
 	return account.Auth
+}
+
+// sendModelChatAttempt sends one model spelling and retries the alternate
+// casing once when InferHub reports a model-ID/permission mismatch. The
+// accepted spelling is cached per account so later requests skip the failed
+// attempt.
+func (p *Provider) sendModelChatAttempt(
+	ctx context.Context,
+	account *Account,
+	model, chatID, sessionID string,
+	body map[string]any,
+	streamTimeout time.Duration,
+) (providers.ChatStream, error) {
+	canonical := CanonicalModel(account, model)
+	key := strings.ToLower(canonical)
+	first, alternate := canonical, strings.ToLower(canonical)
+	if original := strings.TrimSpace(model); canonical == key && strings.EqualFold(canonical, original) {
+		alternate = original
+	}
+	if cached, ok := account.chatModelIDs.Load(key); ok {
+		if accepted, _ := cached.(string); accepted != "" && accepted != canonical {
+			first, alternate = accepted, canonical
+		}
+	}
+
+	spellings := []string{first}
+	if alternate != "" && alternate != first {
+		spellings = append(spellings, alternate)
+	}
+	var firstErr error
+	for index, spelling := range spellings {
+		attemptBody := cloneChatBody(body)
+		attemptBody["model"] = spelling
+		raw, err := json.Marshal(attemptBody)
+		if err != nil {
+			return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
+				Message: "codearts: chat request body is not valid JSON"}
+		}
+		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, sessionID, raw, streamTimeout)
+		if err == nil {
+			if index > 0 {
+				account.chatModelIDs.Store(key, spelling)
+			}
+			return stream, nil
+		}
+		if index == 0 {
+			firstErr = err
+			if !isCodeArtsModelIDError(err) {
+				return nil, err
+			}
+			continue
+		}
+		// Preserve the original permission error when the alternate is also
+		// rejected: an unregistered alternate spelling did not resolve the
+		// original denial.
+		if isCodeArtsModelAccessError(firstErr) && isCodeArtsModelIDError(err) {
+			return nil, firstErr
+		}
+		return nil, err
+	}
+	return nil, firstErr
+}
+
+// isCodeArtsModelAccessError detects the explicit "account may not call this
+// model" response. InferHub sometimes reports a casing mismatch with the same
+// code, so callers retry a different spelling before treating it as terminal.
+func isCodeArtsModelAccessError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr == nil {
+		return false
+	}
+	message := strings.ToLower(apiErr.Message)
+	return strings.Contains(message, "tm.000010051") ||
+		strings.Contains(apiErr.Message, "无权调用该模型")
+}
+
+// isCodeArtsModelIDError also accepts the unregistered-model code used when
+// the alternate spelling is wrong.
+func isCodeArtsModelIDError(err error) bool {
+	if isCodeArtsModelAccessError(err) {
+		return true
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(apiErr.Message), "inferhub.002002009")
 }
 
 // sendChatAttempt sends one POST, classifies non-2xx responses, and preflights
