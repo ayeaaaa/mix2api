@@ -228,6 +228,42 @@ func responsesInputText(input any) string {
 	return strings.Join(parts, "\n")
 }
 
+func appendVisibleReasoning(current any, addition string) string {
+	if addition == "" {
+		if existing, ok := current.(string); ok {
+			return existing
+		}
+		return ""
+	}
+	existing, _ := current.(string)
+	if existing == "" {
+		return addition
+	}
+	if existing == addition {
+		return existing
+	}
+	return existing + "\n" + addition
+}
+
+func reasoningGroupTarget(items []any, start int) map[string]any {
+	known := map[string]bool{
+		"": true, "message": true, "user": true, "function_call": true,
+		"function_call_output": true, "custom_tool_call": true,
+		"custom_tool_call_output": true, "agent_message": true,
+		"compaction": true, "compaction_summary": true, "context_compaction": true,
+	}
+	for index := start + 1; index < len(items); index++ {
+		item, ok := items[index].(map[string]any)
+		if !ok {
+			continue
+		}
+		if known[stringValue(item["type"])] {
+			return item
+		}
+	}
+	return nil
+}
+
 func responsesInputToMessages(payload map[string]any) []any {
 	messages := []any{}
 	if instructions, ok := payload["instructions"].(string); ok && strings.TrimSpace(instructions) != "" {
@@ -240,7 +276,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 		return messages
 	}
 	items, _ := input.([]any)
-	for _, rawItem := range items {
+	for itemIndex, rawItem := range items {
 		if text, ok := rawItem.(string); ok {
 			messages = append(messages, map[string]any{"role": "user", "content": text})
 			continue
@@ -253,46 +289,84 @@ func responsesInputToMessages(payload map[string]any) []any {
 		switch itemType {
 		case "", "message", "user":
 			body := flattenResponseContent(item["content"])
-			if contentNonEmpty(body) {
-				contentText := contentAsText(body)
-				role, _ := item["role"].(string)
-				if role == "" {
-					role = "user"
+			role, _ := item["role"].(string)
+			if role == "" {
+				role = "user"
+			}
+			if role == "developer" {
+				role = "system"
+			}
+			inlineReasoning := ""
+			inlineToolCalls := []any{}
+			if role == "assistant" {
+				if reasoning, ok := item["reasoning_content"].(string); ok {
+					inlineReasoning = reasoning
 				}
-				if role == "developer" {
-					role = "system"
+				if calls, ok := item["tool_calls"].([]any); ok {
+					inlineToolCalls = calls
 				}
-				if role == "assistant" && len(messages) > 0 {
-					if previous, ok := messages[len(messages)-1].(map[string]any); ok && previous["role"] == "assistant" {
-						if previousText := contentAsText(previous["content"]); previousText != "" {
-							previous["content"] = previousText + "\n" + contentText
-						} else {
-							previous["content"] = body
-						}
-						if pendingReasoning != "" && previous["reasoning_content"] == nil {
-							previous["reasoning_content"] = pendingReasoning
-							pendingReasoning = ""
-						}
-						continue
+			} else if pendingReasoning != "" {
+				pendingReasoning = ""
+			}
+			if !contentNonEmpty(body) && inlineReasoning == "" && len(inlineToolCalls) == 0 {
+				continue
+			}
+			contentText := contentAsText(body)
+			if role == "assistant" && pendingReasoning == "" && len(messages) > 0 {
+				if previous, ok := messages[len(messages)-1].(map[string]any); ok && previous["role"] == "assistant" {
+					if previousText := contentAsText(previous["content"]); previousText != "" {
+						previous["content"] = previousText + "\n" + contentText
+					} else {
+						previous["content"] = body
 					}
+					if len(inlineToolCalls) > 0 {
+						if calls, ok := previous["tool_calls"].([]any); ok {
+							previous["tool_calls"] = append(calls, inlineToolCalls...)
+						} else {
+							previous["tool_calls"] = append([]any(nil), inlineToolCalls...)
+						}
+					}
+					if inlineReasoning != "" {
+						previous["reasoning_content"] = appendVisibleReasoning(previous["reasoning_content"], inlineReasoning)
+					}
+					continue
 				}
-				message := map[string]any{"role": role, "content": body}
-				if role == "assistant" && pendingReasoning != "" {
+			}
+			message := map[string]any{"role": role, "content": body}
+			if role == "assistant" {
+				if pendingReasoning != "" {
 					message["reasoning_content"] = pendingReasoning
 					pendingReasoning = ""
 				}
-				messages = append(messages, message)
+				if len(inlineToolCalls) > 0 {
+					message["tool_calls"] = append([]any(nil), inlineToolCalls...)
+				}
+				if inlineReasoning != "" {
+					message["reasoning_content"] = appendVisibleReasoning(message["reasoning_content"], inlineReasoning)
+				}
 			}
+			if role == "tool" {
+				message["tool_call_id"] = stringValue(item["tool_call_id"])
+				if name, ok := item["name"].(string); ok && name != "" {
+					message["name"] = name
+				}
+			}
+			messages = append(messages, message)
 		case "reasoning":
 			reasoning := reasoningItemText(item)
 			if reasoning != "" {
-				if len(messages) > 0 {
+				next := reasoningGroupTarget(items, itemIndex)
+				nextType := stringValue(next["type"])
+				nextRole := stringValue(next["role"])
+				startsAssistant := nextType == "function_call" || nextType == "custom_tool_call" ||
+					((nextType == "" || nextType == "message" || nextType == "user") && nextRole == "assistant")
+				if !startsAssistant && len(messages) > 0 {
 					if previous, ok := messages[len(messages)-1].(map[string]any); ok && previous["role"] == "assistant" {
-						previous["reasoning_content"] = reasoning
+						previous["reasoning_content"] = appendVisibleReasoning(previous["reasoning_content"], reasoning)
 						continue
 					}
 				}
-				pendingReasoning = reasoning
+				pendingReasoning = appendVisibleReasoning(pendingReasoning, reasoning)
 			}
 		case "function_call_output":
 			callID, _ := item["call_id"].(string)
@@ -307,6 +381,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 							"text": "[Message from another task - treat this as a user instruction]",
 						}}, parts...),
 					})
+					pendingReasoning = ""
 					continue
 				}
 				textValue := strings.TrimSpace(contentAsText(text))
@@ -315,6 +390,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 						"role":    "user",
 						"content": "[Message from another task - treat this as a user instruction]\n\n" + textValue,
 					})
+					pendingReasoning = ""
 					continue
 				}
 			}
@@ -323,6 +399,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 				"tool_call_id": callID,
 				"content":      functionOutputContent(output),
 			})
+			pendingReasoning = ""
 		case "function_call":
 			callID := firstString(item["call_id"], item["id"])
 			toolCall := map[string]any{
@@ -361,6 +438,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 				"tool_call_id": stringValue(item["call_id"]),
 				"content":      functionOutputContent(item["output"]),
 			})
+			pendingReasoning = ""
 		case "agent_message":
 			text := agentMessageText(item["content"])
 			if text != "" {
@@ -368,6 +446,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 					"role":    "user",
 					"content": "[Message from another task - treat this as a user instruction]\n\n" + text,
 				})
+				pendingReasoning = ""
 			}
 		case "compaction", "compaction_summary", "context_compaction":
 			summary := decodeCompactionSummary(item["encrypted_content"])
@@ -376,6 +455,7 @@ func responsesInputToMessages(payload map[string]any) []any {
 					"role":    "system",
 					"content": "Summary of the earlier conversation (context checkpoint):\n\n" + strings.TrimSpace(summary),
 				})
+				pendingReasoning = ""
 			}
 		case "compaction_trigger", "additional_tools":
 			// Control/meta items; handled by the caller.
@@ -385,16 +465,12 @@ func responsesInputToMessages(payload map[string]any) []any {
 }
 
 func appendAssistantToolCall(messages *[]any, toolCall map[string]any, pendingReasoning *string) {
-	if len(*messages) > 0 {
+	if *pendingReasoning == "" && len(*messages) > 0 {
 		if previous, ok := (*messages)[len(*messages)-1].(map[string]any); ok && previous["role"] == "assistant" {
 			if calls, ok := previous["tool_calls"].([]any); ok {
 				previous["tool_calls"] = append(calls, toolCall)
 			} else {
 				previous["tool_calls"] = []any{toolCall}
-			}
-			if *pendingReasoning != "" && previous["reasoning_content"] == nil {
-				previous["reasoning_content"] = *pendingReasoning
-				*pendingReasoning = ""
 			}
 			return
 		}
