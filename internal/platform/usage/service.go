@@ -97,6 +97,7 @@ type Service struct {
 	Store   *Store
 	Pricing *pricing.Snapshot
 	Cache   *Cache
+	Rollup  *Rollup
 	Now     func() time.Time
 
 	// KeyName resolves a key id to its display name. Unknown ids should be
