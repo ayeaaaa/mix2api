@@ -28,7 +28,7 @@ var (
 	sanitizeFingerprintFeatures = []string{
 		"x-anthropic-billing", "cc_entrypoint=", "you are claude code",
 		"main branch (", "you are a coding agent running in the codex cli",
-		"github.com/anthropics/", "11128", "deepseek harness",
+		"github.com/anthropics/", "deepseek harness",
 		"sisyphus-junior - focused executor from ohmyopencode",
 		"powered by", "built on", "built by", "created by", "developed by",
 		"made by", "trained by", "whose url the runtime context names",
@@ -36,15 +36,21 @@ var (
 	}
 )
 
-func hasSanitizeFingerprint(text string, identity bool) bool {
+func hasSanitizeFingerprint(text string, identity, billing bool) bool {
 	if text == "" {
 		return false
 	}
 	low := strings.ToLower(text)
 	for _, feature := range sanitizeFingerprintFeatures {
+		if !billing && (feature == "x-anthropic-billing" || feature == "cc_entrypoint=") {
+			continue
+		}
 		if strings.Contains(low, feature) {
 			return true
 		}
+	}
+	if billing && strings.Contains(low, "cc_") {
+		return true
 	}
 	if !identity {
 		return false
@@ -52,8 +58,8 @@ func hasSanitizeFingerprint(text string, identity bool) bool {
 	return sanitizeIdentity.MatchString(text)
 }
 
-func sanitizeText(text string, identity bool) string {
-	if text == "" || !hasSanitizeFingerprint(text, identity) {
+func sanitizeText(text string, identity, billing bool) string {
+	if text == "" || !hasSanitizeFingerprint(text, identity, billing) {
 		return text
 	}
 	text = sanitizeOMO.ReplaceAllString(text, "Sisyphus-Junior - Focused executor")
@@ -73,46 +79,75 @@ func sanitizeText(text string, identity bool) string {
 	text = strings.ReplaceAll(text,
 		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
 		"To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues")
-	text = strings.ReplaceAll(text, "11128", "11-128")
-	text = sanitizeBillingLine.ReplaceAllString(text, "")
-	text = sanitizeBillingHdr.ReplaceAllString(text, "")
-	if strings.Contains(text, "cc_") {
-		for {
-			next := sanitizeBillingKV.ReplaceAllString(text, "")
-			if next == text {
-				break
+	if billing {
+		text = sanitizeBillingLine.ReplaceAllString(text, "")
+		text = sanitizeBillingHdr.ReplaceAllString(text, "")
+		if strings.Contains(text, "cc_") {
+			for {
+				next := sanitizeBillingKV.ReplaceAllString(text, "")
+				if next == text {
+					break
+				}
+				text = next
 			}
-			text = next
 		}
+		text = sanitizeBillingBare.ReplaceAllString(text, "anthropic-header")
 	}
-	text = sanitizeBillingBare.ReplaceAllString(text, "x-anthropic-billing-hdr")
 	return strings.TrimSpace(text)
 }
 
-func sanitizeContent(content any, identity bool) any {
+func sanitizeContent(content any, identity, billing bool) any {
 	switch typed := content.(type) {
 	case string:
-		return sanitizeText(typed, identity)
+		return sanitizeText(typed, identity, billing)
 	case []any:
-		out := make([]any, len(typed))
-		for index, part := range typed {
+		out := make([]any, 0, len(typed))
+		for _, part := range typed {
 			item, ok := part.(map[string]any)
 			if !ok {
-				out[index] = part
+				out = append(out, part)
 				continue
 			}
 			copied := cloneMap(item)
 			if creditText(copied["type"]) == "text" {
 				if text, ok := copied["text"].(string); ok {
-					copied["text"] = sanitizeText(text, identity)
+					copied["text"] = sanitizeText(text, identity, billing)
+					if billing && creditText(copied["text"]) == "" {
+						continue
+					}
 				}
 			}
-			out[index] = copied
+			out = append(out, copied)
 		}
 		return out
 	default:
 		return content
 	}
+}
+
+func sanitizeTools(tools any) any {
+	list, ok := tools.([]any)
+	if !ok {
+		return tools
+	}
+	out := make([]any, 0, len(list))
+	for _, raw := range list {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		copied := cloneMap(item)
+		if function, ok := copied["function"].(map[string]any); ok {
+			fnCopy := cloneMap(function)
+			if description, ok := fnCopy["description"].(string); ok {
+				fnCopy["description"] = sanitizeText(description, true, false)
+			}
+			copied["function"] = fnCopy
+		}
+		out = append(out, copied)
+	}
+	return out
 }
 
 func sanitizeToolCalls(toolCalls any) any {
@@ -132,7 +167,7 @@ func sanitizeToolCalls(toolCalls any) any {
 			fnCopy := cloneMap(function)
 			switch args := fnCopy["arguments"].(type) {
 			case string:
-				fnCopy["arguments"] = sanitizeText(args, false)
+				fnCopy["arguments"] = sanitizeText(args, false, false)
 			case nil:
 				fnCopy["arguments"] = "{}"
 			default:
@@ -164,19 +199,38 @@ func sanitizeChatMessages(messages []any) []any {
 		copied := cloneMap(item)
 		role := creditText(copied["role"])
 		identity := role == "system" || role == "developer" || role == "assistant"
-		before, _ := copied["content"].(string)
-		if content, exists := copied["content"]; exists {
-			copied["content"] = sanitizeContent(content, identity)
+		billing := role == "system" || role == "developer"
+		before := copied["content"]
+		hadText := false
+		switch typed := before.(type) {
+		case string:
+			hadText = strings.TrimSpace(typed) != ""
+		case []any:
+			for _, part := range typed {
+				item, ok := part.(map[string]any)
+				if ok && creditText(item["type"]) == "text" && strings.TrimSpace(creditText(item["text"])) != "" {
+					hadText = true
+					break
+				}
+			}
 		}
-		if (role == "system" || role == "developer") && before != "" &&
-			strings.TrimSpace(before) != "" && creditText(copied["content"]) == "" {
-			continue
+		if content, exists := copied["content"]; exists {
+			copied["content"] = sanitizeContent(content, identity, billing)
+		}
+		if billing && hadText {
+			empty := creditText(copied["content"]) == ""
+			if list, ok := copied["content"].([]any); ok && len(list) == 0 {
+				empty = true
+			}
+			if empty {
+				continue
+			}
 		}
 		if reasoning, ok := copied["reasoning_content"].(string); ok {
-			copied["reasoning_content"] = sanitizeText(reasoning, false)
+			copied["reasoning_content"] = sanitizeText(reasoning, false, false)
 		}
 		if reasoning, ok := copied["reasoning"].(string); ok {
-			copied["reasoning"] = sanitizeText(reasoning, false)
+			copied["reasoning"] = sanitizeText(reasoning, false, false)
 		}
 		if toolCalls, exists := copied["tool_calls"]; exists {
 			copied["tool_calls"] = sanitizeToolCalls(toolCalls)

@@ -1228,6 +1228,9 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 	if err := p.normalizeChatBody(body, model); err != nil {
 		return nil, "", err
 	}
+	if tools, exists := body["tools"]; exists {
+		body["tools"] = sanitizeTools(tools)
+	}
 	return body, model, nil
 }
 

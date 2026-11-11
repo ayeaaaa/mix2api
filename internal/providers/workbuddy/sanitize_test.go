@@ -7,14 +7,14 @@ import (
 
 func TestSanitizeBillingHeaderLine(t *testing.T) {
 	full := "x-anthropic-billing-header: cc_version=2.1.37; cc_entrypoint=cli; cch=abc;\nYou are helpful."
-	out := sanitizeText(full, true)
+	out := sanitizeText(full, true, true)
 	if strings.Contains(strings.ToLower(out), "x-anthropic-billing") || strings.Contains(out, "cch=") {
 		t.Fatalf("billing header leaked: %q", out)
 	}
 	if out != "You are helpful." {
 		t.Fatalf("surrounding text = %q", out)
 	}
-	short := sanitizeText("x-anthropic-billing-hdr: cch=abc;\nKeep me.", true)
+	short := sanitizeText("x-anthropic-billing-hdr: cch=abc;\nKeep me.", true, true)
 	if strings.Contains(strings.ToLower(short), "x-anthropic-billing") || !strings.Contains(short, "Keep me.") {
 		t.Fatalf("short billing header = %q", short)
 	}
@@ -39,7 +39,7 @@ func TestSanitizeClientIdentityStrings(t *testing.T) {
 		"You are a coding agent running in the Codex CLI.",
 		"You are an AI agent powered by DeepSeek Harness.",
 	} {
-		if out := sanitizeText(input, true); !strings.Contains(out, "You are a helpful AI assistant.") {
+		if out := sanitizeText(input, true, true); !strings.Contains(out, "You are a helpful AI assistant.") {
 			t.Fatalf("identity %q -> %q", input, out)
 		}
 	}
@@ -53,19 +53,51 @@ func TestSanitizeClientIdentityStrings(t *testing.T) {
 
 func TestSanitizeDSHAndChannelPhrases(t *testing.T) {
 	gui := "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names."
-	if out := sanitizeText(gui, true); !strings.Contains(out, "whose URL is named in the runtime context") ||
+	if out := sanitizeText(gui, true, true); !strings.Contains(out, "whose URL is named in the runtime context") ||
 		strings.Contains(out, "DeepSeek Harness") {
 		t.Fatalf("GUI rewrite = %q", out)
 	}
 	fileRef := "Tokens prefixed with @ are paths the user explicitly referenced."
-	if out := sanitizeText(fileRef, true); !strings.Contains(out, "paths that the user") {
+	if out := sanitizeText(fileRef, true, true); !strings.Contains(out, "paths that the user") {
 		t.Fatalf("file-ref rewrite = %q", out)
 	}
-	if out := sanitizeText("code 11128", false); out != "code 11-128" {
-		t.Fatalf("11128 rewrite = %q", out)
+	if out := sanitizeText("code 11128", false, true); out != "code 11128" {
+		t.Fatalf("11128 body text was rewritten: %q", out)
 	}
-	if out := sanitizeText("Sisyphus-Junior - Focused executor from OhMyOpenCode", false); out != "Sisyphus-Junior - Focused executor" {
+	if out := sanitizeText("Sisyphus-Junior - Focused executor from OhMyOpenCode", false, true); out != "Sisyphus-Junior - Focused executor" {
 		t.Fatalf("OMO rewrite = %q", out)
+	}
+}
+
+func TestSanitizeToolsAndBillingScope(t *testing.T) {
+	header := "x-anthropic-billing-header: cch=abc;"
+	assistant := sanitizeChatMessages([]any{
+		map[string]any{"role": "assistant", "content": header},
+		map[string]any{"role": "user", "content": header},
+	})
+	if len(assistant) != 2 || !strings.Contains(creditText(assistant[0].(map[string]any)["content"]), "x-anthropic-billing") {
+		t.Fatalf("assistant billing text was removed: %#v", assistant)
+	}
+	system := sanitizeChatMessages([]any{
+		map[string]any{"role": "system", "content": header},
+		map[string]any{"role": "user", "content": "hi"},
+	})
+	if len(system) != 1 || creditText(system[0].(map[string]any)["role"]) != "user" {
+		t.Fatalf("header-only system message survived: %#v", system)
+	}
+	tools := sanitizeTools([]any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "run",
+			"description": "You are Claude Code, Anthropic's official CLI for Claude.",
+		},
+	}})
+	desc := tools.([]any)[0].(map[string]any)["function"].(map[string]any)["description"]
+	if desc != "You are a helpful AI assistant." {
+		t.Fatalf("tool description = %q", desc)
+	}
+	if out := sanitizeText("mention x-anthropic-billing-header here", false, true); strings.Contains(out, "x-anthropic-billing-header") {
+		t.Fatalf("bare billing key = %q", out)
 	}
 }
 
@@ -90,8 +122,8 @@ func TestSanitizeToolArguments(t *testing.T) {
 	})
 	calls := messages[0].(map[string]any)["tool_calls"].([]any)
 	first := calls[0].(map[string]any)["function"].(map[string]any)["arguments"].(string)
-	if strings.Contains(strings.ToLower(first), "x-anthropic-billing") || strings.Contains(first, "cch=") {
-		t.Fatalf("tool argument leaked header: %q", first)
+	if !strings.Contains(first, "x-anthropic-billing") {
+		t.Fatalf("tool argument data was rewritten: %q", first)
 	}
 	second := calls[1].(map[string]any)["function"].(map[string]any)["arguments"].(string)
 	if second != "{}" {
