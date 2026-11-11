@@ -77,7 +77,7 @@ bytes). It contains at most eight rows and no paths:
 ```
 
 A rollback is queued only when a row is `complete: true` and its version is a
-stable `X.Y.Z` different from the running version. Incomplete or arbitrary
+stable or prerelease `X.Y.Z[-pre]` different from the running version. Incomplete or arbitrary
 versions are rejected with HTTP 409. The panel payload contains versions,
 sizes, times and the source (`systemd` or `local`), never filesystem paths.
 
