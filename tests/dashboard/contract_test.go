@@ -11,7 +11,7 @@ import (
 )
 
 // TestDashboardContract pins the Gate E surface: the embedded asset matches
-// the documented v1.6.5 provenance (byte-identical asset), the
+// the documented v1.6.5 provenance plus the top-bar total-quota delta, the
 // static aliases are public and non-CORS, the API route inventory is complete,
 // and the management gate fails closed.
 func TestDashboardContract(t *testing.T) {
@@ -27,6 +27,10 @@ func TestDashboardContract(t *testing.T) {
 		"const PANEL_STORE = 'wb-proxy-panel-token'",
 		"async function getJSON(url, opts)",
 		"async function postJSON(url, body)",
+		"tabIntlTotal",
+		"tabCnTotal",
+		"intlSize",
+		"cnSize",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("embedded dashboard is missing marker %q", marker)

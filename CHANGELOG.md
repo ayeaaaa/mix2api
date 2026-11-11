@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- Dashboard top bar shows total quota beside total credits for both WorkBuddy
+  realms (`可用 / 总积分 / 总额度`); the v2.0.1 asset only exposed total
+  credits.
+
 ## [2.0.1] - 2026-11-11
 
 Patch release focused on upstream protocol parity, account safety, and request
