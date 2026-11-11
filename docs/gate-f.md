@@ -20,7 +20,7 @@ requires a manual run.
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
 | Selected v1.6.5 oracle recording + v2 comparison | **PARTIAL** | Core 24 cases: 14 exact/10 documented; WorkBuddy 18 cases: 12 exact/6 documented (additive model/usage fields + log-store scope); media 13 cases: 11 exact/2 documented (additive task stats and media-usage-row fields); failure suites: Raccoon 5/5, CodeArts 5/5, WorkBuddy 5/5 exact. Fixtures under `tests/oracle/recorded/`. |
-| Real-account smoke on dedicated accounts | **PARTIAL** | Chat/stream passed on all exits; CN Responses/Messages/usage passed; mutable WorkBuddy CN checkin/growth/streak, CodeArts checkin, Raccoon credits/reward passed idempotently. See `docs/smoke/2026-11-11-*.md`. Real media and update/service smoke still pending |
+| Real-account smoke on dedicated accounts | **PARTIAL (media waived)** | Chat/stream passed on all exits; CN Responses/Messages/usage passed; mutable WorkBuddy CN checkin/growth/streak, CodeArts checkin, Raccoon credits/reward passed idempotently. Real media smoke explicitly waived by owner on 2026-11-11; fake media oracle covers success paths. Update/service smoke still pending |
 | 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` recorded p95 162 ms, p99 163 ms, 0 failures, threshold 2000 ms |
 | v1.6.5 performance baseline comparison | **PENDING** | no captured baseline |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
