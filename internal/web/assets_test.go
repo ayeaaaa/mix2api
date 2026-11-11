@@ -24,16 +24,15 @@ func TestDashboardAssetHash(t *testing.T) {
 	if !strings.Contains(string(body), "data-ui-language=") {
 		t.Fatal("embedded dashboard does not look like the v1 page")
 	}
-	// The only v1 divergence is the two repository links. Keeping the v1 hash
-	// visible prevents an accidental larger rewrite from going unnoticed.
-	if DashboardV1SHA256 == DashboardSHA256 {
-		t.Fatal("v1 and v2 dashboard hashes must differ after the link fix")
+	// The v2 asset keeps the v1 repository links byte-for-byte.
+	if DashboardV1SHA256 != DashboardSHA256 {
+		t.Fatal("v2 dashboard must remain byte-identical to v1.6.5")
 	}
-	if strings.Contains(string(body), `github.com/ayeaaaa/mix2api"`) {
-		t.Fatal("dashboard still links to the v1 repository")
+	if strings.Contains(string(body), `github.com/ayeaaaa/mix2api-v2"`) {
+		t.Fatal("dashboard still links to the retired v2 repository")
 	}
-	if count := strings.Count(string(body), `github.com/ayeaaaa/mix2api-v2"`); count != 2 {
-		t.Fatalf("dashboard v2 repository link count = %d, want 2", count)
+	if count := strings.Count(string(body), `github.com/ayeaaaa/mix2api"`); count != 2 {
+		t.Fatalf("dashboard repository link count = %d, want 2", count)
 	}
 }
 

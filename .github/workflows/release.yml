@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Semantic version without v (for example 2.0.0-rc.1)"
+        description: "Semantic version without v (for example 2.0.0)"
         required: true
         type: string
       commit:
@@ -36,8 +36,8 @@ permissions:
 
 env:
   GO_VERSION: "1.22"
-  RELEASE_REPOSITORY: "ayeaaaa/mix2api-v2"
-  IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api-v2"
+  RELEASE_REPOSITORY: "ayeaaaa/mix2api"
+  IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api"
 
 jobs:
   verify:
@@ -141,8 +141,8 @@ jobs:
           }
       - name: Verify release repository identity
         run: |
-          test "${{ env.RELEASE_REPOSITORY }}" = "ayeaaaa/mix2api-v2"
-          test "${{ env.IMAGE_REPOSITORY }}" = "ghcr.io/ayeaaaa/mix2api-v2"
+          test "${{ env.RELEASE_REPOSITORY }}" = "ayeaaaa/mix2api"
+          test "${{ env.IMAGE_REPOSITORY }}" = "ghcr.io/ayeaaaa/mix2api"
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

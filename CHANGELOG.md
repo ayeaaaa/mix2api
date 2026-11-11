@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.0] - 2026-11-11
+
+Final release. Source is published on branch `v2` of `ayeaaaa/mix2api`; `main`
+remains v1.6.5. Owner approved the final release with the real Windows SCM
+update path still unverified; see `docs/gate-f.md`.
+
+### Fixed
+
+- Docker buildx `linux/arm64` builds now inherit the automatic `TARGETARCH`
+  instead of shadowing it with an amd64 default; the arm64 image contains an
+  AArch64 binary and passes the healthcheck under QEMU.
+- Release identity is unified on `ayeaaaa/mix2api` and
+  `ghcr.io/ayeaaaa/mix2api`; the embedded dashboard is byte-identical to v1.6.5
+  again, including its two repository links.
+- Final `2.0.0` is the default build identity; compose and packaging examples
+  use the `v2.0.0` tag.
+
+### Verified
+
+- Real systemd update install/rollback, real-archive update, local registry
+  multi-arch push/pull, arm64 container runtime, and a local GitHub Actions
+  `verify` dry-run.
+- Windows amd64 binary and `.cmd` update hooks under Wine; real Windows SCM
+  execution remains pending.
+- `govulncheck`: no reachable vulnerabilities; one unreachable `x/sys` module
+  finding is recorded in `docs/security-scan.md`.
+
 ## [2.0.0-rc.1] - 2026-11-10
 
 Release candidate. **Not a final v2.0.0 release.** Gate F oracle, real-account
@@ -64,9 +91,10 @@ smoke, and CI workflow dry-run are still pending; see `docs/gate-f.md`.
 - Windows `.cmd`/`.bat` update hooks run through `cmd.exe /d /s /c` with the
   canonical quoted batch command line, so hook paths containing spaces stay
   intact; `.exe` hooks run directly.
-- Release identity is unified on `ayeaaaa/mix2api-v2` for GitHub releases,
-  GHCR, compose, and the updater. The embedded dashboard's two repository links
-  now follow it; the v1 hash is retained beside the documented v2 digest.
+- Release identity was unified on `ayeaaaa/mix2api-v2` for this candidate. The
+  final `2.0.0` release moved the source, releases, compose examples, and
+  updater to `ayeaaaa/mix2api` while keeping the dashboard byte-identical to
+  v1.6.5.
 - The release workflow rejects `v`-prefixed, leading-zero, build-metadata, or
   otherwise non-strict version inputs before building.
 - `SOURCE_DATE_EPOCH` now fixes archive entry timestamps as documented, and an

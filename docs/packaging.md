@@ -42,10 +42,10 @@ Multi-arch builds:
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.0-rc.1 \
+  --build-arg VERSION=2.0.0 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api-v2:v2.0.0-rc.1 --push .
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.0 --push .
 ```
 
 ### Volume ownership

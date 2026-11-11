@@ -6,8 +6,8 @@ No Python, Node, or system SQLite is required.
 ## Unix
 
 ```sh
-tar -xzf mix2api-2.0.0-rc.1-portable-linux-amd64.tar.gz
-cd mix2api-2.0.0-rc.1-portable-linux-amd64
+tar -xzf mix2api-2.0.0-portable-linux-amd64.tar.gz
+cd mix2api-2.0.0-portable-linux-amd64
 PANEL_PASSWORD='change-me' MIX2API_API_KEY='change-me-too' ./start-mix2api.sh
 ```
 

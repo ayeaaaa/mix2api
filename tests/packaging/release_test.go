@@ -14,8 +14,8 @@ func TestReleaseWorkflowIsManualAndGateFGuarded(t *testing.T) {
 		"workflow_dispatch:", "gate_f_signed", "publish:", "prerelease:",
 		"make check", "make race", "make dist", "SHA256SUMS", "sbom.spdx.json",
 		"docker/build-push-action", "gh release create", "Gate F signoff",
-		`RELEASE_REPOSITORY: "ayeaaaa/mix2api-v2"`,
-		`IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api-v2"`,
+		`RELEASE_REPOSITORY: "ayeaaaa/mix2api"`,
+		`IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api"`,
 		`tags: ${{ env.IMAGE_REPOSITORY }}:v${{ inputs.version }}`,
 		"Validate version input", "VERSION: ${{ inputs.version }}",
 		`./scripts/validate-release-version.sh "$VERSION"`,
@@ -42,34 +42,34 @@ func TestReleaseDocumentsAndCurrentVersion(t *testing.T) {
 		}
 	}
 	changelog := repoFile(t, "CHANGELOG.md")
-	if !strings.Contains(changelog, "2.0.0-rc.1") {
-		t.Fatalf("CHANGELOG does not describe the RC: %s", changelog)
+	if !strings.Contains(changelog, "## [2.0.0]") {
+		t.Fatalf("CHANGELOG does not describe the final release: %s", changelog)
 	}
 	gate := repoFile(t, "docs/gate-f.md")
 	if !strings.Contains(gate, "PENDING") {
 		t.Fatal("Gate F document must keep unverified gates marked PENDING")
 	}
 	release := repoFile(t, "docs/release.md")
-	if !strings.Contains(release, "No `v2.0.0` tag") {
-		t.Fatal("release doc must not claim v2.0.0 is released")
+	if !strings.Contains(release, "v2.0.0") {
+		t.Fatal("release doc must describe the v2.0.0 release")
 	}
 }
 
 func TestReleaseIdentityIsUnified(t *testing.T) {
 	releaseSource := repoFile(t, "internal/core/release/release.go")
-	if !strings.Contains(releaseSource, `Repository = "ayeaaaa/mix2api-v2"`) {
+	if !strings.Contains(releaseSource, `Repository = "ayeaaaa/mix2api"`) {
 		t.Fatal("core/release repository identity mismatch")
 	}
 	updaterSource := repoFile(t, "internal/platform/update/checker.go")
-	if !strings.Contains(updaterSource, `DefaultRepository   = "ayeaaaa/mix2api-v2"`) {
+	if !strings.Contains(updaterSource, `DefaultRepository   = "ayeaaaa/mix2api"`) {
 		t.Fatal("update checker repository identity mismatch")
 	}
 	compose := repoFile(t, "docker-compose.yml")
-	if !strings.Contains(compose, "ghcr.io/ayeaaaa/mix2api-v2:") {
+	if !strings.Contains(compose, "ghcr.io/ayeaaaa/mix2api:") {
 		t.Fatal("compose image identity mismatch")
 	}
 	workflow := repoFile(t, ".github/workflows/release.yml")
-	if !strings.Contains(workflow, "ayeaaaa/mix2api-v2") {
+	if !strings.Contains(workflow, "ayeaaaa/mix2api") {
 		t.Fatal("workflow repository identity mismatch")
 	}
 }

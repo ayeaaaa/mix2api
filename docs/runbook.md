@@ -5,8 +5,8 @@
 ### Native binary
 
 ```sh
-tar -xzf mix2api-2.0.0-rc.1-linux-amd64.tar.gz
-cd mix2api-2.0.0-rc.1-linux-amd64
+tar -xzf mix2api-2.0.0-linux-amd64.tar.gz
+cd mix2api-2.0.0-linux-amd64
 sudo useradd --system --home-dir /srv/mix2api --shell /usr/sbin/nologin mix2api
 sudo install -d -o mix2api -g mix2api -m 0750 /srv/mix2api
 sudo install -o mix2api -g mix2api -m 0755 mix2api /srv/mix2api/mix2api

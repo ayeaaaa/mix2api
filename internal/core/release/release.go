@@ -27,7 +27,7 @@ const (
 	// v1's Python portable manifest.
 	Format = "mix2api-release/2"
 	// Repository is the only repository the updater accepts.
-	Repository = "ayeaaaa/mix2api-v2"
+	Repository = "ayeaaaa/mix2api"
 
 	KindStandard = "standard"
 	KindOpenWrt  = "openwrt"

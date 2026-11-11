@@ -11,7 +11,7 @@ import (
 )
 
 // TestDashboardContract pins the Gate E surface: the embedded asset matches
-// the documented v1.6.5 provenance (two repository-link replacements), the
+// the documented v1.6.5 provenance (byte-identical asset), the
 // static aliases are public and non-CORS, the API route inventory is complete,
 // and the management gate fails closed.
 func TestDashboardContract(t *testing.T) {

@@ -2,10 +2,10 @@
 
 ## Current status
 
-This tree is **`2.0.0-rc.1`** (release candidate). No `v2.0.0` tag, GitHub
-release, or GHCR image has been created. Tagging and publishing require the
-explicit operator decision after Gate F; see `docs/gate-f.md` and
-`tests/oracle/REAL-ACCOUNT-SMOKE.md`.
+This tree is **`2.0.0`** final. The v2 source is published on branch `v2` of
+`ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.5. Release assets
+and the GHCR image use `v2.0.0`. Gate F evidence is in `docs/gate-f.md`; real
+Windows SCM update execution remains the only unverified runtime item.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ explicit operator decision after Gate F; see `docs/gate-f.md` and
 
 ```sh
 git status --short           # must be clean
-VERSION=2.0.0-rc.1 \
+VERSION=2.0.0 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
@@ -53,7 +53,7 @@ the injected build identity and must be the commit timestamp for reproducibility
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf mix2api-2.0.0-rc.1-linux-amd64.tar.gz | head
+tar -tzf mix2api-2.0.0-linux-amd64.tar.gz | head
 ./mix2api version --json   # after extracting, must show the injected values
 ```
 
@@ -70,20 +70,21 @@ make clean
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.0-rc.1 \
+  --build-arg VERSION=2.0.0 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api-v2:v2.0.0-rc.1 .
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.0 .
 ```
 
 The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
 
-## Publish (only after Gate F)
+## Publish
 
-The release workflow (`.github/workflows/release.yml`) is manual and refuses to
-publish unless `publish=true` and `gate_f_signed=yes`. The `version` input must
-be a strict semantic version **without** a leading `v` (`2.0.0-rc.1`, not
-`v2.0.0-rc.1`); a dedicated validation step rejects `v`/`V` prefixes, leading
+The v2 source lives on branch `v2`; the repository's `main` branch remains
+v1.6.5. The release workflow (`.github/workflows/release.yml`) is manual and
+refuses to publish unless `publish=true` and `gate_f_signed=yes`. The `version`
+input must be a strict semantic version **without** a leading `v` (`2.0.0`, not
+`v2.0.0`); a dedicated validation step rejects `v`/`V` prefixes, leading
 zeroes, and build metadata before any build starts. It:
 
 1. verifies the requested commit matches the checkout;
@@ -92,8 +93,27 @@ zeroes, and build metadata before any build starts. It:
 3. builds/pushes `linux/amd64,linux/arm64` to GHCR;
 4. creates the `v<version>` tag and GitHub release with the dist assets.
 
-There is no push/tag trigger and no scheduled release. Do not run the publish
-job until the Gate F table is signed for this commit.
+There is no push/tag trigger and no scheduled release.
+
+For this repository layout, the equivalent manual publication is:
+
+```sh
+git push origin v2
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg VERSION=2.0.0 \
+  --build-arg COMMIT="$(git rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
+  --provenance=false --push \
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.0 .
+gh release create v2.0.0 dist/* \
+  --target "$(git rev-parse HEAD)" \
+  --title "mix2api v2.0.0" \
+  --notes-file CHANGELOG.md
+```
+
+The tag points at the v2 commit, not at `main`. Do not move `main` or overwrite
+the v1.6.5 tag.
 
 ## Rollback a release
 
@@ -107,6 +127,7 @@ job until the Gate F table is signed for this commit.
 
 ## Versioning
 
-- Development defaults to the RC version in `internal/core/version`.
+- Development defaults to the final `2.0.0` identity in
+  `internal/core/version`.
 - Release builds inject `Version`, `Commit`, and `Date` with `-ldflags -X`.
-- A release candidate must never be described as final `v2.0.0`.
+- The final release is `v2.0.0`; future fixes use a new semantic version.

@@ -18,9 +18,8 @@ import (
 	"time"
 )
 
-// DefaultVersion is the release candidate series for this tree. Tagging and
-// publishing v2.0.0 remains a manual Gate F decision.
-const DefaultVersion = "2.0.0-rc.1"
+// DefaultVersion is the final v2.0.0 release identity for this tree.
+const DefaultVersion = "2.0.0"
 
 // Version is the semantic version of this build, without a leading "v".
 var Version = DefaultVersion

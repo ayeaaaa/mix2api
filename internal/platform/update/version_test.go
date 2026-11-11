@@ -68,7 +68,7 @@ func TestPickLatestStable(t *testing.T) {
 
 func TestFinalReleaseIsNewerThanRunningCandidate(t *testing.T) {
 	picked := PickLatest([]any{
-		map[string]any{"tag_name": "v2.0.0", "html_url": "https://github.com/ayeaaaa/mix2api-v2/releases/tag/v2.0.0"},
+		map[string]any{"tag_name": "v2.0.0", "html_url": "https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.0"},
 	}, "2.0.0-rc.1")
 	if picked == nil || !picked.Newer || picked.Version != "2.0.0" {
 		t.Fatalf("picked = %#v", picked)

@@ -844,11 +844,11 @@ func TestUnknownBackupVersionIsNotPublished(t *testing.T) {
 }
 
 func TestReleaseURLIdentity(t *testing.T) {
-	safe := "https://github.com/ayeaaaa/mix2api-v2/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
+	safe := "https://github.com/ayeaaaa/mix2api/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
 	if !releaseURLAllowed(safe) {
 		t.Fatal("canonical release URL rejected")
 	}
-	old := "https://github.com/ayeaaaa/mix2api/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
+	old := "https://github.com/ayeaaaa/mix2api-v2/releases/download/v2.0.0/mix2api-2.0.0-linux-amd64.tar.gz"
 	if releaseURLAllowed(old) {
 		t.Fatal("v1 repository URL accepted for v2 assets")
 	}

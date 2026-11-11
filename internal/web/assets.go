@@ -1,7 +1,6 @@
 // Package web serves the embedded v1.6.5 dashboard and its static aliases.
-// The asset is copied from the v1 release with exactly two repository-link
-// replacements (ayeaaaa/mix2api -> ayeaaaa/mix2api-v2); no build step rewrites
-// it. This package deliberately imports no provider or platform code so the
+// The asset is byte-identical to the v1 release; no build step rewrites it.
+// This package deliberately imports no provider or platform code so the
 // static surface cannot grow a management dependency.
 package web
 
@@ -15,7 +14,7 @@ import (
 	"sync"
 )
 
-// The shipped dashboard. It is byte-identical to v1.6.5 except for the two
+// The shipped dashboard. It is byte-identical to v1.6.5, including the two
 // repository links documented in tests/oracle/dashboard.md; the contract test
 // pins its SHA-256.
 //
@@ -24,11 +23,10 @@ var dashboardHTML []byte
 
 // DashboardSHA256 is the lowercase hex digest of the embedded dashboard. It is
 // recorded in tests/oracle/dashboard.md and checked by the contract test.
-const DashboardSHA256 = "2f6be04886285f34af7d739e3f37d06e64d8ea5f60d77f7f2a431394c18522df"
+const DashboardSHA256 = "70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793"
 
-// DashboardV1SHA256 is the original v1.6.5 digest before the repository-link
-// correction. Keeping both hashes makes the single provenance exception
-// auditable.
+// DashboardV1SHA256 is the original v1.6.5 digest. It equals DashboardSHA256
+// because the v2 asset keeps the v1 repository links unchanged.
 const DashboardV1SHA256 = "70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793"
 
 var (

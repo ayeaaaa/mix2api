@@ -9,7 +9,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mix2api
-PKG_VERSION:=$(if $(MIX2API_VERSION),$(MIX2API_VERSION),2.0.0-rc.1)
+PKG_VERSION:=$(if $(MIX2API_VERSION),$(MIX2API_VERSION),2.0.0)
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=mix2api contributors
@@ -24,7 +24,7 @@ define Package/mix2api
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
   TITLE:=mix2api multi-provider AI gateway
-  URL:=https://github.com/ayeaaaa/mix2api-v2
+  URL:=https://github.com/ayeaaaa/mix2api
   DEPENDS:=+ca-bundle +ca-certificates +tzdata
   PKGARCH:=$(ARCH)
 endef

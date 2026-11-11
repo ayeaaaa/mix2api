@@ -2,7 +2,7 @@
 #   cd deploy && docker compose -f docker-compose.image.yml pull && docker compose -f docker-compose.image.yml up -d
 services:
   mix2api:
-    image: ghcr.io/ayeaaaa/mix2api-v2:${MIX2API_VERSION:-v2.0.0-rc.1}
+    image: ghcr.io/ayeaaaa/mix2api:${MIX2API_VERSION:-v2.0.0}
     container_name: mix2api
     restart: unless-stopped
     ports:

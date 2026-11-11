@@ -4,12 +4,12 @@
 
 | Version | Status |
 | --- | --- |
-| `2.0.0-rc.1` | release candidate; security fixes accepted |
+| `2.0.0` | current final release; security fixes accepted |
 | v1.6.5 | upstream baseline, maintained in its own repository |
 | older v2 snapshots | not supported |
 
-No final `v2.0.0` release exists yet. The candidate is not a production
-guarantee until Gate F is signed (`docs/gate-f.md`).
+`2.0.0` is the current final release. Gate F evidence and the remaining real
+Windows SCM verification item are recorded in `docs/gate-f.md`.
 
 ## Reporting a vulnerability
 
@@ -37,7 +37,7 @@ a working exploit. Include:
 
 The gateway process only queues one validated request. The privileged executor:
 
-- accepts only `https://github.com/ayeaaaa/mix2api-v2/releases/download/...`;
+- accepts only `https://github.com/ayeaaaa/mix2api/releases/download/...`;
 - requires `SHA256SUMS` to match the fixed asset name;
 - validates `release-manifest.json` (format, version, stable tag, fixed
   repository, platform, per-file sha256);
@@ -66,7 +66,8 @@ while running.
 
 ## Known limitations
 
-- The RC has not completed the real-account smoke gate.
+- Real Windows SCM/service update execution is still unverified; the Windows
+  binary and `.cmd` hooks were tested under Wine.
 - The update executor trusts its operator-provided stop/start hooks.
 - v1 and v2 must not share a live data directory.
 - No security audit of the full v1 behavior surface has been performed.

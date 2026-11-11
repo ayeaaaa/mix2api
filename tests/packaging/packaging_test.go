@@ -63,7 +63,7 @@ func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 	for _, name := range []string{"docker-compose.yml", "deploy/docker-compose.yml", "deploy/docker-compose.image.yml"} {
 		text := repoFile(t, name)
 		for _, want := range []string{
-			"image: ghcr.io/ayeaaaa/mix2api-v2:",
+			"image: ghcr.io/ayeaaaa/mix2api:",
 			"/app/accounts",
 			"/app/usage",
 			"/app/media",
@@ -207,7 +207,7 @@ func TestReleaseBinariesCarryInjectedIdentityAndReproduce(t *testing.T) {
 	first := filepath.Join(dir, "mix2api-1")
 	second := filepath.Join(dir, "mix2api-2")
 	ldflags := "-s -w -buildid= " +
-		"-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Version=2.0.0-rc.1 " +
+		"-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Version=2.0.0 " +
 		"-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Commit=abc123 " +
 		"-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Date=2026-11-08T00:00:00Z"
 	build := func(output string) {
@@ -245,7 +245,7 @@ func TestReleaseBinariesCarryInjectedIdentityAndReproduce(t *testing.T) {
 	if err := json.Unmarshal(output, &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Version != "2.0.0-rc.1" || info.Commit != "abc123" || info.Date != "2026-11-08T00:00:00Z" {
+	if info.Version != "2.0.0" || info.Commit != "abc123" || info.Date != "2026-11-08T00:00:00Z" {
 		t.Fatalf("injected identity = %#v", info)
 	}
 }

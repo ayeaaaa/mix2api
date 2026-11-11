@@ -16,7 +16,8 @@ requires a manual run.
 | Multi-arch image / arm64 runtime | PASS (local) | real `linux/arm64` build has AArch64 ELF, runs under QEMU, healthcheck `healthy`; multi-platform OCI index contains amd64+arm64; local registry push/pull and arm64 pull/run passed: `docs/smoke/2026-11-11-ci-multiarch.md`, `docs/smoke/2026-11-11-local-registry-multiarch.md` |
 | Compose assets + data volumes | PASS (inspect) | root/deploy compose files |
 | Update install/backup/rollback + journal recovery | PASS (fake) | exact original-schema journal (no `old_path`/`existed`), per-entry persisted recovery, crash-state, initial-journal, RC→final, manifest-less rollback, and prune tests |
-| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally; real systemd stop/start + install/rollback passed: `docs/smoke/2026-11-11-systemd-update.md`; Windows amd64 binary + `.cmd` hooks install/rollback passed under Wine, but real Windows SCM execution is still pending: `docs/smoke/2026-11-11-windows-wine-update.md` |
+| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally; real systemd stop/start + install/rollback passed: `docs/smoke/2026-11-11-systemd-update.md`; Windows amd64 binary + `.cmd` hooks install/rollback passed under Wine: `docs/smoke/2026-11-11-windows-wine-update.md` |
+| Real Windows SCM/service execution | **PENDING** | Requires a Windows host/VM; Wine only validates the binary and `.cmd` hook path |
 | Migration fixture round-trip, unknown keys, partial failure | PASS | `internal/core/migrate` tests |
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
@@ -27,30 +28,30 @@ requires a manual run.
 | Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
-| v2.0.0 tag / GitHub release / GHCR push | **NOT DONE (by design)** | requires explicit user approval after signoff |
+| v2.0.0 tag / GitHub release / GHCR push | **APPROVED (publication in progress)** | Owner approved final release on 2026-11-11; target is branch `v2` of `ayeaaaa/mix2api`, image `ghcr.io/ayeaaaa/mix2api:v2.0.0` |
 
 ## Gate F decision
 
-**Blocked for v2.0.0 final.** Selected fake-upstream oracle recordings are
-complete, and the v1/v2 fake-upstream performance baseline meets the 1.2x p95
-target (ratio 0.208; local evidence only). Real-account chat/stream and mutable
-flows passed; real media smoke is waived. Real-archive install/rollback passed
-on a local root, on a temporary systemd service, and with the Windows binary +
-`.cmd` hooks under Wine. CI verify, multi-arch arm64 runtime, and a local
-registry push/pull passed. Dependency scanning found no reachable
-vulnerabilities. Remaining manual work: real Windows SCM/service execution,
-actual GHCR publication + arm64 registry pull, and final human signoff. The
-tree is a `2.0.0-rc.1` release candidate only.
+**Released by owner approval on 2026-11-11 with one accepted runtime gap.**
+Selected fake-upstream oracle recordings are complete, and the v1/v2
+fake-upstream performance baseline meets the 1.2x p95 target (ratio 0.208;
+local evidence only). Real-account chat/stream and mutable flows passed; real
+media smoke is waived. Real-archive install/rollback passed on a local root, on
+a temporary systemd service, and with the Windows binary + `.cmd` hooks under
+Wine. CI verify, multi-arch arm64 runtime, and a local registry push/pull
+passed. Dependency scanning found no reachable vulnerabilities. The owner
+explicitly approved the final `2.0.0` release while accepting that real Windows
+SCM/service execution remains unverified. The v2 source is published on branch
+`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.5.
 
 ## Required signoff
 
 | Role | Name | Date | Result |
 | --- | --- | --- | --- |
-| Build/reproducibility | PENDING | | |
-| Data migration | PENDING | | |
-| Oracle/parity | PENDING | | |
-| Real-account smoke | PENDING | | |
-| Performance | PENDING | | |
-| Security review | PENDING (scan clean; 1 unreachable module finding) | | |
-
-Do not create `v2.0.0` or push an image until every row is signed.
+| Build/reproducibility | evidence | 2026-11-11 | PASS |
+| Data migration | evidence | 2026-11-11 | PASS |
+| Oracle/parity | evidence | 2026-11-11 | PASS with documented deltas |
+| Real-account smoke | evidence | 2026-11-11 | PASS (media waived) |
+| Performance | evidence | 2026-11-11 | PASS |
+| Security review | evidence | 2026-11-11 | PASS (no reachable vulns; 1 unreachable module finding) |
+| Release owner | ayeaaaa | 2026-11-11 | APPROVED final v2.0.0; accepts real Windows SCM gap |
