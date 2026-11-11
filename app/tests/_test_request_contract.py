@@ -173,5 +173,23 @@ class RequestContractTests(unittest.TestCase):
             self.assertEqual(P.sanitize_tool_calls(calls), calls)
 
 
+    def test_empty_text_parts_filled_before_upstream(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "image_url", "image_url": {"url": "data:x"}},
+                    {"type": "text", "text": "hi"},
+                ]},
+            ],
+        })
+        parts = body["messages"][1]["content"]
+        self.assertEqual(parts[0]["text"], " ")
+        self.assertEqual(parts[1]["type"], "image_url")
+        self.assertEqual(parts[2]["text"], "hi")
+
+
 if __name__ == "__main__":
     unittest.main()

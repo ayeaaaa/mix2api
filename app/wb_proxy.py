@@ -14624,6 +14624,36 @@ def apply_prompt_mode(messages):
     return messages
 
 
+def fill_empty_text_parts(messages):
+    """Fill empty text parts before they reach the upstream (400 / 11151).
+
+    Unknown part types, non-array content, and non-empty text parts are kept
+    byte-for-byte. The upstream validates every type:"text" part and retires
+    the conversation when one is empty.
+    """
+    out = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        item = dict(m)
+        content = item.get("content")
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if (isinstance(part, dict)
+                        and str(part.get("type") or "") == "text"
+                        and part.get("text") == ""):
+                    copied = dict(part)
+                    copied["text"] = " "
+                    parts.append(copied)
+                else:
+                    parts.append(part)
+            item["content"] = parts
+        out.append(item)
+    return out
+
+
 def build_upstream_body(payload):
     model = payload.get("model") or ""
     # Map an unsupported level before anything below reads the effort, so the
@@ -14644,6 +14674,7 @@ def build_upstream_body(payload):
         elif thinking_type != "disabled" and str(effort or "").strip().lower() != "none":
             thinking_enabled = True
     messages = normalize_roles(payload.get("messages") or [])
+    messages = fill_empty_text_parts(messages)
     # Prompt mode runs before sanitize/backfill so the gateway prompt is the
     # one the upstream sees, with the client's fingerprint-y system text gone.
     messages = apply_prompt_mode(messages)
