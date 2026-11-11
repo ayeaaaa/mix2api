@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
@@ -49,13 +48,21 @@ func TestSSELoad(t *testing.T) {
 	root := t.TempDir()
 	accountsDir := filepath.Join(root, "accounts")
 	usageDir := filepath.Join(root, "usage")
-	fake := newLoadUpstream()
-	upstream := httptest.NewServer(fake)
-	t.Cleanup(upstream.Close)
-	t.Setenv("WB_INTL_CHAT_UPSTREAM", upstream.URL)
-	t.Setenv("WB_CN_CHAT_UPSTREAM", upstream.URL)
-	t.Setenv("WB_BILLING_UPSTREAM", upstream.URL)
-	t.Setenv("WB_TASK_WEB_UPSTREAM", upstream.URL)
+	upstreamURL := os.Getenv("MIX2API_LOAD_UPSTREAM")
+	if upstreamURL == "" {
+		fake := newLoadUpstream()
+		upstream := httptest.NewServer(fake)
+		t.Cleanup(upstream.Close)
+		upstreamURL = upstream.URL
+	} else if err := requireLoopbackURL(upstreamURL); err != nil {
+		t.Fatalf("MIX2API_LOAD_UPSTREAM: %v", err)
+	}
+	t.Setenv("WB_INTL_CHAT_UPSTREAM", upstreamURL)
+	t.Setenv("WB_CN_CHAT_UPSTREAM", upstreamURL)
+	t.Setenv("WB_BILLING_UPSTREAM", upstreamURL)
+	t.Setenv("WB_TASK_WEB_UPSTREAM", upstreamURL)
+	targetVersion := envString("MIX2API_LOAD_TARGET_VERSION", "2.0.0-load")
+	targetCommit := os.Getenv("MIX2API_LOAD_TARGET_COMMIT")
 
 	if err := os.MkdirAll(accountsDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -91,7 +98,7 @@ func TestSSELoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform, err := app.BuildPlatform(setup, app.PlatformOptions{
-		Paths: setup.Paths, Version: "2.0.0-load", PanelPassword: loadPanel,
+		Paths: setup.Paths, Version: targetVersion, PanelPassword: loadPanel,
 		MediaDir: filepath.Join(root, "media"), UpdateDir: filepath.Join(root, "updates"),
 		Home: root, Logger: func(string) {},
 	})
@@ -104,7 +111,7 @@ func TestSSELoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := api.NewServer(api.ServerOptions{
-		Version: "2.0.0-load", Providers: setup.Providers, Platform: platform.HTTPServices(),
+		Version: targetVersion, Providers: setup.Providers, Platform: platform.HTTPServices(),
 		APIKeyAuth: api.RequireAPIKeyAuth(loadAPIKey), StaticAPIKey: loadAPIKey,
 	})
 	live := httptest.NewServer(server.Handler)
@@ -117,6 +124,9 @@ func TestSSELoad(t *testing.T) {
 	}}
 
 	beforeAllocs, beforeSys, beforeG := memSnapshot()
+	rssBefore := rssKB(os.Getpid())
+	cpuBefore := procCPU(os.Getpid())
+	sampler := startRSSSampler(os.Getpid())
 	start := make(chan struct{})
 	results := make([]requestResult, concurrency)
 	var wg sync.WaitGroup
@@ -132,10 +142,14 @@ func TestSSELoad(t *testing.T) {
 	close(start)
 	wg.Wait()
 	elapsed := time.Since(started)
+	rssPeak := sampler.Stop()
+	rssAfter := rssKB(os.Getpid())
+	cpuAfter := procCPU(os.Getpid())
 	afterAllocs, afterSys, afterG := memSnapshot()
 
 	latencies := make([]time.Duration, 0, concurrency)
 	failures := 0
+	done := 0
 	for _, result := range results {
 		if result.err != nil {
 			failures++
@@ -143,15 +157,14 @@ func TestSSELoad(t *testing.T) {
 			continue
 		}
 		latencies = append(latencies, result.ttfb)
-	}
-	if failures != 0 {
-		t.Fatalf("%d/%d requests failed", failures, concurrency)
+		if result.done {
+			done++
+		}
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	p50 := percentile(latencies, 0.50)
 	p95 := percentile(latencies, 0.95)
 	p99 := percentile(latencies, 0.99)
-	cpuSeconds := readCPU()
 	rows := countUsageRows(t, filepath.Join(usageDir, "usage.jsonl"))
 	sqliteStarted := time.Now()
 	for index := 0; index < concurrency; index++ {
@@ -168,22 +181,23 @@ func TestSSELoad(t *testing.T) {
 	}
 	sqliteAppend := time.Since(sqliteStarted)
 	evidence := map[string]any{
+		"target": "v2", "target_version": targetVersion, "target_commit": targetCommit,
+		"network": "loopback-only", "recorded_at": time.Now().UTC().Format(time.RFC3339),
 		"concurrency": concurrency, "requests": concurrency, "failures": failures,
+		"done": done, "done_failures": concurrency - done,
 		"elapsed_ms": elapsed.Milliseconds(), "p50_first_byte_ms": p50.Milliseconds(),
 		"p95_first_byte_ms": p95.Milliseconds(), "p99_first_byte_ms": p99.Milliseconds(),
+		"rss_before_kb": rssBefore, "rss_peak_kb": rssPeak, "rss_after_kb": rssAfter,
 		"mem_alloc_before": beforeAllocs, "mem_alloc_after": afterAllocs,
 		"mem_sys_before": beforeSys, "mem_sys_after": afterSys,
 		"goroutines_before": beforeG, "goroutines_after": afterG,
-		"cpu_seconds": cpuSeconds, "usage_rows": rows,
+		"cpu_seconds": cpuAfter - cpuBefore, "usage_rows": rows,
 		"sqlite_rows": logResult.Total, "sqlite_append_ms": sqliteAppend.Milliseconds(),
 		"go_version": runtime.Version(),
 	}
-	raw, _ := json.Marshal(evidence)
-	t.Logf("LOAD_EVIDENCE %s", raw)
-	if value := os.Getenv("MIX2API_LOAD_EVIDENCE"); value != "" {
-		if err := os.WriteFile(value, append(raw, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	writeLoadEvidence(t, evidence)
+	if failures != 0 {
+		t.Fatalf("%d/%d requests failed", failures, concurrency)
 	}
 	if p95 > time.Duration(envInt("MIX2API_LOAD_P95_MS", 2000))*time.Millisecond {
 		t.Fatalf("p95 first byte %s exceeds threshold", p95)
@@ -198,6 +212,7 @@ func TestSSELoad(t *testing.T) {
 
 type requestResult struct {
 	ttfb time.Duration
+	done bool
 	err  error
 }
 
@@ -232,7 +247,7 @@ func runSSERequest(client *http.Client, url, payload string) requestResult {
 	if ttfb == 0 {
 		ttfb = time.Since(started)
 	}
-	return requestResult{ttfb: ttfb}
+	return requestResult{ttfb: ttfb, done: true}
 }
 
 func containsDone(body []byte) bool {
@@ -290,15 +305,6 @@ func memSnapshot() (alloc, sys uint64, goroutines int) {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
 	return stats.Alloc, stats.Sys, runtime.NumGoroutine()
-}
-
-func readCPU() float64 {
-	samples := []metrics.Sample{{Name: "/cpu/classes/total:cpu-seconds"}}
-	metrics.Read(samples)
-	if samples[0].Value.Kind() == metrics.KindFloat64 {
-		return samples[0].Value.Float64()
-	}
-	return 0
 }
 
 func countUsageRows(t *testing.T, path string) int {

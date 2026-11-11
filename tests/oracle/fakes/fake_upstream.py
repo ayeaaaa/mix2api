@@ -29,6 +29,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+# The oracle recorder is serial, but the load harness opens 200 loopback
+# connections at once. The stdlib default backlog is 5, which turns a
+# concurrency benchmark into TCP SYN-retransmit timing. Raise it for every
+# fake server in this process; this changes no response bytes.
+ThreadingHTTPServer.request_queue_size = 256
+
 ROOT = Path(__file__).resolve().parents[3]
 V1 = ROOT / "tests" / "oracle" / "v1.6.5"
 sys.path.insert(0, str(V1 / "app" / "tests"))

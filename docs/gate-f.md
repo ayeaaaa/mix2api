@@ -21,8 +21,8 @@ requires a manual run.
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
 | Selected v1.6.5 oracle recording + v2 comparison | **PARTIAL** | Core 24 cases: 14 exact/10 documented; WorkBuddy 18 cases: 12 exact/6 documented (additive model/usage fields + log-store scope); media 13 cases: 11 exact/2 documented (additive task stats and media-usage-row fields); failure suites: Raccoon 5/5, CodeArts 5/5, WorkBuddy 5/5 exact. Fixtures under `tests/oracle/recorded/`. |
 | Real-account smoke on dedicated accounts | **PARTIAL (media waived)** | Chat/stream passed on all exits; CN Responses/Messages/usage passed; mutable WorkBuddy CN checkin/growth/streak, CodeArts checkin, Raccoon credits/reward passed idempotently. Real media smoke explicitly waived by owner on 2026-11-11; fake media oracle covers success paths. Update/service smoke still pending |
-| 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` recorded p95 162 ms, p99 163 ms, 0 failures, threshold 2000 ms |
-| v1.6.5 performance baseline comparison | **PENDING** | no captured baseline |
+| 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` 3-round p95 313–328 ms, p99 324–338 ms, 0 failures, threshold 2000 ms; earlier in-process-fake run p95 162 ms |
+| v1.6.5 performance baseline comparison | PASS (local fake) | `tests/load/v1-baseline.json` + `v2-baseline.json`: v1 p95 1520–1571 ms, v2 p95 313–328 ms, ratio 0.208 (target ≤1.2), 3 rounds each, 0 failures |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | **PENDING** | workflow added; GitHub Actions run not executed here |
 | v2.0.0 tag / GitHub release / GHCR push | **NOT DONE (by design)** | requires explicit user approval after signoff |
@@ -30,9 +30,10 @@ requires a manual run.
 ## Gate F decision
 
 **Blocked for v2.0.0 final.** Selected fake-upstream oracle recordings are
-complete; real-account smoke (including mutable media/task/update flows), real
-executor install, and a CI workflow dry-run remain manual. The tree is a
-`2.0.0-rc.1` release candidate only.
+complete, and the v1/v2 fake-upstream performance baseline now meets the 1.2x
+p95 target (ratio 0.208; local evidence only). Real-account smoke (including
+mutable media/task/update flows), real executor install, and a CI workflow
+dry-run remain manual. The tree is a `2.0.0-rc.1` release candidate only.
 
 ## Required signoff
 
