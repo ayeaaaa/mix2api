@@ -1481,8 +1481,12 @@ func TestChat403RestrictedRotatesButContentDoesNot(t *testing.T) {
 			t.Fatalf("restricted rotation calls = %d, want 2", len(calls))
 		}
 		account := accountByUID(t, provider.Pool(), "a-403")
-		if !account.State.CoolUntil.After(time.Now()) {
-			t.Fatalf("restricted cooldown = %v", account.State.CoolUntil)
+		account.mu.RLock()
+		banned := taskBanned(account.Auth)
+		enabled := account.Auth.Enabled
+		account.mu.RUnlock()
+		if !banned || enabled {
+			t.Fatalf("restricted account not banned: banned=%v enabled=%v", banned, enabled)
 		}
 	})
 

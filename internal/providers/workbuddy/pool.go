@@ -227,6 +227,15 @@ func seedRuntimeRestrictionLocked(account *Account) {
 	if account == nil {
 		return
 	}
+	if taskBanned(account.Auth) {
+		account.Auth.SetEnabled(false)
+		account.Auth.SetTasksEnabled(false)
+		account.State.Disabled = true
+		account.State.ManualDisabled = false
+		account.State.TasksEnabled = false
+		account.State.CoolUntil = time.Time{}
+		return
+	}
 	until := taskRestrictedUntil(account.Auth)
 	if until <= 0 {
 		return
@@ -447,7 +456,7 @@ func (p *Pool) TaskAccounts() []*Account {
 		auth := cloneAuth(account.Auth)
 		cooling := account.State.CoolUntil.After(now)
 		account.mu.RUnlock()
-		if active && (cooling || taskRestrictedUntil(auth) > float64(now.Unix())) {
+		if active && (cooling || taskBanned(auth) || taskRestrictedUntil(auth) > float64(now.Unix())) {
 			active = false
 		}
 		if active {
@@ -1099,6 +1108,8 @@ func (p *Pool) Disable(uid, reason string) error {
 // restores task participation as well; SetTasks can opt out afterwards.
 func (p *Pool) Enable(uid string) error {
 	return p.mutateAccount(uid, func(account *Account) {
+		delete(account.Auth.Extra, "accountBanned")
+		delete(account.Auth.Extra, "bannedAt")
 		account.Auth.SetEnabled(true)
 		account.Auth.SetTasksEnabled(true)
 		account.State.Disabled = false
@@ -1216,10 +1227,10 @@ func (p *Pool) NoteModelError(a *Account, model, message string, wait time.Durat
 	return nil
 }
 
-// NoteRestricted records v1's account-level 403/11140 restriction. The
-// two-hour window is kept in both stores: runtime State.CoolUntil (chat
-// rotation) and persisted Auth extra restrictedUntil (task selectors survive a
-// restart). The first hit starts the clock; repeated probes do not extend it.
+// NoteRestricted records upstream's account-level 403/11140 ban. It is not a
+// timed cooldown: the account is disabled for API dispatch and tasks, and the
+// ban is persisted until an operator explicitly enables it. Repeated probes do
+// not move bannedAt.
 func (p *Pool) NoteRestricted(a *Account, message string) error {
 	if a == nil {
 		return nil
@@ -1229,37 +1240,29 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 	}
 	now := p.nowTime()
 	a.mu.Lock()
-	if persisted := taskRestrictedUntil(a.Auth); persisted > float64(now.Unix()) {
-		// The persisted window is authoritative across restarts. Refresh the
-		// runtime cooldown from it without extending the clock (no hot-probing).
-		restrictedUntil := time.Unix(int64(persisted), 0)
-		if restrictedUntil.After(a.State.CoolUntil) {
-			a.State.CoolUntil = restrictedUntil
-		}
-		a.mu.Unlock()
-		return nil
-	}
-	until := now.Add(restrictedCooldown)
-	a.State.LastError = truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
-	if until.After(a.State.CoolUntil) {
-		a.State.CoolUntil = until
-	}
-	raw, err := json.Marshal(float64(until.Unix()))
-	if err != nil {
-		a.mu.Unlock()
-		return err
-	}
+	redacted := truncateText(redactAccountText(message, accountSecretValuesLocked(a)), tokenErrorLimit)
+	a.State.LastError = redacted
+	a.Auth.SetEnabled(false)
+	a.Auth.SetTasksEnabled(false)
+	a.State.Disabled = true
+	a.State.ManualDisabled = false
+	a.State.TasksEnabled = false
+	a.State.CoolUntil = time.Time{}
 	if a.Auth.Extra == nil {
 		a.Auth.Extra = make(map[string]json.RawMessage)
 	}
-	a.Auth.Extra["restrictedUntil"] = raw
+	banned, _ := json.Marshal(true)
+	a.Auth.Extra["accountBanned"] = banned
+	if taskBannedAt(a.Auth) <= 0 {
+		at, _ := json.Marshal(float64(now.Unix()))
+		a.Auth.Extra["bannedAt"] = at
+	}
+	delete(a.Auth.Extra, "restrictedUntil")
 	uid := strings.TrimSpace(a.Auth.UID)
 	if uid == "" {
 		uid = strings.TrimSpace(a.State.UID)
 	}
 	if uid == "" || a.pool == nil {
-		// Standalone test/runtime account: still expose the unified in-memory
-		// state, but there is no credential file to persist.
 		a.mu.Unlock()
 		return nil
 	}
@@ -1268,7 +1271,18 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 		if account.Auth.Extra == nil {
 			account.Auth.Extra = make(map[string]json.RawMessage)
 		}
-		account.Auth.Extra["restrictedUntil"] = raw
+		account.Auth.SetEnabled(false)
+		account.Auth.SetTasksEnabled(false)
+		account.Auth.Extra["accountBanned"] = banned
+		if taskBannedAt(account.Auth) <= 0 {
+			at, _ := json.Marshal(float64(now.Unix()))
+			account.Auth.Extra["bannedAt"] = at
+		}
+		delete(account.Auth.Extra, "restrictedUntil")
+		account.State.Disabled = true
+		account.State.ManualDisabled = false
+		account.State.TasksEnabled = false
+		account.State.CoolUntil = time.Time{}
 	})
 }
 
@@ -1325,7 +1339,7 @@ func (p *Pool) NoteSuccess(a *Account, model ...string) error {
 	a.State.LastError = ""
 	a.State.CoolUntil = time.Time{}
 	a.tokenExpired = false
-	if !a.State.ManualDisabled {
+	if !a.State.ManualDisabled && !taskBanned(a.Auth) {
 		a.State.Disabled = false
 		a.State.DisabledBy = ""
 		a.State.Reason = ""
@@ -1734,6 +1748,18 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		existing.mu.RUnlock()
 
 		preserveStableAuth(&normalized, old)
+		if taskBanned(old) {
+			normalized.SetEnabled(false)
+			normalized.SetTasksEnabled(false)
+			if normalized.Extra == nil {
+				normalized.Extra = make(map[string]json.RawMessage)
+			}
+			normalized.Extra["accountBanned"] = old.Extra["accountBanned"]
+			if at, ok := old.Extra["bannedAt"]; ok {
+				normalized.Extra["bannedAt"] = at
+			}
+			delete(normalized.Extra, "restrictedUntil")
+		}
 		saved, err := SaveAccount(p.dir, normalized)
 		if err != nil {
 			return nil, err
@@ -1769,8 +1795,8 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 		existing.paidKnown = known
 		existing.Models = oldModels
 		existing.tokenExpired = false
-		existing.State.Disabled = !saved.Enabled
-		existing.State.ManualDisabled = !saved.Enabled
+		existing.State.Disabled = !saved.Enabled || taskBanned(saved)
+		existing.State.ManualDisabled = !saved.Enabled && !taskBanned(saved)
 		existing.State.TasksEnabled = saved.TasksEnabled
 		existing.State.Note = saved.Note
 		existing.State.Reason = ""

@@ -141,6 +141,8 @@ type AccountView struct {
 	LastErrorDetail any      `json:"lastErrorDetail"`
 	InCooldown      bool     `json:"inCooldown"`
 	CooldownFor     any      `json:"cooldownFor"`
+	AccountBanned   bool     `json:"accountBanned"`
+	BannedAt        any      `json:"bannedAt"`
 	RestrictedFor   any      `json:"restrictedFor"`
 	// v1's soft/unscoped rate-limit ladders and breaker/degrade windows are
 	// not modeled by v2's simpler account breaker. These fields stay zero/nil
@@ -264,7 +266,7 @@ func (a *Account) Healthy(now time.Time) bool {
 }
 
 func (a *Account) healthyLocked(now time.Time) bool {
-	if a.removed || !a.Auth.Enabled || a.State.Disabled || a.tokenExpired {
+	if a.removed || taskBanned(a.Auth) || !a.Auth.Enabled || a.State.Disabled || a.tokenExpired {
 		return false
 	}
 	if a.State.CoolUntil.After(now) {
@@ -641,6 +643,11 @@ func (a *Account) viewAt(now time.Time) AccountView {
 			restrictedFor = seconds
 		}
 	}
+	banned := taskBanned(a.Auth)
+	var bannedAt any
+	if at := taskBannedAt(a.Auth); at > 0 {
+		bannedAt = int64(at)
+	}
 
 	return AccountView{
 		UID:                  uid,
@@ -670,6 +677,8 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		LastErrorDetail:      nil,
 		InCooldown:           cooling,
 		CooldownFor:          cooldownFor,
+		AccountBanned:        banned,
+		BannedAt:             bannedAt,
 		RestrictedFor:        restrictedFor,
 		SoftStreak:           0,
 		UnscopedStreak:       0,
@@ -697,7 +706,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		LastDailyChat:        optionalTimestamp(a.Auth.LastDailyChat),
 		LastActivityReport:   optionalTimestamp(a.Auth.LastActivityReport),
 		CanCheckin:           !a.Auth.APIKey && a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
-		CanDailyChat:         !a.Auth.APIKey && a.Auth.Realm == realmIntl,
+		CanDailyChat:         !a.Auth.APIKey && a.Auth.Realm == realmIntl && !banned,
 		CanReportActivity: !a.Auth.APIKey &&
 			(a.Auth.Realm == realmCN || a.Auth.Realm == realmIntl) &&
 			strings.TrimSpace(a.Auth.EnterpriseID) == "",
