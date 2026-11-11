@@ -429,6 +429,22 @@ func (s *Service) costFor(row map[string]any) pricing.Cost {
 	return s.Pricing.CostForRow(row)
 }
 
+// newRowPricer loads the pricing tables once for a batch/scan. A nil result
+// means pricing is not configured; callers fall back to costFor.
+func (s *Service) newRowPricer() *pricing.RowPricer {
+	if s == nil || s.Pricing == nil {
+		return nil
+	}
+	return s.Pricing.NewRowPricer()
+}
+
+func (s *Service) costForWith(pricer *pricing.RowPricer, row map[string]any) pricing.Cost {
+	if pricer != nil {
+		return pricer.CostForRow(row)
+	}
+	return s.costFor(row)
+}
+
 func (s *Service) rowRealm(row Row) string {
 	if s == nil || s.Store == nil {
 		return RowRealm(row)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -288,6 +289,22 @@ func TestPolicyTimelineLookup(t *testing.T) {
 	}
 	if snapshot.CurrentPolicyID("m") != id2 {
 		t.Fatalf("current policy = %q, want %q", snapshot.CurrentPolicyID("m"), id2)
+	}
+	pricer := snapshot.NewRowPricer()
+	for _, at := range []float64{50, 250, 350} {
+		row["at"] = at
+		want := snapshot.CostForRow(row)
+		got := pricer.CostForRow(row)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("RowPricer at %v = %+v, want %+v", at, got, want)
+		}
+	}
+	// Timeline is a public defensive copy; mutating it must not poison the
+	// immutable view used by per-row pricing.
+	timeline := snapshot.Timeline()
+	timeline[1].Policies["m"] = "mutated"
+	if got := snapshot.Timeline()[1].Policies["m"]; got != id1 {
+		t.Fatalf("Timeline returned shared state: %q", got)
 	}
 	// Repeated EnsurePolicy is idempotent and does not rewrite old rows.
 	before, _ := os.ReadFile(filepath.Join(usage, policiesName))

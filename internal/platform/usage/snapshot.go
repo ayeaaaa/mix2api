@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"time"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/pricing"
 )
 
 // ModelBucket is the v1 by_model / by_model_realm / by_model_acct shape.
@@ -97,12 +99,12 @@ type costLike struct {
 	CNY      float64
 }
 
-func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string) {
+func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string, pricer *pricing.RowPricer) {
 	if !s.matchesRealm(row, realm) {
 		return
 	}
 	outcome := RowOutcome(row)
-	cost := s.costFor(row)
+	cost := s.costForWith(pricer, row)
 	model := rowString(row, "model")
 	if outcome != "completed" {
 		stats.Errors++
@@ -224,11 +226,12 @@ func (s *Service) snapshotStats(ctx context.Context, realm string, window Range)
 		}
 	}
 	stats := newUsageStats()
+	pricer := s.newRowPricer()
 	offset, err := s.scanAll(ctx, func(row Row) error {
 		if !inRange(number(row, "at"), window) {
 			return nil
 		}
-		s.foldSnapshotRow(&stats, row, realm)
+		s.foldSnapshotRow(&stats, row, realm, pricer)
 		return nil
 	})
 	if err != nil {
@@ -284,8 +287,9 @@ func (s *Service) adoptSnapshot(ctx context.Context, realm string) (map[string]a
 		if stats.ByModelAcct == nil {
 			stats.ByModelAcct = map[string]map[string]map[string]ModelBucket{}
 		}
+		pricer := s.newRowPricer()
 		newOffset, err := s.scan(ctx, s.Store.Paths.Log, offset, func(row Row) error {
-			s.foldSnapshotRow(&stats, row, realm)
+			s.foldSnapshotRow(&stats, row, realm, pricer)
 			return nil
 		})
 		if err != nil {

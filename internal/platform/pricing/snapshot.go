@@ -477,21 +477,27 @@ func (s *Snapshot) Enabled() bool {
 	return value
 }
 
-// MarkupFor returns the per-model calibration factor. Invalid, negative, zero
-// or corrupt entries fall back to 1.0 and never scale a price.
-func (s *Snapshot) MarkupFor(model string) float64 {
+// markupRef returns the immutable cached markup table. Callers must not
+// mutate it; use MarkupFor for a single lookup.
+func (s *Snapshot) markupRef() map[string]float64 {
 	if s == nil {
-		return 1
+		return nil
 	}
 	path := filepath.Join(s.usageDir, markupName)
 	key := fileKey(path)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.markupKey != key || s.markup == nil {
 		s.markup = readMarkup(path)
 		s.markupKey = key
 	}
-	factor := s.markup[model]
-	s.mu.Unlock()
+	return s.markup
+}
+
+// MarkupFor returns the per-model calibration factor. Invalid, negative, zero
+// or corrupt entries fall back to 1.0 and never scale a price.
+func (s *Snapshot) MarkupFor(model string) float64 {
+	factor := s.markupRef()[model]
 	if factor <= 0 {
 		return 1
 	}
@@ -520,17 +526,18 @@ func readMarkup(path string) map[string]float64 {
 	return out
 }
 
-// RuntimeOverrides returns the panel-written hub → OpenRouter id map.
-func (s *Snapshot) RuntimeOverrides() map[string]string {
+// overridesRef returns the immutable cached runtime override table. Callers
+// must not mutate it; use RuntimeOverrides for a defensive copy.
+func (s *Snapshot) overridesRef() map[string]string {
 	if s == nil {
-		return map[string]string{}
+		return nil
 	}
 	path := filepath.Join(s.usageDir, overridesName)
 	key := fileKey(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.overridesKey == key && s.overrides != nil {
-		return cloneStrings(s.overrides)
+		return s.overrides
 	}
 	out := map[string]string{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -549,7 +556,12 @@ func (s *Snapshot) RuntimeOverrides() map[string]string {
 	}
 	s.overridesKey = key
 	s.overrides = out
-	return cloneStrings(out)
+	return out
+}
+
+// RuntimeOverrides returns the panel-written hub → OpenRouter id map.
+func (s *Snapshot) RuntimeOverrides() map[string]string {
+	return cloneStrings(s.overridesRef())
 }
 
 // SaveRuntimeOverride writes one panel mapping; an empty OpenRouter id removes
@@ -726,6 +738,10 @@ func (s *Snapshot) CostForRow(row map[string]any) Cost {
 }
 
 func (s *Snapshot) fillVia(cost *Cost, entry Entry, model string) {
+	fillViaWith(cost, entry, model, s.RuntimeOverrides())
+}
+
+func fillViaWith(cost *Cost, entry Entry, model string, overrides map[string]string) {
 	via := strings.TrimSpace(entry.Via)
 	if via == "variant" || via == "override" || via == "direct" {
 		cost.Via = via
@@ -733,7 +749,7 @@ func (s *Snapshot) fillVia(cost *Cost, entry Entry, model string) {
 		cost.OverrideFrom = entry.OverrideFrom
 		return
 	}
-	mapping := s.RuntimeOverrides()[model]
+	mapping := overrides[model]
 	if mapping == "" {
 		mapping = SourceOverrides[model]
 	}
