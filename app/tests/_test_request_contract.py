@@ -222,5 +222,20 @@ class RequestContractTests(unittest.TestCase):
         self.assertEqual(P.mirror_upstream_reasoning(messages, "glm-5.2")[0]["reasoning"], "think")
         self.assertEqual(P.mirror_upstream_reasoning(messages, "deepseek-v4.1-flash"), messages)
 
+    def test_intl_model_alias_scope_and_escape_hatch(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "intl"),
+                             "deepseek-v4.1-flash-sg")
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "cn"),
+                             "deepseek-v4.1-flash")
+            self.assertEqual(P.intl_model_alias("glm-5.2", "intl"), "glm-5.2")
+            payload = {"model": "deepseek-v4.1-flash"}
+            self.assertEqual(P.apply_intl_model_alias(payload, "intl"),
+                             "deepseek-v4.1-flash-sg")
+            self.assertEqual(payload["model"], "deepseek-v4.1-flash-sg")
+        with mock.patch.dict(os.environ, {"WB_INTL_MODEL_ALIAS": "0"}):
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "intl"),
+                             "deepseek-v4.1-flash")
+
 if __name__ == "__main__":
     unittest.main()

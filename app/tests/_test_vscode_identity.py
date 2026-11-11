@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import wb_accounts
 import wb_identity
+os.environ.setdefault("WB_INTL_MODEL_ALIAS", "0")
 import wb_proxy
 
 PASS = FAIL = 0
