@@ -25,7 +25,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.5-2496ED?style=flat-square" alt="Version 1.6.5"></a>
+  <a href="https://github.com/ayeaaaa/mix2api/releases"><img src="https://img.shields.io/badge/Release-v1.6.6-2496ED?style=flat-square" alt="Version 1.6.6"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Multi_Realm-4_Exits-0DBD8B?style=flat-square" alt="Multi Realm">
@@ -558,6 +558,14 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 ## 六、版本更新记录 (Changelog)
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
+
+## v1.6.6
+
+- **网页通道身份对齐**：按账号派生浏览器画像（UA / Accept-Language / sec-ch-*），建会话 body 与 ACP 请求形态对齐官方网页端；新增 `X-Request-ID`、`session/new`、`set_mode`、`set_config_option`、完整 prompt `_meta` 与可配置拟人停顿。
+- **CodeArts**：模型 ID 大小写不一致时同账号自动重试；role-only 首帧不再挡住模型错误；SSE「积分已耗尽」冷却 600 秒并换号；terminal error 不再清除手动停用。
+- **WorkBuddy 稳定性**：`11140` 改为持久封禁（手动启用才解除）；intl `deepseek-v4.1-flash` 出站映射到 `-sg`；完整 11151 空文本守卫；billing header / 工具描述 / Claude Code / Codex 指纹清洗；reasoning 镜像与 Responses 历史推理保真。
+- **其他**：DSH flow-map `refs` 兼容；profile 包装响应兼容；桌面身份 5.9.4 / CLI 2.165.0；面板 noindex；CN Kimi `$ref/$defs` 内联。
+- **测试**：286 个套件全过（213 Python + 73 JS）。
 
 ## v1.6.5
 

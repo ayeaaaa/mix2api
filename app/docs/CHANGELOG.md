@@ -1,3 +1,11 @@
+## v1.6.6
+
+- **网页通道身份对齐**：按账号派生浏览器画像，建会话 body / ACP 请求形态对齐官方网页端；新增 `X-Request-ID`、`session/new`、`set_mode`、`set_config_option`、完整 prompt `_meta` 与拟人停顿。
+- **CodeArts**：模型 ID 大小写回退；role-only preflight；SSE 积分耗尽冷却；手动停用保留。
+- **WorkBuddy**：`11140` 持久封禁；intl DeepSeek `-sg` 别名；完整 11151 守卫；billing / 工具描述 / 客户端指纹清洗；reasoning 镜像与 Responses 回放保真；DSH flow-map refs。
+- **其他**：profile 包装兼容；身份 5.9.4 / CLI 2.165.0；面板 noindex；CN Kimi schema `$ref/$defs` 内联。
+- 全量测试：**286 个套件：213 个 Python + 73 个 JS，`286 passed, 0 failed, 0 skipped`**。
+
 ## v1.5.0
 
 **mix2api 接管上游（2026-11-06）**：WorkBuddy2API-Hub 发布 v2.0.0 后停止维护。mix2api 以 v2.0.0 为基线继续维护，保留自有品牌、新面板、媒体生成与 CodeArts 集成。
