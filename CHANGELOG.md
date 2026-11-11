@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.5] - 2026-11-11
+
+### 中文
+
+#### 性能
+
+- 修复全量用量扫描的主要 CPU 热点：pricing timeline 不再在每行定价时深拷贝；
+  新增单次扫描复用的不可变 `RowPricer`，避免每行 `os.Stat`、锁和重复查表。
+  本机 19.5k 行数据上，全量 `/usage` 从约 75.7 秒降到约 0.82 秒。
+
+### English
+
+#### Performance
+
+- Remove the dominant full-scan CPU hotspot: per-row pricing no longer deep-copies
+  the entire policy timeline. A per-scan immutable `RowPricer` reuses the
+  timeline, policy, markup and override tables instead of statting and locking
+  for every row. On a local 19.5k-row ledger, a full `/usage` scan drops from
+  about 75.7s to about 0.82s.
+
 ## [2.0.4] - 2026-11-11
 
 ### 中文
