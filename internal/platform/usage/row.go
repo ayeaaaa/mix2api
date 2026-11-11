@@ -238,3 +238,154 @@ func truthy(value any) bool {
 		return true
 	}
 }
+
+// scanRow is the compact decode shape used by the aggregation scans. It covers
+// every field the fold paths read; unknown fields stay in the raw log for
+// recent/export and are deliberately not materialized here.
+type scanRow struct {
+	At               float64        `json:"at"`
+	ISO              string         `json:"iso"`
+	Model            string         `json:"model"`
+	Stream           bool           `json:"stream"`
+	Outcome          string         `json:"outcome"`
+	Error            bool           `json:"error"`
+	Kind             string         `json:"kind"`
+	ElapsedMS        float64        `json:"elapsed_ms"`
+	TTFTMS           float64        `json:"ttft_ms"`
+	GenMS            float64        `json:"gen_ms"`
+	PromptTokens     float64        `json:"prompt_tokens"`
+	CompletionTokens float64        `json:"completion_tokens"`
+	ReasoningTokens  float64        `json:"reasoning_tokens"`
+	CachedTokens     float64        `json:"cached_tokens"`
+	TotalTokens      float64        `json:"total_tokens"`
+	Credit           float64        `json:"credit"`
+	CostPolicy       string         `json:"cost_policy"`
+	Account          string         `json:"account"`
+	UID              string         `json:"uid"`
+	Realm            string         `json:"realm"`
+	Key              *string        `json:"key"`
+	Status           float64        `json:"status"`
+	Message          string         `json:"message"`
+	UsageMissing     bool           `json:"usage_missing"`
+	Reset            float64        `json:"reset"`
+	Sample           float64        `json:"sample"`
+	CacheHitPct      float64        `json:"cache_hit_pct"`
+	TokensPerSec     float64        `json:"tokens_per_sec"`
+	PromptDetails    map[string]any `json:"prompt_tokens_details"`
+	InputDetails     map[string]any `json:"input_tokens_details"`
+	CompletionDetail map[string]any `json:"completion_tokens_details"`
+	CacheReadInput   float64        `json:"cache_read_input_tokens"`
+	PromptCacheHit   float64        `json:"prompt_cache_hit_tokens"`
+}
+
+// decodeScanRow decodes one ledger line into the compact scan shape, then
+// materializes only the fields the fold paths need. The map remains the
+// compatibility boundary for callers/tests, but the expensive JSON decoder
+// and per-field interface boxing are gone from the hot path.
+func decodeScanRow(line []byte) (Row, error) {
+	var decoded scanRow
+	if err := json.Unmarshal(line, &decoded); err != nil {
+		return nil, err
+	}
+	row := make(Row, 20)
+	if decoded.At != 0 {
+		row["at"] = decoded.At
+	}
+	if decoded.ISO != "" {
+		row["iso"] = decoded.ISO
+	}
+	if decoded.Model != "" {
+		row["model"] = decoded.Model
+	}
+	if decoded.Stream {
+		row["stream"] = true
+	}
+	if decoded.Outcome != "" {
+		row["outcome"] = decoded.Outcome
+	}
+	if decoded.Error {
+		row["error"] = true
+	}
+	if decoded.Kind != "" {
+		row["kind"] = decoded.Kind
+	}
+	if decoded.ElapsedMS != 0 {
+		row["elapsed_ms"] = decoded.ElapsedMS
+	}
+	if decoded.TTFTMS != 0 {
+		row["ttft_ms"] = decoded.TTFTMS
+	}
+	if decoded.GenMS != 0 {
+		row["gen_ms"] = decoded.GenMS
+	}
+	if decoded.PromptTokens != 0 {
+		row["prompt_tokens"] = decoded.PromptTokens
+	}
+	if decoded.CompletionTokens != 0 {
+		row["completion_tokens"] = decoded.CompletionTokens
+	}
+	if decoded.ReasoningTokens != 0 {
+		row["reasoning_tokens"] = decoded.ReasoningTokens
+	}
+	if decoded.CachedTokens != 0 {
+		row["cached_tokens"] = decoded.CachedTokens
+	}
+	if decoded.TotalTokens != 0 {
+		row["total_tokens"] = decoded.TotalTokens
+	}
+	if decoded.Credit != 0 {
+		row["credit"] = decoded.Credit
+	}
+	if decoded.CostPolicy != "" {
+		row["cost_policy"] = decoded.CostPolicy
+	}
+	if decoded.Account != "" {
+		row["account"] = decoded.Account
+	}
+	if decoded.UID != "" {
+		row["uid"] = decoded.UID
+	}
+	if decoded.Realm != "" {
+		row["realm"] = decoded.Realm
+	}
+	if decoded.Key != nil {
+		row["key"] = *decoded.Key
+	}
+	if decoded.Status != 0 {
+		row["status"] = decoded.Status
+	}
+	if decoded.Message != "" {
+		row["message"] = decoded.Message
+	}
+	if decoded.UsageMissing {
+		row["usage_missing"] = true
+	}
+	if decoded.Reset != 0 {
+		row["reset"] = decoded.Reset
+	}
+	if decoded.Sample != 0 {
+		row["sample"] = decoded.Sample
+	}
+	if decoded.CacheHitPct != 0 {
+		row["cache_hit_pct"] = decoded.CacheHitPct
+	}
+	if decoded.TokensPerSec != 0 {
+		row["tokens_per_sec"] = decoded.TokensPerSec
+	}
+	if decoded.PromptDetails != nil {
+		row["prompt_tokens_details"] = decoded.PromptDetails
+	}
+	if decoded.InputDetails != nil {
+		row["input_tokens_details"] = decoded.InputDetails
+	}
+	if decoded.CompletionDetail != nil {
+		row["completion_tokens_details"] = decoded.CompletionDetail
+	}
+	if decoded.CacheReadInput != 0 {
+		row["cache_read_input_tokens"] = decoded.CacheReadInput
+	}
+	if decoded.PromptCacheHit != 0 {
+		row["prompt_cache_hit_tokens"] = decoded.PromptCacheHit
+	}
+	return row, nil
+}

@@ -505,10 +505,7 @@ func (s *Service) scan(ctx context.Context, path string, offset int64, fold func
 		next := offset + int64(len(line))
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) > 0 {
-			decoder := json.NewDecoder(bytes.NewReader(trimmed))
-			decoder.UseNumber()
-			var row Row
-			if err := decoder.Decode(&row); err == nil && row != nil {
+			if row, err := decodeScanRow(trimmed); err == nil && row != nil {
 				if fold != nil {
 					if err := fold(row); err != nil {
 						return next, err
