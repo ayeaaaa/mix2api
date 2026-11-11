@@ -1206,6 +1206,7 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 
 	messages, _ := body["messages"].([]any)
 	messages = normalizeChatRoles(messages)
+	messages = sanitizeChatMessages(messages)
 	messages = backfillChatReasoning(messages, model, chatThinkingEnabled(body, model))
 	if len(messages) == 0 {
 		messages = []any{map[string]any{"role": "system", "content": defaultChatSystemPrompt}}
