@@ -919,10 +919,15 @@ func (p *Provider) taskWebHeaders(account *Account) http.Header {
 	headers.Set("Authorization", "Bearer "+auth.AccessToken)
 	headers.Set("X-User-Id", strings.TrimSpace(auth.UID))
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "application/json, text/plain, */*")
+	headers.Set("Accept", "application/json")
+	headers.Set("X-Request-ID", randomHex(16))
 	headers.Set("Origin", origins)
 	headers.Set("Referer", origins+"/app")
-	headers.Set("User-Agent", taskWebUserAgent)
+	for key, values := range webBrowserHeaders(auth.UID, auth.Realm) {
+		for _, value := range values {
+			headers.Set(key, value)
+		}
+	}
 	return headers
 }
 

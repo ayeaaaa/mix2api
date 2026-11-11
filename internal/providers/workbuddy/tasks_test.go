@@ -554,7 +554,7 @@ func TestTasksDailyChatWebRetryBackoffAndOnce(t *testing.T) {
 	if fake.count(http.MethodPost, "/console/as/conversations/") != 2 {
 		t.Fatalf("create calls = %d, want 2", fake.count(http.MethodPost, "/console/as/conversations/"))
 	}
-	if methods := acp.methods(); strings.Join(methods, ",") != "initialize,session/load,session/set_model,session/prompt" {
+	if methods := acp.methods(); strings.Join(methods, ",") != "initialize,session/load,session/set_model,session/new,session/set_mode,session/set_config_option,session/prompt" {
 		t.Fatalf("ACP methods = %v", methods)
 	}
 	account := accountByUID(t, pool, "web-daily")

@@ -12,10 +12,7 @@ import (
 	"time"
 )
 
-const (
-	dailyChatPrompt = "Hi"
-	dailyChatPlugin = "weixinpay"
-)
+const dailyChatPrompt = "Hi"
 
 // DailyWebResult is one web-channel daily activity result. The fields mirror
 // v1's daily_chat_web: phase is create/session/turn, attempts counts rounds, and
@@ -473,10 +470,21 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 	payload, err := json.Marshal(map[string]any{
 		"prompt":             dailyChatPrompt,
 		"model":              model,
-		"conversationOrigin": "workbuddy-app",
-		"plugins": []any{map[string]any{
-			"name": dailyChatPlugin, "marketplace": "codebuddy-builtin",
-		}},
+		"conversationOrigin": "agents",
+		"addonSelection": map[string]any{
+			"version":         1,
+			"welcomeMode":     "working",
+			"interactionMode": "craft",
+		},
+		"plugins": []any{
+			map[string]any{"name": "welcomemode-work", "marketplace": "workbuddy-builtin"},
+			map[string]any{"name": "interactionmode-craft", "marketplace": "workbuddy-builtin"},
+			map[string]any{"name": "prompt-common", "marketplace": "workbuddy-builtin"},
+		},
+		"extraInfo": map[string]any{
+			"clientCreateRequestId": "cloud-create-" + uuid7(),
+			"traceId":               randomHex(16),
+		},
 	})
 	if err != nil {
 		result.Error = err.Error()
@@ -543,7 +551,7 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 		return p.webConversationStatus(ctx, account, headers, conversation)
 	}
 	turn := runACPTurn(ctx, p.taskClient(), link, token, sessionID, cwd,
-		dailyChatPrompt, taskWebUserAgent, model, taskProxyURL(account),
+		dailyChatPrompt, headers.Get("User-Agent"), model, taskProxyURL(account),
 		wait, pollInterval, pollStatus, p.acpLinkValidator)
 	statusResult := DailyWebResult{
 		OK: turn.OK, Status: turn.Status, Events: turn.Events, Chunks: turn.Chunks,
