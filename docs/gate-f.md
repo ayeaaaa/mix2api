@@ -28,6 +28,7 @@ requires a manual run.
 | Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
+| v2.0.5 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.5>; tag/commit `0ebc996`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:2e0e9db...`; arm64 pulled from GHCR, ran `2.0.5`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.5.md` |
 | v2.0.4 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.4>; tag/commit `32c6334`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7e08f6e...`; arm64 pulled from GHCR, ran `2.0.4`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.4.md` |
 | v2.0.3 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.3>; tag/commit `1f66ba9`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:ff8d8be...`; arm64 pulled from GHCR, ran `2.0.3`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.3.md` |
 | v2.0.2 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.2>; tag/commit `76e525c`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:6114327...`; arm64 pulled from GHCR, ran `2.0.2`, and `/health` passed: `docs/smoke/2026-11-11-release-2.0.2.md` |
@@ -64,6 +65,11 @@ cache, realm-isolation, analytics, and series tests; the full `make check` and
 current-day analytics bucket is treated as empty, and migrated v1 series
 caches can serve open windows whose current minute/hour has no rows yet.
 Regression tests cover both cases; `make check` and `make race` pass.
+
+**v2.0.5 addendum:** this patch removes the dominant full-scan CPU hotspot.
+Pricing uses an immutable timeline internally and a per-scan `RowPricer`; a
+19.5k-row local full `/usage` scan drops from about 75.7s to about 0.82s.
+`make check` and `make race` pass.
 
 ## Required signoff
 
