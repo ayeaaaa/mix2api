@@ -34,6 +34,12 @@ Selected cases:
 | codearts_overview / checkin / credits_refresh / models_refresh | CodeArts panel routes |
 | usage / usage_raccoon / usage_codearts | `GET /usage` with optional `?realm=` |
 | logs | `GET /logs` (panel token) |
+| wb_models_intl / wb_models_cn / wb_health | WorkBuddy `realm=intl|cn` |
+| wb_chat / wb_chat_stream / wb_chat_cn / wb_chat_stream_cn | WorkBuddy chat |
+| wb_responses / wb_responses_stream / wb_messages | WorkBuddy bridges |
+| wb_accounts / wb_usage_intl / wb_usage_cn / wb_logs | WorkBuddy panel routes |
+| wb_credits_intl / wb_credits_cn / wb_checkin_cn / wb_catalog_refresh_intl | WorkBuddy panel actions |
+| raccoon_* / codearts_* / wb_* failure cases | deterministic 429/401/400/5xx matrices |
 
 ```sh
 # After starting v1.6.5 against the local fake upstream (see below):
@@ -41,6 +47,13 @@ tests/oracle/run.sh record \
   --base http://127.0.0.1:18765 --out /tmp/mix2api-oracle \
   --version 1.6.5 --commit e40c4e8994f9cc6ace3457e350466cdd5d422a37 \
   --fake-upstream --panel-token "$PANEL" --api-key "$API_KEY"
+
+# WorkBuddy and failure suites use --suite and --fake-control:
+tests/oracle/run.sh record --suite workbuddy \
+  --base http://127.0.0.1:18767 --out /tmp/mix2api-oracle-workbuddy \
+  --version 1.6.5 --commit e40c4e8994f9cc6ace3457e350466cdd5d422a37 \
+  --fake-upstream --fake-control "$CONTROL" \
+  --panel-token "$PANEL" --api-key "$API_KEY"
 
 # Against the v2 candidate with the same fake-upstream accounts. --all reports
 # every mismatched case; the committed fixture is under tests/oracle/recorded.
@@ -50,21 +63,34 @@ tests/oracle/run.sh compare --all \
   --panel-token "$PANEL" --api-key "$API_KEY"
 ```
 
+The WorkBuddy procedure (including the test-only patch of the ignored v1 copy)
+is in `workbuddy.md`. The failure matrices and their setup/observe hooks are
+documented in `recorded/v1.6.5-failures/PROVENANCE.md`.
+
 Normalization uses `tests/contract/normalize.go`: transport metadata is
 dropped, generated IDs/timestamps are replaced only in identifier contexts,
 model/account IDs and content survive, SSE frames are merged semantically, and
 `[DONE]` is recorded. The harness never contacts a non-loopback host and never
 writes credentials into the fixture.
 
-**Gate F status: selected oracle recording is COMPLETE; comparison has a
-documented delta.** The committed fixture covers the Raccoon core matrix and
-the feasible CodeArts provider slice. Against the `2.0.0-rc.1` parity-fix
-candidate, 14 of 24 cases match exactly; 10 differ only by documented additive
-v2 fields or running-version/log-store scope. The differences are listed with
-exact fields in `recorded/v1.6.5/PROVENANCE.md`; they are not normalized away.
-WorkBuddy provider cases and failure modes remain pending. The real-account
-checklist is in `REAL-ACCOUNT-SMOKE.md` and must be completed on dedicated
-accounts before any `v2.0.0` tag.
+**Gate F status: selected oracle recording is COMPLETE; comparison has
+documented deltas.** The committed fixtures cover the Raccoon core matrix, the
+feasible CodeArts provider slice, the WorkBuddy intl/cn slice, and deterministic
+failure matrices for Raccoon, CodeArts, and WorkBuddy.
+
+- `recorded/v1.6.5/`: 24 core cases. Against `2.0.0-rc.1`, 14 match exactly and
+  10 differ by documented additive fields or running-version/log-store scope.
+- `recorded/v1.6.5-workbuddy/`: 18 WorkBuddy cases. 8 match exactly and 10
+  differ by documented additive fields, account-view semantics, or log-store
+  scope.
+- `recorded/v1.6.5-failures/`: 15 failure cases. Raccoon 4/5 exact (the only
+  difference is the v1 credit `gateway_hint`); CodeArts 5/5 exact; WorkBuddy
+  5/5 exact.
+
+The exact fields are in each directory's `PROVENANCE.md` and `V2-DELTA.txt`;
+they are not normalized away. The real-account checklist is in
+`REAL-ACCOUNT-SMOKE.md` and must be completed on dedicated accounts before any
+`v2.0.0` tag.
 
 The older manual procedure below remains the reference for starting the v1
 fake upstream and seeding accounts.

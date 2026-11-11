@@ -1,0 +1,14 @@
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1794365602, "model": "hy4-preview", "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1700000000, "model": "hy4-preview", "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1794365602, "model": "hy4-preview", "choices": [{"index": 0, "delta": {"content": "好"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1700000000, "model": "hy4-preview", "choices": []}
+
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1794365602, "model": "hy4-preview", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+
+data: {"id": "chatcmpl-wb-c91b832d4a0d4009", "object": "chat.completion.chunk", "created": 1794365602, "model": "hy4-preview", "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}
+
+data: [DONE]
+

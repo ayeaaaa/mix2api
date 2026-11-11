@@ -10,8 +10,9 @@ foundation**, not outputs captured from a live v1.6.5 oracle run.
   fake-upstream output now lives separately in
   `tests/oracle/recorded/v1.6.5/`; its `PROVENANCE.md` lists the exact v2 delta.
   Gate A remains **partial**: these scoped regression fixtures pass, and the
-  recorded selected cases confirm or delimit the v1.6.5 behavior, but full
-  oracle parity (including WorkBuddy and failure modes) remains open.
+  recorded selected cases confirm or delimit the v1.6.5 behavior. WorkBuddy and
+  deterministic failure matrices are recorded in the sibling fixture
+  directories; full replacement of every scoped regression golden remains open.
 - When recording real oracle fixtures, follow `tests/oracle/README.md`, keep the
   v1.6.5 tree read-only and out of git, and replace these files only after
   reviewing semantic differences.
@@ -51,19 +52,23 @@ The `workbuddy_*.golden.json` and `workbuddy_chat_stream*.golden.json` files are
 **v2 regression fixtures**, generated from the local fake WorkBuddy upstream
 through the real intl/cn providers and API server. They are **not captured
 v1.6.5 oracle output**. The v2 regression contract is **complete** for these
-scoped fixtures; v1.6.5 oracle parity is **pending**. They cover the scoped
-WorkBuddy surface: provider health for both realms, exact per-realm models and
-the WorkBuddy-only `realm=all` union, catalog refresh, chat non-stream/SSE
-(text, tools, reasoning, images), 429 and 401 refresh/retry, cross-exit
-failover, credits refresh, the daily-token guard, CN check-in, intl daily
-activity, CN growth tasks, and legacy admin account listing.
+scoped fixtures. The selected v1.6.5 WorkBuddy outputs are now recorded in
+`tests/oracle/recorded/v1.6.5-workbuddy/` (18 cases), and the failure matrix is
+in `tests/oracle/recorded/v1.6.5-failures/workbuddy/` (5 cases). They cover the
+scoped WorkBuddy surface: provider health for both realms, per-realm models,
+catalog refresh, chat non-stream/SSE (text, tools, reasoning, images), 429 and
+401 refresh/retry, 5xx failover, credits refresh, CN check-in, and legacy admin
+account listing.
 
 Dynamic values follow the same normalizer as the other providers; WorkBuddy
 adds timestamp recognition for `addedAt`, `updated_iso`, `lastCheckin`,
 `lastDailyChat`, `lastActivityReport`, and activity `ts`. The fake upstream URL
 and temporary accounts path are replaced before comparison. See
-`tests/oracle/workbuddy.md` for the read-only v1.6.5 oracle procedure. Actual
-v1.6.5 parity remains **pending** for WorkBuddy as well.
+`tests/oracle/workbuddy.md` for the read-only v1.6.5 oracle procedure. The
+recorded comparison has a documented delta (models additive aliases, health
+identity/providers, account-view fields, usage metadata/timing sums, log-store
+scope, credits/check-in account filtering); see
+`tests/oracle/recorded/v1.6.5-workbuddy/V2-DELTA.txt`.
 
 ### Final-review parity fixes and exclusions
 

@@ -1,0 +1,175 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T02:52:45Z",
+    "base_url": "http://127.0.0.1:18770",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "fake_control_url": "http://127.0.0.1:40381",
+    "note": "CodeArts failure matrix on loopback v1 fake upstream; loopback only"
+  },
+  "cases": [
+    {
+      "name": "codearts_429_failover",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_429_failover.json",
+      "sha256": "453f1dcd6ee885649a4c18c7c16a5fc59a4103576c652001871fc685cfb74abf",
+      "group": "codearts_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "codearts",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=codearts",
+      "observe_file": "codearts_429_failover.observe.json",
+      "observe_sha256": "19ef2b66ca9b59c1f1a5c9460155a469c10994cf0af6085700a679c20f784811"
+    },
+    {
+      "name": "codearts_429_failover_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "codearts_429_failover_stream.sse",
+      "sha256": "a50e642025895ea64144b160d3842d40d0dce611c40c0d12c0184988481ca19d",
+      "group": "codearts_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "codearts",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=codearts",
+      "observe_file": "codearts_429_failover_stream.observe.json",
+      "observe_sha256": "19ef2b66ca9b59c1f1a5c9460155a469c10994cf0af6085700a679c20f784811"
+    },
+    {
+      "name": "codearts_credit_400",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_credit_400.json",
+      "sha256": "beee1505211b5b7fd8a8fcfe470c840e5f9373dfc8a5134d30a6900271505ead",
+      "group": "codearts_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "codearts",
+          "scenario": "credit_400"
+        }
+      },
+      "observe": "/__observe?provider=codearts",
+      "observe_file": "codearts_credit_400.observe.json",
+      "observe_sha256": "19ef2b66ca9b59c1f1a5c9460155a469c10994cf0af6085700a679c20f784811"
+    },
+    {
+      "name": "codearts_concurrency_retry",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_concurrency_retry.json",
+      "sha256": "af763da58b5d497a0323fc2ee4acf631efd4b3f5d41d27ca2fce1b7026bbbb84",
+      "group": "codearts_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "codearts",
+          "scenario": "concurrency_400"
+        }
+      },
+      "observe": "/__observe?provider=codearts",
+      "observe_file": "codearts_concurrency_retry.observe.json",
+      "observe_sha256": "19ef2b66ca9b59c1f1a5c9460155a469c10994cf0af6085700a679c20f784811"
+    },
+    {
+      "name": "codearts_401_failover",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 502,
+      "file": "codearts_401_failover.json",
+      "sha256": "565f7f2410bae954c09139829c75c63f7fe29b8d92937d2d4782712290871fcf",
+      "group": "codearts_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "codearts",
+          "scenario": "401"
+        }
+      },
+      "observe": "/__observe?provider=codearts",
+      "observe_file": "codearts_401_failover.observe.json",
+      "observe_sha256": "ac9c23d4562e0b312f6d7ac19e56a806cb506de93033bd207459e9103b8ec55b"
+    }
+  ]
+}

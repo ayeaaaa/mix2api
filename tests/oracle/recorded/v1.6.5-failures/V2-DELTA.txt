@@ -1,0 +1,26 @@
+# v2 2.0.0-rc.1 parity-fix candidate against the v1.6.5 failure oracle
+#
+# Commands (fresh target and fake state per suite):
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18769 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/raccoon \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18771 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/codearts \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18773 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/workbuddy \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#
+# Result:
+#   Raccoon:  4 of 5 exact; 1 differs (gateway_hint only).
+#   CodeArts: 5 of 5 exact.
+#   WorkBuddy: 5 of 5 exact.
+#
+# No normalization rule was added to erase a stable field. The observations
+# (chat/refresh/token call counts and method/path/status tuples) matched for
+# every case, including the retry/failover paths.
+#
+# Raccoon:
+oracle: raccoon_credit_400: JSON mismatch:
+error.gateway_hint: missing on target (oracle="account credits exhausted at upstream; waiting for daily check-in to restore")
+oracle: 1 case(s) differ

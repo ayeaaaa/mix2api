@@ -183,15 +183,16 @@ shortcuts:
 
 No stable field was removed or projected out to make the comparison pass.
 
-## Pending
+## Related fixtures
 
-- WorkBuddy provider-specific cases are not recorded. v1.6.5 has no standalone
-  WorkBuddy fake and hardcodes `https://www.workbuddy.ai` for intl; recording
-  would require patching only the copied tree or a local HTTPS reverse proxy.
-- Failure modes (429, 401 refresh, concurrency retry/failover, credit
-  exhaustion) are not in this selected set.
+- WorkBuddy intl/cn is recorded separately in
+  `tests/oracle/recorded/v1.6.5-workbuddy/` (18 cases) with the test-only
+  patched v1 copy and a loopback fake upstream.
+- Deterministic failure modes are recorded in
+  `tests/oracle/recorded/v1.6.5-failures/` for Raccoon, CodeArts, and
+  WorkBuddy. See that directory's `PROVENANCE.md` and `V2-DELTA.txt`.
 - Media is disabled by default in both targets; only the 404 envelope is
-  recorded. An enabled fake media catalog is pending.
+  recorded. An enabled fake media catalog is still pending.
 - The real-account checklist in `tests/oracle/REAL-ACCOUNT-SMOKE.md` remains a
   separate release gate.
 

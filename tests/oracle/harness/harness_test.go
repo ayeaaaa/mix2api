@@ -314,3 +314,76 @@ func TestProvenanceAndCaseValidationMatrix(t *testing.T) {
 		t.Fatal("duplicate case names accepted")
 	}
 }
+
+func TestRecordCompareSetupAndObservation(t *testing.T) {
+	var scenario atomic.Value
+	scenario.Store("ok")
+	var calls atomic.Int64
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/__setup":
+			var body struct {
+				Scenario string `json:"scenario"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			scenario.Store(body.Scenario)
+			calls.Store(0)
+			writeTestJSON(w, map[string]any{"ok": true})
+		case "/__observe":
+			writeTestJSON(w, map[string]any{"scenario": scenario.Load(), "calls": calls.Load()})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeTestJSON(w, map[string]any{"value": scenario.Load()})
+	}))
+	defer target.Close()
+
+	cases := []Case{{
+		Name: "failure", Method: http.MethodGet, Path: "/value", Auth: AuthNone, Kind: "json",
+		Setup:   &ControlRequest{Method: http.MethodPost, Path: "/__setup", Body: json.RawMessage(`{"scenario":"429"}`)},
+		Observe: "/__observe",
+	}}
+	dir := t.TempDir() + "/oracle"
+	recorder := &Recorder{
+		BaseURL: target.URL, FakeControl: control.URL, Cases: cases,
+		Provenance: Provenance{TargetVersion: "1.6.5", TargetCommit: "abc", FakeUpstream: true},
+		Now:        func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) },
+	}
+	if err := recorder.Record(context.Background(), dir); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	document, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Provenance.FakeControl != control.URL {
+		t.Fatalf("fake control provenance = %q", document.Provenance.FakeControl)
+	}
+	comparer := &Comparer{BaseURL: target.URL, FakeControl: control.URL, Dir: dir}
+	if diffs := comparer.CompareAll(context.Background()); len(diffs) != 0 {
+		t.Fatalf("compare: %v", diffs)
+	}
+
+	// The response still matches, but a changed observation must fail.
+	control.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/__observe" {
+			writeTestJSON(w, map[string]any{"scenario": "changed", "calls": 9})
+			return
+		}
+		writeTestJSON(w, map[string]any{"ok": true})
+	})
+	diffs := comparer.CompareAll(context.Background())
+	if len(diffs) != 1 || !strings.Contains(diffs[0].Error(), "observation") {
+		t.Fatalf("observation mismatch not reported: %v", diffs)
+	}
+
+	// A setup/observe case without a control URL must be refused.
+	recorder.FakeControl = ""
+	if err := recorder.Record(context.Background(), t.TempDir()+"/missing-control"); err == nil {
+		t.Fatal("record accepted setup/observe without --fake-control")
+	}
+}

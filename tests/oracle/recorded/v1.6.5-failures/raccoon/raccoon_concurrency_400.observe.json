@@ -1,0 +1,1 @@
+{"provider": "raccoon", "chat_calls": 1, "refresh_calls": 0, "catalog_calls": 0, "requests": [{"method": "POST", "path": "/api/web/llm/v2/chat/completions"}]}

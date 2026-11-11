@@ -1,0 +1,231 @@
+# v2 2.0.0-rc.1 parity-fix candidate against the v1.6.5 WorkBuddy oracle
+# Command: tests/oracle/run.sh compare --all --base http://127.0.0.1:18766 \
+#   --oracle tests/oracle/recorded/v1.6.5-workbuddy --fake-control "$CONTROL"
+# The target and fake upstreams used the same fixed synthetic layout as the
+# recording. Both runs used the same accounts directory and usage directory so
+# storage/log paths are comparable.
+#
+# Result: 8 of 18 cases match exactly; 10 differ by the documented additive
+# fields, v1 account-view semantics, or log-store scope below. No normalization
+# rule was added to erase a stable field.
+#
+# Matching: wb_chat, wb_chat_stream, wb_chat_cn, wb_chat_stream_cn,
+# wb_responses, wb_responses_stream, wb_messages, wb_catalog_refresh_intl.
+#
+# Differences, summarized:
+# - models: v2 adds category/context_window/free/max_output/max_tokens/provider.
+# - health: v2 omits v1 current-account identity; adds version/providers and
+#   codearts accounts/healthy/ok.
+# - accounts: v2 adds activeConcurrent/maxConcurrent/reason; null -> "" for
+#   unset activity fields.
+# - usage: v2 omits account/accounts_map; adds the timing sums.
+# - logs: v1 startup/request text vs v2 durable request store; v1 43 lines,
+#   v2 16 lines in this run.
+# - credits: v1 returns the whole pool in accounts; v2 returns the targeted
+#   realm. v2 adds busy/tier.
+# - checkin: v2 adds realm/activity/checkin/credits and refreshes the check-in
+#   flag in the account view.
+#
+oracle: wb_models_intl: JSON mismatch:
+data[0].category: extra on target (target="chat")
+data[0].context_window: extra on target (target=1000000)
+data[0].free: extra on target (target=false)
+data[0].max_output: extra on target (target=128000)
+data[0].max_tokens: extra on target (target=128000)
+data[0].provider: extra on target (target="workbuddy")
+data[1].category: extra on target (target="chat")
+data[1].context_window: extra on target (target=1000000)
+data[1].free: extra on target (target=false)
+data[1].max_output: extra on target (target=128000)
+data[1].max_tokens: extra on target (target=128000)
+data[1].provider: extra on target (target="workbuddy")
+data[2].category: extra on target (target="chat")
+data[2].context_window: extra on target (target=1000000)
+data[2].free: extra on target (target=false)
+data[2].max_output: extra on target (target=64000)
+data[2].max_tokens: extra on target (target=64000)
+data[2].provider: extra on target (target="workbuddy")
+data[3].category: extra on target (target="chat")
+data[3].context_window: extra on target (target=192000)
+data[3].free: extra on target (target=true)
+data[3].max_output: extra on target (target=64000)
+data[3].max_tokens: extra on target (target=64000)
+data[3].provider: extra on target (target="workbuddy")
+data[4].category: extra on target (target="chat")
+data[4].context_window: extra on target (target=1000000)
+data[4].free: extra on target (target=false)
+data[4].max_output: extra on target (target=128000)
+data[4].max_tokens: extra on target (target=128000)
+data[4].provider: extra on target (target="workbuddy")
+data[5].category: extra on target (target="chat")
+data[5].context_window: extra on target (target=1000000)
+data[5].free: extra on target (target=false)
+data[5].max_output: extra on target (target=128000)
+data[5].max_tokens: extra on target (target=128000)
+data[5].provider: extra on target (target="workbuddy")
+data[6].category: extra on target (target="chat")
+data[6].context_window: extra on target (target=1000000)
+data[6].free: extra on target (target=false)
+data[6].max_output: extra on target (target=128000)
+oracle: wb_models_cn: JSON mismatch:
+data[0].category: extra on target (target="chat")
+data[0].context_window: extra on target (target=1000000)
+data[0].free: extra on target (target=false)
+data[0].max_output: extra on target (target=64000)
+data[0].max_tokens: extra on target (target=64000)
+data[0].provider: extra on target (target="workbuddy")
+data[1].category: extra on target (target="chat")
+data[1].context_window: extra on target (target=192000)
+data[1].free: extra on target (target=true)
+data[1].max_output: extra on target (target=64000)
+data[1].max_tokens: extra on target (target=64000)
+data[1].provider: extra on target (target="workbuddy")
+data[2].category: extra on target (target="chat")
+data[2].context_window: extra on target (target=1000000)
+data[2].free: extra on target (target=false)
+data[2].max_output: extra on target (target=128000)
+data[2].max_tokens: extra on target (target=128000)
+data[2].provider: extra on target (target="workbuddy")
+data[3].category: extra on target (target="chat")
+data[3].context_window: extra on target (target=1000000)
+data[3].free: extra on target (target=false)
+data[3].max_output: extra on target (target=48000)
+data[3].max_tokens: extra on target (target=48000)
+data[3].provider: extra on target (target="workbuddy")
+data[4].category: extra on target (target="chat")
+data[4].context_window: extra on target (target=1000000)
+data[4].free: extra on target (target=false)
+data[4].max_output: extra on target (target=32000)
+data[4].max_tokens: extra on target (target=32000)
+data[4].provider: extra on target (target="workbuddy")
+data[5].category: extra on target (target="chat")
+data[5].context_window: extra on target (target=1000000)
+data[5].free: extra on target (target=false)
+data[5].max_output: extra on target (target=48000)
+data[5].max_tokens: extra on target (target=48000)
+data[5].provider: extra on target (target="workbuddy")
+data[6].category: extra on target (target="chat")
+data[6].context_window: extra on target (target=200000)
+data[6].free: extra on target (target=false)
+data[6].max_output: extra on target (target=48000)
+oracle: wb_health: JSON mismatch:
+codearts.accounts: extra on target (target=0)
+codearts.healthy: extra on target (target=0)
+codearts.ok: extra on target (target=false)
+credential_file: null, want "oracle-cn.json"
+domain: null, want "www.workbuddy.cn"
+expires_at: null, want "\u003ctimestamp\u003e"
+issuer: null, want ""
+providers: extra on target (target={"cn":{"accounts":1,"base_url":"http://127.0.0.1:35899","catalog_source":"remote","configured":true,"cooling":0,"disabled":0,"healthy":1,"ok":true,"provider":"workbuddy","realm":"cn"},"codearts":{"accounts":0,"base_url":"http://127.0.0.1:35…)
+uid: null, want "oracle-cn"
+version: extra on target (target="2.0.0-rc.1")
+oracle: wb_accounts: JSON mismatch:
+accounts[0].activeConcurrent: extra on target (target=0)
+accounts[0].lastActivityReport: "", want null
+accounts[0].lastCheckin: "", want null
+accounts[0].lastDailyChat: "", want null
+accounts[0].maxConcurrent: extra on target (target=0)
+accounts[0].reason: extra on target (target="")
+accounts[1].activeConcurrent: extra on target (target=0)
+accounts[1].lastActivityReport: "", want null
+accounts[1].lastCheckin: "", want null
+accounts[1].lastDailyChat: "", want null
+accounts[1].maxConcurrent: extra on target (target=0)
+accounts[1].reason: extra on target (target="")
+oracle: wb_usage_intl: JSON mismatch:
+account.accounts: 0, want 2
+account.accounts_ready: 0, want 2
+account.credential_file: "", want "oracle-intl.json"
+account.domain: "", want "www.workbuddy.ai"
+account.uid: "", want "oracle-intl"
+accounts_map.oracle-cn: missing on target (oracle={"nickname":"Oracle cn","realm":"cn"})
+accounts_map.oracle-intl: missing on target (oracle={"nickname":"Oracle intl","realm":"intl"})
+ttft_ms_sum: 6, want 0
+ttft_samples: 2, want 0
+wall_ms_sum: 13, want 0
+wall_samples: 5, want 0
+oracle: wb_usage_cn: JSON mismatch:
+account.accounts: 0, want 2
+account.accounts_ready: 0, want 2
+account.credential_file: "", want "oracle-cn.json"
+account.domain: "", want "www.workbuddy.cn"
+account.uid: "", want "oracle-cn"
+accounts_map.oracle-cn: missing on target (oracle={"nickname":"Oracle cn","realm":"cn"})
+accounts_map.oracle-intl: missing on target (oracle={"nickname":"Oracle intl","realm":"intl"})
+ttft_ms_sum: 1, want 0
+ttft_samples: 1, want 0
+wall_ms_sum: 4, want 0
+wall_samples: 2, want 0
+oracle: wb_logs: JSON mismatch:
+logs: length 15, want 41
+logs[0].msg: "\"GET /health HTTP/1.1\" 200 -", want "panel      : password is still the default 'admin' - change it in the panel"
+logs[1].msg: "\"POST /panel/login HTTP/1.1\" 200 -", want "[调度器] 后台定时调度器已启动"
+logs[1].tag: "system", want "scheduler"
+logs[2].msg: "\"GET /v1/models?realm=intl HTTP/1.1\" 200 -", want "accounts   : 2 total, 2 usable"
+logs[2].tag: "catalog", want "accounts"
+logs[3].msg: "\"GET /v1/models?realm=cn HTTP/1.1\" 200 -", want "  - oracle-c  Oracle cn  www.workbuddy.cn  4.0 hours"
+logs[3].tag: "catalog", want "system"
+logs[4].msg: "\"GET /health?force=1 HTTP/1.1\" 200 -", want "  - oracle-i  Oracle intl  www.workbuddy.ai  4.0 hours"
+logs[5].msg: "\"POST /v1/chat/completions?realm=intl HTTP/1.1\" 200 -", want "store      : /tmp/opencode/oracle-wb/accounts-v1"
+logs[5].tag: "chat", want "accounts"
+logs[6].msg: "\"POST /v1/chat/completions?realm=intl HTTP/1.1\" 200 -", want "credential : /tmp/opencode/oracle-wb/accounts-v1/oracle-cn.json"
+logs[6].tag: "chat", want "accounts"
+logs[7].msg: "\"POST /v1/chat/completions?realm=cn HTTP/1.1\" 200 -", want "catalog    : app cache not found - will use the model API instead"
+logs[7].tag: "chat", want "catalog"
+logs[8].msg: "\"POST /v1/chat/completions?realm=cn HTTP/1.1\" 200 -", want "account    : oracle-cn @ www.workbuddy.cn"
+logs[8].tag: "chat", want "accounts"
+logs[9].msg: "\"POST /v1/responses?realm=intl HTTP/1.1\" 200 -", want "issuer     :"
+logs[9].tag: "chat", want "system"
+logs[10].msg: "\"POST /v1/responses?realm=intl HTTP/1.1\" 200 -", want "realm      : intl (www.workbuddy.ai)"
+logs[10].tag: "chat", want "system"
+logs[11].msg: "\"POST /v1/messages?realm=intl HTTP/1.1\" 200 -", want "cn upstream: http://127.0.0.1:35899 (WB_CN_CHAT_UPSTREAM)"
+logs[11].tag: "system", want "upstream"
+logs[12].msg: "\"GET /accounts?realm=all HTTP/1.1\" 200 -", want "user-agent : WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
+logs[12].tag: "accounts", want "system"
+logs[13].msg: "\"GET /usage?realm=intl HTTP/1.1\" 200 -", want "listening  : http://127.0.0.1:18767/v1  (api key: off)"
+logs[13].tag: "usage", want "system"
+logs[14].msg: "\"GET /usage?realm=cn HTTP/1.1\" 200 -", want "dashboard  : http://127.0.0.1:18767/"
+logs[14].tag: "usage", want "system"
+max_id: 15, want 41
+total: 15, want 41
+oracle: wb_credits_intl: JSON mismatch:
+accounts: length 1, want 2
+accounts[0].activeConcurrent: extra on target (target=0)
+accounts[0].canCheckin: false, want true
+accounts[0].canDailyChat: true, want false
+accounts[0].credits: {"checkin":null,"earliest_expiring":null,"is_paid_user":false,"packages":[{"auto_renew":false,"create_time":"","cycle_end_time":"","cycle_start_time":"","days_left":null,"deal_name":"","expire_time":"","grant_reason":"","in_usage":true,"is_…, want null
+accounts[0].domain: "www.workbuddy.ai", want "www.workbuddy.cn"
+accounts[0].file: "oracle-intl.json", want "oracle-cn.json"
+accounts[0].lastActivityReport: "", want null
+accounts[0].lastCheckin: "", want null
+accounts[0].lastDailyChat: "", want null
+accounts[0].machineId: "3f1925b7-f5ca-457e-afef-bf4a9acd12c2", want "ae947ff4-00e1-47b7-a143-f5410a8c8fd9"
+accounts[0].maxConcurrent: extra on target (target=0)
+accounts[0].nickname: "Oracle intl", want "Oracle cn"
+accounts[0].realm: "intl", want "cn"
+accounts[0].reason: extra on target (target="")
+accounts[0].tier: {"checked_at":"\u003ctimestamp\u003e","package":"","package_code":"","paid":false,"protected_price":false,"source":"billing","trial":0}, want null
+accounts[0].uid: "oracle-intl", want "oracle-cn"
+busy: extra on target (target=false)
+oracle: wb_credits_cn: JSON mismatch:
+accounts: length 1, want 2
+accounts[0].activeConcurrent: extra on target (target=0)
+accounts[0].lastActivityReport: "", want null
+accounts[0].lastCheckin: "", want null
+accounts[0].lastDailyChat: "", want null
+accounts[0].maxConcurrent: extra on target (target=0)
+accounts[0].reason: extra on target (target="")
+busy: extra on target (target=false)
+oracle: wb_checkin_cn: JSON mismatch:
+accounts: length 1, want 2
+accounts[0].activeConcurrent: extra on target (target=0)
+accounts[0].credits.checkin.today_checked_in: true, want false
+accounts[0].lastActivityReport: "", want null
+accounts[0].lastDailyChat: "", want null
+accounts[0].maxConcurrent: extra on target (target=0)
+accounts[0].reason: extra on target (target="")
+results[0].activity: extra on target (target={"message":"签到成功","nickname":"Oracle cn","ok":true,"realm":"cn","task":"checkin","trigger":"manual","ts":"\u003ctimestamp\u003e","uid":"oracle-cn"})
+results[0].checkin: extra on target (target={"active":true,"daily_credit":5,"streak_days":2,"today_checked_in":true,"today_credit":0})
+results[0].credits: extra on target (target={"checkin":{"active":true,"daily_credit":5,"streak_days":2,"today_checked_in":true,"today_credit":0},"earliest_expiring":null,"is_paid_user":false,"packages":[],"remain":60,"remain_percent":"60.0%","size":100,"updated_at":"\u003ctimestamp\u…)
+results[0].realm: extra on target (target="cn")
+oracle: 10 case(s) differ

@@ -38,6 +38,14 @@ const (
 	AuthAPI   Auth = "api"
 )
 
+// ControlRequest is a deterministic fake-upstream setup call made before a
+// case. It is test scaffolding, never a request to the recorded target.
+type ControlRequest struct {
+	Method string          `json:"method"`
+	Path   string          `json:"path"`
+	Body   json.RawMessage `json:"body,omitempty"`
+}
+
 // Case is one recorded endpoint request.
 type Case struct {
 	Name    string            `json:"name"`
@@ -50,6 +58,17 @@ type Case struct {
 	File    string            `json:"file,omitempty"`
 	SHA256  string            `json:"sha256,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// Group documents which recording run produced the case. It is not used
+	// for matching but keeps a fixture's provenance readable.
+	Group string `json:"group,omitempty"`
+	// Setup runs against the fake control server before the target request.
+	Setup *ControlRequest `json:"setup,omitempty"`
+	// Observe fetches a deterministic fake-upstream counter snapshot after
+	// the target request. ObserveFile/SHA256 commit that snapshot beside the
+	// response body so exactly-once/retry behaviour is compared, not inferred.
+	Observe       string `json:"observe,omitempty"`
+	ObserveFile   string `json:"observe_file,omitempty"`
+	ObserveSHA256 string `json:"observe_sha256,omitempty"`
 }
 
 // Provenance is the honesty record stored beside every oracle fixture.
@@ -60,6 +79,7 @@ type Provenance struct {
 	BaseURL       string `json:"base_url"`
 	FakeUpstream  bool   `json:"fake_upstream"`
 	Network       string `json:"network"`
+	FakeControl   string `json:"fake_control_url,omitempty"`
 	Note          string `json:"note,omitempty"`
 }
 
@@ -124,14 +144,160 @@ func DefaultCases() []Case {
 	}
 }
 
+// WorkBuddyCases is the v1.6.5 WorkBuddy provider slice. v1 has no standalone
+// WorkBuddy fake and hardcodes the intl origin, so recording uses the ignored
+// copied v1 tree with the test-only endpoint patch documented in
+// tests/oracle/workbuddy.md and a local fake upstream.
+func WorkBuddyCases() []Case {
+	chat := func(model string, stream bool) json.RawMessage {
+		value := map[string]any{
+			"model": model,
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+			"stream": stream,
+		}
+		raw, _ := json.Marshal(value)
+		return raw
+	}
+	const model = "hy4-preview"
+	return []Case{
+		{Name: "wb_models_intl", Method: http.MethodGet, Path: "/v1/models?realm=intl", Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_models_cn", Method: http.MethodGet, Path: "/v1/models?realm=cn", Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_health", Method: http.MethodGet, Path: "/health?force=1", Auth: AuthNone, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_chat", Method: http.MethodPost, Path: "/v1/chat/completions?realm=intl", Body: chat(model, false), Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_chat_stream", Method: http.MethodPost, Path: "/v1/chat/completions?realm=intl", Body: chat(model, true), Auth: AuthAPI, Kind: "sse", Group: "workbuddy"},
+		{Name: "wb_chat_cn", Method: http.MethodPost, Path: "/v1/chat/completions?realm=cn", Body: chat(model, false), Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_chat_stream_cn", Method: http.MethodPost, Path: "/v1/chat/completions?realm=cn", Body: chat(model, true), Auth: AuthAPI, Kind: "sse", Group: "workbuddy"},
+		{Name: "wb_responses", Method: http.MethodPost, Path: "/v1/responses?realm=intl", Body: json.RawMessage(`{"model":"hy4-preview","input":"hello","stream":false}`), Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_responses_stream", Method: http.MethodPost, Path: "/v1/responses?realm=intl", Body: json.RawMessage(`{"model":"hy4-preview","input":"hello","stream":true}`), Auth: AuthAPI, Kind: "sse", Group: "workbuddy"},
+		{Name: "wb_messages", Method: http.MethodPost, Path: "/v1/messages?realm=intl", Body: json.RawMessage(`{"model":"hy4-preview","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`), Auth: AuthAPI, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_accounts", Method: http.MethodGet, Path: "/accounts?realm=all", Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_usage_intl", Method: http.MethodGet, Path: "/usage?realm=intl", Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_usage_cn", Method: http.MethodGet, Path: "/usage?realm=cn", Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_logs", Method: http.MethodGet, Path: "/logs", Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_credits_intl", Method: http.MethodPost, Path: "/accounts/credits", Body: json.RawMessage(`{"realm":"intl"}`), Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_credits_cn", Method: http.MethodPost, Path: "/accounts/credits", Body: json.RawMessage(`{"realm":"cn"}`), Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_checkin_cn", Method: http.MethodPost, Path: "/accounts/checkin", Body: json.RawMessage(`{"uid":"oracle-cn"}`), Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+		{Name: "wb_catalog_refresh_intl", Method: http.MethodPost, Path: "/catalog/refresh", Body: json.RawMessage(`{"realm":"intl"}`), Auth: AuthPanel, Kind: "json", Group: "workbuddy"},
+	}
+}
+
+func failureCase(name, path string, body json.RawMessage, kind, provider, scenario string) Case {
+	return Case{
+		Name: name, Method: http.MethodPost, Path: path, Body: body,
+		Auth: AuthAPI, Kind: kind, Group: provider + "_failure",
+		Setup: &ControlRequest{
+			Method: http.MethodPost, Path: "/__setup",
+			Body: json.RawMessage(`{"provider":"` + provider + `","scenario":"` + scenario + `"}`),
+		},
+		Observe: "/__observe?provider=" + provider,
+	}
+}
+
+// RaccoonFailureCases is the deterministic Raccoon failure matrix. Each case
+// resets the fake to a scenario that fails the first upstream attempt; the
+// observation records how many upstream calls the target actually made.
+func RaccoonFailureCases() []Case {
+	chat := func(stream bool) json.RawMessage {
+		value := map[string]any{
+			"model": "raccoon-090dd3",
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+			"stream": stream,
+		}
+		raw, _ := json.Marshal(value)
+		return raw
+	}
+	return []Case{
+		failureCase("raccoon_429_failover", "/v1/chat/completions?realm=raccoon", chat(false), "json", "raccoon", "429"),
+		failureCase("raccoon_429_failover_stream", "/v1/chat/completions?realm=raccoon", chat(true), "sse", "raccoon", "429"),
+		failureCase("raccoon_credit_400", "/v1/chat/completions?realm=raccoon", chat(false), "json", "raccoon", "credit_400"),
+		failureCase("raccoon_concurrency_400", "/v1/chat/completions?realm=raccoon", chat(false), "json", "raccoon", "concurrency_400"),
+		// 401 refreshes and rotates the credential, so keep it last: later
+		// cases would otherwise see an account whose token the fake no longer
+		// accepts after the scenario reset.
+		failureCase("raccoon_401_refresh", "/v1/chat/completions?realm=raccoon", chat(false), "json", "raccoon", "401"),
+	}
+}
+
+// CodeArtsFailureCases is the deterministic CodeArts failure matrix.
+func CodeArtsFailureCases() []Case {
+	chat := func(stream bool) json.RawMessage {
+		value := map[string]any{
+			"model": "GLM-5.2",
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+			"stream": stream,
+		}
+		raw, _ := json.Marshal(value)
+		return raw
+	}
+	return []Case{
+		failureCase("codearts_429_failover", "/v1/chat/completions?realm=codearts", chat(false), "json", "codearts", "429"),
+		failureCase("codearts_429_failover_stream", "/v1/chat/completions?realm=codearts", chat(true), "sse", "codearts", "429"),
+		failureCase("codearts_credit_400", "/v1/chat/completions?realm=codearts", chat(false), "json", "codearts", "credit_400"),
+		failureCase("codearts_concurrency_retry", "/v1/chat/completions?realm=codearts", chat(false), "json", "codearts", "concurrency_400"),
+		// v1 treats a chat 401 as terminal for that credential and rotates.
+		// Keep it last for the same reset reason as Raccoon.
+		failureCase("codearts_401_failover", "/v1/chat/completions?realm=codearts", chat(false), "json", "codearts", "401"),
+	}
+}
+
+// WorkBuddyFailureCases is the deterministic WorkBuddy failure matrix. The
+// fake fails the first chat attempt and records whether the target retried,
+// refreshed, or rotated to the next account.
+func WorkBuddyFailureCases() []Case {
+	chat := func(stream bool) json.RawMessage {
+		value := map[string]any{
+			"model": "hy4-preview",
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+			"stream": stream,
+		}
+		raw, _ := json.Marshal(value)
+		return raw
+	}
+	return []Case{
+		failureCase("wb_429_failover", "/v1/chat/completions?realm=intl", chat(false), "json", "workbuddy", "429"),
+		failureCase("wb_429_failover_stream", "/v1/chat/completions?realm=intl", chat(true), "sse", "workbuddy", "429"),
+		failureCase("wb_401_refresh", "/v1/chat/completions?realm=intl", chat(false), "json", "workbuddy", "401"),
+		failureCase("wb_5xx_failover", "/v1/chat/completions?realm=intl", chat(false), "json", "workbuddy", "5xx"),
+		failureCase("wb_5xx_failover_stream", "/v1/chat/completions?realm=intl", chat(true), "sse", "workbuddy", "5xx"),
+	}
+}
+
+// CasesForSuite returns the named recording matrix. The default core suite is
+// the original Raccoon/CodeArts matrix.
+func CasesForSuite(name string) ([]Case, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "core":
+		return DefaultCases(), nil
+	case "workbuddy":
+		return WorkBuddyCases(), nil
+	case "raccoon-failures", "raccoon_failures":
+		return RaccoonFailureCases(), nil
+	case "codearts-failures", "codearts_failures":
+		return CodeArtsFailureCases(), nil
+	case "workbuddy-failures", "workbuddy_failures":
+		return WorkBuddyFailureCases(), nil
+	default:
+		return nil, fmt.Errorf("oracle: unknown suite %q", name)
+	}
+}
+
 // Recorder captures one target.
 type Recorder struct {
-	BaseURL    string
-	Client     *http.Client
-	Creds      Credentials
-	Cases      []Case
-	Provenance Provenance
-	Now        func() time.Time
+	BaseURL     string
+	FakeControl string
+	Client      *http.Client
+	Creds       Credentials
+	Cases       []Case
+	Provenance  Provenance
+	Now         func() time.Time
 }
 
 // Record fetches every case and writes raw responses plus oracle.json.
@@ -151,6 +317,19 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
+	if r.FakeControl != "" {
+		if err := validateLoopback(r.FakeControl); err != nil {
+			return fmt.Errorf("oracle: fake control URL: %w", err)
+		}
+		// Provenance records the control origin so a reader can tell the
+		// scenario hooks never point at a remote host.
+		r.Provenance.FakeControl = r.FakeControl
+	}
+	for _, item := range r.Cases {
+		if (item.Setup != nil || item.Observe != "") && r.FakeControl == "" {
+			return fmt.Errorf("oracle: case %s needs --fake-control", item.Name)
+		}
+	}
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
 		return err
@@ -168,6 +347,11 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 		return err
 	}
 	for _, item := range r.Cases {
+		if item.Setup != nil {
+			if err := r.runControl(ctx, *item.Setup); err != nil {
+				return fmt.Errorf("oracle: setup %s: %w", item.Name, err)
+			}
+		}
 		status, body, err := r.fetch(ctx, item)
 		if err != nil {
 			return fmt.Errorf("oracle: record %s: %w", item.Name, err)
@@ -178,6 +362,18 @@ func (r *Recorder) Record(ctx context.Context, outDir string) error {
 		item.SHA256 = hex.EncodeToString(sum[:])
 		if err := os.WriteFile(filepath.Join(outDir, item.File), body, 0o644); err != nil {
 			return err
+		}
+		if item.Observe != "" {
+			observed, err := r.fetchControl(ctx, item.Observe)
+			if err != nil {
+				return fmt.Errorf("oracle: observe %s: %w", item.Name, err)
+			}
+			item.ObserveFile = item.Name + ".observe.json"
+			observeSum := sha256.Sum256(observed)
+			item.ObserveSHA256 = hex.EncodeToString(observeSum[:])
+			if err := os.WriteFile(filepath.Join(outDir, item.ObserveFile), observed, 0o644); err != nil {
+				return err
+			}
 		}
 		document.Cases = append(document.Cases, item)
 	}
@@ -222,16 +418,27 @@ func Load(dir string) (*Document, error) {
 		if item.SHA256 != hex.EncodeToString(sum[:]) {
 			return nil, fmt.Errorf("oracle: checksum mismatch for %s", item.File)
 		}
+		if item.ObserveFile != "" {
+			observed, err := os.ReadFile(filepath.Join(dir, item.ObserveFile))
+			if err != nil {
+				return nil, err
+			}
+			observeSum := sha256.Sum256(observed)
+			if item.ObserveSHA256 != hex.EncodeToString(observeSum[:]) {
+				return nil, fmt.Errorf("oracle: observation checksum mismatch for %s", item.ObserveFile)
+			}
+		}
 	}
 	return &document, nil
 }
 
 // Comparer fetches a target and compares normalized output with a fixture.
 type Comparer struct {
-	BaseURL string
-	Client  *http.Client
-	Creds   Credentials
-	Dir     string
+	BaseURL     string
+	FakeControl string
+	Client      *http.Client
+	Creds       Credentials
+	Dir         string
 }
 
 // CaseError is one mismatched case from CompareAll.
@@ -270,6 +477,16 @@ func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 			failures = append(failures, CaseError{Name: item.Name, Err: err})
 			continue
 		}
+		if item.Setup != nil {
+			if c.FakeControl == "" {
+				failures = append(failures, CaseError{Name: item.Name, Err: errors.New("fake control URL is required")})
+				continue
+			}
+			if err := c.runControl(ctx, *item.Setup); err != nil {
+				failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("setup: %w", err)})
+				continue
+			}
+		}
 		status, got, err := c.fetch(ctx, item)
 		if err != nil {
 			failures = append(failures, CaseError{Name: item.Name, Err: err})
@@ -282,9 +499,98 @@ func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 		}
 		if err := compareBody(item.Kind, want, got); err != nil {
 			failures = append(failures, CaseError{Name: item.Name, Err: err})
+			continue
+		}
+		if item.ObserveFile != "" {
+			wantObserved, err := os.ReadFile(filepath.Join(c.Dir, item.ObserveFile))
+			if err != nil {
+				failures = append(failures, CaseError{Name: item.Name, Err: err})
+				continue
+			}
+			gotObserved, err := c.fetchControl(ctx, item.Observe)
+			if err != nil {
+				failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("observe: %w", err)})
+				continue
+			}
+			if err := compareBody("json", wantObserved, gotObserved); err != nil {
+				failures = append(failures, CaseError{Name: item.Name, Err: fmt.Errorf("observation: %w", err)})
+			}
 		}
 	}
 	return failures
+}
+
+func (r *Recorder) runControl(ctx context.Context, control ControlRequest) error {
+	_, _, err := doControl(ctx, r.FakeControl, control)
+	return err
+}
+
+func (r *Recorder) fetchControl(ctx context.Context, path string) ([]byte, error) {
+	return getControl(ctx, r.FakeControl, path)
+}
+
+func (c *Comparer) runControl(ctx context.Context, control ControlRequest) error {
+	_, _, err := doControl(ctx, c.FakeControl, control)
+	return err
+}
+
+func (c *Comparer) fetchControl(ctx context.Context, path string) ([]byte, error) {
+	return getControl(ctx, c.FakeControl, path)
+}
+
+func doControl(ctx context.Context, baseURL string, control ControlRequest) (int, []byte, error) {
+	if baseURL == "" {
+		return 0, nil, errors.New("oracle: fake control URL is required")
+	}
+	target, err := joinURL(baseURL, control.Path)
+	if err != nil {
+		return 0, nil, err
+	}
+	var body io.Reader
+	if len(control.Body) > 0 {
+		body = bytes.NewReader(control.Body)
+	}
+	method := control.Method
+	if method == "" {
+		method = http.MethodPost
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(control.Body) > 0 {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	status, raw, err := doRequest(nil, request)
+	if err != nil {
+		return status, raw, err
+	}
+	if status < 200 || status >= 300 {
+		return status, raw, fmt.Errorf("fake control returned HTTP %d", status)
+	}
+	return status, raw, nil
+}
+
+func getControl(ctx context.Context, baseURL, path string) ([]byte, error) {
+	if baseURL == "" {
+		return nil, errors.New("oracle: fake control URL is required")
+	}
+	target, err := joinURL(baseURL, path)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	status, raw, err := doRequest(nil, request)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("fake control returned HTTP %d", status)
+	}
+	return raw, nil
 }
 
 func (r *Recorder) fetch(ctx context.Context, item Case) (int, []byte, error) {
@@ -674,6 +980,11 @@ func validateProvenance(value Provenance) error {
 	if err := validateLoopback(value.BaseURL); err != nil {
 		return fmt.Errorf("oracle: provenance base_url: %w", err)
 	}
+	if value.FakeControl != "" {
+		if err := validateLoopback(value.FakeControl); err != nil {
+			return fmt.Errorf("oracle: provenance fake_control_url: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -699,6 +1010,28 @@ func validateCases(cases []Case) error {
 		}
 		if !isSHA256(item.SHA256) {
 			return fmt.Errorf("oracle: invalid fixture checksum for %s", name)
+		}
+		if item.Setup != nil {
+			if item.Setup.Method == "" || !strings.HasPrefix(item.Setup.Path, "/") ||
+				strings.Contains(item.Setup.Path, "://") {
+				return fmt.Errorf("oracle: invalid setup request for %s", name)
+			}
+		}
+		if item.Observe != "" && (!strings.HasPrefix(item.Observe, "/") ||
+			strings.Contains(item.Observe, "://")) {
+			return fmt.Errorf("oracle: invalid observe path for %s", name)
+		}
+		if (item.ObserveFile == "") != (item.ObserveSHA256 == "") {
+			return fmt.Errorf("oracle: incomplete observation metadata for %s", name)
+		}
+		if item.ObserveFile != "" {
+			if filepath.Base(item.ObserveFile) != item.ObserveFile ||
+				strings.ContainsAny(item.ObserveFile, "/\\") {
+				return fmt.Errorf("oracle: unsafe observation filename for %s", name)
+			}
+			if !isSHA256(item.ObserveSHA256) {
+				return fmt.Errorf("oracle: invalid observation checksum for %s", name)
+			}
 		}
 	}
 	return nil

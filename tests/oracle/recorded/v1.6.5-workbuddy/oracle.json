@@ -1,0 +1,285 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T02:54:24Z",
+    "base_url": "http://127.0.0.1:18767",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "fake_control_url": "http://127.0.0.1:40381",
+    "note": "WorkBuddy intl/cn via test-only patched v1 copy and loopback fake upstream; loopback only"
+  },
+  "cases": [
+    {
+      "name": "wb_models_intl",
+      "method": "GET",
+      "path": "/v1/models?realm=intl",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_models_intl.json",
+      "sha256": "120d16d8a23370dae2d9820c9118c01f89bb910ac897a17970bba724d3f621cd",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_models_cn",
+      "method": "GET",
+      "path": "/v1/models?realm=cn",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_models_cn.json",
+      "sha256": "a8845a44a4080f2aa39e27f67f752d7efe44e103b3968e9122901196db2a0e79",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_health",
+      "method": "GET",
+      "path": "/health?force=1",
+      "auth": "none",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_health.json",
+      "sha256": "2cb2b360bed3459217ab346955b200b544276b9a0395a4bb83abb3e583f6371b",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_chat",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_chat.json",
+      "sha256": "f154d6ee790d0708b2111eeea61a8a2bbb36aeb8ca5970da0a5943f49b06aa98",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_chat_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "wb_chat_stream.sse",
+      "sha256": "8763dbfabd8c58d8f22ef30574fb245230b074e25d0dc0f91c6ec1a85f15277a",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_chat_cn",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=cn",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_chat_cn.json",
+      "sha256": "fde9613a7eb62298d08bf45769745f055d9f3d02b17c0490efa65fb5f4addc68",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_chat_stream_cn",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=cn",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "wb_chat_stream_cn.sse",
+      "sha256": "312a647f84ea2284eb6a074b1bf874c2a3e1f6e49167d49fd3b8414969b6dc28",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_responses",
+      "method": "POST",
+      "path": "/v1/responses?realm=intl",
+      "body": {
+        "model": "hy4-preview",
+        "input": "hello",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_responses.json",
+      "sha256": "c6e63cff54e0cf7aa6fa3e4d16bb29dc0ebe3ce97f3c6a0ec1d9a27b563a03e4",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_responses_stream",
+      "method": "POST",
+      "path": "/v1/responses?realm=intl",
+      "body": {
+        "model": "hy4-preview",
+        "input": "hello",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "wb_responses_stream.sse",
+      "sha256": "a8eb9f104f5c13fdb5e1ef405eb1786b6d635da075724866eece820212924f2b",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_messages",
+      "method": "POST",
+      "path": "/v1/messages?realm=intl",
+      "body": {
+        "model": "hy4-preview",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ]
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_messages.json",
+      "sha256": "cf3a50e2581b203f553859d1252701dfdfd527c5e311ce65a2398bcedaaffc54",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_accounts",
+      "method": "GET",
+      "path": "/accounts?realm=all",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_accounts.json",
+      "sha256": "1a426659010fe1803798f580dd071b297fde3b4487aba50382aca6de59279148",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_usage_intl",
+      "method": "GET",
+      "path": "/usage?realm=intl",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_usage_intl.json",
+      "sha256": "6fa4ead0f162d179d533e74fdaa3ce78fb677b8d75da77963c2c3c81f411fe5c",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_usage_cn",
+      "method": "GET",
+      "path": "/usage?realm=cn",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_usage_cn.json",
+      "sha256": "0eb393443ec3e06012d32bcbd3a9ec48546ffbc71496386ccee7fd7810c195c2",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_logs",
+      "method": "GET",
+      "path": "/logs",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_logs.json",
+      "sha256": "01967e0e4b9be8254fc5a3f37bd50e59de9a6e947d48604e139c325a853e7295",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_credits_intl",
+      "method": "POST",
+      "path": "/accounts/credits",
+      "body": {
+        "realm": "intl"
+      },
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_credits_intl.json",
+      "sha256": "b27333aa25c8a7d92bbba98177d73582513ff28089e956883a67b280d8151b3d",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_credits_cn",
+      "method": "POST",
+      "path": "/accounts/credits",
+      "body": {
+        "realm": "cn"
+      },
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_credits_cn.json",
+      "sha256": "9faabbc0a0bc494680377f0c18f38f88fbc4011f07f9d9edb399b5390d032ccd",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_checkin_cn",
+      "method": "POST",
+      "path": "/accounts/checkin",
+      "body": {
+        "uid": "oracle-cn"
+      },
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_checkin_cn.json",
+      "sha256": "4aae11ce3fcbfea64fd451b9f78fb8590c10a2b8f6a99375819e0417d833dd82",
+      "group": "workbuddy"
+    },
+    {
+      "name": "wb_catalog_refresh_intl",
+      "method": "POST",
+      "path": "/catalog/refresh",
+      "body": {
+        "realm": "intl"
+      },
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_catalog_refresh_intl.json",
+      "sha256": "35fc5d239f75b3ef1211e91d560e11410a78820b06670da1c993f1e58a4864ab",
+      "group": "workbuddy"
+    }
+  ]
+}

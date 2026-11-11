@@ -47,6 +47,9 @@ func runRecord(args []string, stdout, stderr io.Writer) int {
 	fake := flags.Bool("fake-upstream", false, "confirm the gateway uses a local fake upstream")
 	panel := flags.String("panel-token", "", "panel token")
 	apiKey := flags.String("api-key", "", "API key")
+	suite := flags.String("suite", "core", "case suite: core, workbuddy, raccoon-failures, codearts-failures, workbuddy-failures")
+	fakeControl := flags.String("fake-control", "", "loopback fake control base URL for setup/observe cases")
+	note := flags.String("note", "", "provenance note")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -54,11 +57,22 @@ func runRecord(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "oracle: --base, --out, --version, and --commit are required")
 		return 2
 	}
+	cases, err := harness.CasesForSuite(*suite)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	provenanceNote := *note
+	if provenanceNote == "" {
+		provenanceNote = "selected v1.6.5 fake-upstream responses; loopback only"
+	}
 	recorder := &harness.Recorder{
-		BaseURL: *base, Creds: harness.Credentials{PanelToken: *panel, APIKey: *apiKey},
+		BaseURL: *base, FakeControl: *fakeControl,
+		Creds: harness.Credentials{PanelToken: *panel, APIKey: *apiKey},
+		Cases: cases,
 		Provenance: harness.Provenance{
 			TargetVersion: *version, TargetCommit: *commit, FakeUpstream: *fake,
-			Note: "selected v1.6.5 fake-upstream responses; loopback only",
+			Note: provenanceNote,
 		},
 		Now: time.Now,
 	}
@@ -66,7 +80,7 @@ func runRecord(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "oracle: "+err.Error())
 		return 1
 	}
-	fmt.Fprintf(stdout, "recorded %d oracle cases to %s\n", len(harness.DefaultCases()), *out)
+	fmt.Fprintf(stdout, "recorded %d oracle cases to %s\n", len(cases), *out)
 	return 0
 }
 
@@ -78,6 +92,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	panel := flags.String("panel-token", "", "panel token")
 	apiKey := flags.String("api-key", "", "API key")
 	all := flags.Bool("all", false, "report every mismatched case instead of stopping at the first")
+	fakeControl := flags.String("fake-control", "", "loopback fake control base URL for setup/observe cases")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -86,7 +101,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	comparer := &harness.Comparer{
-		BaseURL: *base, Dir: *dir,
+		BaseURL: *base, Dir: *dir, FakeControl: *fakeControl,
 		Creds: harness.Credentials{PanelToken: *panel, APIKey: *apiKey},
 	}
 	if *all {
