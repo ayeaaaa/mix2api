@@ -20,7 +20,7 @@ requires a manual run.
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |
 | Selected v1.6.5 oracle recording + v2 comparison | **PENDING** | no captured fixture committed |
-| Real-account smoke on dedicated accounts | **PENDING** | `tests/oracle/REAL-ACCOUNT-SMOKE.md` |
+| Real-account smoke on dedicated accounts | **PARTIAL** | WorkBuddy CN chat/Responses/Messages/usage passed against one dedicated account: `docs/smoke/2026-11-11-workbuddy-cn.md`; intl/CodeArts/Raccoon still pending |
 | 200 concurrent SSE p95 first byte | PASS (local fake) | `tests/load` recorded p95 162 ms, p99 163 ms, 0 failures, threshold 2000 ms |
 | v1.6.5 performance baseline comparison | **PENDING** | no captured baseline |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; `v`-prefixed image/tag identity tested |
