@@ -74,17 +74,18 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	return nil
 }
 
-// Policies returns the immutable-looking policy table, de-duplicated by id.
-func (s *Snapshot) Policies() map[string]Policy {
+// policiesRef returns the immutable cached policy table. Callers must not
+// mutate the returned map or its values; use Policies for a defensive copy.
+func (s *Snapshot) policiesRef() map[string]Policy {
 	if s == nil {
-		return map[string]Policy{}
+		return nil
 	}
 	path := filepath.Join(s.usageDir, policiesName)
 	key := fileKey(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.policiesKey == key && s.policies != nil {
-		return clonePolicies(s.policies)
+		return s.policies
 	}
 	out := map[string]Policy{}
 	for _, row := range readJSONLLines(path) {
@@ -101,7 +102,12 @@ func (s *Snapshot) Policies() map[string]Policy {
 	}
 	s.policiesKey = key
 	s.policies = out
-	return clonePolicies(out)
+	return out
+}
+
+// Policies returns the immutable-looking policy table, de-duplicated by id.
+func (s *Snapshot) Policies() map[string]Policy {
+	return clonePolicies(s.policiesRef())
 }
 
 func clonePolicies(source map[string]Policy) map[string]Policy {
@@ -117,33 +123,13 @@ func (s *Snapshot) policyByID(id string) (Policy, bool) {
 	if s == nil || id == "" {
 		return Policy{}, false
 	}
-	path := filepath.Join(s.usageDir, policiesName)
-	key := fileKey(path)
-	s.mu.Lock()
-	if s.policiesKey != key || s.policies == nil {
-		out := map[string]Policy{}
-		for _, row := range readJSONLLines(path) {
-			data, err := json.Marshal(row)
-			if err != nil {
-				continue
-			}
-			var policy Policy
-			if err := json.Unmarshal(data, &policy); err != nil || policy.ID == "" {
-				continue
-			}
-			policy.raw = row
-			out[policy.ID] = policy
-		}
-		s.policiesKey = key
-		s.policies = out
-	}
-	policy, ok := s.policies[id]
-	s.mu.Unlock()
+	policy, ok := s.policiesRef()[id]
 	return policy, ok
 }
 
-// Timeline returns the policy timeline, oldest first.
-func (s *Snapshot) Timeline() []TimelineRow {
+// timelineRef returns the immutable cached timeline. Callers must not mutate
+// the returned rows or their policy maps; use Timeline for a defensive copy.
+func (s *Snapshot) timelineRef() []TimelineRow {
 	if s == nil {
 		return nil
 	}
@@ -152,7 +138,7 @@ func (s *Snapshot) Timeline() []TimelineRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.timelineKey == key && s.timeline != nil {
-		return cloneTimeline(s.timeline)
+		return s.timeline
 	}
 	rows := make([]TimelineRow, 0)
 	for _, row := range readJSONLLines(path) {
@@ -169,7 +155,13 @@ func (s *Snapshot) Timeline() []TimelineRow {
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].At < rows[j].At })
 	s.timelineKey = key
 	s.timeline = rows
-	return cloneTimeline(rows)
+	return rows
+}
+
+// Timeline returns the policy timeline, oldest first. The returned value is a
+// defensive copy; hot pricing paths use timelineRef instead.
+func (s *Snapshot) Timeline() []TimelineRow {
+	return cloneTimeline(s.timelineRef())
 }
 
 func cloneTimeline(source []TimelineRow) []TimelineRow {
@@ -211,7 +203,7 @@ func readJSONLLines(path string) []map[string]any {
 
 // currentAssignment returns the last timeline row.
 func (s *Snapshot) currentAssignment() (float64, map[string]string) {
-	timeline := s.Timeline()
+	timeline := s.timelineRef()
 	if len(timeline) == 0 {
 		return 0, map[string]string{}
 	}
@@ -425,31 +417,7 @@ func sameAssignment(a, b map[string]string) bool {
 // policyRefAt resolves which policy a moment in the past should use, matching
 // v1's backfill rules. An empty timeline yields ("", false).
 func (s *Snapshot) policyRefAt(epoch float64, model string) (string, bool) {
-	timeline := s.Timeline()
-	if len(timeline) == 0 {
-		return "", false
-	}
-	index := sort.Search(len(timeline), func(i int) bool { return timeline[i].At > epoch }) - 1
-	if index < 0 {
-		index = 0
-	}
-	if id := timeline[index].Policies[model]; id != "" {
-		return id, false
-	}
-	for _, row := range timeline {
-		if row.At < epoch {
-			continue
-		}
-		if id := row.Policies[model]; id != "" {
-			return id, true
-		}
-	}
-	for position := index; position >= 0; position-- {
-		if id := timeline[position].Policies[model]; id != "" {
-			return id, true
-		}
-	}
-	return "", false
+	return policyRefAtTimeline(s.timelineRef(), epoch, model)
 }
 
 // PolicyLabel formats a policy's first-seen wall clock like v1's panel.

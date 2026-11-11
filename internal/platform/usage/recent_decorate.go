@@ -17,6 +17,7 @@ func (s *Service) Recent(ctx context.Context, opts RecentOptions) (RecentPage, e
 		return RecentPage{}, err
 	}
 	page.USDCNY = s.usdCNY()
+	pricer := s.newRowPricer()
 	for _, row := range page.Rows {
 		select {
 		case <-ctx.Done():
@@ -25,7 +26,7 @@ func (s *Service) Recent(ctx context.Context, opts RecentOptions) (RecentPage, e
 		}
 		mapped := Row(row)
 		row["key_name"] = s.keyDisplay(stringValue(mapped, "key"))
-		cost := s.costFor(row)
+		cost := s.costForWith(pricer, row)
 		if !cost.Known {
 			row["cost_cny"] = nil
 			row["cost_band"] = nil

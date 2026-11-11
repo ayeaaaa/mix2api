@@ -326,11 +326,12 @@ func (s *Service) Analytics(ctx context.Context, opts AnalyticsOptions) (map[str
 		winMaps = dayMaps
 	} else {
 		winMaps = newAnalyticsMaps()
+		pricer := s.newRowPricer()
 		if _, err := s.scanAll(ctx, func(row Row) error {
 			if !s.matchesRealm(row, realm) || !inRange(number(row, "at"), window) {
 				return nil
 			}
-			cost := s.costFor(row)
+			cost := s.costForWith(pricer, row)
 			cny := 0.0
 			if cost.Known {
 				cny = cost.CNY
@@ -354,11 +355,12 @@ func (s *Service) analyticsAllTime(ctx context.Context, realm string) (analytics
 		return maps, nil
 	}
 	maps := newAnalyticsMaps()
+	pricer := s.newRowPricer()
 	offset, err := s.scanAll(ctx, func(row Row) error {
 		if !s.matchesRealm(row, realm) {
 			return nil
 		}
-		cost := s.costFor(row)
+		cost := s.costForWith(pricer, row)
 		cny := 0.0
 		if cost.Known {
 			cny = cost.CNY
@@ -454,11 +456,12 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 		if maxAt, ok := numericValue(entry["max_at"]); ok {
 			maps.MaxAt = maxAt
 		}
+		pricer := s.newRowPricer()
 		newOffset, err := s.scan(ctx, s.Store.Paths.Log, offset, func(row Row) error {
 			if !s.matchesRealm(row, realm) {
 				return nil
 			}
-			cost := s.costFor(row)
+			cost := s.costForWith(pricer, row)
 			cny := 0.0
 			if cost.Known {
 				cny = cost.CNY
