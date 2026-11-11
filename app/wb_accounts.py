@@ -13,7 +13,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from wb_fingerprint import derive_id, generate_request_id, session_id
+from wb_fingerprint import (derive_id, generate_request_id, session_id,
+                            web_browser_headers)
 import wb_activity
 import wb_atrest
 import wb_catalog
@@ -260,10 +261,13 @@ def fetch_account_profile(account, timeout=15):
         data = json.loads(resp.read().decode("utf-8"))
     if not isinstance(data, dict):
         raise RuntimeError("profile response is not an object")
-    uid = str(data.get("uid") or "")
+    # The console endpoint now wraps the profile in {"code": 0, "data": {...}};
+    # older responses put uid/nickname at the top level. Accept both.
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    uid = str(payload.get("uid") or "")
     if uid and account.uid and uid != account.uid:
         raise RuntimeError("profile uid mismatch")
-    nickname = data.get("nickname")
+    nickname = payload.get("nickname")
     return uid, nickname.strip() if isinstance(nickname, str) else ""
 
 
@@ -554,7 +558,8 @@ REALM_MARKERS = {"cn": CN_REALM_MARKERS, "intl": INTL_REALM_MARKERS}
 #: 不在这套 24h 窗口配额里。键与 Account.realm 的取值一致（intl / cn），
 #: 国内版的 deepseek-v4.1-flash 是收费模型（x0.11），不在名单内。
 FREE_CAP_MODELS = {
-    "intl": frozenset({"hy4-preview-f", "hy3", "deepseek-v4.1-flash"}),
+    "intl": frozenset({"hy4-preview-f", "hy3", "deepseek-v4.1-flash",
+                            "deepseek-v4.1-flash-sg"}),
     "cn": frozenset({"hy4-preview-f", "hy3"}),
 }
 
@@ -1000,16 +1005,27 @@ class Account(object):
         self.cooldown_until = 0.0
         # 运行时标记：上游返回 401 或 token 为空时置为 True，提示需重新登录
         self.token_expired = bool(not self.access_token)
-        # 上游账号级风控限制（403 / code 11140「账号存在异常行为，已被限制
-        # 使用」）的解除时刻。与上面那些节流窗口不同，这一条**持久化**：上游的
-        # 限制按小时到工作日计，网关重启 / 换身分 / 刷新 token 都不能让它重新
-        # 入池——否则同一台设备上的账号会被一个个送进风控（见 note_restricted
-        # 与社区复盘「解封前严禁换号继续打同一设备」）。
-        self.restricted_until = 0.0
+        # 上游账号级封禁（403 / code 11140「账号存在异常行为，已被限制使用」）
+        # 是持久状态，不是有期限的冷却：重启 / 刷新 token / 换身分 / 一键测试
+        # 都不能把账号放回池子，只有操作者手动启用才解除。旧版本的
+        # restrictedUntil 在加载时迁移成同一状态。
+        self.account_banned = bool(data.get("accountBanned"))
         try:
-            self.restricted_until = max(0.0, float(data.get("restrictedUntil") or 0))
+            self.banned_at = max(0.0, float(data.get("bannedAt") or 0))
         except (TypeError, ValueError):
-            self.restricted_until = 0.0
+            self.banned_at = 0.0
+        try:
+            legacy_restricted = max(0.0, float(data.get("restrictedUntil") or 0))
+        except (TypeError, ValueError):
+            legacy_restricted = 0.0
+        if legacy_restricted > time.time():
+            self.account_banned = True
+            self.enabled = False
+            self.tasks_enabled = False
+            if not self.banned_at:
+                self.banned_at = time.time()
+        # 兼容旧代码/旧测试的只读字段；封禁不再按时间自动解除。
+        self.restricted_until = 0.0
         # Per-model throttling. Upstream rate limits (code 6004 "usage exceeds
         # frequency limit") apply to ONE model for one account, not to the whole
         # account: other models keep working. Cooldown the offending model only,
@@ -1187,10 +1203,11 @@ class Account(object):
             "disabledModels": list(self.disabled_models),
             "lastError": self.last_error,
             "cooldownUntil": self.cooldown_until,
-            # 持久化：上游风控限制按小时到工作日计，重启后仍然成立（见
-            # note_restricted）。导出的文档会带上它供查看，导入侧
-            # normalise_import_row() 不认这个字段，换机器不会把账号一起停掉。
-            "restrictedUntil": self.restricted_until,
+            # 持久化：上游账号封禁必须跨重启保留（见 note_restricted）。
+            # 导入侧不认这个字段，换机器不会把账号一起停掉。
+            "accountBanned": bool(self.account_banned),
+            "bannedAt": self.banned_at,
+            "restrictedUntil": 0.0,
             "credits": self.credits,
             # 账号档位（#505）。持久化：一天一次的计费摘要结论，重启后仍然
             # 有效；导入到另一台机器时按 VOLATILE_FIELDS 丢掉，不把上一台
@@ -1282,8 +1299,9 @@ class Account(object):
             "lastErrorDetail": last_error_detail or None,
             "inCooldown": deadline > now,
             "cooldownFor": round(max(0.0, deadline - now)) or None,
-            # 上游账号级风控限制（403 / 11140）：面板据此把账号标成「风控限制」
-            # 而不是普通冷却，并提示去官方渠道申诉而不是换号重试。
+            # 上游账号级封禁（403 / 11140）：持久禁用，必须手动重新启用。
+            "accountBanned": bool(self.account_banned),
+            "bannedAt": self.banned_at or None,
             "restrictedFor": round(max(0.0, restricted - now)) or None,
             "modelCooldowns": models,
             "softStreak": int(self.soft_streak),
@@ -1797,6 +1815,8 @@ class Account(object):
         拒绝的原因（唯一不覆盖的是临期凭证那条：它会真的发起刷新，诊断路径上
         不该顺带打上游）。
         """
+        if self.account_banned:
+            return "账号封禁（需手动启用）"
         if not self.enabled:
             return "已停用"
         if not self.access_token:
@@ -1855,7 +1875,8 @@ class Account(object):
         return str(model).strip().lower() in self.disabled_models
 
     def ready(self, model=None, refresh=True):
-        if not self.enabled or not self.access_token or getattr(self, "token_expired", False):
+        if (self.account_banned or not self.enabled or not self.access_token
+                or getattr(self, "token_expired", False)):
             return False
         # 人工黑名单排在最前：它是静态配置（最便宜），而且在语义上优先于所有
         # 「暂时不可用」的判断 —— 被禁用的模型不该因为账号恰好恢复了就漏进来。
@@ -2214,11 +2235,9 @@ class Account(object):
     def can_daily_chat(self):
         if self.realm != "intl":
             return False
-        # 403 / code 11140 is an account-level restriction. Scheduled daily
-        # activity must respect the same persisted restriction window as normal
-        # chat dispatch, otherwise every later activity slot probes the account
-        # again even though the upstream already told us to stop.
-        if self.restricted_until > time.time():
+        # 403 / code 11140 is a persistent account ban. Scheduled daily
+        # activity must stop until the operator manually enables the account.
+        if self.account_banned:
             return False
         if not self.last_daily_chat:
             return True
@@ -2240,16 +2259,22 @@ class Account(object):
         return not str(self.last_activity_report).startswith(today_str)
 
     def web_headers(self):
-        """网页版 app 的出站头：只有 bearer 与 X-User-Id，没有桌面端指纹。"""
-        return {
+        """网页版 app 的出站头：bearer + X-User-Id + 按账号稳定的浏览器画像。
+
+        官方网页端只有这两个凭据头（没有桌面端 X-IDE-* 指纹）；浏览器侧的头
+        由 wb_fingerprint 按 uid 派生，避免所有账号共用同一个 UA/平台。
+        """
+        headers = {
             "Authorization": "Bearer " + self.access_token,
             "X-User-Id": self.uid,
             "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
+            "Accept": "application/json",
+            "X-Request-ID": generate_request_id(self.uid),
             "Origin": WEB_ORIGIN,
             "Referer": WEB_ORIGIN + "/app",
-            "User-Agent": WEB_USER_AGENT,
         }
+        headers.update(web_browser_headers(self.uid, self.realm))
+        return headers
 
     def daily_chat_model(self):
         """Which model the desktop-identity leg of the activity runs on.
@@ -2497,9 +2522,23 @@ class Account(object):
         body = {
             "prompt": chosen_prompt,
             "model": model,
-            # 网页端建会话时固定带上这两项（抓包所得），保持请求形态一致。
-            "conversationOrigin": "workbuddy-app",
-            "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
+            # 按官方网页端抓包（2026-11-10）对齐：agents + addonSelection +
+            # 三个内置插件 + extraInfo；旧实现只有 workbuddy-app + weixinpay。
+            "conversationOrigin": "agents",
+            "addonSelection": {
+                "version": 1,
+                "welcomeMode": "working",
+                "interactionMode": "craft",
+            },
+            "plugins": [
+                {"name": "welcomemode-work", "marketplace": "workbuddy-builtin"},
+                {"name": "interactionmode-craft", "marketplace": "workbuddy-builtin"},
+                {"name": "prompt-common", "marketplace": "workbuddy-builtin"},
+            ],
+            "extraInfo": {
+                "clientCreateRequestId": "cloud-create-" + str(uuid.uuid4()),
+                "traceId": uuid.uuid4().hex,
+            },
         }
         conversation, failure = self._web_conversation_create(body)
         if failure and failure.get("limit"):
@@ -2773,9 +2812,9 @@ class Account(object):
         """
         if self.realm != "intl":
             return {"ok": False, "error": "daily chat is only for international accounts"}
-        # 11140 的限制窗口要和普通 chat 一样先挡住；这里单独返回失败形状，
-        # 不能把「账号受限」伪装成「今日活跃已完成」。
-        if self.restricted_until > time.time():
+        # 11140 的封禁要和普通 chat 一样先挡住；这里单独返回失败形状，
+        # 不能把「账号被封禁」伪装成「今日活跃已完成」。
+        if self.account_banned:
             return {"ok": False, "skipped": True, "restricted": True,
                     "error": "账号处于上游风控限制窗口，跳过每日活跃"}
         # 当日活跃成功后再触发（下一个定时点、手动补跑、并发重复调度）直接
@@ -2791,7 +2830,8 @@ class Account(object):
         """每日活跃对话的实际流程；返回形状见 daily_chat。"""
         import wb_proxy
         url = self.chat_base_url() + wb_proxy.CHAT_PATH
-        model = self.daily_chat_model()
+        logical_model = self.daily_chat_model()
+        model = wb_proxy.intl_model_alias(logical_model, self.realm)
         headers = self.headers("chat", model=model)
         body = {
             "model": model,
@@ -3484,8 +3524,8 @@ class Account(object):
             # 企业空间的 IsPaidUser 语义未验证（#505），先按「未知」处理。
             # 静态 Key 的个人计费摘要端点直接 401，同样按未知处理。
             return None
-        if self.restricted_until > time.time():
-            # 账号正被上游限制：这时再打计费接口只会继续喂风控。
+        if self.account_banned:
+            # 账号正被上游封禁：这时再打计费接口只会继续喂风控。
             return None
         if headers is None:
             headers = self.headers(purpose="billing")
@@ -3610,21 +3650,20 @@ class Account(object):
         给出的处置口径是：看到 11140 立即停手，解封前严禁换号继续打同一台设备，
         否则设备指纹会连坐。
 
-        与普通冷却的区别：
-        - 固定 2 小时（可用 cooldown 覆盖），不吃 single_account 的 3 秒兜底——
-          把被限制的账号每 3 秒再试一次，只会继续喂上游风控；
-        - 持久化到凭据档（restrictedUntil）：重启 / 刷新 token / 换身分 /
-          「一键测试」都不会把它清掉，只有真正成功一次（说明上游已解除）才清。
+        与普通冷却的区别：没有到期时间，也不参与自动恢复。命中的账号会立即
+        关闭 API 派发与自动任务并持久化；重启 / 刷新 token / 换身分 /
+        「一键测试」都不会把它放回池子。只有操作者手动启用才解除。
         """
-        now = time.time()
-        wait = RESTRICTED_ACCOUNT_COOLDOWN if cooldown is None else float(cooldown)
         with self._throttle_lock:
-            self.last_error = "HTTP 403 (account restricted)"
+            self.last_error = "HTTP 403 (account banned)"
             self.last_error_detail = str(detail)[:2000] if detail else ""
-            # 第一次命中才起算：反复探测/重试不该把 2 小时越推越长。
-            if self.restricted_until <= now:
-                self.restricted_until = now + max(1.0, wait)
-        return self.restricted_until
+            self.enabled = False
+            self.tasks_enabled = False
+            self.account_banned = True
+            if not self.banned_at:
+                self.banned_at = time.time()
+            self.restricted_until = 0.0
+        return 0.0
 
     def note_balance_cooled(self, message="insufficient credits"):
         """402 / out of credits: park until the next local 04:00.
@@ -3742,10 +3781,9 @@ class Account(object):
     def note_success(self, model=None):
         """A served request clears every account-level penalty.
 
-        That includes a persisted upstream restriction: a request that actually
-        succeeded is the one piece of evidence that the vendor lifted it. (In
-        normal dispatch a restricted account is never picked, so this only fires
-        from a manual test.)
+        Upstream account bans are deliberately not cleared here: a green probe
+        does not prove the vendor lifted an account-level ban. Only an explicit
+        operator enable clears it.
 
         It also lifts the `token_expired` park. A response the upstream really
         served is direct proof that the credential still works, yet that flag is
@@ -3815,9 +3853,16 @@ class Account(object):
                 self.last_error_detail = ""
                 self.cooldown_until = 0
                 self.balance_until = 0.0
-            # 上游账号级风控限制（restricted_until）故意不在这里清：它不是本机
-            # 记的限流窗口，而是上游对账号的标记；换身分 / 重试 / 刷新都不该把
-            # 它放回池子（见 note_restricted）。
+            # 上游账号封禁（account_banned）故意不在这里清：它不是本机记的
+            # 限流窗口，而是上游对账号的标记；换身分 / 重试 / 刷新都不该把
+            # 它放回池子（见 note_restricted/clear_account_ban）。
+
+    def clear_account_ban(self):
+        """Only an explicit operator enable clears an upstream account ban."""
+        with self._throttle_lock:
+            self.account_banned = False
+            self.banned_at = 0.0
+            self.restricted_until = 0.0
 
     def clear_model_cooldown(self, model):
         """只解除某个模型的限流，账号级状态原样保留。
@@ -4349,6 +4394,11 @@ class AccountPool(object):
             if existing is not None:
                 account.added_at = existing.added_at
                 account.path = existing.path
+                if getattr(existing, "account_banned", False):
+                    account.account_banned = True
+                    account.banned_at = existing.banned_at
+                    account.enabled = False
+                    account.tasks_enabled = False
                 if not account.credits and existing.credits:
                     account.credits = existing.credits
                 # 重新登录 / 扫码换 token 不该丢掉已经读到的档位（#505）。
@@ -4470,6 +4520,7 @@ class AccountPool(object):
                                  if tasks_enabled is not None
                                  else bool(enabled))
         if enabled:
+            account.clear_account_ban()
             account.clear_error()
         account.save(self.dir)
         self.apply_proxy_slots()

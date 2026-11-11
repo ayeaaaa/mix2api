@@ -201,6 +201,37 @@ def restart_hint():
     """Launcher that stops every running copy first."""
     return "restart-wb-proxy.bat" if IS_WINDOWS else "./restart-wb-proxy.sh"
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
+
+# The intl exit renamed deepseek-v4.1-flash to the "-sg" build in 2026-11.
+# Clients and /v1/models keep the logical id; only the outbound request and
+# billing attribution use the "-sg" id. Set WB_INTL_MODEL_ALIAS=0 to disable.
+INTL_MODEL_ALIASES = {
+    "deepseek-v4.1-flash": "deepseek-v4.1-flash-sg",
+}
+
+
+def intl_model_alias_enabled():
+    raw = os.environ.get("WB_INTL_MODEL_ALIAS", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def intl_model_alias(name, realm=None):
+    text = str(name or "")
+    if (realm or CURRENT_REALM) != "intl" or not intl_model_alias_enabled():
+        return text
+    return INTL_MODEL_ALIASES.get(text.strip().lower(), text)
+
+
+def apply_intl_model_alias(payload, realm=None):
+    if not isinstance(payload, dict):
+        return ""
+    name = str(payload.get("model") or "")
+    target = intl_model_alias(name, realm)
+    if target != name:
+        payload["model"] = target
+        log("alias: intl model %s -> %s" % (name, target))
+    return target
+
 def detect_model_realm(model_id):
     if not model_id:
         return CURRENT_REALM
@@ -11468,7 +11499,7 @@ def runtime_settings_view():
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
         "project": "mix2api",
-        "version": "1.6.5",
+        "version": "1.6.6",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -13015,21 +13046,21 @@ def normalize_roles(messages):
 # ---------------------------------------------------------------------------
 # Fingerprint Sanitization (immunizes against Codex / Claude Code WAF patterns)
 # ---------------------------------------------------------------------------
-SANITIZE_FEATURES = (
+SANITIZE_BILLING_HDR_NAMES = (
     "x-anthropic-billing-header",
-    "cc_entrypoint=",
+    "x-anthropic-billing-hdr",
+)
+SANITIZE_FEATURES = SANITIZE_BILLING_HDR_NAMES + (
     "You are Claude Code",
     "Main branch (",
     "You are a coding agent running in the Codex CLI",
     "github.com/anthropics/",
-    "11128",
 )
 SANITIZE_REWRITES = (
     ("Main branch (you will usually use this for PRs)",
      "Default branch (you will usually use this for PRs)"),
     ("To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
      "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
-    ("11128", "11-128"),
 )
 # Codex CLI 的自述首段（#743）：上游按「身份句 + Codex CLI」判 11-128。
 # 旧规则把中性句改写成这段自述，反过来把指纹注入出站 body；这里整句中性化，
@@ -13046,8 +13077,13 @@ SANITIZE_CLAUDE_CODE_INTRO_RE = re.compile(
     r"(?: tool)? for Claude(?: Code)?\.?")
 SANITIZE_CLAUDE_CODE_INTRO_REPLACEMENT = "You are a helpful AI assistant."
 SANITIZE_CLAUDE_CODE_LOWER = "you are claude code,"
-SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
-SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
+# The real wire value is one full line with trailing cch= parameters; delete the
+# whole line, not just the first semicolon-delimited value.
+SANITIZE_HDR_LINE_RE = re.compile(
+    r"(?im)^[ \t]*x-anthropic-billing-(?:header|hdr)[ \t]*:[^\r\n]*(?:\r?\n|$)")
+SANITIZE_HDR_RE = re.compile(
+    r"(?i)x-anthropic-billing-(?:header|hdr)\s*:\s*[^;\r\n]*(?:;\s*)?")
+SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-(?:header|hdr)")
 SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
 # WorkBuddy upstream returns 11128 ("Illegal API invocation from an unapproved
 # channel") when this exact OmO identity fingerprint appears as a contiguous
@@ -13142,15 +13178,19 @@ SANITIZE_REI_FOLD = str.maketrans({0x130: "i", 0x131: "i", 0x17F: "s"})
 # 两个小写字面量直接从正则派生，保证与正则永远同源：手抄第二份迟早漂移，
 # 派生出来的值不存在这个问题。pattern 里的 (?i) 是内联旗标，剥掉后就是
 # 字面量本体。
-SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_RE.pattern
-if SANITIZE_BARE_HDR_LOWER.startswith("(?i)"):
-    SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_LOWER[4:]
+# The two accepted spellings are checked literally on the lowercased text; the
+# regex below still decides the actual rewrite.
+SANITIZE_BARE_HDR_LOWER = SANITIZE_BILLING_HDR_NAMES[0]
+SANITIZE_BARE_HDR_ALIASES = SANITIZE_BILLING_HDR_NAMES
 SANITIZE_OMO_JUNIOR_LOWER = SANITIZE_OMO_JUNIOR_RE.pattern.lower()
 SANITIZE_IDENTITY_LOWER = SANITIZE_IDENTITY_VERBS
-def has_fingerprint(text, identity=True):
+def has_fingerprint(text, identity=True, billing=True):
     if not isinstance(text, str) or not text:
         return False
+    billing_lower = tuple(name.lower() for name in SANITIZE_BILLING_HDR_NAMES)
     for f in SANITIZE_FEATURES:
+        if not billing and f.lower() in billing_lower:
+            continue
         if f in text:
             return True
     # 三个特例字符几乎从不出现：先做三次 C 速度探测，命中才走归一化副本，
@@ -13159,8 +13199,9 @@ def has_fingerprint(text, identity=True):
         low = text.translate(SANITIZE_REI_FOLD).lower()
     else:
         low = text.lower()
-    if (SANITIZE_BARE_HDR_LOWER in low
-            or SANITIZE_OMO_JUNIOR_LOWER in low):
+    if ((billing and any(name in low for name in SANITIZE_BARE_HDR_ALIASES))
+            or SANITIZE_OMO_JUNIOR_LOWER in low
+            or (billing and "cc_" in low)):
         return True
     if not identity:
         return False
@@ -13186,10 +13227,10 @@ def has_fingerprint(text, identity=True):
     if not any(needle in low for needle in SANITIZE_IDENTITY_LOWER):
         return False
     return SANITIZE_IDENTITY_RE.search(text) is not None
-def sanitize_text(text, identity=True):
+def sanitize_text(text, identity=True, billing=True):
     if not isinstance(text, str) or not text:
         return text
-    if not has_fingerprint(text, identity=identity):
+    if not has_fingerprint(text, identity=identity, billing=billing):
         return text
     # Keep the rewrite deliberately narrow: do not globally remove
     # "OhMyOpenCode" or "Sisyphus-Junior", because either token alone is
@@ -13211,23 +13252,27 @@ def sanitize_text(text, identity=True):
         text = SANITIZE_BRAND_RE.sub(SANITIZE_BRAND_REPLACEMENT, text)
     for old, new in SANITIZE_REWRITES:
         text = text.replace(old, new)
+    text = SANITIZE_HDR_LINE_RE.sub("", text)
     text = SANITIZE_HDR_RE.sub("", text)
     if "cc_" in text:
         prev = ""
         while prev != text:
             prev = text
             text = SANITIZE_KV_RE.sub("", text)
-    text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
+    text = SANITIZE_BARE_HDR_RE.sub("anthropic-header", text)
     return text.strip()
-def sanitize_content(content, identity=True):
+def sanitize_content(content, identity=True, billing=False):
     if isinstance(content, str):
-        return sanitize_text(content, identity=identity)
+        return sanitize_text(content, identity=identity, billing=billing)
     if isinstance(content, list):
         out = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == "text" and "text" in part:
                 p = dict(part)
-                p["text"] = sanitize_text(p["text"], identity=identity)
+                p["text"] = sanitize_text(p["text"], identity=identity,
+                                          billing=billing)
+                if billing and not p["text"]:
+                    continue
                 out.append(p)
             else:
                 out.append(part)
@@ -13239,6 +13284,28 @@ def preserve_request_contract_enabled():
     """Opt-in field/data preservation; does not enforce upstream constraints."""
     return os.environ.get("WB_PRESERVE_REQUEST_CONTRACT", "0").strip().lower() in (
         "1", "true", "yes", "on")
+
+
+def sanitize_tools(tools):
+    """Remove channel fingerprints from function descriptions."""
+    if not isinstance(tools, list):
+        return tools
+    out = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            out.append(tool)
+            continue
+        item = dict(tool)
+        fn = item.get("function")
+        if isinstance(fn, dict):
+            fn = dict(fn)
+            desc = fn.get("description")
+            if isinstance(desc, str):
+                fn["description"] = sanitize_text(desc, identity=True,
+                                                  billing=False)
+            item["function"] = fn
+        out.append(item)
+    return out
 
 
 def sanitize_tool_calls(tool_calls):
@@ -13259,7 +13326,8 @@ def sanitize_tool_calls(tool_calls):
                 raw_args = fn.get("arguments")
                 if isinstance(raw_args, str):
                     fn["arguments"] = (raw_args if preserve
-                                       else sanitize_text(raw_args, identity=False))
+                                       else sanitize_text(raw_args, identity=False,
+                                                          billing=False))
                 elif raw_args is None:
                     fn["arguments"] = "{}"
                 else:
@@ -13285,13 +13353,30 @@ def sanitize_messages(messages):
             # assistant 历史里的身份句同样是已确认的指纹（#574：同一句放在
             # assistant 里 400/400/400，放在 user 里 200/200/200）。user / tool
             # 仍是用户数据，不改写。
-            identity = item.get("role") in ("system", "developer", "assistant")
+            role = item.get("role")
+            identity = role in ("system", "developer", "assistant")
+            billing = role in ("system", "developer")
             if "content" in item and not preserve_tool_result:
+                before = item.get("content")
+                had_text = ((isinstance(before, str) and bool(before.strip()))
+                            or (isinstance(before, list) and any(
+                                isinstance(part, dict)
+                                and part.get("type") == "text"
+                                and str(part.get("text") or "").strip()
+                                for part in before)))
                 item["content"] = sanitize_content(item["content"],
-                                                   identity=identity)
+                                                   identity=identity,
+                                                   billing=billing)
+                # A system message may contain only billing metadata; drop it
+                # after sanitization instead of sending an empty text block
+                # (upstream 400 / 11151).
+                if billing and had_text and (
+                        item["content"] == ""
+                        or item["content"] == []):
+                    continue
             if isinstance(item.get("reasoning_content"), str):
                 item["reasoning_content"] = sanitize_text(
-                    item["reasoning_content"], identity=False)
+                    item["reasoning_content"], identity=False, billing=False)
             if "tool_calls" in item:
                 item["tool_calls"] = sanitize_tool_calls(item["tool_calls"])
             out.append(item)
@@ -13611,6 +13696,30 @@ def backfill_reasoning_content(messages, model, thinking_enabled=None):
         else:
             out.append(m)
     return out
+def mirror_upstream_reasoning(messages, model):
+    """Mirror reasoning_content for models whose upstream reads reasoning."""
+    prefixes = ("kimi", "glm", "minimax", "mimo", "step", "space-bunny")
+    name = str(model or "").lower()
+    if not any(name == prefix or name.startswith(prefix + "-")
+               for prefix in prefixes):
+        return messages
+    if not isinstance(messages, list):
+        return messages
+    out = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            out.append(message)
+            continue
+        item = dict(message)
+        reasoning_content = item.get("reasoning_content")
+        reasoning = item.get("reasoning")
+        if (isinstance(reasoning_content, str) and reasoning_content.strip()
+                and not (isinstance(reasoning, str) and reasoning.strip())):
+            item["reasoning"] = reasoning_content
+        out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool & Tool Choice Normalization (avoids code 11101 on object tool_choice)
 # ---------------------------------------------------------------------------
@@ -13785,6 +13894,124 @@ def _normalize_tool_parameters(fn):
         p["properties"] = {}
     _deep_normalize_schema(p)
     fn["parameters"] = p
+
+
+def _schema_contains_ref(node):
+    if isinstance(node, dict):
+        if "$ref" in node:
+            return True
+        return any(_schema_contains_ref(value) for key, value in node.items()
+                   if key not in ("default", "examples", "example", "enum", "const"))
+    if isinstance(node, list):
+        return any(_schema_contains_ref(value) for value in node)
+    return False
+
+
+def _inline_kimi_schema_node(node, defs, seen=None, depth=0, budget=None):
+    if budget is None:
+        budget = [10000]
+    if depth > 64:
+        return {}
+    if budget[0] <= 0:
+        budget[0] = -1
+        return {}
+    budget[0] -= 1
+    if isinstance(node, list):
+        out = []
+        for value in node:
+            expanded = _inline_kimi_schema_node(
+                value, defs, seen=seen, depth=depth + 1, budget=budget)
+            if budget[0] < 0:
+                return {}
+            out.append(expanded)
+        return out
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        name = None
+        for prefix in ("#/$defs/", "#/definitions/"):
+            if ref.startswith(prefix):
+                name = ref[len(prefix):].replace("~1", "/").replace("~0", "~")
+                break
+        if name is None:
+            return dict(node)
+        active = set(seen or ())
+        if not name or name not in defs:
+            return {"type": "object"}
+        if name in active:
+            return {}
+        active.add(name)
+        expanded = _inline_kimi_schema_node(
+            defs[name], defs, seen=active, depth=depth + 1, budget=budget)
+        if budget[0] < 0:
+            return {}
+        siblings = {}
+        root = depth == 0
+        for key, value in node.items():
+            if key == "$ref" or (root and key in ("$defs", "definitions", "$schema")):
+                continue
+            child = _inline_kimi_schema_node(
+                value, defs, seen=active, depth=depth + 1, budget=budget)
+            if budget[0] < 0:
+                return {}
+            siblings[key] = child
+        if siblings and isinstance(expanded, dict):
+            expanded = dict(expanded)
+            expanded.update(siblings)
+        return expanded
+    out = {}
+    root = depth == 0
+    for key, value in node.items():
+        if root and key in ("$defs", "definitions", "$schema"):
+            continue
+        if key in ("default", "examples", "example", "enum", "const"):
+            out[key] = value
+            continue
+        child = _inline_kimi_schema_node(
+            value, defs, seen=seen, depth=depth + 1, budget=budget)
+        if budget[0] < 0:
+            return {}
+        out[key] = child
+    return out
+
+
+def inline_kimi_tool_schemas(body):
+    """Inline local JSON Schema refs for CN Kimi tool declarations."""
+    if not isinstance(body, dict):
+        return body
+    model = str(body.get("model") or "").strip().lower()
+    if model.startswith("cn:"):
+        model = model[3:].strip()
+    if not model.startswith("kimi") or not isinstance(body.get("tools"), list):
+        return body
+    for tool in body["tools"]:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            continue
+        if not ("$defs" in params or "definitions" in params
+                or _schema_contains_ref(params)):
+            continue
+        defs = {}
+        for key in ("definitions", "$defs"):
+            values = params.get(key)
+            if isinstance(values, dict):
+                defs.update(values)
+        budget = [10000]
+        expanded = _inline_kimi_schema_node(
+            params, defs, seen=set(), depth=0, budget=budget)
+        if budget[0] < 0 or not isinstance(expanded, dict):
+            expanded = {"type": "object"}
+        fn = dict(fn)
+        fn["parameters"] = expanded
+        _normalize_tool_parameters(fn)
+        tool["function"] = fn
+    return body
 
 
 def normalize_tools(obj):
@@ -14606,6 +14833,64 @@ def apply_prompt_mode(messages):
     return messages
 
 
+EMPTY_TEXT_PART_FILL = " "
+
+
+def _fill_empty_text_parts(parts):
+    """Give empty/null text parts a placeholder; return True when changed."""
+    changed = False
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if text is None or text == "":
+            part["text"] = EMPTY_TEXT_PART_FILL
+            changed = True
+    return changed
+
+
+def _sniffed_parts(content):
+    """Return parsed parts when a string content would be read as a part list."""
+    if not isinstance(content, str):
+        return None
+    stripped = content.lstrip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        parts = json.loads(stripped)
+    except Exception:
+        return None
+    if not parts or not isinstance(parts, list):
+        return None
+    if not all(isinstance(part, dict) for part in parts):
+        return None
+    return parts
+
+
+def guard_empty_text_parts(messages):
+    """Fill empty text parts in real part lists and sniffer-parsed strings.
+
+    Upstream validates every type:"text" part and answers 400 / 11151 for an
+    empty or missing text value. The common trigger is a tool-result string
+    such as ``[{"type":"text","text":""}]`` that upstream parses as parts.
+    """
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            parts = [dict(part) if isinstance(part, dict)
+                     and part.get("type") == "text" else part
+                     for part in content]
+            if _fill_empty_text_parts(parts):
+                m["content"] = parts
+        else:
+            parts = _sniffed_parts(content)
+            if parts is not None and _fill_empty_text_parts(parts):
+                m["content"] = json.dumps(parts, ensure_ascii=False)
+    return messages
+
+
 def build_upstream_body(payload):
     model = payload.get("model") or ""
     # Map an unsupported level before anything below reads the effort, so the
@@ -14653,7 +14938,8 @@ def build_upstream_body(payload):
     repaired, _merged = merge_adjacent_tool_calls(body["messages"])
     repaired, _repacked = repack_tool_result_blocks(repaired)
     repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
-    body["messages"] = repaired
+    repaired = guard_empty_text_parts(repaired)
+    body["messages"] = mirror_upstream_reasoning(repaired, model)
     translate_max_completion_tokens(body)
     # Upstream GPT-family models enforce a minimum max_output_tokens >= 16;
     # smaller values (e.g. max_tokens=1 from probes) fail with 400 integer_below_min_value (#364, #252).
@@ -14667,6 +14953,9 @@ def build_upstream_body(payload):
             pass
     normalize_tool_choice(body)
     normalize_tools(body)
+    if "tools" in body:
+        body["tools"] = sanitize_tools(body["tools"])
+    inline_kimi_tool_schemas(body)
     normalize_stop(body)
     if "max_tokens" not in body:
         default_max = model_default_max_output_tokens(model)
@@ -16052,7 +16341,7 @@ def restriction_hold_message(realm, remaining):
 
 
 def _persist_restriction(account):
-    """把 restrictedUntil 落盘；失败只记日志，不影响请求路径。"""
+    """把持久封禁状态落盘；失败只记日志，不影响请求路径。"""
     try:
         path = getattr(account, "path", "") or ""
         if path:
@@ -16359,7 +16648,8 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
         POOL.apply_remaining_weights(
             remaining_schedule_weights() if remaining_priority_enabled() else None)
     realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
-    model = str(payload.get("model") or "")
+    requested_model = str(payload.get("model") or "")
+    model = intl_model_alias(requested_model, realm)
     pinned = pin_account if pin_account is not None else pinned_account()
     if pinned is not None:
         if allowed_accounts is not None and pinned.uid not in allowed_accounts:
@@ -16388,6 +16678,11 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     # payload 重建（degrade 会切换 prompt 模式，必须拿到新 body）。
     upstream_body = (prebuilt_body if prebuilt_body is not None
                      else build_upstream_body(payload))
+    if upstream_body.get("model") != model:
+        # The client payload keeps the logical id; the outbound body carries the
+        # intl upstream id. Copy before changing so callers can reuse the body.
+        upstream_body = dict(upstream_body)
+        upstream_body["model"] = model
     # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
     # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
     # （该函数可能在最前面插入 SYSTEM_PROMPT）。affinity_page 只在超限对话上
@@ -16646,6 +16941,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             bind_account_slot_to_response(resp, account)
             try:
                 resp._wb_account_uid = account.uid
+                resp._wb_billed_model = model
             except Exception:
                 pass
             slot_held = None
@@ -16770,9 +17066,9 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     account.note_restricted(detail=detail,
                                             cooldown=RESTRICTED_403_COOLDOWN)
                     _persist_restriction(account)
-                    log("account %s restricted by upstream (403 11140), "
-                        "cooling %.0fs (persisted)" % (account.uid[:8],
-                                                       RESTRICTED_403_COOLDOWN))
+                    log("account %s banned by upstream (403 11140), "
+                        "disabled until manual enable (persisted)"
+                        % account.uid[:8])
                     if session_key and POOL:
                         POOL.affinity.demote(session_key, account.uid)
                     last_error = exc
@@ -16842,11 +17138,14 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 last_error = exc
                 continue
             if exc.code == 400:
-                # A 400 is passed through unchanged. `11158` (model not allowed
-                # for this user type) used to be recorded here for the model
-                # catalogue label; the tier map from `/v3/config` now drives
-                # both the scheduler and that label, so the request never gets
-                # this far for a gated model.
+                # A 400 is passed through unchanged. Release the in-flight seat
+                # first: this path exits open_upstream, so the post-loop cleanup
+                # never runs and one 400 would otherwise park the account until
+                # restart. `11158` (model not allowed for this user type) is
+                # handled by the tier map before reaching this point.
+                if slot_held is not None:
+                    account_slot_release(slot_held)
+                    slot_held = None
                 raise
             if exc.code >= 500:
                 detail = http_error_detail(exc)
@@ -16887,6 +17186,9 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     POOL.affinity.demote(session_key, account.uid)
                 last_error = exc
                 continue
+            if slot_held is not None:
+                account_slot_release(slot_held)
+                slot_held = None
             raise
         except Exception as exc:
             if wb_accounts.is_tls_verify_error(exc):
@@ -17327,12 +17629,13 @@ def probe_account(account, model=None, timeout=30):
     单个「测试」与「一键测试」共用这一份：两边各写一套的话，早晚一边忘了清计数、
     另一边忘了认本机断网——而这两件事正是「明明测了能用，它还熔断」的全部来源。
     """
-    model = model or TEST_MODEL_DEFAULT
+    logical_model = model or TEST_MODEL_DEFAULT
+    upstream_model = intl_model_alias(logical_model, account.realm)
     row = {"uid": account.uid, "nickname": account.nickname or account.uid[:8],
-           "realm": account.realm, "model": model, "ok": False, "elapsed_ms": 0,
+           "realm": account.realm, "model": logical_model, "ok": False, "elapsed_ms": 0,
            "status": None, "reply": "", "error": "", "network": False}
     chat_url = account.chat_base_url() + CHAT_PATH
-    test_body = {"model": model, "messages": [{"role": "user", "content": "hi"}],
+    test_body = {"model": upstream_model, "messages": [{"role": "user", "content": "hi"}],
                  "stream": False}
     probe_body = build_upstream_body(test_body)
     cli_identity = account.is_cli_identity()
@@ -17346,7 +17649,7 @@ def probe_account(account, model=None, timeout=30):
         body = wb_identity.gzip_body(body)
     # 与 open_upstream 同一条出站形态：VSCode 身分的 model 请求带 X-Model-ID；
     # CLI / VSCode 官方主 chat 都默认 gzip。
-    probe_headers = account.headers(purpose="chat", model=model)
+    probe_headers = account.headers(purpose="chat", model=upstream_model)
     if cli_identity or vscode_identity:
         probe_headers["Content-Encoding"] = wb_identity.REQUEST_CONTENT_ENCODING
     req = urllib.request.Request(chat_url, data=body, method="POST",
@@ -18347,6 +18650,33 @@ def _decode_compaction_summary(blob):
     return text
 
 
+def _append_visible_reasoning(current, addition):
+    if not addition:
+        return current
+    if not current:
+        return addition
+    if current == addition:
+        return current
+    return current + chr(10) + addition
+
+
+def _reasoning_group_target(items, start):
+    known_types = {
+        None, "message", "user", "function_call", "function_call_output",
+        "custom_tool_call", "custom_tool_call_output", "agent_message",
+    }
+    known_types.update(COMPACTION_ITEM_TYPES)
+    for item_index in range(start + 1, len(items)):
+        item = items[item_index]
+        if isinstance(item, str):
+            return item
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in known_types:
+            return item
+    return None
+
+
 def _responses_input_to_messages(payload):
     """Turn the Responses input items into chat messages."""
     messages = []
@@ -18358,7 +18688,7 @@ def _responses_input_to_messages(payload):
     if isinstance(inp, str):
         messages.append({"role": "user", "content": inp})
     elif isinstance(inp, list):
-        for item in inp:
+        for item_index, item in enumerate(inp):
             if isinstance(item, str):
                 messages.append({"role": "user", "content": item})
                 continue
@@ -18367,27 +18697,52 @@ def _responses_input_to_messages(payload):
             itype = item.get("type")
             if itype in (None, "message", "user"):
                 body = _flatten_content(item.get("content"))
-                if body:
-                    role = item.get("role") or "user"
-                    if role == "developer":
-                        role = "system"
-                    # If this is assistant text and the previous message is an assistant
-                    # message (e.g. from an adjacent function_call), merge them so
-                    # tool_calls and text stay in one message without breaking tool sequence.
-                    if role == "assistant" and messages and messages[-1].get("role") == "assistant":
+                role = item.get("role") or "user"
+                if role == "developer":
+                    role = "system"
+                inline_reasoning = ""
+                inline_tool_calls = []
+                if role == "assistant":
+                    if isinstance(item.get("reasoning_content"), str):
+                        inline_reasoning = item["reasoning_content"]
+                    if isinstance(item.get("tool_calls"), list):
+                        inline_tool_calls = item["tool_calls"]
+                elif pending_reasoning:
+                    pending_reasoning = ""
+                if body or inline_reasoning or inline_tool_calls:
+                    # Adjacent assistant text and tool calls stay in one message,
+                    # but only when no reasoning item is waiting to be attached.
+                    if (role == "assistant" and not pending_reasoning
+                            and messages
+                            and messages[-1].get("role") == "assistant"):
                         prev = messages[-1]
                         if prev.get("content"):
                             prev["content"] = str(prev["content"]) + chr(10) + str(body)
                         else:
                             prev["content"] = body
-                        if pending_reasoning and "reasoning_content" not in prev:
-                            prev["reasoning_content"] = pending_reasoning
-                            pending_reasoning = ""
+                        if inline_tool_calls:
+                            if "tool_calls" in prev:
+                                prev["tool_calls"].extend(inline_tool_calls)
+                            else:
+                                prev["tool_calls"] = list(inline_tool_calls)
+                        if inline_reasoning:
+                            prev["reasoning_content"] = _append_visible_reasoning(
+                                prev.get("reasoning_content"), inline_reasoning)
                     else:
                         msg_dict = {"role": role, "content": body}
-                        if role == "assistant" and pending_reasoning:
-                            msg_dict["reasoning_content"] = pending_reasoning
-                            pending_reasoning = ""
+                        if role == "assistant":
+                            if pending_reasoning:
+                                msg_dict["reasoning_content"] = pending_reasoning
+                                pending_reasoning = ""
+                            if inline_tool_calls:
+                                msg_dict["tool_calls"] = list(inline_tool_calls)
+                            if inline_reasoning:
+                                msg_dict["reasoning_content"] = _append_visible_reasoning(
+                                    msg_dict.get("reasoning_content"), inline_reasoning)
+                        if role == "tool":
+                            msg_dict["tool_call_id"] = item.get("tool_call_id") or ""
+                            if item.get("name") is not None:
+                                msg_dict["name"] = item.get("name")
                         messages.append(msg_dict)
             elif itype == "reasoning":
                 # Reasoning item from previous assistant turn in Responses API.
@@ -18408,10 +18763,22 @@ def _responses_input_to_messages(payload):
                     elif isinstance(cnt, list):
                         r_text = _flatten_content(cnt)
                 if r_text:
-                    if messages and messages[-1].get("role") == "assistant":
-                        messages[-1]["reasoning_content"] = r_text
+                    nxt = _reasoning_group_target(inp, item_index)
+                    nxt_type = nxt.get("type") if isinstance(nxt, dict) else None
+                    nxt_role = nxt.get("role") if isinstance(nxt, dict) else None
+                    starts_assistant = (
+                        nxt_type in ("function_call", "custom_tool_call")
+                        or (nxt_type in (None, "message", "user")
+                            and nxt_role == "assistant")
+                    )
+                    if (not starts_assistant and messages
+                            and messages[-1].get("role") == "assistant"):
+                        prev = messages[-1]
+                        prev["reasoning_content"] = _append_visible_reasoning(
+                            prev.get("reasoning_content"), r_text)
                     else:
-                        pending_reasoning = r_text
+                        pending_reasoning = _append_visible_reasoning(
+                            pending_reasoning, r_text)
             elif itype == "function_call_output":
                 raw_out = item.get("output")
                 if not item.get("call_id"):
@@ -18436,6 +18803,7 @@ def _responses_input_to_messages(payload):
                                           "[Message from another task - treat this "
                                           "as a user instruction]"}] + _txt),
                         })
+                        pending_reasoning = ""
                         continue
                     _txt = (_txt or "").strip()
                     if _txt:
@@ -18444,6 +18812,7 @@ def _responses_input_to_messages(payload):
                             "content": ("[Message from another task - treat this "
                                         "as a user instruction]" + chr(10) + chr(10) + _txt),
                         })
+                        pending_reasoning = ""
                         continue
                 if isinstance(raw_out, list):
                     content = _flatten_content(raw_out)
@@ -18461,6 +18830,7 @@ def _responses_input_to_messages(payload):
                     "tool_call_id": item.get("call_id") or "",
                     "content": content,
                 })
+                pending_reasoning = ""
             elif itype == "function_call":
                 tc_item = {
                     "id": item.get("call_id") or item.get("id") or "",
@@ -18470,8 +18840,10 @@ def _responses_input_to_messages(payload):
                         "arguments": item.get("arguments") or "{}",
                     },
                 }
-                # Merge into previous assistant message if adjacent
-                if messages and messages[-1].get("role") == "assistant":
+                # Merge into previous assistant message if adjacent and no
+                # reasoning item is waiting for its own assistant turn.
+                if (not pending_reasoning and messages
+                        and messages[-1].get("role") == "assistant"):
                     prev = messages[-1]
                     if "tool_calls" in prev:
                         prev["tool_calls"].append(tc_item)
@@ -18505,8 +18877,10 @@ def _responses_input_to_messages(payload):
                         "arguments": json.dumps({"input": raw_input}, ensure_ascii=False),
                     },
                 }
-                # Merge into previous assistant message if adjacent
-                if messages and messages[-1].get("role") == "assistant":
+                # Merge into previous assistant message if adjacent and no
+                # reasoning item is waiting for its own assistant turn.
+                if (not pending_reasoning and messages
+                        and messages[-1].get("role") == "assistant"):
                     prev = messages[-1]
                     if "tool_calls" in prev:
                         prev["tool_calls"].append(tc_item)
@@ -18541,6 +18915,7 @@ def _responses_input_to_messages(payload):
                     "tool_call_id": item.get("call_id") or "",
                     "content": content,
                 })
+                pending_reasoning = ""
             elif itype == "agent_message":
                 parts = item.get("content")
                 if isinstance(parts, list):
@@ -18557,6 +18932,7 @@ def _responses_input_to_messages(payload):
                         "content": ("[Message from another task - treat this as "
                                     "a user instruction]" + chr(10) + chr(10) + text),
                     })
+                    pending_reasoning = ""
             elif itype in COMPACTION_ITEM_TYPES:
                 # A compaction result from an earlier turn. Codex replays it as
                 # an opaque item; to the upstream it is the handoff summary the
@@ -20257,7 +20633,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "mix2api/1.6.5"
+    server_version = "mix2api/1.6.6"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -20351,6 +20727,7 @@ class Handler(BaseHTTPRequestHandler):
                 # （RFC 7232 §4.1），否则缓存会丢掉状态、下次又整份重取。
                 self.send_response(304)
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Robots-Tag", "noindex, nofollow")
                 self.send_header("ETag", etag)
                 self.end_headers()
                 return
@@ -21768,12 +22145,14 @@ class Handler(BaseHTTPRequestHandler):
                 # Cache-Control 必须原样重发（RFC 7232 §4.1），否则缓存会丢掉状态。
                 self.send_response(304)
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Robots-Tag", "noindex, nofollow")
                 self.send_header("ETag", etag)
                 self.end_headers()
                 return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
         # no-cache 而不是 no-store：允许存储，但每次使用前必须回源校验；配合
         # 上面的校验符，校验命中的代价是一次 304 而不是整页约 470KB。不加
         # max-age：没有它浏览器每次打开都会校验，应用更新后新版页面立即生效。

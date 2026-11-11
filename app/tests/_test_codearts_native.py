@@ -159,6 +159,7 @@ try:
     check("cooldown cleared", acct.cool_until == 0)
 
     print("== model id identity ==")
+    original_models = list(acct.models)
     acct.models = [
         {"id": "deepseek-v4.1-flash", "max_tokens": 1000},
         {"id": "deepseek-v4.1-flash-1017", "max_tokens": 2000},
@@ -173,6 +174,105 @@ try:
           C._model_output_limit(acct, "deepseek-v4.1-flash-1017") == 2000)
     check("base has its own output limit",
           C._model_output_limit(acct, "deepseek-v4.1-flash") == 1000)
+    acct.models = original_models
+
+    print("== model id casing fallback ==")
+    acct.chat_model_ids.clear()
+    state.requests = []
+    state.model_access_error_remaining = {"GLM-5.2": 1}
+    casing_body = C.build_chat_body({
+        "model": "glm-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+    }, "sess-casing")
+    stream, _used_acct, used_model = C.open_chat(
+        C.load_config(ACCOUNTS), casing_body, "sess-casing")
+    b"".join(stream)
+    stream.close()
+    attempts = [json.loads(r["body"])["model"] for r in state.requests
+                if r["path"] == C.EP_CHAT]
+    check("fallback retries alternate spelling",
+          attempts == ["GLM-5.2", "glm-5.2"], attempts)
+    check("fallback returns accepted spelling", used_model == "glm-5.2",
+          used_model)
+    check("fallback keeps account healthy",
+          acct.cool_until == 0 and acct.err_count == 0)
+
+    state.requests = []
+    cached_body = C.build_chat_body({
+        "model": "GLM-5.2",
+        "messages": [{"role": "user", "content": "hi"}],
+    }, "sess-casing-2")
+    stream, _used_acct, used_model = C.open_chat(
+        C.load_config(ACCOUNTS), cached_body, "sess-casing-2")
+    b"".join(stream)
+    stream.close()
+    attempts = [json.loads(r["body"])["model"] for r in state.requests
+                if r["path"] == C.EP_CHAT]
+    check("cached spelling is reused", attempts == ["glm-5.2"], attempts)
+    acct.chat_model_ids.clear()
+    state.model_access_error_remaining = {}
+
+    print("== role-only preflight ==")
+    role_only = (b'data: {"choices":[{"index":0,"delta":{"role":"assistant"},'
+                 b'"finish_reason":null}]}\n\n')
+    model_error = (b'data: {"error_code":"TM.000010051","error_msg":'
+                   b'"\\u60a8\\u5f53\\u524d\\u65e0\\u6743\\u8c03\\u7528\\u8be5\\u6a21\\u578b"}\n\n')
+    embedded = C.CodeArtsStream(io.BytesIO(role_only + model_error),
+                                "GLM-5.2", acct, acct.pool)
+    try:
+        embedded.preflight()
+        check("role-only then model error is raised before stream", False)
+    except C.CodeArtsUpstreamError as exc:
+        check("role-only then model error is raised before stream",
+              "无权调用" in str(exc), exc)
+    finally:
+        embedded.close()
+    good = role_only + (b'data: {"choices":[{"index":0,"delta":{"content":"ok"},'
+                        b'"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    stream = C.CodeArtsStream(io.BytesIO(good), "GLM-5.2", acct, acct.pool)
+    stream.preflight()
+    result = b"".join(stream)
+    check("role-only chunk preserved on success",
+          b'"role": "assistant"' in result and b'"content": "ok"' in result,
+          result)
+    stream.close()
+
+    print("== credit exhaustion and manual disable ==")
+    embedded = C.CodeArtsStream(
+        io.BytesIO('data: {"code":400,"message":"你的积分已耗尽，请充值"}\n\n'.encode('utf-8')),
+        "GLM-5.2", acct, acct.pool)
+    try:
+        embedded.preflight()
+        check("SSE credit exhaustion is a 429", False)
+    except C.CodeArtsUpstreamError as exc:
+        check("SSE credit exhaustion is a 429", exc.status == 429 and
+              str(exc.code) == "CREDIT_EXHAUSTED", exc)
+    finally:
+        embedded.close()
+
+    pool.disable("u1", reason="manual disable")
+    pool.note_error(acct, "terminal credential error", terminal=True)
+    check("terminal error keeps manual disable",
+          acct.manual_disabled is True and acct.disabled is True)
+    pool.enable("u1")
+    check("manual enable clears the flag", acct.manual_disabled is False)
+
+    state.embedded_error = {"code": 400, "message": "你的积分已耗尽，请充值"}
+    try:
+        body = C.build_chat_body({
+            "model": "GLM-5.2",
+            "messages": [{"role": "user", "content": "hi"}],
+        }, "sess-credit-sse")
+        C.open_chat(C.load_config(ACCOUNTS), body, "sess-credit-sse")
+        check("SSE credit exhaustion fails the request", False)
+    except C.CodeArtsUpstreamError:
+        check("SSE credit exhaustion fails the request", True)
+    finally:
+        state.embedded_error = None
+    check("SSE credit exhaustion parks the account",
+          acct.cool_until > time.time() + 500, acct.cool_until)
+    acct.cool_until = 0
+    acct.err_count = 0
 
     print("== proxy slots ==")
     import urllib.request

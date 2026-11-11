@@ -35,6 +35,8 @@ class FakeState(object):
         self.chat_mode = "delta"  # delta | text
         self.chat_error = None    # (status, body_dict) 或 None
         self.chat_error_remaining = -1  # -1 = 一直失败；N = 失败 N 次后恢复
+        # Model spelling -> remaining rejects. Used by the casing-fallback test.
+        self.model_access_error_remaining = {}
         self.credit_error_once = False  # 下一次聊天返回积分耗尽 400
         self.embedded_error = None  # {"error_code": ..., "error_msg": ...}
         self.require_benefit_header = False
@@ -224,6 +226,16 @@ class _Handler(BaseHTTPRequestHandler):
             if state.require_benefit_header and self.headers.get("maas_type") != "benefit":
                 self._send_json(200, {"error_code": "InferHub.002002009.404",
                                       "error_msg": "model is not registered"})
+                return
+            model = str((state.last_body or {}).get("model") or "")
+            remaining = state.model_access_error_remaining.get(model)
+            if remaining is not None and remaining != 0:
+                if remaining > 0:
+                    state.model_access_error_remaining[model] = remaining - 1
+                self._send_json(502, {
+                    "error_code": "TM.000010051",
+                    "error_msg": "您当前无权调用该模型，请联系企业管理员开通。",
+                })
                 return
             if state.credit_error_once:
                 state.credit_error_once = False

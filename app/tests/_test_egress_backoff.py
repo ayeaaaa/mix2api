@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import wb_accounts as A
 import wb_egress
+os.environ.setdefault("WB_INTL_MODEL_ALIAS", "0")
 import wb_proxy
 import wb_settings
 import wb_upstream_pool

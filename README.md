@@ -34,7 +34,7 @@ mix2api 是一个独立的单进程网关项目：把 WorkBuddy 国际版、Work
 - **协议与用量**：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages 统一路由；CodeArts 用量记 `realm=codearts`、Raccoon 记 `realm=raccoon` 且 `cost_policy=raccoon:unpriced`，都不按 WorkBuddy 价目表计价。
 - **部署**：单服务 compose，默认端口 `58675`；`make build / up / test / logs`。
 - **小浣熊每日活跃打卡**：上游按天给当天活跃的账号自动发 `daily_grant`（300 积分），没有领取接口；网关每天 09:00 / 21:00 各试一次最小对话触发活跃并核对到账，已到账不重复打卡，设置页开关默认关闭。
-- **测试**：286 个套件：213 个 Python + 73 个 JS 全过；CodeArts 链路用本机假华为云上游覆盖，Raccoon 链路用本机假小浣熊上游覆盖，密码学有 Go 对照向量。
+- **测试**：287 个套件：214 个 Python + 73 个 JS 全过；CodeArts 链路用本机假华为云上游覆盖，Raccoon 链路用本机假小浣熊上游覆盖，密码学有 Go 对照向量。
 
 > 本项目仅用于协议学习与个人自用；账号风控、限流、封禁风险由使用者自行承担。请优先使用官方客户端，不要使用主账号，不要共享或转售账号。
 
@@ -63,11 +63,11 @@ docker compose -f docker-compose.image.yml up -d
 或手动：
 
 ```bash
-docker pull ghcr.io/ayeaaaa/mix2api:v1.6.5
+docker pull ghcr.io/ayeaaaa/mix2api:v1.6.6
 docker run -d --name mix2api -p 58675:58675 -e PORT=58675 \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
-  ghcr.io/ayeaaaa/mix2api:v1.6.5
+  ghcr.io/ayeaaaa/mix2api:v1.6.6
 ```
 
 ### 发布产物

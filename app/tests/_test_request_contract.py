@@ -155,23 +155,174 @@ class RequestContractTests(unittest.TestCase):
         parts = [{"type": "text", "text": DATA}]
         self.assertEqual(P.sanitize_messages([{"role": "tool", "content": parts}])[0]["content"], parts)
 
-    def test_other_role_fingerprint_rules_are_unchanged(self):
+    def test_11128_is_not_rewritten_in_message_data(self):
         for role in ("system", "user", "assistant"):
             with self.subTest(role=role):
                 out = P.sanitize_messages([{"role": role, "content": "11128"}])
-                self.assertEqual(out[0]["content"], "11-128")
+                self.assertEqual(out[0]["content"], "11128")
 
     def test_legacy_tool_sanitization_is_unchanged(self):
         with mock.patch.dict(os.environ, {FLAG: "0"}):
             out = P.sanitize_messages(self.tool_turn())
-            self.assertEqual(out[2]["content"], DATA.replace("11128", "11-128"))
+            self.assertEqual(out[2]["content"], DATA)
             self.assertEqual(out[1]["tool_calls"][0]["function"]["arguments"],
-                             DATA.replace("11128", "11-128"))
+                             DATA)
 
     def test_malformed_tool_calls_remain_tolerated(self):
         for calls in (None, [], "fixture", [None, {}]):
             self.assertEqual(P.sanitize_tool_calls(calls), calls)
 
+
+    def test_empty_text_parts_filled_before_upstream(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "image_url", "image_url": {"url": "data:x"}},
+                    {"type": "text", "text": "hi"},
+                ]},
+            ],
+        })
+        parts = body["messages"][1]["content"]
+        self.assertEqual(parts[0]["text"], " ")
+        self.assertEqual(parts[1]["type"], "image_url")
+        self.assertEqual(parts[2]["text"], "hi")
+
+    def test_empty_text_parts_in_sniffed_string_content(self):
+        body = P.build_upstream_body({
+            "model": "deepseek-v4.1-flash",
+            "messages": [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content":
+                 '[{"type":"text","text":null},{"type":"text"}]'},
+            ],
+        })
+        content = body["messages"][1]["content"]
+        parts = json.loads(content)
+        self.assertEqual(parts[0]["text"], " ")
+        self.assertEqual(parts[1]["text"], " ")
+        # Second pass is idempotent.
+        again = P.guard_empty_text_parts([{"role": "user", "content": content}])
+        self.assertEqual(again[0]["content"], content)
+
+
+    def test_reasoning_mirror_for_models_that_read_it(self):
+        messages = [
+            {"role": "assistant", "content": "a", "reasoning_content": "think"},
+            {"role": "assistant", "content": "b", "reasoning_content": "new",
+             "reasoning": "keep"},
+            {"role": "user", "content": "hi"},
+        ]
+        out = P.mirror_upstream_reasoning(messages, "kimi-k3")
+        self.assertEqual(out[0]["reasoning"], "think")
+        self.assertEqual(out[1]["reasoning"], "keep")
+        self.assertNotIn("reasoning", out[2])
+        self.assertEqual(P.mirror_upstream_reasoning(messages, "glm-5.2")[0]["reasoning"], "think")
+        self.assertEqual(P.mirror_upstream_reasoning(messages, "deepseek-v4.1-flash"), messages)
+
+    def test_intl_model_alias_scope_and_escape_hatch(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "intl"),
+                             "deepseek-v4.1-flash-sg")
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "cn"),
+                             "deepseek-v4.1-flash")
+            self.assertEqual(P.intl_model_alias("glm-5.2", "intl"), "glm-5.2")
+            payload = {"model": "deepseek-v4.1-flash"}
+            self.assertEqual(P.apply_intl_model_alias(payload, "intl"),
+                             "deepseek-v4.1-flash-sg")
+            self.assertEqual(payload["model"], "deepseek-v4.1-flash-sg")
+        with mock.patch.dict(os.environ, {"WB_INTL_MODEL_ALIAS": "0"}):
+            self.assertEqual(P.intl_model_alias("deepseek-v4.1-flash", "intl"),
+                             "deepseek-v4.1-flash")
+
+    def test_responses_replay_joins_adjacent_reasoning(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "first"},
+                {"type": "summary_text", "text": "second"},
+            ]},
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "third"},
+            ]},
+            {"type": "message", "role": "assistant", "content": "answer"},
+        ]})
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["reasoning_content"], "first\nsecond\nthird")
+
+    def test_responses_replay_preserves_inline_assistant_fields(self):
+        messages = P._responses_input_to_messages({"input": [{
+            "type": "message", "role": "assistant", "content": "hello",
+            "reasoning_content": "think",
+            "tool_calls": [{"id": "call-1", "type": "function",
+                            "function": {"name": "run", "arguments": "{}"}}],
+        }]})
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["reasoning_content"], "think")
+        self.assertEqual(len(messages[0]["tool_calls"]), 1)
+
+    def test_responses_replay_reasoning_before_tool_call_starts_new_assistant(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "message", "role": "assistant", "content": "earlier"},
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "tool thinking"},
+            ]},
+            {"type": "function_call", "call_id": "call-1",
+             "name": "run", "arguments": "{}"},
+        ]})
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["content"], "earlier")
+        self.assertNotIn("reasoning_content", messages[0])
+        self.assertEqual(messages[1]["reasoning_content"], "tool thinking")
+        self.assertEqual(len(messages[1]["tool_calls"]), 1)
+
+    def test_responses_replay_tool_output_clears_pending_reasoning(self):
+        messages = P._responses_input_to_messages({"input": [
+            {"type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "orphan thinking"},
+            ]},
+            {"type": "function_call_output", "call_id": "",
+             "output": "next instruction"},
+            {"type": "message", "role": "assistant", "content": "done"},
+        ]})
+        self.assertEqual(len(messages), 2)
+        self.assertNotIn("reasoning_content", messages[1])
+
+    def test_kimi_tool_schema_refs_are_inlined(self):
+        body = P.build_upstream_body({
+            "model": "kimi-k3.1-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "$defs": {"Item": {"type": "object", "properties": {
+                        "value": {"type": "string"}}}},
+                    "properties": {"item": {"$ref": "#/$defs/Item"}},
+                },
+            }}],
+        })
+        params = body["tools"][0]["function"]["parameters"]
+        self.assertNotIn("$ref", params["properties"]["item"])
+        self.assertNotIn("$defs", params)
+        self.assertEqual(params["properties"]["item"]["type"], "object")
+        self.assertEqual(
+            params["properties"]["item"]["properties"]["value"]["type"], "string")
+
+    def test_kimi_literal_ref_data_is_not_inlined(self):
+        body = P.build_upstream_body({
+            "model": "kimi-k3.1-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {
+                    "value": {"type": "string", "default": {"$ref": "keep"}},
+                }},
+            }}],
+        })
+        params = body["tools"][0]["function"]["parameters"]
+        self.assertEqual(params["properties"]["value"]["default"], {"$ref": "keep"})
 
 if __name__ == "__main__":
     unittest.main()
