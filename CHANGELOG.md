@@ -5,13 +5,24 @@ Keep a Changelog and the project uses semantic versioning.
 
 ## [Unreleased]
 
-### Fixed
+### 中文
+
+- 修复迁移后用量缓存失效：`ValidateCachePosition` 改为按 size/offset/tail
+  内容校验，不再依赖原文件 inode/path；v1 全局（`realm: null`）
+  analytics/series checkpoint 仅由 all-realm 视图复用，具体 realm 仍走
+  对应缓存或按 realm 过滤扫描；日对齐的 analytics 窗口复用 v1 日桶，避免
+  重新全量扫描。
+
+### English
+
+#### Fixed
 
 - Usage checkpoints survive a data migration: `ValidateCachePosition` now
-  validates the size/offset/tail content instead of the original inode/path,
-  and v1 global (`realm: null`) analytics/series checkpoints are adopted
-  again. Day-aligned analytics windows use the v1 per-day buckets instead of
-  rescanning the full usage log.
+  validates the size/offset/tail content instead of the original inode/path.
+  v1 global (`realm: null`) analytics/series checkpoints are adopted by the
+  all-realm view only; scoped realms still use an exact entry or a
+  realm-filtered scan. Day-aligned analytics windows use the v1 per-day buckets
+  instead of rescanning the full usage log.
 
 ## [2.0.2] - 2026-11-11
 

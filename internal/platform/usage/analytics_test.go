@@ -163,7 +163,7 @@ func TestAnalyticsAdoptsGlobalV1DayCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := env.service()
-	payload, err := service.Analytics(context.Background(), AnalyticsOptions{Range: "today", Realm: "intl"})
+	payload, err := service.Analytics(context.Background(), AnalyticsOptions{Range: "today", Realm: "all"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,5 +173,56 @@ func TestAnalyticsAdoptsGlobalV1DayCache(t *testing.T) {
 	}
 	if got := mustNumber(t, mustMap(t, summary["window"])["requests"]); got != 7 {
 		t.Fatalf("window requests = %v, want the cached day bucket", got)
+	}
+}
+
+func TestAnalyticsRejectsGlobalV1CacheForScopedRealm(t *testing.T) {
+	now := time.Now()
+	rows := []map[string]any{
+		row(float64(now.Add(-time.Hour).Unix()), "m", "intl", "intl-a", 100, 10, nil),
+	}
+	env := newTestEnv(t, rows)
+	env.Now = now
+	t.Setenv("WB_USAGE_CACHE", "1")
+	info, err := os.Stat(env.Paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, ok := CachePosition(env.Paths.Log, info.Size())
+	if !ok {
+		t.Fatal("position")
+	}
+	day := now.Format("2006-01-02")
+	empty := map[string]any{"accts": map[string]any{}, "models": map[string]any{}, "keys": map[string]any{}}
+	maps := map[string]any{"summary": map[string]any{"requests": 999}}
+	dayMaps := map[string]any{"summary": map[string]any{"requests": 999}}
+	for key, value := range empty {
+		maps[key] = value
+		dayMaps[key] = value
+	}
+	entry := map[string]any{
+		"realm":      "",
+		"maps":       maps,
+		"days":       map[string]any{day: dayMaps},
+		"days_floor": day,
+		"max_at":     float64(now.Unix()),
+	}
+	for key, value := range position {
+		entry[key] = value
+	}
+	doc, err := json.Marshal(map[string]any{"schema": cacheSchema, "kind": "analytics", "entries": []any{entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.Cache.Path("analytics"), doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := env.service().Analytics(context.Background(), AnalyticsOptions{Range: "today", Realm: "intl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := mustMap(t, mustMap(t, payload["summary"])["window"])
+	if got := mustNumber(t, window["requests"]); got != 1 {
+		t.Fatalf("scoped realm adopted global v1 cache: window requests = %v, want 1", got)
 	}
 }

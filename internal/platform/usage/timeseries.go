@@ -210,8 +210,9 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 	}
 	for _, entry := range s.Cache.Entries("series") {
 		entryRealm, _ := entry["realm"].(string)
-		// v1 series checkpoints are global (realm: null).
-		if entryRealm != "" && entryRealm != realm {
+		// v1 global series checkpoints contain every realm; only the
+		// all-realm view may adopt them.
+		if entryRealm != realm {
 			continue
 		}
 		if !s.cacheFingerprintOK(entry) {

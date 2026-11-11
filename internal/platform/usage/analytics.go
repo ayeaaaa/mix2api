@@ -382,9 +382,10 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 	}
 	for _, entry := range s.Cache.Entries("analytics") {
 		entryRealm, _ := entry["realm"].(string)
-		// v1 analytics checkpoints are global (realm: null); adopt them for
-		// every realm and filter through the payload. Empty is the same shape.
-		if entryRealm != "" && entryRealm != realm {
+		// v1 global checkpoints (realm: null) contain every realm, so they
+		// are only valid for the all-realm view. A scoped request must use an
+		// exact realm entry or fall back to a realm-filtered scan.
+		if entryRealm != realm {
 			continue
 		}
 		if !s.cacheFingerprintOK(entry) {
