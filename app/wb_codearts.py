@@ -462,6 +462,9 @@ class CodeArtsAccount(object):
         self.last_used = 0.0
         self.models = []
         self.model_benefit = {}
+        # Accepted upstream spelling per logical model id. InferHub can report
+        # a casing mismatch as TM.000010051; remember the spelling that worked.
+        self.chat_model_ids = {}
         self.models_fetched_at = 0.0
         self.checkin = None
         self.note = ""
@@ -1830,6 +1833,30 @@ def _chat_headers(acct, chat_id, session_id, benefit):
     return headers
 
 
+def _is_role_only_data(data):
+    try:
+        payload = json.loads(data.decode("utf-8", "replace"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    delta = choice.get("delta")
+    if not isinstance(delta, dict) or delta.get("role") != "assistant":
+        return False
+    if choice.get("finish_reason"):
+        return False
+    for key, value in delta.items():
+        if key == "role":
+            continue
+        if value not in (None, "", 0, False):
+            return False
+    return True
+
+
 class CodeArtsStream(object):
     """把华为云 SSE 包成 wb-hub 回程处理器能吃的行迭代器。
 
@@ -1845,6 +1872,7 @@ class CodeArtsStream(object):
         self.pool = pool
         self._wb_billed_model = model
         self._pending = b""
+        self._prefix = []
         self._done = False
         self._finish_sent = False
         self._last_text = ""
@@ -1870,6 +1898,7 @@ class CodeArtsStream(object):
 
     def preflight(self):
         """读到首个 data 事件；HTTP 200 里内嵌的业务错误在这里抛出。"""
+        saw_role = False
         while True:
             line = self.raw.readline()
             if not line:
@@ -1880,8 +1909,21 @@ class CodeArtsStream(object):
             data = stripped[5:].strip()
             if not data:
                 continue
+            if data == b"[DONE]":
+                self._pending = line if line.endswith(b"\n") else line + b"\n"
+                return
+            try:
+                self._raise_embedded(data)
+            except CodeArtsError as exc:
+                if not saw_role or _is_model_id_error(str(exc)):
+                    raise
+                self._pending = line if line.endswith(b"\n") else line + b"\n"
+                return
+            if not saw_role and _is_role_only_data(data):
+                self._prefix.append(line if line.endswith(b"\n") else line + b"\n")
+                saw_role = True
+                continue
             self._pending = line if line.endswith(b"\n") else line + b"\n"
-            self._raise_embedded(data)
             return
 
     def _raise_embedded(self, data):
@@ -1931,7 +1973,9 @@ class CodeArtsStream(object):
 
     def __iter__(self):
         while not self._done:
-            if self._pending:
+            if self._prefix:
+                line = self._prefix.pop(0)
+            elif self._pending:
                 line, self._pending = self._pending, b""
             else:
                 line = self.raw.readline()
@@ -2107,8 +2151,50 @@ def _clamp_output_tokens(acct, model, body):
         body[key] = limit
 
 
+def _is_model_access_error(message):
+    text = str(message or "")
+    return "tm.000010051" in text.lower() or "无权调用该模型" in text
+
+
+def _is_model_id_error(message):
+    return (_is_model_access_error(message)
+            or "inferhub.002002009" in str(message or "").lower())
+
+
+def _model_spellings(acct, model):
+    canonical = _canonical_model(acct, model)
+    key = canonical.lower()
+    alternate = key
+    original = str(model or "").strip()
+    if canonical == key and original.lower() == key:
+        alternate = original
+    first = acct.chat_model_ids.get(key) or canonical
+    if first == canonical:
+        first, alternate = canonical, alternate
+    else:
+        first, alternate = first, canonical
+    return canonical, first, (alternate if alternate != first else "")
+
+
 def _client_chat(acct, body, session_key):
-    model = _canonical_model(acct, body.get("model"))
+    canonical, first, alternate = _model_spellings(acct, body.get("model"))
+    try:
+        return _client_chat_model(acct, body, session_key, first)
+    except CodeArtsError as exc:
+        if not alternate or not _is_model_id_error(str(exc)):
+            raise
+        try:
+            result = _client_chat_model(acct, body, session_key, alternate)
+        except CodeArtsError as retry_exc:
+            if _is_model_access_error(str(exc)) and _is_model_id_error(str(retry_exc)):
+                raise exc
+            raise
+        acct.chat_model_ids[canonical.lower()] = alternate
+        return result
+
+
+def _client_chat_model(acct, body, session_key, model_override=None):
+    model = str(model_override) if model_override is not None else _canonical_model(acct, body.get("model"))
     chat_id = body.get("chat_id") or _derive_chat_id(session_key, body.get("messages"))
     if not _valid_chat_id(chat_id):
         chat_id = _derive_chat_id(session_key, body.get("messages"))
