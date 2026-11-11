@@ -2,6 +2,8 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -56,5 +58,96 @@ func TestTimeseriesBuckets(t *testing.T) {
 	customSeries := customBucket["series"].([]SeriesBucket)
 	if len(customSeries) == 0 || customSeries[0].At != float64(since.Unix()) {
 		t.Fatalf("custom bucket should anchor at window start: %+v", customSeries)
+	}
+}
+
+func TestSeriesAdoptsGlobalV1Cache(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	rows := []map[string]any{
+		row(float64(now.Add(-time.Hour).Unix()), "m", "intl", "a", 100, 10, nil),
+	}
+	env := newTestEnv(t, rows)
+	env.Now = now
+	t.Setenv("WB_USAGE_CACHE", "1")
+	info, err := os.Stat(env.Paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, ok := CachePosition(env.Paths.Log, info.Size())
+	if !ok {
+		t.Fatal("position")
+	}
+	minute := float64(now.Add(-time.Hour).Unix() / 60)
+	entry := map[string]any{
+		"realm":        "",
+		"minutes":      []any{[]any{minute, 9, 0, 900, 90, 0, 0, 990, 4.5}},
+		"minutes_from": float64(now.Add(-2*time.Hour).Unix() / 60),
+		"days":         map[string]any{},
+		"days_floor":   now.Format("2006-01-02"),
+		"max_at":       float64(now.Unix()),
+		"hits":         []any{},
+		"log":          "/old/migrated/usage.jsonl",
+	}
+	for key, value := range position {
+		entry[key] = value
+	}
+	doc, err := json.Marshal(map[string]any{
+		"schema": cacheSchema, "kind": "series", "entries": []any{entry},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.Cache.Path("series"), doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := env.service()
+	state, ok := service.adoptSeries(context.Background(), "")
+	if !ok {
+		t.Fatal("global v1 series cache was not adopted")
+	}
+	minuteKey := int64(minute) * 60
+	bucket := state.Minutes[minuteKey]
+	if bucket == nil || bucket.Requests != 9 || bucket.Credit != 4.5 {
+		t.Fatalf("minutes = %+v, want the v1 minute cache", bucket)
+	}
+}
+
+func TestSeriesRejectsGlobalV1CacheForScopedRealm(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.Local)
+	env := newTestEnv(t, []map[string]any{
+		row(float64(now.Add(-time.Hour).Unix()), "m", "intl", "a", 100, 10, nil),
+	})
+	env.Now = now
+	t.Setenv("WB_USAGE_CACHE", "1")
+	info, err := os.Stat(env.Paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, ok := CachePosition(env.Paths.Log, info.Size())
+	if !ok {
+		t.Fatal("position")
+	}
+	minute := float64(now.Add(-time.Hour).Unix() / 60)
+	entry := map[string]any{
+		"realm":        "",
+		"minutes":      []any{[]any{minute, 9, 0, 900, 90, 0, 0, 990, 4.5}},
+		"minutes_from": float64(now.Add(-2*time.Hour).Unix() / 60),
+		"days":         map[string]any{},
+		"days_floor":   now.Format("2006-01-02"),
+		"max_at":       float64(now.Unix()),
+		"hits":         []any{},
+	}
+	for key, value := range position {
+		entry[key] = value
+	}
+	doc, err := json.Marshal(map[string]any{"schema": cacheSchema, "kind": "series", "entries": []any{entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.Cache.Path("series"), doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := env.service().adoptSeries(context.Background(), "intl"); ok {
+		t.Fatal("scoped realm adopted global v1 series cache")
 	}
 }

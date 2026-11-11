@@ -290,8 +290,14 @@ func cacheLock(path string) *sync.Mutex {
 }
 
 // ValidateCachePosition checks the stored offset against the current log:
-// same device/inode, file not shorter than the offset, mtime shape present,
-// and the 64 bytes before the offset unchanged. It returns the offset.
+// the file is not shorter than the offset, the mtime shape is sane, and the
+// 64 bytes before the offset are unchanged. It returns the offset.
+//
+// Device, inode and path are deliberately advisory: a migration copies the
+// usage log to a new file (and often a new path), so the identity fields no
+// longer match even though the bytes before the checkpoint offset are
+// unchanged. The tail signature is the content authority; rejecting on a
+// copied inode would force every migrated deployment into a full cold scan.
 func ValidateCachePosition(entry map[string]any, path string) (int64, bool) {
 	if entry == nil {
 		return 0, false
@@ -299,13 +305,6 @@ func ValidateCachePosition(entry map[string]any, path string) (int64, bool) {
 	offset, ok := cacheInt(entry["offset"])
 	if !ok || offset <= 0 {
 		return 0, false
-	}
-	if stored, _ := entry["log"].(string); stored != "" {
-		cleanStored, errStored := filepath.Abs(stored)
-		cleanCurrent, errCurrent := filepath.Abs(path)
-		if errStored == nil && errCurrent == nil && cleanStored != cleanCurrent {
-			return 0, false
-		}
 	}
 	key, ok := entry["key"].([]any)
 	if !ok || len(key) != 3 {
@@ -320,29 +319,15 @@ func ValidateCachePosition(entry map[string]any, path string) (int64, bool) {
 		}
 	}
 	size, okSize := cacheInt(key[0])
-	device, okDevice := cacheInt(key[1])
-	inode, okInode := cacheInt(key[2])
-	if !okSize || !okDevice || !okInode {
+	if !okSize {
 		return 0, false
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Size() < offset {
 		return 0, false
 	}
-	if currentSize, currentDevice, currentInode, ok := logIdentity(info); ok {
+	if currentSize, _, _, ok := logIdentity(info); ok {
 		if currentSize != size && currentSize < offset {
-			return 0, false
-		}
-		if storedDevice, ok := cacheInt(entry["device"]); ok && storedDevice != 0 && storedDevice != int64(currentDevice) {
-			return 0, false
-		}
-		if storedInode, ok := cacheInt(entry["inode"]); ok && storedInode != 0 && storedInode != int64(currentInode) {
-			return 0, false
-		}
-		if device != 0 && device != int64(currentDevice) {
-			return 0, false
-		}
-		if inode != 0 && inode != int64(currentInode) {
 			return 0, false
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 )
 
 // KeyBucketBefore marks rows written before the key field existed.
@@ -89,10 +90,13 @@ type AnalyticsKey struct {
 }
 
 type analyticsMaps struct {
-	Summary AnalyticsStat                 `json:"summary"`
-	Accts   map[string]*AnalyticsAccount  `json:"accts"`
-	Models  map[string]*AnalyticsModelRow `json:"models"`
-	Keys    map[string]*AnalyticsKey      `json:"keys"`
+	Summary   AnalyticsStat                 `json:"summary"`
+	Accts     map[string]*AnalyticsAccount  `json:"accts"`
+	Models    map[string]*AnalyticsModelRow `json:"models"`
+	Keys      map[string]*AnalyticsKey      `json:"keys"`
+	Days      map[string]analyticsMaps      `json:"days,omitempty"`
+	DaysFloor string                        `json:"days_floor,omitempty"`
+	MaxAt     float64                       `json:"max_at,omitempty"`
 }
 
 func newAnalyticsMaps() analyticsMaps {
@@ -100,6 +104,7 @@ func newAnalyticsMaps() analyticsMaps {
 		Accts:  map[string]*AnalyticsAccount{},
 		Models: map[string]*AnalyticsModelRow{},
 		Keys:   map[string]*AnalyticsKey{},
+		Days:   map[string]analyticsMaps{},
 	}
 }
 
@@ -314,6 +319,11 @@ func (s *Service) Analytics(ctx context.Context, opts AnalyticsOptions) (map[str
 	if window.Since == nil && window.Until == nil {
 		winMaps = allMaps.clone()
 		mirrorAllTimeToWindow(&winMaps)
+	} else if dayMaps, ok := s.analyticsWindowFromDays(allMaps, window); ok {
+		// The v1 analytics checkpoint carries per-day buckets; a day-aligned
+		// window (the dashboard's Today/7d/30d presets) can be answered from
+		// those buckets instead of rescanning the whole usage log.
+		winMaps = dayMaps
 	} else {
 		winMaps = newAnalyticsMaps()
 		if _, err := s.scanAll(ctx, func(row Row) error {
@@ -354,6 +364,9 @@ func (s *Service) analyticsAllTime(ctx context.Context, realm string) (analytics
 			cny = cost.CNY
 		}
 		s.foldAnalyticsRow(row, realm, &maps, false, cny)
+		if at, ok := RowAt(row); ok {
+			s.foldAnalyticsDay(&maps, at, realm, row, cny)
+		}
 		return nil
 	})
 	if err != nil {
@@ -369,6 +382,9 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 	}
 	for _, entry := range s.Cache.Entries("analytics") {
 		entryRealm, _ := entry["realm"].(string)
+		// v1 global checkpoints (realm: null) contain every realm, so they
+		// are only valid for the all-realm view. A scoped request must use an
+		// exact realm entry or fall back to a realm-filtered scan.
 		if entryRealm != realm {
 			continue
 		}
@@ -422,6 +438,22 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 				entry.Realms = map[string]int64{}
 			}
 		}
+		// v1 keeps the per-day analytics buckets beside `maps`; ours keeps
+		// them inside data when it writes the checkpoint itself.
+		if rawDays, ok := entry["days"].(map[string]any); ok && len(rawDays) > 0 {
+			if encoded, err := json.Marshal(rawDays); err == nil {
+				var days map[string]analyticsMaps
+				if json.Unmarshal(encoded, &days) == nil {
+					maps.Days = days
+				}
+			}
+		}
+		if floor, ok := entry["days_floor"].(string); ok {
+			maps.DaysFloor = floor
+		}
+		if maxAt, ok := numericValue(entry["max_at"]); ok {
+			maps.MaxAt = maxAt
+		}
 		newOffset, err := s.scan(ctx, s.Store.Paths.Log, offset, func(row Row) error {
 			if !s.matchesRealm(row, realm) {
 				return nil
@@ -432,6 +464,9 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 				cny = cost.CNY
 			}
 			s.foldAnalyticsRow(row, realm, &maps, false, cny)
+			if at, ok := RowAt(row); ok {
+				s.foldAnalyticsDay(&maps, at, realm, row, cny)
+			}
 			return nil
 		})
 		if err != nil {
@@ -443,6 +478,128 @@ func (s *Service) adoptAnalytics(ctx context.Context, realm string) (analyticsMa
 	return analyticsMaps{}, false
 }
 
+func analyticsDayKey(when time.Time) string {
+	return when.In(time.Local).Format("2006-01-02")
+}
+
+func (s *Service) foldAnalyticsDay(maps *analyticsMaps, at float64, realm string, row Row, cost float64) {
+	key := analyticsDayKey(time.Unix(int64(at), 0))
+	day, ok := maps.Days[key]
+	if !ok {
+		day = newAnalyticsMaps()
+	}
+	s.foldAnalyticsRow(row, realm, &day, true, cost)
+	day.Days = nil
+	maps.Days[key] = day
+	if at > maps.MaxAt {
+		maps.MaxAt = at
+	}
+	if maps.DaysFloor == "" || key < maps.DaysFloor {
+		maps.DaysFloor = key
+	}
+}
+
+// analyticsWindowFromDays answers a day-aligned window from the per-day v1
+// buckets. Custom sub-day windows still fall back to the row scan.
+func (s *Service) analyticsWindowFromDays(all analyticsMaps, window Range) (analyticsMaps, bool) {
+	if window.Since == nil || len(all.Days) == 0 {
+		return analyticsMaps{}, false
+	}
+	since := window.Since.In(time.Local)
+	if since.Hour() != 0 || since.Minute() != 0 || since.Second() != 0 || since.Nanosecond() != 0 {
+		return analyticsMaps{}, false
+	}
+	until := s.now().In(time.Local)
+	if window.Until != nil {
+		until = window.Until.In(time.Local)
+		if until.Hour() != 0 || until.Minute() != 0 || until.Second() != 0 || until.Nanosecond() != 0 {
+			return analyticsMaps{}, false
+		}
+	}
+	if !since.Before(until) {
+		return analyticsMaps{}, false
+	}
+	merged := newAnalyticsMaps()
+	for day := since; day.Before(until); day = day.AddDate(0, 0, 1) {
+		key := analyticsDayKey(day)
+		if all.DaysFloor != "" && key < all.DaysFloor {
+			return analyticsMaps{}, false
+		}
+		bucket, ok := all.Days[key]
+		if !ok {
+			return analyticsMaps{}, false
+		}
+		mergeAnalyticsMaps(&merged, bucket)
+	}
+	return merged, true
+}
+
+func accumulateAnalyticsStat(dst *AnalyticsStat, src AnalyticsStat) {
+	dst.Requests += src.Requests
+	dst.Errors += src.Errors
+	dst.PromptTokens += src.PromptTokens
+	dst.CompletionTokens += src.CompletionTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	dst.CachedTokens += src.CachedTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.Credit += src.Credit
+	dst.CostCNY += src.CostCNY
+	dst.TTFTSum += src.TTFTSum
+	dst.TTFTN += src.TTFTN
+	dst.SpeedSum += src.SpeedSum
+	dst.SpeedN += src.SpeedN
+	dst.ElapsedSum += src.ElapsedSum
+	dst.ElapsedN += src.ElapsedN
+}
+
+func addAnalyticsModel(dst AnalyticsModel, src AnalyticsModel) AnalyticsModel {
+	dst.Requests += src.Requests
+	dst.Tokens += src.Tokens
+	dst.Reasoning += src.Reasoning
+	dst.CostCNY += src.CostCNY
+	return dst
+}
+
+func mergeAnalyticsMaps(dst *analyticsMaps, src analyticsMaps) {
+	accumulateAnalyticsStat(&dst.Summary, src.Summary)
+	for uid, entry := range src.Accts {
+		target := dst.Accts[uid]
+		if target == nil {
+			target = &AnalyticsAccount{UID: entry.UID, Nickname: entry.Nickname, Realm: entry.Realm, Domain: entry.Domain, WindowModels: map[string]AnalyticsModel{}, AllModels: map[string]AnalyticsModel{}}
+			dst.Accts[uid] = target
+		}
+		accumulateAnalyticsStat(&target.Window, entry.Window)
+		for model, value := range entry.WindowModels {
+			target.WindowModels[model] = addAnalyticsModel(target.WindowModels[model], value)
+		}
+	}
+	for id, entry := range src.Models {
+		target := dst.Models[id]
+		if target == nil {
+			target = &AnalyticsModelRow{Model: entry.Model}
+			dst.Models[id] = target
+		}
+		accumulateAnalyticsStat(&target.Window, entry.Window)
+	}
+	for id, entry := range src.Keys {
+		target := dst.Keys[id]
+		if target == nil {
+			target = &AnalyticsKey{Key: entry.Key, Name: entry.Name, Realm: entry.Realm, Enabled: entry.Enabled, Source: entry.Source, WindowModels: map[string]AnalyticsModel{}, AllModels: map[string]AnalyticsModel{}, Realms: map[string]int64{}, ModelsOther: map[string]any{}}
+			dst.Keys[id] = target
+		}
+		accumulateAnalyticsStat(&target.Window, entry.Window)
+		for model, value := range entry.WindowModels {
+			target.WindowModels[model] = addAnalyticsModel(target.WindowModels[model], value)
+		}
+		for realm, count := range entry.Realms {
+			target.Realms[realm] += count
+		}
+		if entry.LastAt > target.LastAt {
+			target.LastAt = entry.LastAt
+		}
+	}
+}
+
 func (s *Service) saveAnalytics(realm string, maps analyticsMaps, offset int64) {
 	if s.Cache == nil || offset <= 0 {
 		return
@@ -452,10 +609,13 @@ func (s *Service) saveAnalytics(realm string, maps analyticsMaps, offset int64) 
 		return
 	}
 	entry := map[string]any{
-		"realm":    realm,
-		"pricing":  CacheFingerprint(s.pricingFingerprint()),
-		"realm_fp": CacheFingerprint(s.realmFingerprint()),
-		"data":     maps,
+		"realm":      realm,
+		"pricing":    CacheFingerprint(s.pricingFingerprint()),
+		"realm_fp":   CacheFingerprint(s.realmFingerprint()),
+		"data":       maps,
+		"days":       maps.Days,
+		"days_floor": maps.DaysFloor,
+		"max_at":     maps.MaxAt,
 	}
 	for key, value := range position {
 		entry[key] = value

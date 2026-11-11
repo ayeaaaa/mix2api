@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -465,5 +466,39 @@ func TestCheckpointExcludesPartialTrailingLine(t *testing.T) {
 	}
 	if mustNumber(t, all["requests"]) != 2 {
 		t.Fatalf("completed trailing row lost after partial-line checkpoint: %+v", all)
+	}
+}
+
+func TestValidateCachePositionAcceptsCopiedLog(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("{\"at\":1}\n{\"at\":2}\n")
+	original := filepath.Join(dir, "usage.jsonl")
+	if err := os.WriteFile(original, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	position, ok := CachePosition(original, int64(len(body)))
+	if !ok {
+		t.Fatal("position")
+	}
+	entry := map[string]any{"log": original}
+	for key, value := range position {
+		entry[key] = value
+	}
+	copied := filepath.Join(dir, "usage-copied.jsonl")
+	if err := os.WriteFile(copied, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A migration copies the usage log to a new inode and often a new path;
+	// the checkpoint is still valid because the bytes before the offset and
+	// the tail are unchanged.
+	if _, ok := ValidateCachePosition(entry, copied); !ok {
+		t.Fatal("copied log must validate by its tail")
+	}
+	body[len(body)-1] ^= 0xff
+	if err := os.WriteFile(copied, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ValidateCachePosition(entry, copied); ok {
+		t.Fatal("a changed tail must reject the checkpoint")
 	}
 }
