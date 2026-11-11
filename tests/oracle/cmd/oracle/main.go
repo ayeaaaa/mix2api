@@ -77,6 +77,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	dir := flags.String("oracle", "", "oracle fixture directory")
 	panel := flags.String("panel-token", "", "panel token")
 	apiKey := flags.String("api-key", "", "API key")
+	all := flags.Bool("all", false, "report every mismatched case instead of stopping at the first")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -87,6 +88,18 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	comparer := &harness.Comparer{
 		BaseURL: *base, Dir: *dir,
 		Creds: harness.Credentials{PanelToken: *panel, APIKey: *apiKey},
+	}
+	if *all {
+		diffs := comparer.CompareAll(context.Background())
+		for _, diff := range diffs {
+			fmt.Fprintf(stderr, "oracle: %s\n", diff.Error())
+		}
+		if len(diffs) > 0 {
+			fmt.Fprintf(stderr, "oracle: %d case(s) differ\n", len(diffs))
+			return 1
+		}
+		fmt.Fprintln(stdout, "oracle comparison passed for all selected cases")
+		return 0
 	}
 	if err := comparer.Compare(context.Background()); err != nil {
 		fmt.Fprintln(stderr, "oracle: "+err.Error())

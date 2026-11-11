@@ -6,10 +6,12 @@ foundation**, not outputs captured from a live v1.6.5 oracle run.
 - They encode the small surface implemented by the Raccoon vertical slice
   (health, models, chat stream, chat non-stream) and lock down v2's intended
   normalized semantics.
-- They have not been diffed against shipped v1.6.5 fake-upstream output in this
-  branch. Gate A in the master plan is therefore **partial**: Raccoon
-  vertical-slice contract/regression tests pass, but full v1.6.5 oracle parity
-  remains open.
+- They are not replaced by the recorded oracle. The selected v1.6.5
+  fake-upstream output now lives separately in
+  `tests/oracle/recorded/v1.6.5/`; its `PROVENANCE.md` lists the exact v2 delta.
+  Gate A remains **partial**: these scoped regression fixtures pass, and the
+  recorded selected cases confirm or delimit the v1.6.5 behavior, but full
+  oracle parity (including WorkBuddy and failure modes) remains open.
 - When recording real oracle fixtures, follow `tests/oracle/README.md`, keep the
   v1.6.5 tree read-only and out of git, and replace these files only after
   reviewing semantic differences.
@@ -23,7 +25,8 @@ The `codearts_*.golden.json` and `codearts_chat_stream.golden.json` files are
 also **v2 regression fixtures**, generated from the local fake CodeArts upstream
 through the real provider and API server. They are **not captured v1.6.5 oracle
 output**. The v2 regression contract is **complete** for these scoped fixtures;
-v1.6.5 oracle parity is **pending**. They cover the scoped CodeArts surface: provider health, the exact
+the selected CodeArts v1.6.5 oracle cases are recorded separately in
+`tests/oracle/recorded/v1.6.5/`. They cover the scoped CodeArts surface: provider health, the exact
 `/v1/models?realm=codearts` union (including `DeepSeek-V4.1-Flash-1017`), chat
 non-stream and SSE (text and tool calls), overview with no credential fields,
 check-in claim/confirm, credits refresh, models refresh, disabled/error
@@ -34,10 +37,13 @@ Dynamic values are explicit placeholders: `base_url`, per-second
 `token_remaining`, the time-of-day `credits` multiplier on every model whose
 peak and off-peak rates differ (`DeepSeek-V4.1-Flash` and
 `DeepSeek-V4.1-Flash-1017`), timestamps, and generated IDs. See
-`tests/oracle/codearts.md` for the read-only v1.6.5 oracle procedure. Actual
-v1.6.5 parity remains **pending** for CodeArts as well; the goldens lock down
-v2's scoped semantics and must be reviewed before being replaced by recorded
-oracle assertions.
+`tests/oracle/codearts.md` for the read-only v1.6.5 oracle procedure. The
+recorded selected CodeArts cases match on models, chat, accounts, overview,
+check-in, and credits refresh except for the documented v1-only `catalog` and
+`elapsed_ms`/`first_chunk_at` fields and two additive v2 fields. Full oracle
+replacement of every CodeArts regression fixture remains **pending**; the
+goldens lock down v2's scoped semantics and must be reviewed before being
+replaced by recorded oracle assertions.
 
 ## WorkBuddy fixtures
 

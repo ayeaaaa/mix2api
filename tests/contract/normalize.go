@@ -22,6 +22,7 @@ const (
 	DynamicValue   = "<dynamic>"
 	TimestampValue = "<timestamp>"
 	UUIDValue      = "<uuid>"
+	DurationValue  = "<duration>"
 )
 
 var uuidPattern = regexp.MustCompile(
@@ -275,6 +276,7 @@ func isTimestampKey(key string) bool {
 		"startedat", "finished", "finishedat", "deletedat", "requestedat",
 		"completedat", "expires", "expiresat", "fetchedat", "retryafter",
 		"reset", "notbefore", "lastseen", "lastseenat", "cooluntil", "until",
+		"since",
 		// WorkBuddy panel views emit both epoch fields and their local-wire
 		// presentation forms; activity rows use the short "ts" spelling.
 		"addedat", "updatediso", "lastcheckin", "lastactivityreport",
@@ -329,6 +331,7 @@ func looksLikeTimestamp(value string) bool {
 		time.RubyDate,
 		"2006-01-02 15:04:05",
 		"2006-01-02",
+		"15:04:05",
 	}
 	for _, layout := range layouts {
 		if _, err := time.Parse(layout, trimmed); err == nil {

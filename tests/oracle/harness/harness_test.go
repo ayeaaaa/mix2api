@@ -159,6 +159,81 @@ func writeTestJSON(w http.ResponseWriter, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func TestSemanticEqualTreatsJSONNumbersByValue(t *testing.T) {
+	if !semanticEqual(json.Number("0"), json.Number("0.0")) {
+		t.Fatal("0 and 0.0 should compare equal")
+	}
+	if !semanticEqual(json.Number("4500"), json.Number("4500.00")) {
+		t.Fatal("4500 and 4500.00 should compare equal")
+	}
+	if semanticEqual(json.Number("1"), json.Number("2")) {
+		t.Fatal("1 and 2 should differ")
+	}
+	if !semanticEqual(
+		map[string]any{"n": json.Number("1.0"), "s": "same"},
+		map[string]any{"n": json.Number("1"), "s": "same"},
+	) {
+		t.Fatal("nested numeric spelling should compare equal")
+	}
+}
+
+func TestDescribeDifferencesReportsPathsAndAdditiveFields(t *testing.T) {
+	want := map[string]any{"stable": "a", "missing": true}
+	got := map[string]any{"stable": "b", "extra": true}
+	text := describeDifferences(want, got)
+	for _, needle := range []string{
+		"stable: \"b\", want \"a\"",
+		"missing: missing on target",
+		"extra: extra on target",
+	} {
+		if !strings.Contains(text, needle) {
+			t.Fatalf("difference report missing %q:\n%s", needle, text)
+		}
+	}
+}
+
+func TestCompareAllReportsEveryMismatch(t *testing.T) {
+	var changed atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value := "same"
+		if changed.Load() {
+			value = "different-" + strings.TrimPrefix(r.URL.Path, "/")
+		}
+		writeTestJSON(w, map[string]any{"value": value})
+	}))
+	defer server.Close()
+
+	cases := []Case{
+		{Name: "one", Method: http.MethodGet, Path: "/one", Auth: AuthNone, Kind: "json"},
+		{Name: "two", Method: http.MethodGet, Path: "/two", Auth: AuthNone, Kind: "json"},
+	}
+	dir := t.TempDir() + "/oracle"
+	recorder := &Recorder{
+		BaseURL: server.URL, Cases: cases,
+		Provenance: Provenance{TargetVersion: "1.6.5", TargetCommit: "abc", FakeUpstream: true},
+		Now:        func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) },
+	}
+	if err := recorder.Record(context.Background(), dir); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	comparer := &Comparer{BaseURL: server.URL, Dir: dir}
+	if diffs := comparer.CompareAll(context.Background()); len(diffs) != 0 {
+		t.Fatalf("unexpected diffs: %v", diffs)
+	}
+	changed.Store(true)
+	diffs := comparer.CompareAll(context.Background())
+	if len(diffs) != 2 {
+		t.Fatalf("CompareAll returned %d diffs, want 2: %v", len(diffs), diffs)
+	}
+	names := map[string]bool{}
+	for _, diff := range diffs {
+		names[diff.Name] = true
+	}
+	if !names["one"] || !names["two"] {
+		t.Fatalf("CompareAll names = %v", names)
+	}
+}
+
 func TestLoadRejectsIncompleteProvenanceAndUnsafeCasePaths(t *testing.T) {
 	dir := t.TempDir()
 	hash := strings.Repeat("a", 64)

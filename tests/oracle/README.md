@@ -6,9 +6,15 @@
 Recording is deliberately restricted to loopback and requires
 `--fake-upstream`; it refuses to run against a real account or a remote host.
 The harness writes raw responses plus a checksummed manifest with provenance
-(`fake_upstream`, `loopback-only`, target version/commit). Fixtures are **not**
-committed until a real recording is reviewed; the current tree still contains
-no captured v1.6.5 oracle.
+(`fake_upstream`, `loopback-only`, target version/commit).
+
+The reviewed v1.6.5 fixture is committed under
+`tests/oracle/recorded/v1.6.5/`. It was recorded from the fake Raccoon and
+CodeArts upstreams inside a private network namespace with synthetic accounts;
+see its `PROVENANCE.md` for the exact commands, case hashes, and the current
+v2 delta. `go test ./tests/oracle/...` verifies the manifest, checksums,
+provenance, payload shapes, and the absence of credentials/non-loopback URLs
+without network access.
 
 Selected cases:
 
@@ -19,11 +25,14 @@ Selected cases:
 | chat / chat_stream | `POST /v1/chat/completions?realm=raccoon` |
 | responses / responses_stream | `POST /v1/responses?realm=raccoon` |
 | messages | `POST /v1/messages?realm=raccoon` |
+| codearts_models / codearts_chat / codearts_chat_stream | CodeArts `realm=codearts` |
 | admin_accounts | `GET /raccoon/accounts` (panel token) |
+| codearts_accounts | `GET /codearts/accounts` (panel token) |
 | media_models | `GET /v1/media/models` (API key) |
 | agents | `GET /agents` (panel token) |
 | updates / updates_backups | `GET /updates`, `GET /updates/backups` |
-| usage | `GET /usage` (panel token) |
+| codearts_overview / checkin / credits_refresh / models_refresh | CodeArts panel routes |
+| usage / usage_raccoon / usage_codearts | `GET /usage` with optional `?realm=` |
 | logs | `GET /logs` (panel token) |
 
 ```sh
@@ -33,9 +42,11 @@ tests/oracle/run.sh record \
   --version 1.6.5 --commit e40c4e8994f9cc6ace3457e350466cdd5d422a37 \
   --fake-upstream --panel-token "$PANEL" --api-key "$API_KEY"
 
-# Against the v2 candidate with the same fake-upstream accounts:
-tests/oracle/run.sh compare \
-  --base http://127.0.0.1:18766 --oracle /tmp/mix2api-oracle \
+# Against the v2 candidate with the same fake-upstream accounts. --all reports
+# every mismatched case; the committed fixture is under tests/oracle/recorded.
+tests/oracle/run.sh compare --all \
+  --base http://127.0.0.1:18766 \
+  --oracle tests/oracle/recorded/v1.6.5 \
   --panel-token "$PANEL" --api-key "$API_KEY"
 ```
 
@@ -45,9 +56,14 @@ model/account IDs and content survive, SSE frames are merged semantically, and
 `[DONE]` is recorded. The harness never contacts a non-loopback host and never
 writes credentials into the fixture.
 
-**Gate F status: selected oracle recording and comparison are PENDING.** The
-real-account checklist is in `REAL-ACCOUNT-SMOKE.md` and must be completed on
-dedicated accounts before any `v2.0.0` tag.
+**Gate F status: selected oracle recording is COMPLETE; comparison has a
+documented delta.** The committed fixture covers the Raccoon core matrix and
+the feasible CodeArts provider slice. Against the `2.0.0-rc.1` candidate, 9 of
+24 cases match exactly; 15 differ. The differences are listed with exact
+fields in `recorded/v1.6.5/PROVENANCE.md`; they are not normalized away.
+WorkBuddy provider cases and failure modes remain pending. The real-account
+checklist is in `REAL-ACCOUNT-SMOKE.md` and must be completed on dedicated
+accounts before any `v2.0.0` tag.
 
 The older manual procedure below remains the reference for starting the v1
 fake upstream and seeding accounts.

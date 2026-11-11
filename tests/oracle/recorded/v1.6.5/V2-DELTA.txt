@@ -1,0 +1,124 @@
+# v2 2.0.0-rc.1 (b4ede64) comparison against the v1.6.5 selected oracle
+# Command: /tmp/opencode/oracle compare --all --base http://127.0.0.1:18765 --oracle tests/oracle/recorded/v1.6.5
+# The target and fake upstreams used the same fixed synthetic layout as the recording.
+
+oracle: models: JSON mismatch:
+catalog: missing on target (oracle={"accounts":1,"fetched_at":"\u003ctimestamp\u003e","source":"raccoon","warning":""})
+oracle: codearts_models: JSON mismatch:
+catalog: missing on target (oracle={"accounts":1,"fetched_at":"\u003ctimestamp\u003e","source":"codearts","stale":false})
+oracle: health: JSON mismatch:
+accounts: missing on target (oracle=0)
+accounts_by_realm: missing on target (oracle={})
+accounts_ready: missing on target (oracle=0)
+accounts_ready_by_realm: missing on target (oracle={})
+accounts_ready_current_realm: missing on target (oracle=0)
+api_key_required: missing on target (oracle=false)
+codearts: missing on target (oracle={"accounts":1,"base_url":"http://127.0.0.1:18768","configured":true,"healthy":1,"ok":true})
+credential_file: missing on target (oracle=null)
+crypto_ok: missing on target (oracle=true)
+domain: missing on target (oracle=null)
+expires_at: missing on target (oracle=null)
+issuer: missing on target (oracle=null)
+key_accounts_bound: missing on target (oracle=0)
+key_accounts_ready: missing on target (oracle=0)
+media: missing on target (oracle={"enabled":false,"identity":"desktop","inflight":0,"realm":"cn","slots":4,"video_concurrency":3})
+models_ready: missing on target (oracle={})
+providers: extra on target (target={"cn":{"accounts":0,"base_url":"<upstream>","configured":true,"cooling":0,"disabled":0,"healthy":0,"ok":true,"provider":"workbuddy","realm":"cn"},"codearts":{"accounts":1,"base_url":"http://127.0.0.1:18768","configured":tru…)
+raccoon: missing on target (oracle={"accounts":1,"base_url":"http://127.0.0.1:18764","catalog_source":"raccoon","configured":true,"healthy":1,"models":2,"ok":true})
+realm: missing on target (oracle="raccoon")
+uid: missing on target (oracle=null)
+version: extra on target (target="2.0.0-rc.1")
+oracle: chat: JSON mismatch:
+elapsed_ms: missing on target (oracle=3012)
+first_chunk_at: missing on target (oracle="\u003ctimestamp\u003e")
+oracle: codearts_chat: JSON mismatch:
+elapsed_ms: missing on target (oracle=0)
+first_chunk_at: missing on target (oracle="\u003ctimestamp\u003e")
+oracle: codearts_accounts: JSON mismatch:
+stats.limited: extra on target (target=0)
+oracle: agents: JSON mismatch:
+auth_required: true, want false
+clients[1].config_paths[0]: "/tmp/mix2api-oracle/state/home/.codex/auth.json", want "/tmp/mix2api-oracle/state/home/.codex/config.toml"
+clients[1].config_paths[1]: "/tmp/mix2api-oracle/state/home/.codex/config.toml", want "/tmp/mix2api-oracle/state/home/.codex/auth.json"
+global_key_set: missing on target (oracle=true)
+models: length 45, want 24
+models[0].id: "DeepSeek-V4.1-Flash", want "deepseek-v4.1-flash"
+models[0].name: "DeepSeek-V4.1-Flash", want "Deepseek-V4.1-Flash"
+models[0].reasoning_efforts: length 6, want 3
+models[0].reasoning_efforts[0]: "none", want "low"
+models[0].reasoning_efforts[1]: "low", want "high"
+models[0].reasoning_efforts[2]: "medium", want "max"
+models[0].supports_vision: missing on target (oracle=true)
+models[1].context_window: missing on target (oracle=1000000)
+models[1].id: "DeepSeek-V4.1-Flash-1017", want "deepseek-v4.1-flash-sg"
+models[1].max_output: missing on target (oracle=128000)
+models[1].name: "DeepSeek-V4.1-Flash-1017", want "Deepseek-V4.1-Flash"
+models[1].reasoning_efforts: length 6, want 3
+models[1].reasoning_efforts[0]: "none", want "low"
+models[1].reasoning_efforts[1]: "low", want "high"
+models[1].reasoning_efforts[2]: "medium", want "max"
+models[1].supports_vision: missing on target (oracle=true)
+models[2].context_window: missing on target (oracle=1000000)
+models[2].id: "GLM-4.7", want "hy4-preview"
+models[2].max_output: missing on target (oracle=64000)
+models[2].name: "GLM-4.7", want "Hy4 Preview"
+models[2].reasoning_efforts: missing on target (oracle=["high"])
+models[2].supports_vision: missing on target (oracle=true)
+models[3].context_window: 131072, want 192000
+models[3].id: "GLM-5.2", want "hy3"
+models[3].max_output: 8192, want 64000
+models[3].name: "GLM-5.2", want "Hy3"
+models[3].reasoning_efforts: length 7, want 2
+models[3].reasoning_efforts[0]: "none", want "low"
+models[3].reasoning_efforts[1]: "minimal", want "high"
+models[3].supports_vision: missing on target (oracle=true)
+models[4].context_window: missing on target (oracle=1000000)
+models[4].id: "GLM-5.2-ArkTS-SPARK", want "gpt-6-astra"
+models[4].max_output: missing on target (oracle=128000)
+models[4].name: "GLM-5.2-ArkTS-SPARK", want "GPT-6-Astra"
+models[4].reasoning_efforts: missing on target (oracle=["low","medium","high","xhigh","max"])
+oracle: updates: JSON mismatch:
+current_version: "2.0.0-rc.1", want "1.6.5"
+last_attempt: missing on target (oracle=null)
+last_error: missing on target (oracle="")
+last_success: missing on target (oracle=null)
+latest_tag: missing on target (oracle="")
+latest_version: missing on target (oracle=null)
+published_at: missing on target (oracle="")
+release_url: missing on target (oracle="")
+oracle: updates_backups: JSON mismatch:
+current_version: "2.0.0-rc.1", want "1.6.5"
+oracle: codearts_overview: JSON mismatch:
+stats.limited: extra on target (target=0)
+oracle: codearts_credits_refresh: JSON mismatch:
+accounts: extra on target (target=[{"credits":{"amount":4500,"end_date":"\u003ctimestamp\u003e","expiring":0,"package":"体验版","remain":4499.19,"unit":"credit","used":0.81},"message":"","ok":true,"uid":"u1"}])
+oracle: usage: JSON mismatch:
+by_model.raccoon-090dd3: missing on target (oracle={"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25})
+by_model_acct.raccoon-090dd3: missing on target (oracle={"raccoon":{"pu-raccoon-test":{"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25}}})
+by_model_realm.raccoon-090dd3: missing on target (oracle={"raccoon":{"accounts":{"pu-raccoon-test":5},"cached_tokens":0,"completion_tokens":10,"cost_cny":0.0,"credit":0,"prompt_tokens":15,"reasoning_tokens":0,"requests":5,"total_tokens":25}})
+completion_tokens: 0, want 10
+cost_missing.raccoon-090dd3: missing on target (oracle=5)
+prompt_tokens: 0, want 15
+realm: "intl", want "raccoon"
+requests: 0, want 5
+total_tokens: 0, want 25
+oracle: usage_raccoon: JSON mismatch:
+gen_ms_sum: 6034, want 0
+gen_samples: 2, want 0
+ttft_ms_sum: 3, want 0
+ttft_samples: 2, want 0
+wall_ms_sum: 12084, want 0
+wall_samples: 5, want 0
+oracle: usage_codearts: JSON mismatch:
+ttft_ms_sum: 2, want 0
+ttft_samples: 1, want 0
+wall_ms_sum: 5, want 0
+wall_samples: 2, want 0
+oracle: logs: JSON mismatch:
+db_bytes: extra on target (target=20480)
+logs: length 0, want 51
+max_id: 0, want 51
+mode: "db", want "memory"
+stored: extra on target (target=0)
+total: 0, want 51
+oracle: 15 case(s) differ

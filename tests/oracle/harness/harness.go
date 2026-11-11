@@ -12,12 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -75,12 +77,14 @@ type Credentials struct {
 }
 
 // DefaultCases is the selected v1.6.5 output matrix required by Gate F. Each
-// case hits a route the v2 server implements; provider-specific detail is
-// selected through the Raccoon realm, matching the documented v1 oracle setup.
+// case hits a route the v2 server implements. The core matrix uses Raccoon;
+// CodeArts is included as the provider-specific slice that has a standalone
+// v1 fake upstream. WorkBuddy intl has no v1 fake and hardcodes its origin, so
+// it remains a documented pending case.
 func DefaultCases() []Case {
-	chat := func(stream bool) json.RawMessage {
+	chat := func(model string, stream bool) json.RawMessage {
 		value := map[string]any{
-			"model": "raccoon-090dd3",
+			"model": model,
 			"messages": []any{
 				map[string]any{"role": "user", "content": "hello"},
 			},
@@ -89,21 +93,34 @@ func DefaultCases() []Case {
 		raw, _ := json.Marshal(value)
 		return raw
 	}
+	// Models is fetched before health on purpose: v1 reports the live
+	// catalog source only after a catalog request has populated the pool
+	// cache. Recording health first would capture the seed fallback.
 	return []Case{
-		{Name: "health", Method: http.MethodGet, Path: "/health?force=1", Auth: AuthNone, Kind: "json"},
 		{Name: "models", Method: http.MethodGet, Path: "/v1/models?realm=raccoon", Auth: AuthAPI, Kind: "json"},
-		{Name: "chat", Method: http.MethodPost, Path: "/v1/chat/completions?realm=raccoon", Body: chat(false), Auth: AuthAPI, Kind: "json"},
-		{Name: "chat_stream", Method: http.MethodPost, Path: "/v1/chat/completions?realm=raccoon", Body: chat(true), Auth: AuthAPI, Kind: "sse"},
+		{Name: "codearts_models", Method: http.MethodGet, Path: "/v1/models?realm=codearts", Auth: AuthAPI, Kind: "json"},
+		{Name: "health", Method: http.MethodGet, Path: "/health?force=1", Auth: AuthNone, Kind: "json"},
+		{Name: "chat", Method: http.MethodPost, Path: "/v1/chat/completions?realm=raccoon", Body: chat("raccoon-090dd3", false), Auth: AuthAPI, Kind: "json"},
+		{Name: "chat_stream", Method: http.MethodPost, Path: "/v1/chat/completions?realm=raccoon", Body: chat("raccoon-090dd3", true), Auth: AuthAPI, Kind: "sse"},
 		{Name: "responses", Method: http.MethodPost, Path: "/v1/responses?realm=raccoon", Body: json.RawMessage(`{"model":"raccoon-090dd3","input":"hello","stream":false}`), Auth: AuthAPI, Kind: "json"},
 		{Name: "responses_stream", Method: http.MethodPost, Path: "/v1/responses?realm=raccoon", Body: json.RawMessage(`{"model":"raccoon-090dd3","input":"hello","stream":true}`), Auth: AuthAPI, Kind: "sse"},
 		{Name: "messages", Method: http.MethodPost, Path: "/v1/messages?realm=raccoon", Body: json.RawMessage(`{"model":"raccoon-090dd3","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`), Auth: AuthAPI, Kind: "json"},
+		{Name: "codearts_chat", Method: http.MethodPost, Path: "/v1/chat/completions?realm=codearts", Body: chat("GLM-5.2", false), Auth: AuthAPI, Kind: "json"},
+		{Name: "codearts_chat_stream", Method: http.MethodPost, Path: "/v1/chat/completions?realm=codearts", Body: chat("GLM-5.2", true), Auth: AuthAPI, Kind: "sse"},
 		{Name: "admin_accounts", Method: http.MethodGet, Path: "/raccoon/accounts", Auth: AuthPanel, Kind: "json"},
+		{Name: "codearts_accounts", Method: http.MethodGet, Path: "/codearts/accounts", Auth: AuthPanel, Kind: "json"},
 		{Name: "media_models", Method: http.MethodGet, Path: "/v1/media/models", Auth: AuthAPI, Kind: "json"},
 		{Name: "agents", Method: http.MethodGet, Path: "/agents", Auth: AuthPanel, Kind: "json"},
 		{Name: "updates", Method: http.MethodGet, Path: "/updates", Auth: AuthPanel, Kind: "json"},
 		{Name: "updates_backups", Method: http.MethodGet, Path: "/updates/backups", Auth: AuthPanel, Kind: "json"},
+		{Name: "codearts_overview", Method: http.MethodGet, Path: "/codearts/overview?force=1", Auth: AuthPanel, Kind: "json"},
+		{Name: "codearts_checkin", Method: http.MethodPost, Path: "/codearts/accounts/checkin", Body: json.RawMessage(`{"uid":"u1"}`), Auth: AuthPanel, Kind: "json"},
+		{Name: "codearts_credits_refresh", Method: http.MethodPost, Path: "/codearts/credits/refresh", Body: json.RawMessage(`{}`), Auth: AuthPanel, Kind: "json"},
 		{Name: "usage", Method: http.MethodGet, Path: "/usage", Auth: AuthPanel, Kind: "json"},
+		{Name: "usage_raccoon", Method: http.MethodGet, Path: "/usage?realm=raccoon", Auth: AuthPanel, Kind: "json"},
+		{Name: "usage_codearts", Method: http.MethodGet, Path: "/usage?realm=codearts", Auth: AuthPanel, Kind: "json"},
 		{Name: "logs", Method: http.MethodGet, Path: "/logs", Auth: AuthPanel, Kind: "json"},
+		{Name: "codearts_models_refresh", Method: http.MethodPost, Path: "/codearts/models/refresh", Body: json.RawMessage(`{}`), Auth: AuthPanel, Kind: "json"},
 	}
 }
 
@@ -217,32 +234,57 @@ type Comparer struct {
 	Dir     string
 }
 
+// CaseError is one mismatched case from CompareAll.
+type CaseError struct {
+	Name string
+	Err  error
+}
+
+func (e CaseError) Error() string {
+	return fmt.Sprintf("%s: %v", e.Name, e.Err)
+}
+
 // Compare returns the first mismatch, or nil when every case matches.
 func (c *Comparer) Compare(ctx context.Context) error {
+	diffs := c.CompareAll(ctx)
+	if len(diffs) > 0 {
+		return diffs[0]
+	}
+	return nil
+}
+
+// CompareAll fetches every case and returns all mismatches. It is used to
+// report the full Gate F delta instead of stopping at the first v1-only field.
+func (c *Comparer) CompareAll(ctx context.Context) []CaseError {
 	if err := validateLoopback(c.BaseURL); err != nil {
-		return err
+		return []CaseError{{Name: "target", Err: err}}
 	}
 	document, err := Load(c.Dir)
 	if err != nil {
-		return err
+		return []CaseError{{Name: "fixture", Err: err}}
 	}
+	var failures []CaseError
 	for _, item := range document.Cases {
 		want, err := os.ReadFile(filepath.Join(c.Dir, item.File))
 		if err != nil {
-			return err
+			failures = append(failures, CaseError{Name: item.Name, Err: err})
+			continue
 		}
 		status, got, err := c.fetch(ctx, item)
 		if err != nil {
-			return fmt.Errorf("oracle: compare %s: %w", item.Name, err)
+			failures = append(failures, CaseError{Name: item.Name, Err: err})
+			continue
 		}
 		if status != item.Status {
-			return fmt.Errorf("oracle: %s status %d, want %d", item.Name, status, item.Status)
+			failures = append(failures, CaseError{Name: item.Name,
+				Err: fmt.Errorf("status %d, want %d", status, item.Status)})
+			continue
 		}
 		if err := compareBody(item.Kind, want, got); err != nil {
-			return fmt.Errorf("oracle: %s: %w", item.Name, err)
+			failures = append(failures, CaseError{Name: item.Name, Err: err})
 		}
 	}
-	return nil
+	return failures
 }
 
 func (r *Recorder) fetch(ctx context.Context, item Case) (int, []byte, error) {
@@ -365,6 +407,44 @@ func loopbackClient() *http.Client {
 	}
 }
 
+// tokenRemainingPattern matches the short credential countdown strings v1
+// emits (for example "59m" or "3h59m"). The contract normalizer deliberately
+// preserves this value for its own CodeArts fixtures, so the oracle harness
+// replaces it here instead of changing the shared rule.
+var tokenRemainingPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]`)
+
+func normalizeOracleJSON(data []byte) (any, error) {
+	value, err := contract.NormalizeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeOracleValues(value), nil
+}
+
+func normalizeOracleValues(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if strings.EqualFold(strings.TrimSpace(key), "token_remaining") {
+				if text, ok := child.(string); ok &&
+					tokenRemainingPattern.MatchString(strings.TrimSpace(text)) {
+					typed[key] = contract.DurationValue
+					continue
+				}
+			}
+			typed[key] = normalizeOracleValues(child)
+		}
+		return typed
+	case []any:
+		for index, child := range typed {
+			typed[index] = normalizeOracleValues(child)
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
 func compareBody(kind string, want, got []byte) error {
 	switch kind {
 	case "sse":
@@ -376,20 +456,20 @@ func compareBody(kind string, want, got []byte) error {
 		if err != nil {
 			return fmt.Errorf("normalize target: %w", err)
 		}
-		if !reflect.DeepEqual(wantEvents, gotEvents) {
-			return fmt.Errorf("SSE mismatch\nwant: %s\ngot:  %s", summarize(wantEvents), summarize(gotEvents))
+		if !semanticEqual(wantEvents, gotEvents) {
+			return fmt.Errorf("SSE mismatch:\n%s", describeDifferences(wantEvents, gotEvents))
 		}
 	case "json":
-		wantValue, err := contract.NormalizeJSON(want)
+		wantValue, err := normalizeOracleJSON(want)
 		if err != nil {
 			return fmt.Errorf("normalize oracle: %w", err)
 		}
-		gotValue, err := contract.NormalizeJSON(got)
+		gotValue, err := normalizeOracleJSON(got)
 		if err != nil {
 			return fmt.Errorf("normalize target: %w", err)
 		}
-		if !reflect.DeepEqual(wantValue, gotValue) {
-			return fmt.Errorf("JSON mismatch\nwant: %s\ngot:  %s", summarize(wantValue), summarize(gotValue))
+		if !semanticEqual(wantValue, gotValue) {
+			return fmt.Errorf("JSON mismatch:\n%s", describeDifferences(wantValue, gotValue))
 		}
 	default:
 		if !bytes.Equal(bytes.TrimSpace(want), bytes.TrimSpace(got)) {
@@ -397,6 +477,149 @@ func compareBody(kind string, want, got []byte) error {
 		}
 	}
 	return nil
+}
+
+// describeDifferences walks two normalized values and returns stable,
+// path-qualified differences. It is deliberately bounded so a large panel
+// payload cannot flood the report.
+func describeDifferences(want, got any) string {
+	diffs := make([]string, 0, 16)
+	diffValues("", want, got, &diffs, 40)
+	if len(diffs) == 0 {
+		return "values differ but no structural difference was found"
+	}
+	return strings.Join(diffs, "\n")
+}
+
+// semanticEqual compares normalized JSON values. JSON numbers keep their
+// lexical form in json.Number, so 0 and 0.0 are the same wire value even
+// though their strings differ.
+func semanticEqual(want, got any) bool {
+	switch left := want.(type) {
+	case json.Number:
+		right, ok := got.(json.Number)
+		if !ok {
+			return false
+		}
+		leftRat, leftOK := new(big.Rat).SetString(left.String())
+		rightRat, rightOK := new(big.Rat).SetString(right.String())
+		if leftOK && rightOK {
+			return leftRat.Cmp(rightRat) == 0
+		}
+		return left.String() == right.String()
+	case map[string]any:
+		right, ok := got.(map[string]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for key, value := range left {
+			other, ok := right[key]
+			if !ok || !semanticEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		right, ok := got.([]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for index := range left {
+			if !semanticEqual(left[index], right[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(want, got)
+	}
+}
+
+func diffValues(path string, want, got any, out *[]string, limit int) {
+	if len(*out) >= limit {
+		return
+	}
+	if semanticEqual(want, got) {
+		return
+	}
+	label := path
+	if label == "" {
+		label = "<root>"
+	}
+	switch left := want.(type) {
+	case map[string]any:
+		right, ok := got.(map[string]any)
+		if !ok {
+			appendDiff(out, fmt.Sprintf("%s: type %T, want %T", label, got, want))
+			return
+		}
+		keys := make([]string, 0, len(left)+len(right))
+		seen := map[string]bool{}
+		for key := range left {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+		for key := range right {
+			if !seen[key] {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			child := key
+			if path != "" {
+				child = path + "." + key
+			}
+			wantValue, wantOK := left[key]
+			gotValue, gotOK := right[key]
+			switch {
+			case !gotOK:
+				appendDiff(out, fmt.Sprintf("%s: missing on target (oracle=%s)", child, compact(wantValue)))
+			case !wantOK:
+				appendDiff(out, fmt.Sprintf("%s: extra on target (target=%s)", child, compact(gotValue)))
+			default:
+				diffValues(child, wantValue, gotValue, out, limit)
+			}
+			if len(*out) >= limit {
+				return
+			}
+		}
+	case []any:
+		right, ok := got.([]any)
+		if !ok {
+			appendDiff(out, fmt.Sprintf("%s: type %T, want %T", label, got, want))
+			return
+		}
+		if len(left) != len(right) {
+			appendDiff(out, fmt.Sprintf("%s: length %d, want %d", label, len(right), len(left)))
+		}
+		for index := 0; index < len(left) && index < len(right); index++ {
+			diffValues(fmt.Sprintf("%s[%d]", path, index), left[index], right[index], out, limit)
+			if len(*out) >= limit {
+				return
+			}
+		}
+	default:
+		appendDiff(out, fmt.Sprintf("%s: %s, want %s", label, compact(got), compact(want)))
+	}
+}
+
+func appendDiff(out *[]string, line string) {
+	if len(*out) < 40 {
+		*out = append(*out, line)
+	}
+}
+
+func compact(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	text := string(raw)
+	if len(text) > 240 {
+		text = text[:240] + "…"
+	}
+	return text
 }
 
 func summarize(value any) string {
