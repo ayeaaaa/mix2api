@@ -210,7 +210,8 @@ func (s *Service) adoptSeries(ctx context.Context, realm string) (seriesState, b
 	}
 	for _, entry := range s.Cache.Entries("series") {
 		entryRealm, _ := entry["realm"].(string)
-		if entryRealm != realm {
+		// v1 series checkpoints are global (realm: null).
+		if entryRealm != "" && entryRealm != realm {
 			continue
 		}
 		if !s.cacheFingerprintOK(entry) {

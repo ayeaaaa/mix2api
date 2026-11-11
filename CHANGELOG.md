@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- Usage checkpoints survive a data migration: `ValidateCachePosition` now
+  validates the size/offset/tail content instead of the original inode/path,
+  and v1 global (`realm: null`) analytics/series checkpoints are adopted
+  again. Day-aligned analytics windows use the v1 per-day buckets instead of
+  rescanning the full usage log.
+
 ## [2.0.2] - 2026-11-11
 
 ### 中文

@@ -2,6 +2,8 @@ package usage
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -111,5 +113,65 @@ func TestAnalyticsEnrichesIdleAccounts(t *testing.T) {
 	credits, ok := idle["credits"].(map[string]any)
 	if !ok || credits == nil {
 		t.Fatalf("idle account credits should default to {}: %+v", idle)
+	}
+}
+
+func TestAnalyticsAdoptsGlobalV1DayCache(t *testing.T) {
+	now := time.Now()
+	rows := []map[string]any{
+		row(float64(now.Add(-time.Hour).Unix()), "m", "intl", "a", 100, 10, nil),
+		row(float64(now.Add(-30*time.Minute).Unix()), "m", "intl", "a", 50, 5, nil),
+	}
+	env := newTestEnv(t, rows)
+	env.Now = now
+	t.Setenv("WB_USAGE_CACHE", "1")
+	info, err := os.Stat(env.Paths.Log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, ok := CachePosition(env.Paths.Log, info.Size())
+	if !ok {
+		t.Fatal("position")
+	}
+	day := now.Format("2006-01-02")
+	entry := map[string]any{
+		"realm": "",
+		"maps": map[string]any{
+			"summary": map[string]any{"requests": 100},
+			"accts":   map[string]any{}, "models": map[string]any{}, "keys": map[string]any{},
+		},
+		"days": map[string]any{
+			day: map[string]any{
+				"summary": map[string]any{"requests": 7},
+				"accts":   map[string]any{}, "models": map[string]any{}, "keys": map[string]any{},
+			},
+		},
+		"days_floor": day,
+		"max_at":     float64(now.Unix()),
+		"log":        "/old/migrated/usage.jsonl",
+	}
+	for key, value := range position {
+		entry[key] = value
+	}
+	doc, err := json.Marshal(map[string]any{
+		"schema": cacheSchema, "kind": "analytics", "entries": []any{entry},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.Cache.Path("analytics"), doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := env.service()
+	payload, err := service.Analytics(context.Background(), AnalyticsOptions{Range: "today", Realm: "intl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := mustMap(t, payload["summary"])
+	if got := mustNumber(t, mustMap(t, summary["all_time"])["requests"]); got != 100 {
+		t.Fatalf("all_time requests = %v, want the cached all-time bucket", got)
+	}
+	if got := mustNumber(t, mustMap(t, summary["window"])["requests"]); got != 7 {
+		t.Fatalf("window requests = %v, want the cached day bucket", got)
 	}
 }
