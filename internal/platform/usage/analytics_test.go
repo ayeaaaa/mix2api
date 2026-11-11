@@ -226,3 +226,23 @@ func TestAnalyticsRejectsGlobalV1CacheForScopedRealm(t *testing.T) {
 		t.Fatalf("scoped realm adopted global v1 cache: window requests = %v, want 1", got)
 	}
 }
+
+func TestAnalyticsDayWindowAllowsEmptyCurrentDay(t *testing.T) {
+	now := time.Date(2026, 11, 11, 0, 1, 0, 0, time.Local)
+	yesterday := now.AddDate(0, 0, -1)
+	yesterdayKey := analyticsDayKey(yesterday)
+	maps := newAnalyticsMaps()
+	day := newAnalyticsMaps()
+	day.Summary.Requests = 7
+	maps.Days[yesterdayKey] = day
+	maps.DaysFloor = yesterdayKey
+	service := &Service{Now: func() time.Time { return now }}
+	since := localMidnight(now)
+	got, ok := service.analyticsWindowFromDays(maps, Range{Since: &since})
+	if !ok {
+		t.Fatal("empty current-day bucket should still serve the day window")
+	}
+	if got.Summary.Requests != 0 {
+		t.Fatalf("current-day requests = %d, want 0", got.Summary.Requests)
+	}
+}

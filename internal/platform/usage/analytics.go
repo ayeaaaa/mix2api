@@ -519,17 +519,21 @@ func (s *Service) analyticsWindowFromDays(all analyticsMaps, window Range) (anal
 	if !since.Before(until) {
 		return analyticsMaps{}, false
 	}
+	if all.DaysFloor == "" {
+		return analyticsMaps{}, false
+	}
 	merged := newAnalyticsMaps()
 	for day := since; day.Before(until); day = day.AddDate(0, 0, 1) {
 		key := analyticsDayKey(day)
-		if all.DaysFloor != "" && key < all.DaysFloor {
+		if key < all.DaysFloor {
 			return analyticsMaps{}, false
 		}
-		bucket, ok := all.Days[key]
-		if !ok {
-			return analyticsMaps{}, false
+		// A day with no rows has no bucket. That is normal for the current
+		// day just after local midnight; treat it as zero and keep using the
+		// complete day range instead of falling back to a full log scan.
+		if bucket, ok := all.Days[key]; ok {
+			mergeAnalyticsMaps(&merged, bucket)
 		}
-		mergeAnalyticsMaps(&merged, bucket)
 	}
 	return merged, true
 }

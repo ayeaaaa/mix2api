@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.4] - 2026-11-11
+
+### 中文
+
+#### 修复
+
+- 修复跨天后用量视图重新全量扫描：analytics 的日对齐窗口在“今天”还没有任何
+  用量、日桶尚未生成时，将缺失的当天视为空，不再回退扫描整份日志；迁移后的
+  v1 series cache 在开放窗口下允许当前分钟/小时尚未产生桶，同样按空数据处理。
+
+### English
+
+#### Fixed
+
+- Avoid a full usage-log rescan after local midnight: day-aligned analytics
+  windows treat the current day's missing bucket as empty, and migrated v1
+  series caches serve open windows whose current minute/hour has no rows yet
+  instead of falling back to a cold scan.
+
 ## [2.0.3] - 2026-11-11
 
 ### 中文

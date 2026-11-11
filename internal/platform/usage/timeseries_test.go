@@ -151,3 +151,33 @@ func TestSeriesRejectsGlobalV1CacheForScopedRealm(t *testing.T) {
 		t.Fatal("scoped realm adopted global v1 series cache")
 	}
 }
+
+func TestSeriesWindowAllowsEmptyCurrentPeriod(t *testing.T) {
+	now := time.Date(2026, 11, 11, 0, 1, 30, 0, time.Local)
+	lo := localMidnight(now)
+	yesterday := now.AddDate(0, 0, -1)
+	state := seriesState{
+		Minutes: map[int64]*SeriesBucket{
+			int64(yesterday.Add(-time.Hour).Unix()): {At: float64(yesterday.Add(-time.Hour).Unix()), Requests: 1},
+		},
+		MinutesFrom:     float64(yesterday.Add(-6 * time.Hour).Unix()),
+		MaxAt:           float64(yesterday.Add(-time.Minute).Unix()),
+		MinuteComplete:  true,
+		MinutesCoverAll: false,
+		Hours: map[int64]*SeriesBucket{
+			int64(yesterday.Add(-time.Hour).Unix()): {At: float64(yesterday.Add(-time.Hour).Unix()), Requests: 1},
+		},
+		HoursFloor:    yesterday.Format("2006-01-02"),
+		HoursMaxAt:    float64(yesterday.Add(-time.Minute).Unix()),
+		HoursComplete: true,
+	}
+	for _, step := range []int{60, 3600, 86400} {
+		buckets, _, ok := seriesSlice(state, lo, now, step)
+		if !ok {
+			t.Fatalf("step %d: empty current period should be servable from cache", step)
+		}
+		if len(buckets) != 0 {
+			t.Fatalf("step %d: buckets = %+v, want empty", step, buckets)
+		}
+	}
+}

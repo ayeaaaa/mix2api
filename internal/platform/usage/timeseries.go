@@ -445,12 +445,14 @@ func seriesClosedCutOK(state seriesState, hi int64) bool {
 // when the window/bucket does not align, so the caller falls back to a raw
 // scan with the exact v1 origin rule.
 func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket, []SeriesCredit, bool) {
-	// Minute buckets cannot apply a sub-minute upper bound; the raw scan is
-	// the only path that can keep `at <= hi` exact.
-	if hi.Second() != 0 || hi.Nanosecond() != 0 {
+	closed := state.MaxAt > 0 && float64(hi.Unix()) < state.MaxAt
+	// A closed window cannot cut a bucket at a sub-minute upper bound; the
+	// raw scan is the only path that can keep `at <= hi` exact. Open windows
+	// may end at the current clock instant: every cached bucket is complete
+	// up to MaxAt, and later minutes/hours are simply empty.
+	if closed && (hi.Second() != 0 || hi.Nanosecond() != 0) {
 		return nil, nil, false
 	}
-	closed := state.MaxAt > 0 && float64(hi.Unix()) < state.MaxAt
 	if closed && !seriesClosedCutOK(state, hi.Unix()) {
 		return nil, nil, false
 	}
@@ -469,16 +471,13 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 			if state.MaxAt > 0 && loUnix < state.MaxAt-6*3600 {
 				return nil, nil, false
 			}
-			if state.MaxAt > 0 && float64(hi.Unix()) > state.MaxAt {
-				return nil, nil, false
-			}
 		}
 	} else if step == 3600 {
 		if lo.Unix() != localHourStart(lo).Unix() {
 			return nil, nil, false
 		}
 		if !state.MinutesCoverAll {
-			if !state.HoursComplete || hi.Unix() != localHourStart(hi).Unix() {
+			if !state.HoursComplete || (closed && hi.Unix() != localHourStart(hi).Unix()) {
 				return nil, nil, false
 			}
 			return seriesHoursSlice(state, lo, hi, step, closed)
@@ -488,7 +487,7 @@ func seriesSlice(state seriesState, lo, hi time.Time, step int) ([]SeriesBucket,
 			return nil, nil, false
 		}
 		if !state.MinutesCoverAll {
-			if !state.HoursComplete || hi.Unix() != localMidnight(hi).Unix() {
+			if !state.HoursComplete || (closed && hi.Unix() != localMidnight(hi).Unix()) {
 				return nil, nil, false
 			}
 			return seriesHoursSlice(state, lo, hi, step, closed)
@@ -553,9 +552,6 @@ func seriesHoursSlice(state seriesState, lo, hi time.Time, step int, closed bool
 	if !ok || float64(lo.Unix()) < floor {
 		return nil, nil, false
 	}
-	if state.HoursMaxAt > 0 && float64(hi.Unix()) > state.HoursMaxAt {
-		return nil, nil, false
-	}
 	grouped := map[int64]*SeriesBucket{}
 	for at, bucket := range state.Hours {
 		if at < lo.Unix() || (closed && at >= hi.Unix()) || (!closed && at > hi.Unix()) {
@@ -581,9 +577,8 @@ func seriesHoursSlice(state seriesState, lo, hi time.Time, step int, closed bool
 		target.TotalTokens += bucket.TotalTokens
 		target.Credit += bucket.Credit
 	}
-	if len(grouped) == 0 {
-		return nil, nil, false
-	}
+	// A day/hour with no rows has no bucket. That is normal for the current
+	// period just after midnight; return an empty slice, not a cold scan.
 	keys := make([]int64, 0, len(grouped))
 	for key := range grouped {
 		keys = append(keys, key)
