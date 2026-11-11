@@ -191,5 +191,19 @@ class RequestContractTests(unittest.TestCase):
         self.assertEqual(parts[2]["text"], "hi")
 
 
+    def test_reasoning_mirror_for_models_that_read_it(self):
+        messages = [
+            {"role": "assistant", "content": "a", "reasoning_content": "think"},
+            {"role": "assistant", "content": "b", "reasoning_content": "new",
+             "reasoning": "keep"},
+            {"role": "user", "content": "hi"},
+        ]
+        out = P.mirror_upstream_reasoning(messages, "kimi-k3")
+        self.assertEqual(out[0]["reasoning"], "think")
+        self.assertEqual(out[1]["reasoning"], "keep")
+        self.assertNotIn("reasoning", out[2])
+        self.assertEqual(P.mirror_upstream_reasoning(messages, "glm-5.2")[0]["reasoning"], "think")
+        self.assertEqual(P.mirror_upstream_reasoning(messages, "deepseek-v4.1-flash"), messages)
+
 if __name__ == "__main__":
     unittest.main()

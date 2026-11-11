@@ -13629,6 +13629,30 @@ def backfill_reasoning_content(messages, model, thinking_enabled=None):
         else:
             out.append(m)
     return out
+def mirror_upstream_reasoning(messages, model):
+    """Mirror reasoning_content for models whose upstream reads reasoning."""
+    prefixes = ("kimi", "glm", "minimax", "mimo", "step", "space-bunny")
+    name = str(model or "").lower()
+    if not any(name == prefix or name.startswith(prefix + "-")
+               for prefix in prefixes):
+        return messages
+    if not isinstance(messages, list):
+        return messages
+    out = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            out.append(message)
+            continue
+        item = dict(message)
+        reasoning_content = item.get("reasoning_content")
+        reasoning = item.get("reasoning")
+        if (isinstance(reasoning_content, str) and reasoning_content.strip()
+                and not (isinstance(reasoning, str) and reasoning.strip())):
+            item["reasoning"] = reasoning_content
+        out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool & Tool Choice Normalization (avoids code 11101 on object tool_choice)
 # ---------------------------------------------------------------------------
@@ -14702,7 +14726,7 @@ def build_upstream_body(payload):
     repaired, _merged = merge_adjacent_tool_calls(body["messages"])
     repaired, _repacked = repack_tool_result_blocks(repaired)
     repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
-    body["messages"] = repaired
+    body["messages"] = mirror_upstream_reasoning(repaired, model)
     translate_max_completion_tokens(body)
     # Upstream GPT-family models enforce a minimum max_output_tokens >= 16;
     # smaller values (e.g. max_tokens=1 from probes) fail with 400 integer_below_min_value (#364, #252).
