@@ -502,3 +502,34 @@ func TestValidateCachePositionAcceptsCopiedLog(t *testing.T) {
 		t.Fatal("a changed tail must reject the checkpoint")
 	}
 }
+
+func TestCacheSavePreservesOtherRealms(t *testing.T) {
+	for _, kind := range []string{"snapshot", "series", "analytics"} {
+		t.Run(kind, func(t *testing.T) {
+			cache := NewCache(t.TempDir())
+			save := func(realm string, marker int64) {
+				t.Helper()
+				if err := cache.Save(kind, map[string]any{"realm": realm, "marker": marker}); err != nil {
+					t.Fatalf("save %s/%q: %v", kind, realm, err)
+				}
+			}
+			save("intl", 1)
+			save("", 2)
+			save("intl", 3)
+
+			entries := cache.Entries(kind)
+			if len(entries) != 2 {
+				t.Fatalf("%s entries = %d, want 2 realms (intl + all): %+v", kind, len(entries), entries)
+			}
+			got := map[string]int64{}
+			for _, entry := range entries {
+				realm, _ := entry["realm"].(string)
+				value, _ := numericValue(entry["marker"])
+				got[realm] = int64(value)
+			}
+			if got["intl"] != 3 || got[""] != 2 {
+				t.Fatalf("%s realms = %+v, want intl=3 all=2", kind, got)
+			}
+		})
+	}
+}
