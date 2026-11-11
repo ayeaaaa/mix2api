@@ -177,6 +177,12 @@ type Account struct {
 	// flights capture it so a rotated response cannot overwrite newer
 	// credentials.
 	authGeneration uint64
+
+	// chatModelIDs caches the accepted upstream spelling for one logical
+	// model id. InferHub can report a casing mismatch as a permission error
+	// (TM.000010051), so a successful alternate spelling is reused for later
+	// requests on this account. Keyed by lowercase canonical id.
+	chatModelIDs sync.Map
 }
 
 // Healthy reports whether the account may serve a request at now. Manual
