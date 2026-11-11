@@ -16184,7 +16184,7 @@ def restriction_hold_message(realm, remaining):
 
 
 def _persist_restriction(account):
-    """把 restrictedUntil 落盘；失败只记日志，不影响请求路径。"""
+    """把持久封禁状态落盘；失败只记日志，不影响请求路径。"""
     try:
         path = getattr(account, "path", "") or ""
         if path:
@@ -16909,9 +16909,9 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     account.note_restricted(detail=detail,
                                             cooldown=RESTRICTED_403_COOLDOWN)
                     _persist_restriction(account)
-                    log("account %s restricted by upstream (403 11140), "
-                        "cooling %.0fs (persisted)" % (account.uid[:8],
-                                                       RESTRICTED_403_COOLDOWN))
+                    log("account %s banned by upstream (403 11140), "
+                        "disabled until manual enable (persisted)"
+                        % account.uid[:8])
                     if session_key and POOL:
                         POOL.affinity.demote(session_key, account.uid)
                     last_error = exc
