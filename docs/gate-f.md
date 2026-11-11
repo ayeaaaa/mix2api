@@ -29,6 +29,7 @@ requires a manual run.
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
 | v2.0.7 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.7>; tag/commit `ac01e77`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7b54830...`; arm64 pulled from GHCR, ran `2.0.7`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.7.md` |
+| v2.0.7 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.7>; tag/commit `ac01e77`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7b54830...`; arm64 pulled from GHCR, ran `2.0.7`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.7.md` |
 | v2.0.6 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.6>; tag/commit `f7f4904`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:5381e1e...`; arm64 pulled from GHCR, ran `2.0.6`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.6.md` |
 | v2.0.5 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.5>; tag/commit `0ebc996`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:2e0e9db...`; arm64 pulled from GHCR, ran `2.0.5`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.5.md` |
 | v2.0.4 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.4>; tag/commit `32c6334`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:7e08f6e...`; arm64 pulled from GHCR, ran `2.0.4`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.4.md` |
@@ -77,6 +78,12 @@ Pricing uses an immutable timeline internally and a per-scan `RowPricer`; a
 struct, avoiding a per-line `json.Decoder` and most interface boxing while
 keeping `Row` as the compatibility boundary. The same local full `/usage` scan
 drops from about 0.82s to about 0.60s; `make check` and `make race` pass.
+
+**v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
+day/realm/account/model/key. It advances by log offset and is only used when the
+analytics view cache is invalid; missing/corrupt data falls back to the scan.
+On a local 19.5k-row ledger the first build takes about 0.64s and later reads
+take about 3ms. `make check` and `make race` pass.
 
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
