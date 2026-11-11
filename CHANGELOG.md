@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.0.7] - 2026-11-11
+
+### 中文
+
+#### 性能
+
+- 新增持久化 analytics 聚合表 `usage-rollup.sqlite3`：按天/出口/账号/模型/Key
+  聚合请求、错误、Token、积分、成本、TTFT/速度/耗时。现有 analytics 缓存
+  失效时优先读表，不再重新解析整份 JSONL；表按日志 offset 增量推进，缺失或
+  损坏时安全回退到原扫描。本机 19.5k 行首次建表约 0.64 秒，后续读取约 3 毫秒。
+
+### English
+
+#### Performance
+
+- Add a persistent analytics rollup (`usage-rollup.sqlite3`) keyed by
+  day/realm/account/model/key, storing requests, errors, tokens, credits, cost,
+  TTFT/speed/elapsed sums and max_at. When the analytics view cache is invalid,
+  the rollup answers the query without reparsing the whole JSONL. It advances by
+  log offset and safely falls back to the original scan if missing/corrupt. On a
+  local 19.5k-row ledger, the first build takes about 0.64s and later reads take
+  about 3ms.
+
 ## [2.0.6] - 2026-11-11
 
 ### 中文

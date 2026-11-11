@@ -2,10 +2,10 @@
 
 ## Current status
 
-This tree is **`2.0.6`** final. The v2 source is published on branch `v2` of
+This tree is **`2.0.7`** final. The v2 source is published on branch `v2` of
 `ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.6. The release is
-<https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.6> and the GHCR image is
-`ghcr.io/ayeaaaa/mix2api:v2.0.6`. Gate F evidence is in `docs/gate-f.md`; real
+<https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.7> and the GHCR image is
+`ghcr.io/ayeaaaa/mix2api:v2.0.7`. Gate F evidence is in `docs/gate-f.md`; real
 Windows SCM update execution remains the only unverified runtime item.
 
 Note: v1 is frozen at `v1.6.6`; its update checks point at the same repository
@@ -25,7 +25,7 @@ update it cannot install. v1 update checks are off by default.
 
 ```sh
 git status --short           # must be clean
-VERSION=2.0.6 \
+VERSION=2.0.7 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
@@ -59,7 +59,7 @@ the injected build identity and must be the commit timestamp for reproducibility
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf mix2api-2.0.6-linux-amd64.tar.gz | head
+tar -tzf mix2api-2.0.7-linux-amd64.tar.gz | head
 ./mix2api version --json   # after extracting, must show the injected values
 ```
 
@@ -76,10 +76,10 @@ make clean
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.6 \
+  --build-arg VERSION=2.0.7 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api:v2.0.6 .
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.7 .
 ```
 
 The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
@@ -111,14 +111,14 @@ For this repository layout, the equivalent manual publication is:
 git push origin v2
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.6 \
+  --build-arg VERSION=2.0.7 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
   --provenance=false --push \
-  -t ghcr.io/ayeaaaa/mix2api:v2.0.6 .
-gh release create v2.0.6 dist/* \
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.7 .
+gh release create v2.0.7 dist/* \
   --target "$(git rev-parse HEAD)" \
-  --title "mix2api v2.0.6" \
+  --title "mix2api v2.0.7" \
   --notes-file CHANGELOG.md
 ```
 
@@ -137,7 +137,7 @@ the v1.6.6 tag.
 
 ## Versioning
 
-- Development defaults to the `2.0.6` identity in
+- Development defaults to the `2.0.7` identity in
   `internal/core/version`.
 - Release builds inject `Version`, `Commit`, and `Date` with `-ldflags -X`.
-- The current release is `v2.0.6`; future fixes use a new semantic version.
+- The current release is `v2.0.7`; future fixes use a new semantic version.
