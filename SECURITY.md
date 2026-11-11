@@ -4,11 +4,11 @@
 
 | Version | Status |
 | --- | --- |
-| `2.0.1` | current final release; security fixes accepted |
-| v1.6.5 | upstream baseline, retained on `main` of this repository |
+| `2.0.2` | current final release; security fixes accepted |
+| v1.6.6 | upstream baseline, retained on `main` of this repository |
 | older v2 snapshots | not supported |
 
-`2.0.1` is the current final release. Gate F evidence and the remaining real
+`2.0.2` is the current final release. Gate F evidence and the remaining real
 Windows SCM verification item are recorded in `docs/gate-f.md`.
 
 ## Reporting a vulnerability

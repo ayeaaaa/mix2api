@@ -2491,6 +2491,17 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '移动登录': 'Mobile login',
     '专属任务': 'Exclusive tasks',
     '已领完': 'All claimed',
+    '每日活跃': 'Daily activity',
+    '每日活跃打卡': 'Daily activity check-in',
+    '今日活跃奖励': "Today's activity reward",
+    '每日活跃 300 分': 'Daily activity, 300 points',
+    '今日未打卡': 'Not checked in today',
+    '未到账': 'Not received',
+    '打卡': 'Check in',
+    '每日活跃已处理': 'Daily activity handled',
+    '每日活跃打卡失败: ': 'Daily activity check-in failed: ',
+    '发一次最小对话触发当日活跃，并核对 300 积分是否到账': 'Sends one minimal chat to mark the day active, then checks whether the 300-point reward landed',
+    '每天 09:00 / 21:00 各试一次：发一次最小对话触发当日活跃，并核对 300 积分是否到账；已到账的账号不重复打卡': 'Tries once at 09:00 and 21:00: sends one minimal chat to mark the day active, then checks whether the 300-point reward landed; accounts that already received it are not pinged again.',
     '粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。': 'Paste the full auth.json from the desktop client, or the {"data": {...}} object from an auth response.',
     '点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。': 'Click Start browser authorization to create a link; this page polls for the result automatically once authorization finishes.',
     '登录成功': 'Signed in',
@@ -6446,6 +6457,10 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           <input id="setCodeartsExpiringPriority" type="checkbox" style="width:16px;height:16px">
           临期积分优先
         </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="raccoonDailyActive" type="checkbox" style="width:16px;height:16px">
+          <span>每日活跃打卡<br><span style="font-size:11px;color:var(--dim)">每天 09:00 / 21:00 各试一次：发一次最小对话触发当日活跃，并核对 300 积分是否到账；已到账的账号不重复打卡</span></span>
+        </label>
         <div>
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
           <input id="setCodeartsMaxConcurrent" type="number" min="1" max="20" value="1"
@@ -8879,6 +8894,24 @@ async function raccoonGrantMobile(uid, btn){
   }
 }
 
+/* 手动每日活跃打卡：发一次最小对话，然后核对今天的 daily_grant 是否到账。
+ * force=true 只绕过「今天已试过几次」的节流，已到账的账号仍然直接跳过。 */
+async function raccoonDailyActive(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/raccoon/accounts/daily-active',
+                             {uid: uid, force: true});
+    const one = (r && r.results && r.results[0]) || {};
+    const msg = one.message || (r && r.message) || '每日活跃已处理';
+    toast(msg, one.ok ? 'ok' : 'warn');
+    await loadRaccoonOverview(true);
+  }catch(e){
+    toast('每日活跃打卡失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 async function saveRaccoonAutoClaim(checked){
   try{
     await postJSON('/settings/save', {raccoon: {auto_claim_login: !!checked}});
@@ -8931,6 +8964,27 @@ function raccoonTaskCell(states, key){
     + (RACCOON_TASK_POINTS[key] || 0) + ' 分</span>';
 }
 
+/* 每日活跃：上游按天给「当天活跃」的账号自动记一笔 daily_grant（300 分），
+ * 没有领取接口。这里只展示服务端记下的结果：已到账 / 未到账 / 今日未打卡。
+ * 日期比较用本地日期，和服务端 state 里的 date 同一口径。 */
+function raccoonDailyCell(a){
+  const d = (a && a.daily_active) || {};
+  const now = new Date();
+  const today = now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-'
+    + String(now.getDate()).padStart(2, '0');
+  if(!d.date || d.date !== today){
+    return '<span style="color:var(--dim)">今日未打卡</span>';
+  }
+  const points = Number(d.points) || 0;
+  if(d.ok && points > 0){
+    return '<span class="badge ok mini">已到账 ' + escapeHtml(String(points)) + '</span>';
+  }
+  return '<span class="badge warn mini">未到账</span>'
+    + '<div style="font-size:11px;color:var(--dim)">已打卡 '
+    + escapeHtml(String(d.attempts || 0)) + ' 次</div>';
+}
+
 function renderRaccoonTasks(r){
   const cards = document.getElementById("raccoonTaskCards");
   const box = document.getElementById("raccoonTasksTable");
@@ -8943,6 +8997,8 @@ function renderRaccoonTasks(r){
   let available = 0;
   let today = 0;
   let claimable = 0;
+  let dailyPoints = 0;
+  let dailyAccounts = 0;
   let hasCredits = false;
   accounts.forEach(function(a){
     const cr = a.credits || {};
@@ -8950,6 +9006,11 @@ function renderRaccoonTasks(r){
       hasCredits = true;
       available += Number(cr.available) || 0;
       today += Number(cr.today_used) || 0;
+    }
+    const daily = a.daily_active || {};
+    if(daily.ok && Number(daily.points) > 0){
+      dailyPoints += Number(daily.points) || 0;
+      dailyAccounts += 1;
     }
     const states = raccoonTaskMap(a.points_tasks, "new_user");
     if(states.desktop_login === "unfinished") claimable += 3000;
@@ -8959,14 +9020,16 @@ function renderRaccoonTasks(r){
     card("账号", accounts.length, "小浣熊账号池")
     + card("可用积分", hasCredits ? available : "—", "全部账号")
     + card("今日消耗", hasCredits ? today : "—", "按账单汇总")
-    + card("待领取登录奖励", claimable, "桌面/移动各 3000 分");
+    + card("待领取登录奖励", claimable, "桌面/移动各 3000 分")
+    + card("今日活跃奖励", dailyAccounts ? dailyPoints : "—",
+           dailyAccounts ? ("已到账 " + dailyAccounts + " 个账号") : "每日活跃 300 分");
   if(!accounts.length){
     box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">还没有小浣熊账号。先在「账号」页导入 auth.json 或添加账号。</div>';
     return;
   }
   let html = '<div class="table-wrap"><table><thead><tr>'
     + '<th>账号</th><th>积分</th><th>注册礼包</th><th>桌面登录</th>'
-    + '<th>移动登录</th><th>专属任务</th><th>操作</th>'
+    + '<th>移动登录</th><th>专属任务</th><th>每日活跃</th><th>操作</th>'
     + '</tr></thead><tbody>';
   accounts.forEach(function(a){
     const uid = escapeHtml(a.uid || "");
@@ -9013,6 +9076,12 @@ function renderRaccoonTasks(r){
       + '<td>' + raccoonTaskCell(newUser, "desktop_login") + '</td>'
       + '<td>' + raccoonTaskCell(newUser, "mobile_login") + '</td>'
       + '<td style="font-size:12px">' + exclusiveHtml + '</td>'
+      + '<td style="font-size:12px">' + raccoonDailyCell(a)
+      + (a.disabled ? '' : '<div style="margin-top:4px">'
+        + '<button class="sec mini"'
+        + ' title="发一次最小对话触发当日活跃，并核对 300 积分是否到账"'
+        + ' onclick="raccoonDailyActive(\'' + uidSafe + '\',this)">打卡</button></div>')
+      + '</td>'
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
   });
   html += '</tbody></table></div>';
@@ -9533,6 +9602,8 @@ function renderRaccoonSettings(cfg){
   const enabled = cfg.enabled === true || cfg.configured === true;
   const enabledInput = document.getElementById("raccoonEnabled");
   if(enabledInput) enabledInput.checked = enabled;
+  const dailyActive = document.getElementById("raccoonDailyActive");
+  if(dailyActive) dailyActive.checked = cfg.daily_active === true;
   const timeout = document.getElementById("raccoonTimeout");
   if(timeout) timeout.value = cfg.timeout_seconds || 60;
   const stream = document.getElementById("raccoonStreamTimeout");
@@ -9555,6 +9626,7 @@ async function saveRaccoonSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
   const payload = {
     enabled: !!(document.getElementById("raccoonEnabled") || {}).checked,
+    daily_active: !!(document.getElementById("raccoonDailyActive") || {}).checked,
     timeout_seconds: parseFloat(val("raccoonTimeout")) || 60,
     stream_timeout_seconds: parseFloat(val("raccoonStreamTimeout")) || 900,
     max_concurrent: parseInt(val("raccoonMaxConcurrent"), 10) || 1,

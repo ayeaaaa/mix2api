@@ -283,6 +283,7 @@ func TestRaccoonRoutesRequirePanel(t *testing.T) {
 		"/raccoon/accounts/proxy", "/raccoon/accounts/note",
 		"/raccoon/accounts/tasks", "/raccoon/accounts/test",
 		"/raccoon/accounts/grant-desktop", "/raccoon/accounts/grant-mobile",
+		"/raccoon/accounts/daily-active",
 		"/raccoon/credits/refresh", "/raccoon/keepalive",
 		"/raccoon/models/refresh", "/raccoon/test",
 		"/raccoon/accounts/oauth/start", "/raccoon/accounts/oauth/poll",
@@ -920,6 +921,51 @@ func TestAdminErrorStatusMappingRoutes(t *testing.T) {
 			t.Fatalf("upstream envelope = %#v", errObject)
 		}
 	})
+}
+
+func TestDailyActiveRoute(t *testing.T) {
+	f := newRoutesFixture(t)
+	f.importFlat(t, f.uid, f.token, nil)
+
+	rec := f.do(http.MethodPost, "/raccoon/accounts/daily-active",
+		map[string]any{"uid": f.uid, "force": true}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("daily-active status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeRouteJSON(t, rec)
+	results, _ := body["results"].([]any)
+	if body["ok"] != true || len(results) != 1 {
+		t.Fatalf("daily-active = %#v", body)
+	}
+	one, _ := results[0].(map[string]any)
+	if one["ok"] != true || one["granted"] != true || routeInt(one["points"]) != 300 || one["chat"] != false {
+		t.Fatalf("daily-active result = %#v", one)
+	}
+	if !strings.Contains(routeText(body["message"]), "到账 1 个") {
+		t.Fatalf("daily-active message = %v", body["message"])
+	}
+
+	missing := f.do(http.MethodPost, "/raccoon/accounts/daily-active", map[string]any{}, "")
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("daily-active missing uid status=%d", missing.Code)
+	}
+}
+
+func TestDailyActiveConfigRoundTrip(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	cfg, err := SaveConfig(store, map[string]any{
+		"daily_active":       true,
+		"daily_active_model": "  raccoon-090dd3  ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DailyActive || cfg.DailyActiveModel != "raccoon-090dd3" {
+		t.Fatalf("saved config = %#v", cfg)
+	}
+	if loaded := LoadConfig(store); !loaded.DailyActive || loaded.DailyActiveModel != "raccoon-090dd3" {
+		t.Fatalf("loaded config = %#v", loaded)
+	}
 }
 
 func TestImportOverviewAndGrant(t *testing.T) {

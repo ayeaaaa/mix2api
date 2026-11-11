@@ -203,6 +203,7 @@ func NewPool(dir string, cfg Config) (*Pool, error) {
 			Auth:          loadedAuth.auth,
 			State:         state,
 			Path:          loadedAuth.path,
+			DailyActive:   dailyActiveFromState(state),
 			proxySlot:     strings.TrimSpace(loadedAuth.auth.ProxySlot),
 			pool:          p,
 			maxConcurrent: maxConcurrent,
@@ -449,6 +450,16 @@ func (p *Pool) saveStateLocked() error {
 		state.UID = uid
 		state.ActiveConcurrent = 0
 		state.MaxConcurrent = normalizedMaxConcurrent(account.maxConcurrent)
+		if len(account.DailyActive) > 0 {
+			if raw, err := json.Marshal(account.DailyActive); err == nil {
+				if state.Extra == nil {
+					state.Extra = make(map[string]json.RawMessage)
+				}
+				state.Extra["daily_active"] = raw
+			}
+		} else if state.Extra != nil {
+			delete(state.Extra, "daily_active")
+		}
 		account.mu.Unlock()
 		if uid == "" {
 			continue

@@ -285,6 +285,7 @@ func (p *Provider) Routes() []providers.Route {
 		{Method: http.MethodPost, Path: "/raccoon/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
 		{Method: http.MethodPost, Path: "/raccoon/accounts/grant-desktop", Auth: panel, Handler: p.handleAccountAction("grant-desktop")},
 		{Method: http.MethodPost, Path: "/raccoon/accounts/grant-mobile", Auth: panel, Handler: p.handleAccountAction("grant-mobile")},
+		{Method: http.MethodPost, Path: "/raccoon/accounts/daily-active", Auth: panel, Handler: p.handleAccountAction("daily-active")},
 		{Method: http.MethodPost, Path: "/raccoon/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
 		{Method: http.MethodPost, Path: "/raccoon/keepalive", Auth: panel, Handler: p.handleKeepalive},
 		{Method: http.MethodPost, Path: "/raccoon/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
@@ -455,6 +456,14 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 				writeAdminError(w, failure)
 				return
 			}
+		case "daily-active":
+			summary, dailyErr := p.pool.DailyActive(r.Context(), uid, pointsTruthy(payload["force"]))
+			if dailyErr != nil {
+				actionErr = dailyErr
+				break
+			}
+			writeJSON(w, http.StatusOK, summary)
+			return
 		case "delete":
 			if p.pool.Get(uid) == nil {
 				writeAdminError(w, &adminError{

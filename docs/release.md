@@ -2,16 +2,16 @@
 
 ## Current status
 
-This tree is **`2.0.1`** final. The v2 source is published on branch `v2` of
-`ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.5. The release is
-<https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.1> and the GHCR image is
-`ghcr.io/ayeaaaa/mix2api:v2.0.1`. Gate F evidence is in `docs/gate-f.md`; real
+This tree is **`2.0.2`** final. The v2 source is published on branch `v2` of
+`ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.6. The release is
+<https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.2> and the GHCR image is
+`ghcr.io/ayeaaaa/mix2api:v2.0.2`. Gate F evidence is in `docs/gate-f.md`; real
 Windows SCM update execution remains the only unverified runtime item.
 
-Note: v1.6.5 update checks point at the same repository and will see `v2.0.0` as
-a newer stable release. v1's installer expects a `workbuddy2api-hub-v2.0.0.zip`
-asset that v2 does not publish, so a v1 deployment with update checks enabled
-may see an update it cannot install.
+Note: v1 is frozen at `v1.6.6`; its update checks point at the same repository
+and will see the newest v2 release. v1's installer expects a v1 asset that v2
+does not publish, so a v1 deployment with update checks enabled may see an
+update it cannot install. v1 update checks are off by default.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ may see an update it cannot install.
 
 ```sh
 git status --short           # must be clean
-VERSION=2.0.1 \
+VERSION=2.0.2 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
@@ -59,7 +59,7 @@ the injected build identity and must be the commit timestamp for reproducibility
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf mix2api-2.0.1-linux-amd64.tar.gz | head
+tar -tzf mix2api-2.0.2-linux-amd64.tar.gz | head
 ./mix2api version --json   # after extracting, must show the injected values
 ```
 
@@ -76,10 +76,10 @@ make clean
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.1 \
+  --build-arg VERSION=2.0.2 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api:v2.0.1 .
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.2 .
 ```
 
 The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
@@ -87,7 +87,7 @@ The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
 ## Publish
 
 The v2 source lives on branch `v2`; the repository's `main` branch remains
-v1.6.5. The release workflow (`.github/workflows/release.yml`) is manual and
+v1.6.6. The release workflow (`.github/workflows/release.yml`) is manual and
 refuses to publish unless `publish=true` and `gate_f_signed=yes`. The `version`
 input must be a strict semantic version **without** a leading `v` (`2.0.0`, not
 `v2.0.0`); a dedicated validation step rejects `v`/`V` prefixes, leading
@@ -107,19 +107,19 @@ For this repository layout, the equivalent manual publication is:
 git push origin v2
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.0.1 \
+  --build-arg VERSION=2.0.2 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
   --provenance=false --push \
-  -t ghcr.io/ayeaaaa/mix2api:v2.0.1 .
-gh release create v2.0.1 dist/* \
+  -t ghcr.io/ayeaaaa/mix2api:v2.0.2 .
+gh release create v2.0.2 dist/* \
   --target "$(git rev-parse HEAD)" \
-  --title "mix2api v2.0.1" \
+  --title "mix2api v2.0.2" \
   --notes-file CHANGELOG.md
 ```
 
 The tag points at the v2 commit, not at `main`. Do not move `main` or overwrite
-the v1.6.5 tag.
+the v1.6.6 tag.
 
 ## Rollback a release
 
@@ -127,13 +127,13 @@ the v1.6.5 tag.
   `mix2api update install --version <previous>`; the executor takes a complete
   backup first.
 - Data: `mix2api rollback --from <v2-data> --to <fresh-v1-dir>`, then point
-  v1.6.5 at the fresh directory. The command is copy-only, validates the
+  v1.6.6 at the fresh directory. The command is copy-only, validates the
   v1-format data, and never writes the source. Never share a live directory.
 - Container: redeploy the previous image tag/digest.
 
 ## Versioning
 
-- Development defaults to the `2.0.1` identity in
+- Development defaults to the `2.0.2` identity in
   `internal/core/version`.
 - Release builds inject `Version`, `Commit`, and `Date` with `-ldflags -X`.
-- The current release is `v2.0.1`; future fixes use a new semantic version.
+- The current release is `v2.0.2`; future fixes use a new semantic version.

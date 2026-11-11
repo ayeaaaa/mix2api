@@ -11,7 +11,7 @@ import (
 )
 
 // TestDashboardContract pins the Gate E surface: the embedded asset matches
-// the documented v1.6.5 provenance plus the top-bar total-quota delta, the
+// the documented v1.6.5 provenance plus the total-quota and daily-active deltas, the
 // static aliases are public and non-CORS, the API route inventory is complete,
 // and the management gate fails closed.
 func TestDashboardContract(t *testing.T) {
@@ -31,6 +31,9 @@ func TestDashboardContract(t *testing.T) {
 		"tabCnTotal",
 		"intlSize",
 		"cnSize",
+		"raccoonDailyActive",
+		"raccoonDailyCell",
+		"/raccoon/accounts/daily-active",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("embedded dashboard is missing marker %q", marker)

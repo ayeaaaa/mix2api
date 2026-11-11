@@ -102,6 +102,9 @@ type Account struct {
 	Path        string
 	Credits     *CreditsSnapshot
 	PointsTasks *PointsTasks
+	// DailyActive is today's daily-activity result, persisted in
+	// accountstate.State.Extra["daily_active"].
+	DailyActive map[string]any
 	Models      []providers.Model
 
 	ReserveCredits       int64
@@ -139,6 +142,7 @@ type Account struct {
 	creditsMu        sync.Mutex
 	tasksMu          sync.Mutex
 	autoClaimMu      sync.Mutex
+	dailyActiveMu    sync.Mutex
 	creditsFetchedAt time.Time
 	tasksFetchedAt   time.Time
 	autoClaimAt      time.Time
@@ -173,6 +177,7 @@ type AccountView struct {
 	Models             int              `json:"models"`
 	Credits            *CreditsSnapshot `json:"credits"`
 	PointsTasks        *PointsTasks     `json:"points_tasks"`
+	DailyActive        any              `json:"daily_active"`
 	Guard              string           `json:"guard"`
 	ReserveCredits     int64            `json:"reserve_credits"`
 	ReserveBlocked     bool             `json:"reserve_blocked"`
@@ -186,6 +191,29 @@ type AccountView struct {
 	Proxy              string           `json:"proxy"`
 	Note               string           `json:"note"`
 	TasksEnabled       bool             `json:"tasks_enabled"`
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
+}
+
+func dailyActiveFromState(state accountstate.State) map[string]any {
+	raw := state.Extra["daily_active"]
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return map[string]any{}
+	}
+	return value
 }
 
 // View returns the public v1-compatible snapshot. It redacts known credential
@@ -257,6 +285,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		Models:             len(a.Models),
 		Credits:            credits,
 		PointsTasks:        pointsTasks,
+		DailyActive:        cloneAnyMap(a.DailyActive),
 		Guard:              a.guardBlockedLocked(""),
 		ReserveCredits:     a.ReserveCredits,
 		ReserveBlocked:     a.reserveBlockedLocked(),

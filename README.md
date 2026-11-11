@@ -4,8 +4,8 @@ Go rewrite of the mix2api multi-provider AI gateway. One CGO-free binary serves
 OpenAI Chat Completions, Responses, Anthropic Messages, SSE, the dashboard, and
 the provider admin surfaces for WorkBuddy (intl/cn), CodeArts, and Raccoon.
 
-**Status: `2.0.1` final (2026-11-11).** The v2 source is published on branch
-`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.5. Gate F evidence is recorded in
+**Status: `2.0.2` final (2026-11-11).** The v2 source is published on branch
+`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.6. Gate F evidence is recorded in
 [`docs/gate-f.md`](docs/gate-f.md); real Windows SCM update execution remains
 the only unverified runtime item.
 
@@ -59,7 +59,7 @@ SBOM, and `release.json`. Version, commit, and date come from `VERSION`,
 Example release build:
 
 ```sh
-VERSION=2.0.1 \
+VERSION=2.0.2 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
@@ -85,8 +85,8 @@ volume ownership.
 ## Data compatibility
 
 Account files, `state.json`, `settings.json`, usage JSONL, and `logs.sqlite3`
-keep their v1.6.5 formats; unknown fields survive reads and writes. Migration is
-copy-only and the original v1.6.5 tree remains untouched. Keep v1 and v2 from
+keep their v1.6.6 formats; unknown fields survive reads and writes. Migration is
+copy-only and the original v1.6.6 tree remains untouched. Keep v1 and v2 from
 sharing a live data directory: stop one process before starting the other, and
 use `mix2api rollback` to produce a fresh v1-compatible directory when needed.
 
@@ -99,7 +99,7 @@ go vet ./...
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/mix2api
 ```
 
-- `tests/contract`: scoped v2 regression goldens (not a captured full v1.6.5
+- `tests/contract`: scoped v2 regression goldens (not a captured full v1.6.6
   oracle; see `tests/contract/testdata/PROVENANCE.md`).
 - `tests/oracle`: loopback oracle harness and real-account smoke checklist.
 - `tests/load`: 200-concurrent SSE harness, skipped unless `MIX2API_LOAD=1`.
@@ -119,5 +119,5 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/mix2api
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE). The v1.6.5 project remains the behavior oracle
+MIT. See [`LICENSE`](LICENSE). The v1.6.6 project remains the behavior oracle
 and is not modified by this repository.

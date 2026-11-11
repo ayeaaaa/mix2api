@@ -38,6 +38,8 @@ type Config struct {
 	ModelsTTLSeconds     float64 `json:"models_ttl_seconds"`
 	MaxConcurrent        int     `json:"max_concurrent"`
 	AutoClaimLogin       bool    `json:"auto_claim_login"`
+	DailyActive          bool    `json:"daily_active"`
+	DailyActiveModel     string  `json:"daily_active_model"`
 }
 
 func defaultConfig() Config {
@@ -48,6 +50,8 @@ func defaultConfig() Config {
 		ModelsTTLSeconds:     defaultModelsTTLSeconds,
 		MaxConcurrent:        defaultMaxConcurrent,
 		AutoClaimLogin:       false,
+		DailyActive:          false,
+		DailyActiveModel:     "",
 	}
 }
 
@@ -79,7 +83,8 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 	for key, value := range patch {
 		switch key {
 		case "enabled", "timeout_seconds", "stream_timeout_seconds",
-			"models_ttl_seconds", "max_concurrent", "auto_claim_login":
+			"models_ttl_seconds", "max_concurrent", "auto_claim_login",
+			"daily_active", "daily_active_model":
 			raw[key] = value
 		}
 	}
@@ -99,6 +104,8 @@ func configValues(cfg Config) map[string]any {
 		"models_ttl_seconds":     cfg.ModelsTTLSeconds,
 		"max_concurrent":         cfg.MaxConcurrent,
 		"auto_claim_login":       cfg.AutoClaimLogin,
+		"daily_active":           cfg.DailyActive,
+		"daily_active_model":     cfg.DailyActiveModel,
 	}
 }
 
@@ -123,6 +130,8 @@ func normalizeConfig(raw map[string]any) Config {
 		raw["max_concurrent"], defaultMaxConcurrent, minMaxConcurrent, maxMaxConcurrent,
 	)
 	cfg.AutoClaimLogin = isTrue(raw["auto_claim_login"])
+	cfg.DailyActive = isTrue(raw["daily_active"])
+	cfg.DailyActiveModel = strings.TrimSpace(pointsText(raw["daily_active_model"]))
 	return cfg
 }
 

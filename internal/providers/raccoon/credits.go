@@ -131,6 +131,61 @@ func (p *Pool) FetchCredits(ctx context.Context, a *Account, force bool) (*Credi
 	return result, nil
 }
 
+// DailyGrantToday reads the account's recent bills and returns the points
+// booked by the upstream's daily_grant event for the current local day. The
+// check intentionally bypasses the 60-second credits cache. A bill time that
+// cannot be parsed is ignored, matching v1's conservative daily-active check.
+func (p *Pool) DailyGrantToday(ctx context.Context, a *Account) (int, error) {
+	if p == nil {
+		return 0, errors.New("raccoon: pool is nil")
+	}
+	if ctx == nil {
+		return 0, errors.New("raccoon: nil context")
+	}
+	if a == nil {
+		return 0, errors.New("raccoon: account is nil")
+	}
+	if a.isDeleted() {
+		return 0, ErrAccountDeleted
+	}
+	client := p.HTTPClient()
+	if client == nil {
+		return 0, errors.New("raccoon: points http client is not configured")
+	}
+	tokens := p.TokenManager()
+	if err := ensurePointsToken(ctx, tokens, a); err != nil {
+		return 0, err
+	}
+	items, err := p.fetchBills(ctx, a, client, tokens)
+	if err != nil {
+		return 0, err
+	}
+	now := p.timeNow()
+	total := 0
+	for _, item := range items {
+		if pointsInt(item["points"]) <= 0 {
+			continue
+		}
+		biz := strings.ToLower(strings.TrimSpace(pointsText(item["biz_type"])))
+		name := pointsText(item["event_name"])
+		if biz != "daily_grant" && !strings.Contains(name, "每日") {
+			continue
+		}
+		created, ok := parsePointsTime(item["created_at"])
+		if !ok || !sameLocalDate(created, now) {
+			continue
+		}
+		total += pointsInt(item["points"])
+	}
+	return total, nil
+}
+
+func sameLocalDate(a, b time.Time) bool {
+	ay, am, ad := a.Local().Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
+}
+
 // RefreshCredits force-refreshes one account (when uid is set) or every loaded
 // account. Per-account upstream failures are aggregated as redacted rows so a
 // single bad account cannot hide the rest of the pool, matching v1.

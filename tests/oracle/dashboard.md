@@ -1,7 +1,8 @@
 # Dashboard oracle (Gate E)
 
 The v2 binary serves the v1.6.5 dashboard plus the top-bar total-quota
-columns (`tabIntlTotal` / `tabCnTotal`). This document records the asset
+columns (`tabIntlTotal` / `tabCnTotal`) and the Raccoon daily-activity
+settings/task controls. This document records the asset
 provenance, the static contract, the API inventory the page uses, and the
 Gate E checks. The original repository
 `/root/opencode/mix2api` is read-only; the copy below is the only committed
@@ -15,18 +16,19 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `86efb00ab64ecd4954b0fee0926710ec4b79a875f3a6ee4a267832def9fd4153` |
+| v2 SHA-256 | `bf758a8801b7adef14505610b067128867218f648a34e77ec933abb68dcfcd7d` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,285,253 bytes |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`); otherwise identical to v1.6.5 |
+| v2 size | 1,289,367 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`) and Raccoon daily-activity settings/task controls; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
 `internal/web/assets.go` exposes `web.DashboardSHA256` and the original
 `web.DashboardV1SHA256`; `internal/web/assets_test.go`,
 `tests/dashboard/contract_test.go`, and the JS harness input all re-check the
-served digest. The v1 hash is kept beside the v2 hash; the only intentional
-delta from v1.6.5 is the top-bar total-quota columns.
+served digest. The v1 hash is kept beside the v2 hash; the intentional
+deltas from v1.6.5 are the top-bar total-quota columns and Raccoon
+daily-activity controls.
 
 ## Static contract
 
@@ -68,7 +70,7 @@ route. Groups:
 | activity/tasks | `GET /activity/history`, `GET /tasks`, `POST /tasks/claim`, `/tasks/run`, `/tasks/streak-bonus`, `/tasks/travel` |
 | scheduler | `GET /scheduler`, `POST /scheduler/toggle`, `/scheduler/trigger` |
 | CodeArts | `GET /codearts/overview`; account actions checkin, clear-cooldown, delete, disable, enable, note, tasks, test, proxy, oauth/start, oauth/poll, oauth/callback; credits/refresh, keepalive, test, models/refresh |
-| Raccoon | `GET /raccoon/overview`; account actions clear-cooldown, delete, disable, enable, grant-desktop, grant-mobile, import, note, tasks, test, proxy, oauth/start, oauth/poll, oauth/callback; credits/refresh, test, models/refresh |
+| Raccoon | `GET /raccoon/overview`; account actions clear-cooldown, daily-active, delete, disable, enable, grant-desktop, grant-mobile, import, note, tasks, test, proxy, oauth/start, oauth/poll, oauth/callback; credits/refresh, test, models/refresh |
 | usage | `GET /usage`, `/usage/analytics`, `/usage/by-account`, `/usage/perf`, `/usage/recent`, `/usage/remaining`, `/usage/timeseries` |
 | logs/pricing | `GET /logs`, `POST /logs/clear`, `GET /pricing`, `POST /pricing/refresh`, `POST /pricing/mapping` |
 | media | `GET /v1/media/models`, `GET /v1/media/tasks`, `POST /v1/videos/{id}/cancel` |

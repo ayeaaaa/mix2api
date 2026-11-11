@@ -69,7 +69,8 @@ func fakeBearerToken(r *http.Request) string {
 // pointsFake mirrors the v1 _fake_raccoon.py points subset: balance, bills,
 // tasks, desktop/mobile grants, and refresh. No test reaches a real upstream.
 type pointsFake struct {
-	mu sync.Mutex
+	mu  sync.Mutex
+	now time.Time
 
 	allowed       map[string]bool
 	refreshExpiry time.Time
@@ -100,10 +101,14 @@ type pointsFake struct {
 
 	lastDesktopHeaders http.Header
 	lastMobileHeaders  http.Header
+
+	chatCalls        int
+	dailyGrantOnChat bool
 }
 
 func newPointsFake(now time.Time) *pointsFake {
 	return &pointsFake{
+		now:              now,
 		allowed:          make(map[string]bool),
 		refreshExpiry:    now.Add(time.Hour),
 		grantPoints:      3000,
@@ -182,6 +187,8 @@ func (f *pointsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveBills(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == PointsTasksPath:
 		f.serveTasks(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == ChatPath:
+		f.serveDailyActiveChat(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == PointsDesktopGrantPath:
 		f.serveDesktopGrant(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == PointsMobileGrantPath:
@@ -193,6 +200,46 @@ func (f *pointsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (f *pointsFake) serveDailyActiveChat(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.chatCalls++
+	grant := f.dailyGrantOnChat
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+	if grant {
+		f.mu.Lock()
+		f.addDailyGrantBillLocked()
+		f.mu.Unlock()
+	}
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+}
+
+func (f *pointsFake) addDailyGrantBillLocked() {
+	payload := f.billsByCursor[""]
+	if payload == nil {
+		payload = defaultFakeBills(f.now)
+		f.billsByCursor[""] = payload
+	}
+	data, _ := payload["data"].(map[string]any)
+	if data == nil {
+		data = map[string]any{}
+		payload["data"] = data
+	}
+	items, _ := data["items"].([]any)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item != nil && item["biz_type"] == "daily_grant" {
+			return
+		}
+	}
+	data["items"] = append(items, map[string]any{
+		"event_name": "每日积分发放", "points": 300, "biz_type": "daily_grant",
+		"client_type": "web", "created_at": f.now.Format(time.RFC3339),
+	})
+}
 func (f *pointsFake) authStatusLocked(r *http.Request) (string, bool, int) {
 	token := fakeBearerToken(r)
 	authorized := f.allowed[token]

@@ -359,8 +359,11 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	return p.pool.OpenChat(ctx, req)
 }
 
-// Jobs returns no background jobs in this slice; scheduling is added later.
-func (p *Provider) Jobs() []scheduler.Job { return nil }
+// Jobs contributes the opt-in daily-activity check-in job. The scheduler calls
+// Run on its normal tick; the job only acts in the 09:00/21:00 local slots.
+func (p *Provider) Jobs() []scheduler.Job {
+	return []scheduler.Job{&dailyActiveJob{provider: p}}
+}
 
 // Health returns the small v1-compatible health block consumed by /health.
 // The five-second cache key includes the config and pool/catalog state, so an

@@ -3,10 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.0.2] - 2026-11-11
+
+Patch release adding the v1.6.6 Raccoon daily-activity check-in to v2 and
+restoring the dashboard's total-quota column.
 
 ### Added
 
+- Raccoon daily-activity check-in: reads today's `daily_grant` bill first,
+  sends one minimal chat only when needed, verifies the 300-point reward for up
+  to six seconds, persists each account's state, and allows at most two
+  attempts per day one hour apart. The opt-in `daily_active` setting runs at
+  09:00 / 21:00 local; `daily_active_model` overrides the ping model.
+- `POST /raccoon/accounts/daily-active` panel action. Manual `force` bypasses
+  the daily attempt/interval limits but never re-pings an account whose reward
+  already landed.
+- Dashboard Raccoon settings toggle, daily-activity task column, reward card,
+  and per-account check-in button.
 - Dashboard top bar shows total quota beside total credits for both WorkBuddy
   realms (`可用 / 总积分 / 总额度`); the v2.0.1 asset only exposed total
   credits.
