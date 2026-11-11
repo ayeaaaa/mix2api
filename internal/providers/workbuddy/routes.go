@@ -728,6 +728,19 @@ func (p *Provider) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// allAccountViews returns the whole WorkBuddy pool (both realms) in the
+// deterministic UID order v1's account_views() used for panel responses.
+func (p *Provider) allAccountViews() []AccountView {
+	accounts := make([]AccountView, 0)
+	for _, provider := range p.allProviders() {
+		if pool := provider.Pool(); pool != nil {
+			accounts = append(accounts, pool.List()...)
+		}
+	}
+	sort.SliceStable(accounts, func(i, j int) bool { return accounts[i].UID < accounts[j].UID })
+	return accounts
+}
+
 func (p *Provider) handleAccountsExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	realm := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("realm")))
@@ -867,9 +880,7 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			provider.invalidateHealth()
-			writeWBAdminJSON(w, http.StatusOK, map[string]any{
-				"results": result.Results, "accounts": result.Accounts, "busy": result.Busy,
-			})
+			p.writeCreditsResponse(w, r, result.Results, result.Busy)
 			return
 		}
 	}
@@ -879,7 +890,6 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 		// separate provider instances here, so an omitted realm means both;
 		// each provider still resolves uid/uids/group against its own accounts.
 		results := make([]CreditRefreshRow, 0)
-		accounts := make([]AccountView, 0)
 		busy := false
 		paced := false
 		for _, provider := range p.allProviders() {
@@ -899,9 +909,8 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 			}
 			busy = busy || value.Busy
 			results = append(results, value.Results...)
-			accounts = append(accounts, value.Accounts...)
 		}
-		writeWBAdminJSON(w, http.StatusOK, map[string]any{"results": results, "accounts": accounts, "busy": busy})
+		p.writeCreditsResponse(w, r, results, busy)
 		return
 	}
 	provider := p.providerForRealm(realm)
@@ -917,11 +926,19 @@ func (p *Provider) handleAccountsCredits(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	provider.invalidateHealth()
-	writeWBAdminJSON(w, http.StatusOK, map[string]any{
-		"results":  result.Results,
-		"accounts": result.Accounts,
-		"busy":     result.Busy,
-	})
+	p.writeCreditsResponse(w, r, result.Results, result.Busy)
+}
+
+// writeCreditsResponse keeps v1's envelope: the accounts array is always the
+// whole WorkBuddy pool, while results only contain the requested targets. GET
+// always carries busy (v1's snapshot endpoint); POST carries it only while a
+// sweep is already running, so the normal response has no busy key at all.
+func (p *Provider) writeCreditsResponse(w http.ResponseWriter, r *http.Request, results []CreditRefreshRow, busy bool) {
+	payload := map[string]any{"results": results, "accounts": p.allAccountViews()}
+	if (r != nil && r.Method == http.MethodGet) || busy {
+		payload["busy"] = busy
+	}
+	writeWBAdminJSON(w, http.StatusOK, payload)
 }
 
 func (p *Provider) refreshCreditsRoute(ctx context.Context, targets CreditsRefreshTargets) (CreditsRefreshResult, error) {
@@ -1584,8 +1601,9 @@ func (p *Provider) handleAccountsCheckin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	provider.refreshSettings()
+	before := p.accountViewsByUID()
 	uid := wbAdminText(payload["uid"])
-	results := make([]CheckinResult, 0)
+	results := make([]map[string]any, 0)
 	targets := []*Account{}
 	if uid != "" {
 		if account := provider.Pool().Get(uid); account != nil && accountRealmOf(account) == realmCN {
@@ -1609,14 +1627,62 @@ func (p *Provider) handleAccountsCheckin(w http.ResponseWriter, r *http.Request)
 			writeWBAdminError(w, wbAdminErrorFrom(err))
 			return
 		}
-		results = append(results, result)
+		results = append(results, v1CheckinRow(result))
 		provider.recordActivity(result.Activity)
 	}
 	provider.invalidateHealth()
+	accounts := p.allAccountViews()
+	// v1's check-in only persisted lastCheckin; it did not refresh the credit
+	// snapshot or expose the newer check-in status in the account row. Keep the
+	// pre-action snapshot so the response matches that contract.
+	for index := range accounts {
+		if previous, ok := before[accounts[index].UID]; ok {
+			lastCheckin := accounts[index].LastCheckin
+			accounts[index] = previous
+			accounts[index].LastCheckin = lastCheckin
+		}
+	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"results":  results,
-		"accounts": provider.Pool().List(),
+		"accounts": accounts,
 	})
+}
+
+// accountViewsByUID snapshots the whole pool before a panel action mutates it.
+func (p *Provider) accountViewsByUID() map[string]AccountView {
+	out := make(map[string]AccountView)
+	for _, view := range p.allAccountViews() {
+		out[view.UID] = view
+	}
+	return out
+}
+
+// v1CheckinRow projects the internal result onto v1's exact wire shape. v1
+// returned uid/nickname plus ok/state/code/msg/data on success and
+// ok/state/code/msg/error on failure; realm, skipped, busy, activity, checkin
+// and credits were never part of the check-in response.
+func v1CheckinRow(result CheckinResult) map[string]any {
+	row := map[string]any{
+		"uid":      result.UID,
+		"nickname": result.Nickname,
+		"ok":       result.OK,
+	}
+	if result.State != "" {
+		row["state"] = result.State
+	}
+	if result.Code != nil {
+		row["code"] = result.Code
+	}
+	if result.Msg != "" {
+		row["msg"] = result.Msg
+	}
+	if result.Error != "" {
+		row["error"] = result.Error
+	}
+	if result.OK {
+		row["data"] = result.Data
+	}
+	return row
 }
 
 func (p *Provider) handleAccountsDailyChat(w http.ResponseWriter, r *http.Request) {
@@ -1651,7 +1717,7 @@ func (p *Provider) handleAccountsDailyChat(w http.ResponseWriter, r *http.Reques
 	provider.invalidateHealth()
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"results":  results,
-		"accounts": provider.Pool().List(),
+		"accounts": p.allAccountViews(),
 	})
 }
 

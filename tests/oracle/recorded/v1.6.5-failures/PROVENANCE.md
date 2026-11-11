@@ -107,15 +107,15 @@ tests/oracle/run.sh compare --all \
 
 | Suite | Exact | Differ |
 | --- | --- | --- |
-| Raccoon | 4 / 5 | 1 (`raccoon_credit_400`) |
+| Raccoon | 5 / 5 | 0 |
 | CodeArts | 5 / 5 | 0 |
 | WorkBuddy | 5 / 5 | 0 |
 
-The complete path-qualified Raccoon output is in `V2-DELTA.txt`. The only
-remaining difference is the v1 `error.gateway_hint` field on the Raccoon
-credit-exhausted 400 envelope; v2 emits the same status, message, type, and
-code without the hint. The CodeArts and WorkBuddy failure suites match
-exactly, including the upstream call counts.
+The complete path-qualified output is in `V2-DELTA.txt`. The former Raccoon
+credit-exhausted difference is resolved: the provider error exposes v1's
+optional `gateway_hint` through a generic interface, and the API writes
+`error.gateway_hint` exactly when it is set. All three failure suites match
+exactly, including the upstream call counts and retry/failover observations.
 
 ## Verification
 

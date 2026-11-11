@@ -268,7 +268,6 @@ func TestPoolPickSkipsManualDisabledCoolingAndExcluded(t *testing.T) {
 	for field, value := range map[string]string{
 		"note":      view.Note,
 		"lastError": view.LastError,
-		"reason":    view.Reason,
 	} {
 		if strings.Contains(value, "access-a") || strings.Contains(value, "device-secret-value") {
 			t.Fatalf("view %s leaked a secret: %q", field, value)

@@ -162,45 +162,48 @@ tests/oracle/run.sh compare --all \
   --api-key "$API_KEY"
 ```
 
-Result: 8 of 18 cases match exactly; 10 differ by the documented additive
-fields, v1 account-view semantics, or log-store scope below. The complete
+Result: 12 of 18 cases match exactly; 6 differ only by the documented
+intentional/additive fields or the log-store scope below. The complete
 path-qualified output is committed as `V2-DELTA.txt`. No normalization rule
 was added or weakened to hide a stable field.
 
 Matching: `wb_chat`, `wb_chat_stream`, `wb_chat_cn`, `wb_chat_stream_cn`,
 `wb_responses`, `wb_responses_stream`, `wb_messages`,
-`wb_catalog_refresh_intl`.
+`wb_catalog_refresh_intl`, `wb_accounts`, `wb_credits_intl`, `wb_credits_cn`,
+`wb_checkin_cn`.
 
 ### Remaining differences
 
 - `wb_models_intl`, `wb_models_cn`: v2 adds the aliases `category`,
   `context_window`, `free`, `max_output`, `max_tokens`, and `provider` to each
-  model entry. The v1 capability fields and model IDs match.
-- `wb_health`: v2 omits the v1 current-account identity block
-  (`uid`, `domain`, `issuer`, `credential_file`, `expires_at`; v1 reported the
-  first pool account `oracle-cn`) and adds `version` and the neutral
-  `providers` map. v2 also adds `codearts.accounts`, `codearts.healthy`, and
-  `codearts.ok` for the unconfigured CodeArts provider.
-- `wb_accounts`: v2 adds `activeConcurrent`, `maxConcurrent`, and `reason` to
-  each account view; v1 serialized the unset `lastCheckin`, `lastDailyChat`,
-  and `lastActivityReport` as `null`, while v2 uses `""`.
-- `wb_usage_intl`, `wb_usage_cn`: v2 does not populate the v1 current-account
-  block or `accounts_map` in `/usage`; v2 adds `ttft_ms_sum`, `ttft_samples`,
-  `gen_ms_sum`, `gen_samples`, `wall_ms_sum`, and `wall_samples`.
-- `wb_logs`: v1 records 43 startup/request lines in memory; v2 records its own
-  request lines in the durable store (16 lines) and adds `stored`/`db_bytes`
-  scope. The entry shape (`id`, `ts`, `time`, `level`, `tag`, `msg`) matches.
-- `wb_credits_intl`, `wb_credits_cn`: v1 returns every account in the `accounts`
-  array; v2 returns only the accounts targeted by the request realm. v2 adds
-  `busy` and the per-account `tier` block, and uses `""` instead of `null` for
-  unset activity fields. v1's intl response happened to put `oracle-cn` first
-  because it returns the whole pool; v2 correctly returns `oracle-intl`.
-- `wb_checkin_cn`: v2 adds `results[0].realm`, `activity`, `checkin`, and
-  `credits`; v1 returns only the check-in result and the account list. v2 also
-  refreshes the account's `credits.checkin.today_checked_in` to `true` after a
-  successful check-in, while v1 leaves the previously fetched `false` value in
-  the account view. v2 returns only the CN account in `accounts`; v1 returns
-  the whole pool.
+  model entry. The v1 capability fields and model IDs match. These fields are
+  intentional additive v2 metadata, not normalized away.
+- `wb_health`: v1's current-account identity block
+  (`uid`, `domain`, `issuer`, `credential_file`, `expires_at`) and the
+  key-readiness counts are restored, including the deterministic
+  representative account (`oracle-cn` by UID order). v2 still adds `version`
+  and the neutral `providers` map; the unconfigured CodeArts block now keeps
+  v1's small `configured`/`base_url` shape.
+- `wb_usage_intl`, `wb_usage_cn`: the v1 `accounts_map` and current-account
+  block are populated from the live provider pools, and `?realm=intl|cn`
+  selects v1's representative account. v2 still adds `ttft_ms_sum`,
+  `ttft_samples`, `gen_ms_sum`, `gen_samples`, `wall_ms_sum`, and
+  `wall_samples`; these timing sums are intentional additive measurements.
+- `wb_logs`: v1 records startup/request text in memory; v2 records its own
+  request lines in the durable store. The entry shape
+  (`id`, `ts`, `time`, `level`, `tag`, `msg`) matches, but v1's startup lines
+  are not fabricated into the v2 store. This is a log-store scope difference,
+  not a normalization exception.
+- `wb_accounts`, `wb_credits_intl`, `wb_credits_cn`, `wb_checkin_cn`: now
+  match exactly. v2 removed the v1-extra `activeConcurrent`, `maxConcurrent`,
+  and `reason` view fields, serializes unset `lastCheckin`/`lastDailyChat`/
+  `lastActivityReport` as `null`, returns the whole WorkBuddy pool in the
+  `accounts` array while keeping results target-filtered, and projects the
+  check-in result onto v1's `uid/nickname/ok/state/code/msg/data` shape.
+- `machineId`/`sessionId`: v2's `deriveViewID` is byte-for-byte the v1
+  `wb_fingerprint.derive_id` algorithm (MD5 of `salt:uid`, UUID-v4-shaped
+  substitution). The oracle comparison matches both `oracle-cn` and
+  `oracle-intl` values exactly; no algorithm difference remains.
 
 No stable field was removed or projected out to make the comparison pass.
 

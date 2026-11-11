@@ -56,6 +56,37 @@ type UsageSnapshotReporter interface {
 	UsageSnapshot() UsageSnapshot
 }
 
+// GatewayHint is implemented by provider errors that can add v1's optional
+// `error.gateway_hint` explanation beside the upstream message. An empty hint
+// means "nothing to add"; the API never invents one for an unknown failure.
+type GatewayHint interface {
+	error
+
+	GatewayHint() string
+}
+
+// AccountSummary is the provider-neutral account row used by the panel health
+// identity block and the usage summary's accounts_map/current-account fields.
+// It contains no credential value; CredentialFile is only the file's basename.
+type AccountSummary struct {
+	UID            string
+	Nickname       string
+	Realm          string
+	Domain         string
+	Issuer         string
+	CredentialFile string
+	ExpiresAt      float64
+	Enabled        bool
+	Ready          bool
+}
+
+// AccountInventory is implemented by providers that expose their live account
+// pool to platform-level panel summaries. Providers without it contribute no
+// accounts, so Raccoon and CodeArts usage stays unchanged.
+type AccountInventory interface {
+	AccountSummaries(ctx context.Context) ([]AccountSummary, error)
+}
+
 // RealmSelector is implemented by providers that expose a switchable default
 // upstream exit. Only WorkBuddy currently implements it.
 type RealmSelector interface {

@@ -65,9 +65,14 @@ adds timestamp recognition for `addedAt`, `updated_iso`, `lastCheckin`,
 `lastDailyChat`, `lastActivityReport`, and activity `ts`. The fake upstream URL
 and temporary accounts path are replaced before comparison. See
 `tests/oracle/workbuddy.md` for the read-only v1.6.5 oracle procedure. The
-recorded comparison has a documented delta (models additive aliases, health
-identity/providers, account-view fields, usage metadata/timing sums, log-store
-scope, credits/check-in account filtering); see
+recorded comparison now matches 12 of 18 cases exactly. The remaining
+differences are intentional additive fields and one scope difference, not
+normalization exceptions: the model aliases `category`, `context_window`,
+`free`, `max_output`, `max_tokens`, and `provider`; the health `version` and
+neutral `providers` map; the usage ttft/gen/wall timing sums and sample counts;
+and v2's durable request log store versus v1's in-memory startup/request text.
+Health identity, account-view shape, credits/check-in whole-pool accounts, and
+`machineId`/`sessionId` now match; see
 `tests/oracle/recorded/v1.6.5-workbuddy/V2-DELTA.txt`.
 
 ### Final-review parity fixes and exclusions

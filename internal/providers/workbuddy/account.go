@@ -1,6 +1,7 @@
 package workbuddy
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -136,7 +137,6 @@ type AccountView struct {
 	TokenExpired    bool     `json:"tokenExpired"`
 	NeedRelogin     bool     `json:"needRelogin"`
 	HasRefreshToken bool     `json:"hasRefreshToken"`
-	Reason          string   `json:"reason"`
 	LastError       string   `json:"lastError"`
 	LastErrorDetail any      `json:"lastErrorDetail"`
 	InCooldown      bool     `json:"inCooldown"`
@@ -154,8 +154,6 @@ type AccountView struct {
 	FailWindow           int                 `json:"failWindow"`
 	LastFailFor          any                 `json:"lastFailFor"`
 	ModelCooldowns       []ModelCooldownView `json:"modelCooldowns"`
-	ActiveConcurrent     int                 `json:"activeConcurrent"`
-	MaxConcurrent        int                 `json:"maxConcurrent"`
 	AddedAt              int64               `json:"addedAt"`
 	File                 string              `json:"file"`
 	Credits              *CreditSnapshot     `json:"credits"`
@@ -170,9 +168,9 @@ type AccountView struct {
 	CreditLimitReached   bool                `json:"creditLimitReached"`
 	ModelDailyTokenLimit int                 `json:"modelDailyTokenLimit"`
 	ModelDailyTokens     map[string]int64    `json:"modelDailyTokens"`
-	LastCheckin          string              `json:"lastCheckin"`
-	LastDailyChat        string              `json:"lastDailyChat"`
-	LastActivityReport   string              `json:"lastActivityReport"`
+	LastCheckin          any                 `json:"lastCheckin"`
+	LastDailyChat        any                 `json:"lastDailyChat"`
+	LastActivityReport   any                 `json:"lastActivityReport"`
 	CanCheckin           bool                `json:"canCheckin"`
 	CanDailyChat         bool                `json:"canDailyChat"`
 	CanReportActivity    bool                `json:"canReportActivity"`
@@ -568,10 +566,6 @@ func (a *Account) viewAt(now time.Time) AccountView {
 	}
 	nickname = truncateText(nickname, 120)
 	secretsToRedact := accountSecretValuesLocked(a)
-	reason := redactAccountText(a.State.Reason, secretsToRedact)
-	if reason == "" {
-		reason = redactAccountText(a.State.LastError, secretsToRedact)
-	}
 	lastError := redactAccountText(a.State.LastError, secretsToRedact)
 	note := redactAccountText(a.Auth.Note, secretsToRedact)
 
@@ -672,7 +666,6 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		TokenExpired:         expired,
 		NeedRelogin:          expired,
 		HasRefreshToken:      strings.TrimSpace(a.Auth.RefreshToken) != "",
-		Reason:               reason,
 		LastError:            lastError,
 		LastErrorDetail:      nil,
 		InCooldown:           cooling,
@@ -686,8 +679,6 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		FailWindow:           600,
 		LastFailFor:          nil,
 		ModelCooldowns:       modelCooldowns,
-		ActiveConcurrent:     a.State.ActiveConcurrent,
-		MaxConcurrent:        a.maxConcurrent,
 		AddedAt:              unixSeconds(a.Auth.AddedAt),
 		File:                 file,
 		Credits:              cloneCreditSnapshot(a.Credits),
@@ -702,9 +693,9 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		CreditLimitReached:   a.creditLimitReachedLocked(),
 		ModelDailyTokenLimit: a.ModelDailyTokenLimit,
 		ModelDailyTokens:     cloneModelTokenMap(a.ModelDailyTokens),
-		LastCheckin:          a.Auth.LastCheckin,
-		LastDailyChat:        a.Auth.LastDailyChat,
-		LastActivityReport:   a.Auth.LastActivityReport,
+		LastCheckin:          optionalTimestamp(a.Auth.LastCheckin),
+		LastDailyChat:        optionalTimestamp(a.Auth.LastDailyChat),
+		LastActivityReport:   optionalTimestamp(a.Auth.LastActivityReport),
 		CanCheckin:           !a.Auth.APIKey && a.Auth.Realm == realmCN && strings.TrimSpace(a.Auth.EnterpriseID) == "",
 		CanDailyChat:         !a.Auth.APIKey && a.Auth.Realm == realmIntl,
 		CanReportActivity: !a.Auth.APIKey &&
@@ -728,6 +719,73 @@ func deriveViewID(uid, salt string) string {
 	}
 	h = h[:12] + "4" + h[13:16] + "a" + h[17:]
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// optionalTimestamp preserves v1's null for an unset activity timestamp. v1
+// serialized these fields as None; an empty string is a different value and
+// would make the panel show a completed activity at the epoch.
+func optionalTimestamp(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+// AccountSummaries exposes this realm's live pool to the platform health and
+// usage summaries. The rows are sorted by UID so the representative account is
+// deterministic across restarts (v1 used the pool's load order).
+func (p *Provider) AccountSummaries(ctx context.Context) ([]providers.AccountSummary, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	pool := p.Pool()
+	if pool == nil {
+		return nil, nil
+	}
+	ready := make(map[string]bool)
+	for _, account := range pool.ReadyAccounts("") {
+		ready[account.UID()] = true
+	}
+	accounts := pool.Accounts()
+	out := make([]providers.AccountSummary, 0, len(accounts))
+	for _, account := range accounts {
+		account.mu.RLock()
+		auth := cloneAuth(account.Auth)
+		disabled := account.State.Disabled
+		account.mu.RUnlock()
+		uid := strings.TrimSpace(auth.UID)
+		if uid == "" {
+			continue
+		}
+		file := ""
+		if strings.TrimSpace(auth.Path) != "" {
+			file = filepath.Base(auth.Path)
+		}
+		expiresAt := float64(0)
+		if !auth.ExpiresAt.IsZero() {
+			expiresAt = float64(auth.ExpiresAt.Unix())
+		}
+		out = append(out, providers.AccountSummary{
+			UID:            uid,
+			Nickname:       strings.TrimSpace(auth.Nickname),
+			Realm:          strings.TrimSpace(auth.Realm),
+			Domain:         strings.TrimSpace(auth.Domain),
+			Issuer:         strings.TrimSpace(parseJWTClaims(auth.AccessToken).Issuer),
+			CredentialFile: file,
+			ExpiresAt:      expiresAt,
+			Enabled:        auth.Enabled && !disabled,
+			Ready:          ready[uid],
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+	return out, nil
 }
 
 func shortUID(uid string) string {

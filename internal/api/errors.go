@@ -18,6 +18,7 @@ type apiFailure struct {
 	Status  int
 	Type    string
 	Message string
+	Hint    string
 }
 
 func (e *apiFailure) Error() string {
@@ -55,7 +56,12 @@ func providerFailure(err error) *apiFailure {
 		if errType == "" {
 			errType = "invalid_request_error"
 		}
-		return &apiFailure{Status: status, Type: errType, Message: message}
+		failure := &apiFailure{Status: status, Type: errType, Message: message}
+		var hintErr providers.GatewayHint
+		if errors.As(err, &hintErr) {
+			failure.Hint = strings.TrimSpace(hintErr.GatewayHint())
+		}
+		return failure
 	}
 
 	return localFailure(http.StatusBadGateway, "upstream request failed")
@@ -66,30 +72,40 @@ func providerFailure(err error) *apiFailure {
 func writeFailure(w http.ResponseWriter, err error) {
 	var failure *apiFailure
 	if errors.As(err, &failure) && failure != nil {
-		writeV1Error(w, failure.Status, failure.Type, failure.Message)
+		writeV1ErrorWithHint(w, failure.Status, failure.Type, failure.Message, failure.Hint)
 		return
 	}
 	mapped := providerFailure(err)
 	if mapped.Status == http.StatusTooManyRequests {
 		var retry providers.RetryMetadata
 		if errors.As(err, &retry) {
-			writeV1ErrorWithRetry(w, mapped.Status, mapped.Type, mapped.Message, retry.RetryDelay(), retry.RetryReset())
+			writeV1ErrorWithRetryAndHint(w, mapped.Status, mapped.Type, mapped.Message, retry.RetryDelay(), retry.RetryReset(), mapped.Hint)
 			return
 		}
 	}
-	writeV1Error(w, mapped.Status, mapped.Type, mapped.Message)
+	writeV1ErrorWithHint(w, mapped.Status, mapped.Type, mapped.Message, mapped.Hint)
 }
 
 // writeV1Error is the single v1 error envelope writer used by the generic API
 // and the provider-route adapter.
 func writeV1Error(w http.ResponseWriter, status int, errType, message string) {
-	writeV1ErrorWithRetry(w, status, errType, message, 0, time.Time{})
+	writeV1ErrorWithHint(w, status, errType, message, "")
+}
+
+// writeV1ErrorWithHint adds v1's optional gateway_hint beside the error. An
+// empty hint omits the key entirely; no hint is ever synthesized here.
+func writeV1ErrorWithHint(w http.ResponseWriter, status int, errType, message, hint string) {
+	writeV1ErrorWithRetryAndHint(w, status, errType, message, 0, time.Time{}, hint)
 }
 
 // writeV1ErrorWithRetry writes the v1 envelope plus the rate-limit metadata v1
 // clients consume: Retry-After, absolute reset headers, and the same fields in
 // the JSON body.
 func writeV1ErrorWithRetry(w http.ResponseWriter, status int, errType, message string, wait time.Duration, reset time.Time) {
+	writeV1ErrorWithRetryAndHint(w, status, errType, message, wait, reset, "")
+}
+
+func writeV1ErrorWithRetryAndHint(w http.ResponseWriter, status int, errType, message string, wait time.Duration, reset time.Time, hint string) {
 	if status < 400 || status > 599 {
 		status = http.StatusBadGateway
 	}
@@ -120,6 +136,9 @@ func writeV1ErrorWithRetry(w http.ResponseWriter, status int, errType, message s
 	}
 	if !validReset.IsZero() {
 		payload["reset_at"] = validReset.Unix()
+	}
+	if hint = strings.TrimSpace(hint); hint != "" {
+		payload["gateway_hint"] = hint
 	}
 	body, err := marshalJSON(map[string]any{"error": payload})
 	if err != nil {

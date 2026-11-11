@@ -12,7 +12,7 @@
 #     --fake-control "$CONTROL" --api-key "$API_KEY"
 #
 # Result:
-#   Raccoon:  4 of 5 exact; 1 differs (gateway_hint only).
+#   Raccoon:  5 of 5 exact.
 #   CodeArts: 5 of 5 exact.
 #   WorkBuddy: 5 of 5 exact.
 #
@@ -20,7 +20,9 @@
 # (chat/refresh/token call counts and method/path/status tuples) matched for
 # every case, including the retry/failover paths.
 #
-# Raccoon:
-oracle: raccoon_credit_400: JSON mismatch:
-error.gateway_hint: missing on target (oracle="account credits exhausted at upstream; waiting for daily check-in to restore")
-oracle: 1 case(s) differ
+# Resolved by this candidate:
+# - Raccoon credit-exhausted 400: the provider error exposes v1's optional
+#   gateway_hint through a generic interface, and the API envelope writes
+#   `error.gateway_hint` exactly when the provider supplies it:
+#   "account credits exhausted at upstream; waiting for daily check-in to restore".
+#   Other failures still omit the key.

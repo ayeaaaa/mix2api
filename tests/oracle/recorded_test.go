@@ -328,10 +328,10 @@ func TestRecordedWorkBuddyOracleIntegrity(t *testing.T) {
 	assertFixturePayloads(t, workBuddyRecordedDir, document)
 	assertFixtureIsDesensitized(t, workBuddyRecordedDir)
 	assertDocumentedDelta(t, workBuddyRecordedDir, "V2-DELTA.txt", []string{
-		"8 of 18 cases match exactly",
-		"10 case(s) differ",
+		"12 of 18 cases match exactly",
+		"6 case(s) differ",
 		"oracle: wb_health: JSON mismatch:",
-		"oracle: wb_credits_intl: JSON mismatch:",
+		"oracle: wb_usage_intl: JSON mismatch:",
 	})
 }
 
@@ -382,10 +382,9 @@ func TestRecordedFailureOracleIntegrity(t *testing.T) {
 		})
 	}
 	assertDocumentedDelta(t, failuresRecordedDir, "V2-DELTA.txt", []string{
-		"Raccoon:  4 of 5 exact",
+		"Raccoon:  5 of 5 exact",
 		"CodeArts: 5 of 5 exact",
 		"WorkBuddy: 5 of 5 exact",
-		"oracle: raccoon_credit_400: JSON mismatch:",
 	})
 }
 

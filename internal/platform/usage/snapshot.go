@@ -359,11 +359,11 @@ func (s *Service) decorateSnapshotMap(out map[string]any, realm string) {
 	}
 	out["usd_cny"] = s.usdCNY()
 	accounts := map[string]any{}
-	for uid, info := range s.Accounts {
+	for uid, info := range s.accountMap() {
 		accounts[uid] = map[string]any{"nickname": info.Nickname, "realm": info.Realm}
 	}
 	out["accounts_map"] = accounts
-	current := s.CurrentAccount
+	current := s.currentAccount(realm)
 	out["account"] = map[string]any{
 		"uid":             current.UID,
 		"domain":          current.Domain,

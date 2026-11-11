@@ -106,7 +106,13 @@ type Service struct {
 
 	Accounts       map[string]AccountInfo
 	CurrentAccount AccountInfo
-	DefaultRealm   string
+	// AccountsFunc and CurrentAccountFunc make the panel summary follow the
+	// live provider pools instead of a startup snapshot. The function forms
+	// take precedence when set; CurrentAccountFunc receives the query realm
+	// ("" or "all" means the whole pool).
+	AccountsFunc       func() map[string]AccountInfo
+	CurrentAccountFunc func(realm string) AccountInfo
+	DefaultRealm       string
 	// DefaultRealmFunc makes the panel's active realm live: usage views read
 	// the current realm without rebuilding the service.
 	DefaultRealmFunc func() string
@@ -365,12 +371,35 @@ func (s *Service) DefaultRealmValue() string {
 	return s.DefaultRealm
 }
 
+// accountMap returns the current pool view, preferring the live function.
+func (s *Service) accountMap() map[string]AccountInfo {
+	if s == nil {
+		return nil
+	}
+	if s.AccountsFunc != nil {
+		return s.AccountsFunc()
+	}
+	return s.Accounts
+}
+
+// currentAccount returns the representative account for one query realm.
+func (s *Service) currentAccount(realm string) AccountInfo {
+	if s == nil {
+		return AccountInfo{}
+	}
+	if s.CurrentAccountFunc != nil {
+		return s.CurrentAccountFunc(realm)
+	}
+	return s.CurrentAccount
+}
+
 func (s *Service) realmFingerprint() string {
 	if s == nil {
 		return ""
 	}
-	uids := make([]string, 0, len(s.Accounts))
-	for uid := range s.Accounts {
+	accounts := s.accountMap()
+	uids := make([]string, 0, len(accounts))
+	for uid := range accounts {
 		uids = append(uids, uid)
 	}
 	sort.Strings(uids)
@@ -381,7 +410,7 @@ func (s *Service) realmFingerprint() string {
 		builder.WriteString("|")
 		builder.WriteString(uid)
 		builder.WriteString("=")
-		builder.WriteString(s.Accounts[uid].Realm)
+		builder.WriteString(accounts[uid].Realm)
 	}
 	return builder.String()
 }

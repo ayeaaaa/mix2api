@@ -3,7 +3,13 @@
 ## Status and provenance
 
 **Current status: the v2 regression contract is complete and the v1.6.5
-WorkBuddy oracle is recorded.**
+WorkBuddy oracle is recorded.** Against the `2.0.0-rc.1` candidate, 12 of 18
+cases match exactly; the remaining 6 differ only by intentional additive
+model/usage fields (`category`, `context_window`, `free`, `max_output`,
+`max_tokens`, `provider`, and the ttft/gen/wall timing sums), the additive
+`version`/`providers` health fields, or the log-store scope. These differences
+are documented in `recorded/v1.6.5-workbuddy/V2-DELTA.txt` and are not
+normalized away.
 
 The WorkBuddy fixture is committed as
 `tests/oracle/recorded/v1.6.5-workbuddy/` (18 cases). It was recorded from the
@@ -48,8 +54,9 @@ These are v2 composition/testing seams, not v1 wire fields:
   `WB_INTL_CHAT_UPSTREAM` override the chat/catalog/task origin per realm.
 - `WB_BILLING_UPSTREAM` and `WB_TASK_WEB_UPSTREAM` exist for single-origin
   deployments and the fake upstream used by the integration/contract suites.
-- `/health` exposes provider health under a neutral `providers` map. The
-  WorkBuddy provider block is smaller than v1's panel/key-readiness blocks.
+- `/health` exposes provider health under a neutral `providers` map and keeps
+  the v1 current-account identity/key-readiness blocks. The additive map is
+  the only health difference besides the running `version`.
 - `realm=all` is implemented by the generic API as the deduplicated union of
   the intl and cn catalogues, preserving intl-first order. No Raccoon or
   CodeArts model is included.
@@ -60,8 +67,9 @@ These are v2 composition/testing seams, not v1 wire fields:
   v2 composition. Account-level admission is enforced by the pool; a
   process-wide semaphore remains a follow-up and must not be recorded as a v1
   parity difference.
-- Session/machine view IDs are deterministic per account; `sessionId` is dropped
-  by the normalizer and `machineId` is stable for a given UID.
+- Session/machine view IDs use v1's exact `derive_id`/`session_id` algorithm
+  (MD5 of `salt:uid`, UUID-v4-shaped substitution), so `machineId`/`sessionId`
+  match the oracle for the same UID.
 - **Concurrency (oracle note):** v2 enforces a process-wide chat admission
   ceiling in addition to the per-account cap. Record v1 oracle payloads
   serially (one chat/SSE request at a time) and do not run the v2 suite against
@@ -293,7 +301,12 @@ Formerly v1-only fields now emitted by v2:
   normalized).
 - v1 `/v1/models` top-level `catalog` block.
 - v1's top-level `/health` realm/crypto/pool/key/media/identity blocks are
-  restored; the neutral `providers` map remains additive.
+  restored; the neutral `providers` map and running `version` remain additive.
+- v1's usage `accounts_map`/current-account block and the whole-pool
+  credits/check-in `accounts` array are restored; the timing sums remain
+  additive v2 measurements.
+- `/logs` is a durable request store in v2, not v1's in-memory startup/request
+  text. The entry shape matches, but startup lines are not fabricated.
 
 Do not fabricate values into the v2 goldens. Stable fields are compared in
 full; only inherently variable durations/timestamps use placeholders.

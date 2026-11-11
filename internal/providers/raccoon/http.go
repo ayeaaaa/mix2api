@@ -129,6 +129,22 @@ func (e *APIError) ErrorType() string {
 	return "invalid_request_error"
 }
 
+// GatewayHint returns v1's optional explanation for a classified upstream
+// failure. Only the credit-exhausted shape is needed by the selected oracle:
+// v1 adds the daily-check-in hint when the upstream says credits are
+// insufficient (HTTP 400/402), and leaves every other failure without a hint.
+func (e *APIError) GatewayHint() string {
+	if e == nil {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(e.Message))
+	if e.Status == http.StatusPaymentRequired ||
+		(strings.Contains(message, "insufficient") && strings.Contains(message, "credit")) {
+		return "account credits exhausted at upstream; waiting for daily check-in to restore"
+	}
+	return ""
+}
+
 // IsAuthError reports whether err is an authentication failure. A non-API
 // error, such as a network or filesystem error, is never an auth failure.
 func IsAuthError(err error) bool {

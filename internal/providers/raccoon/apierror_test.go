@@ -95,3 +95,30 @@ func TestAPIErrorSafeMessageIsUnprefixed(t *testing.T) {
 		t.Fatalf("nil SafeMessage = %q", got)
 	}
 }
+
+var _ providers.GatewayHint = (*APIError)(nil)
+
+func TestAPIErrorGatewayHintMatchesV1CreditShape(t *testing.T) {
+	credit := &APIError{
+		Kind: KindBadRequest, Status: http.StatusBadRequest,
+		Message: "insufficient credits; please top up",
+	}
+	want := "account credits exhausted at upstream; waiting for daily check-in to restore"
+	if got := credit.GatewayHint(); got != want {
+		t.Fatalf("GatewayHint = %q, want %q", got, want)
+	}
+	payment := &APIError{Kind: KindBadRequest, Status: http.StatusPaymentRequired}
+	if got := payment.GatewayHint(); got != want {
+		t.Fatalf("402 GatewayHint = %q, want %q", got, want)
+	}
+	for _, err := range []*APIError{
+		nil,
+		{Kind: KindBadRequest, Status: http.StatusBadRequest, Message: "concurrent session limit"},
+		{Kind: KindRateLimited, Status: http.StatusTooManyRequests, Message: "too many requests"},
+		{Kind: KindBadRequest, Status: http.StatusBadRequest, Message: "insufficient quota"},
+	} {
+		if got := err.GatewayHint(); got != "" {
+			t.Fatalf("unexpected hint for %#v: %q", err, got)
+		}
+	}
+}

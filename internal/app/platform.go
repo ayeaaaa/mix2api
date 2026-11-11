@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -242,6 +243,7 @@ func BuildPlatform(setup *Setup, opts PlatformOptions) (*Platform, error) {
 	usageService := usage.NewService(usageStore, pricingSnapshot, usageCache)
 	usageService.Now = opts.Now
 	usageService.StartedAt = opts.Now()
+	usageService.AccountsFunc, usageService.CurrentAccountFunc = usageAccountInventory(providerList)
 	usageService.DefaultRealm = realm.Active(context.Background())
 	usageService.DefaultRealmFunc = func() string { return realm.Active(context.Background()) }
 	usageService.KeyName = func(id string) string {
@@ -633,4 +635,75 @@ func positiveInt(value any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// usageAccountInventory adapts provider-owned account pools to the panel's
+// v1 usage summary. Only providers that implement AccountInventory contribute
+// rows, so the Raccoon/CodeArts usage payloads stay unchanged.
+func usageAccountInventory(providerList []providers.Provider) (func() map[string]usage.AccountInfo, func(string) usage.AccountInfo) {
+	collect := func() []providers.AccountSummary {
+		byUID := make(map[string]providers.AccountSummary)
+		for _, provider := range providerList {
+			inventory, ok := provider.(providers.AccountInventory)
+			if !ok {
+				continue
+			}
+			rows, err := inventory.AccountSummaries(context.Background())
+			if err != nil {
+				continue
+			}
+			for _, row := range rows {
+				if strings.TrimSpace(row.UID) == "" {
+					continue
+				}
+				byUID[row.UID] = row
+			}
+		}
+		out := make([]providers.AccountSummary, 0, len(byUID))
+		for _, row := range byUID {
+			out = append(out, row)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+		return out
+	}
+	accounts := func() map[string]usage.AccountInfo {
+		rows := collect()
+		out := make(map[string]usage.AccountInfo, len(rows))
+		for _, row := range rows {
+			out[row.UID] = usage.AccountInfo{
+				UID: row.UID, Nickname: row.Nickname, Realm: row.Realm,
+				Domain: row.Domain, Issuer: row.Issuer,
+				CredentialFile: row.CredentialFile, ExpiresAt: row.ExpiresAt,
+			}
+		}
+		return out
+	}
+	current := func(realm string) usage.AccountInfo {
+		rows := collect()
+		info := usage.AccountInfo{Accounts: len(rows)}
+		for _, row := range rows {
+			if row.Ready {
+				info.AccountsReady++
+			}
+		}
+		realm = strings.ToLower(strings.TrimSpace(realm))
+		if realm == "all" {
+			realm = ""
+		}
+		for _, row := range rows {
+			if realm != "" && row.Realm != realm {
+				continue
+			}
+			info.UID = row.UID
+			info.Nickname = row.Nickname
+			info.Realm = row.Realm
+			info.Domain = row.Domain
+			info.Issuer = row.Issuer
+			info.CredentialFile = row.CredentialFile
+			info.ExpiresAt = row.ExpiresAt
+			break
+		}
+		return info
+	}
+	return accounts, current
 }

@@ -80,12 +80,10 @@ failure matrices for Raccoon, CodeArts, and WorkBuddy.
 
 - `recorded/v1.6.5/`: 24 core cases. Against `2.0.0-rc.1`, 14 match exactly and
   10 differ by documented additive fields or running-version/log-store scope.
-- `recorded/v1.6.5-workbuddy/`: 18 WorkBuddy cases. 8 match exactly and 10
-  differ by documented additive fields, account-view semantics, or log-store
-  scope.
-- `recorded/v1.6.5-failures/`: 15 failure cases. Raccoon 4/5 exact (the only
-  difference is the v1 credit `gateway_hint`); CodeArts 5/5 exact; WorkBuddy
-  5/5 exact.
+- `recorded/v1.6.5-workbuddy/`: 18 WorkBuddy cases. 12 match exactly and 6
+  differ only by documented additive model/usage fields or the log-store scope.
+- `recorded/v1.6.5-failures/`: 15 failure cases. Raccoon 5/5 exact; CodeArts
+  5/5 exact; WorkBuddy 5/5 exact.
 
 The exact fields are in each directory's `PROVENANCE.md` and `V2-DELTA.txt`;
 they are not normalized away. The real-account checklist is in

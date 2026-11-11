@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -752,7 +753,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			response.Providers[realmName] = health
 			switch realmName {
 			case "codearts":
-				response.CodeArts = copyHealth(health)
+				response.CodeArts = v1CodeArtsHealth(health)
 			case "raccoon":
 				response.Raccoon = copyHealth(health)
 			case "intl", "cn":
@@ -771,7 +772,136 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if entry, ok := s.healthKeyAccess(r); ok {
+		summaries := s.accountSummaries(r.Context())
+		if len(summaries) > 0 {
+			representative := summaries[0]
+			response.UID = representative.UID
+			response.Domain = representative.Domain
+			response.Issuer = representative.Issuer
+			response.CredentialFile = representative.CredentialFile
+			response.ExpiresAt = representative.ExpiresAt
+		}
+		response.KeyAccountsReady, response.KeyAccountsBound = keyAccountCounts(entry, summaries, realm)
+	}
 	writeJSONResponse(w, http.StatusOK, response)
+}
+
+// healthKeyAccess mirrors v1's /health identity gate: a panel session, a
+// matching API key, or a deployment with auth_disabled may see the account
+// identity block. A key-authenticated request also supplies the key-readiness
+// counts; panel/no-key access leaves them at zero, as v1 did.
+func (s *Server) healthKeyAccess(r *http.Request) (*keys.Entry, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if s.sessions != nil && s.sessions.Valid(panelSessionToken(r)) {
+		return nil, true
+	}
+	if s.keyStore != nil {
+		entries, err := s.keyStore.List(false)
+		if err == nil {
+			if entry, ok := keys.Match(entries, apiKeyFromRequest(r)); ok {
+				return entry, true
+			}
+			if !hasEnabledKeys(entries) && s.staticAPIKeyPasses(r) {
+				return &keys.Entry{ID: "launcher", Name: "启动参数", Key: apiKeyFromRequest(r), Enabled: true}, true
+			}
+		}
+	} else if s.staticAPIKeyPasses(r) {
+		return &keys.Entry{ID: "launcher", Name: "启动参数", Enabled: true}, true
+	}
+	if !s.authRequired() {
+		return nil, true
+	}
+	return nil, false
+}
+
+// accountSummaries collects every provider that exposes its live pool. The
+// rows are deduplicated by UID and sorted so the representative account is
+// deterministic; v1's pool order was effectively the sorted account files.
+func (s *Server) accountSummaries(ctx context.Context) []providers.AccountSummary {
+	if s == nil {
+		return nil
+	}
+	byUID := make(map[string]providers.AccountSummary)
+	for _, provider := range s.providers {
+		inventory, ok := provider.(providers.AccountInventory)
+		if !ok {
+			continue
+		}
+		rows, err := inventory.AccountSummaries(ctx)
+		if err != nil {
+			continue
+		}
+		for _, row := range rows {
+			if strings.TrimSpace(row.UID) == "" {
+				continue
+			}
+			byUID[row.UID] = row
+		}
+	}
+	out := make([]providers.AccountSummary, 0, len(byUID))
+	for _, row := range byUID {
+		out = append(out, row)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+	return out
+}
+
+// keyAccountCounts is v1 key_readiness: bound is the explicit allow-list size
+// (or every account in the key's realm), and ready counts only accounts that
+// can serve right now inside that realm/allow-list.
+func keyAccountCounts(entry *keys.Entry, summaries []providers.AccountSummary, activeRealm string) (ready, bound int) {
+	if entry == nil {
+		return 0, 0
+	}
+	realm := keys.BoundRealm(entry)
+	if realm == "" {
+		realm = activeRealm
+	}
+	allowed := make(map[string]bool, len(entry.Accounts))
+	for _, uid := range entry.Accounts {
+		if uid = strings.TrimSpace(uid); uid != "" {
+			allowed[uid] = true
+		}
+	}
+	if len(allowed) > 0 {
+		bound = len(allowed)
+	}
+	for _, account := range summaries {
+		if account.Realm != realm {
+			continue
+		}
+		if len(allowed) == 0 {
+			bound++
+		}
+		if !account.Ready {
+			continue
+		}
+		if len(allowed) > 0 && !allowed[account.UID] {
+			continue
+		}
+		ready++
+	}
+	return ready, bound
+}
+
+// v1CodeArtsHealth keeps v1's small unconfigured block. A configured provider
+// keeps the full health payload; the v2 providers map remains additive.
+func v1CodeArtsHealth(value providers.Health) map[string]any {
+	out := copyHealth(value)
+	if out["configured"] == true {
+		return out
+	}
+	for key := range out {
+		switch key {
+		case "configured", "base_url", "error":
+		default:
+			delete(out, key)
+		}
+	}
+	return out
 }
 
 func copyHealth(value providers.Health) map[string]any {

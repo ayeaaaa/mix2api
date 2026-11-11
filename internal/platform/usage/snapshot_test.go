@@ -122,3 +122,59 @@ func TestNoCrossRealmMerge(t *testing.T) {
 		t.Fatalf("realm=all should not be a generic union omission: %+v", all)
 	}
 }
+
+func TestSnapshotUsesLiveAccountInventory(t *testing.T) {
+	now := float64(time.Now().Unix())
+	rows := []map[string]any{
+		row(now, "m", "intl", "oracle-intl", 10, 1, nil),
+		row(now, "m", "cn", "oracle-cn", 20, 2, nil),
+	}
+	env := newTestEnv(t, rows)
+	service := env.service()
+	accounts := map[string]AccountInfo{
+		"oracle-intl": {UID: "oracle-intl", Nickname: "Oracle intl", Realm: "intl", Domain: "www.workbuddy.ai"},
+		"oracle-cn":   {UID: "oracle-cn", Nickname: "Oracle cn", Realm: "cn", Domain: "www.workbuddy.cn"},
+	}
+	service.AccountsFunc = func() map[string]AccountInfo { return accounts }
+	service.CurrentAccountFunc = func(realm string) AccountInfo {
+		info := AccountInfo{Accounts: len(accounts), AccountsReady: len(accounts)}
+		if realm == "all" {
+			realm = ""
+		}
+		for uid, account := range accounts {
+			if realm != "" && account.Realm != realm {
+				continue
+			}
+			info.UID = uid
+			info.Nickname = account.Nickname
+			info.Realm = account.Realm
+			info.Domain = account.Domain
+			info.CredentialFile = uid + ".json"
+			info.ExpiresAt = 1794380055
+			break
+		}
+		return info
+	}
+
+	for _, tc := range []struct {
+		realm string
+		uid   string
+	}{{"intl", "oracle-intl"}, {"cn", "oracle-cn"}} {
+		snapshot, err := service.Snapshot(context.Background(), SnapshotOptions{Realm: tc.realm})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mapped := mustMap(t, snapshot["accounts_map"])
+		if len(mapped) != 2 {
+			t.Fatalf("%s accounts_map = %#v", tc.realm, mapped)
+		}
+		if _, ok := mapped[tc.uid]; !ok {
+			t.Fatalf("%s accounts_map missing %s: %#v", tc.realm, tc.uid, mapped)
+		}
+		current := mustMap(t, snapshot["account"])
+		if current["uid"] != tc.uid || mustNumber(t, current["accounts"]) != 2 ||
+			mustNumber(t, current["accounts_ready"]) != 2 {
+			t.Fatalf("%s current account = %#v", tc.realm, current)
+		}
+	}
+}

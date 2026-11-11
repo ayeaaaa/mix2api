@@ -494,8 +494,9 @@ func finalizeAnalyticsMaps(maps *analyticsMaps) {
 }
 
 func (s *Service) analyticsPayload(allMaps, winMaps analyticsMaps, realm string, window Range) map[string]any {
+	accountsByUID := s.accountMap()
 	accountRows := map[string]*AnalyticsAccount{}
-	for uid, info := range s.Accounts {
+	for uid, info := range accountsByUID {
 		if realm != "" && info.Realm != realm {
 			continue
 		}
@@ -511,7 +512,7 @@ func (s *Service) analyticsPayload(allMaps, winMaps analyticsMaps, realm string,
 				WindowModels: map[string]AnalyticsModel{}, AllModels: map[string]AnalyticsModel{}}
 			accountRows[uid] = row
 		}
-		if info, ok := s.Accounts[uid]; ok {
+		if info, ok := accountsByUID[uid]; ok {
 			if info.Nickname != "" {
 				row.Nickname = info.Nickname
 			}
@@ -536,7 +537,7 @@ func (s *Service) analyticsPayload(allMaps, winMaps analyticsMaps, realm string,
 			"window": entry.Window, "all_time": entry.AllTime,
 			"window_models": entry.WindowModels, "all_models": entry.AllModels,
 		}
-		if info, ok := s.Accounts[uid]; ok {
+		if info, ok := accountsByUID[uid]; ok {
 			credits := info.Credits
 			if credits == nil {
 				credits = map[string]any{}

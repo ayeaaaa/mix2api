@@ -726,8 +726,17 @@ func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("credits/fetch status=%d body=%s", rec.Code, rec.Body)
 	}
-	if _, ok := decodeWBRoutesJSON(t, rec)["busy"]; !ok {
-		t.Fatalf("credits/fetch missing busy: %s", rec.Body)
+	// v1's POST sweep response has no busy key unless a sweep is already
+	// running; GET is the snapshot endpoint that always reports it.
+	if _, ok := decodeWBRoutesJSON(t, rec)["busy"]; ok {
+		t.Fatalf("credits/fetch unexpectedly carried busy: %s", rec.Body)
+	}
+	rec = f.do(http.MethodGet, "/accounts/credits", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credits GET status=%d body=%s", rec.Code, rec.Body)
+	}
+	if busy, ok := decodeWBRoutesJSON(t, rec)["busy"]; !ok || busy != false {
+		t.Fatalf("credits GET busy = %#v (present=%v)", busy, ok)
 	}
 
 	realmContext := context.Background()
@@ -2268,5 +2277,144 @@ func TestRoutesWorkBuddyTwinCompositionAndNotFound(t *testing.T) {
 	rec := f.do(http.MethodGet, "/accounts/not-a-route", nil)
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "workbuddy") {
 		t.Fatalf("unknown route status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestRoutesCreditsAndCheckinReturnWholePoolV1Shape(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	intl := wbRouteAddAccount(t, f.intl, "oracle-intl", realmIntl, nil)
+	cn := wbRouteAddAccount(t, f.cn, "oracle-cn", realmCN, nil)
+	cn.SetCredits(&CreditSnapshot{
+		Remain: 60, Used: 40, Size: 100, UsedPercent: "40.0%", RemainPercent: "60.0%",
+		Checkin:  &CheckinStatus{TodayCheckedIn: false, StreakDays: 2, DailyCredit: 5, Active: true},
+		Packages: []CreditPackage{},
+	})
+	intl.SetCredits(&CreditSnapshot{
+		Remain: 60, Used: 40, Size: 100, UsedPercent: "40.0%", RemainPercent: "60.0%",
+		Packages: []CreditPackage{},
+	})
+
+	rec := f.do(http.MethodPost, "/accounts/credits", map[string]any{"realm": "intl"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credits status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeWBRoutesJSON(t, rec)
+	accounts := wbRouteObjects(t, body["accounts"])
+	if len(accounts) != 2 || wbRouteText(accounts[0]["uid"]) != "oracle-cn" || wbRouteText(accounts[1]["uid"]) != "oracle-intl" {
+		t.Fatalf("credits accounts = %#v, want the whole pool", accounts)
+	}
+	results := wbRouteObjects(t, body["results"])
+	if len(results) != 1 || wbRouteText(results[0]["uid"]) != "oracle-intl" {
+		t.Fatalf("credits results = %#v, want only the requested realm", results)
+	}
+	if _, present := body["busy"]; present {
+		t.Fatalf("normal POST credits carried busy: %#v", body)
+	}
+
+	rec = f.do(http.MethodPost, "/accounts/checkin", map[string]any{"uid": "oracle-cn"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("checkin status=%d body=%s", rec.Code, rec.Body)
+	}
+	body = decodeWBRoutesJSON(t, rec)
+	accounts = wbRouteObjects(t, body["accounts"])
+	if len(accounts) != 2 {
+		t.Fatalf("checkin accounts = %#v, want the whole pool", accounts)
+	}
+	var cnView map[string]any
+	for _, view := range accounts {
+		if wbRouteText(view["uid"]) == "oracle-cn" {
+			cnView = view
+		}
+	}
+	if cnView == nil {
+		t.Fatalf("checkin accounts missing cn: %#v", accounts)
+	}
+	credits, _ := cnView["credits"].(map[string]any)
+	checkin, _ := credits["checkin"].(map[string]any)
+	if checkin == nil || checkin["today_checked_in"] != false {
+		t.Fatalf("checkin refreshed the pre-action credit snapshot: %#v", cnView["credits"])
+	}
+	if wbRouteText(cnView["lastCheckin"]) == "" {
+		t.Fatalf("checkin did not update lastCheckin: %#v", cnView)
+	}
+	results = wbRouteObjects(t, body["results"])
+	if len(results) != 1 {
+		t.Fatalf("checkin results = %#v", results)
+	}
+	for _, extra := range []string{"realm", "activity", "checkin", "credits", "skipped", "busy"} {
+		if _, present := results[0][extra]; present {
+			t.Fatalf("checkin result carried v2-only %q: %#v", extra, results[0])
+		}
+	}
+	for _, key := range []string{"uid", "nickname", "ok", "state", "code", "msg", "data"} {
+		if _, present := results[0][key]; !present {
+			t.Fatalf("checkin result missing v1 field %q: %#v", key, results[0])
+		}
+	}
+}
+
+func TestAccountViewMatchesV1FingerprintAndNullActivity(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "oracle-intl", realmIntl, nil)
+	wbRouteAddAccount(t, f.cn, "oracle-cn", realmCN, nil)
+
+	rec := f.do(http.MethodGet, "/accounts?realm=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("accounts status=%d body=%s", rec.Code, rec.Body)
+	}
+	accounts := wbRouteObjects(t, decodeWBRoutesJSON(t, rec)["accounts"])
+	byUID := make(map[string]map[string]any, len(accounts))
+	for _, view := range accounts {
+		byUID[wbRouteText(view["uid"])] = view
+	}
+	for uid, want := range map[string][2]string{
+		"oracle-cn":   {"ae947ff4-00e1-47b7-a143-f5410a8c8fd9", "528843fd-b012-4fd1-a0ab-58c27b008e64"},
+		"oracle-intl": {"3f1925b7-f5ca-457e-afef-bf4a9acd12c2", "f1a31870-3798-40be-a9f8-f99476ae2242"},
+	} {
+		view := byUID[uid]
+		if view == nil {
+			t.Fatalf("missing account %s: %#v", uid, accounts)
+		}
+		if wbRouteText(view["machineId"]) != want[0] || wbRouteText(view["sessionId"]) != want[1] {
+			t.Fatalf("%s fingerprint = %q/%q, want %q/%q", uid,
+				view["machineId"], view["sessionId"], want[0], want[1])
+		}
+		for _, key := range []string{"lastCheckin", "lastDailyChat", "lastActivityReport"} {
+			if value, present := view[key]; !present || value != nil {
+				t.Fatalf("%s %s = %#v (present=%v), want null", uid, key, value, present)
+			}
+		}
+		for _, key := range []string{"activeConcurrent", "maxConcurrent", "reason"} {
+			if _, present := view[key]; present {
+				t.Fatalf("%s has v1-extra field %q: %#v", uid, key, view)
+			}
+		}
+	}
+}
+
+func TestAccountSummariesExposeLivePool(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	wbRouteAddAccount(t, f.intl, "oracle-intl", realmIntl, nil)
+	wbRouteAddAccount(t, f.cn, "oracle-cn", realmCN, nil)
+
+	var rows []providers.AccountSummary
+	for _, provider := range []*Provider{f.intl, f.cn} {
+		got, err := provider.AccountSummaries(context.Background())
+		if err != nil {
+			t.Fatalf("AccountSummaries: %v", err)
+		}
+		rows = append(rows, got...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].UID < rows[j].UID })
+	if len(rows) != 2 || rows[0].UID != "oracle-cn" || rows[1].UID != "oracle-intl" {
+		t.Fatalf("summaries = %#v", rows)
+	}
+	for _, row := range rows {
+		if !row.Enabled || !row.Ready {
+			t.Fatalf("%s readiness = enabled:%v ready:%v", row.UID, row.Enabled, row.Ready)
+		}
+		if row.Domain == "" || row.Issuer == "" || row.CredentialFile != row.UID+".json" {
+			t.Fatalf("%s summary = %#v", row.UID, row)
+		}
 	}
 }
