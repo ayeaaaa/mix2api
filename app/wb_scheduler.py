@@ -449,7 +449,7 @@ class Scheduler:
             # 上游账号级封禁（403 / code 11140）中的账号一律跳过：无人值守
             # 的巡检/打卡再去「试探」一次，只会让同一台设备上的其他账号连坐。
             # 封禁是持久状态，只有操作者手动启用才解除。
-            if getattr(acc, "account_banned", False):
+            if getattr(acc, "account_banned", False) is True:
                 self.log(f"跳过封禁账号 [{uid8}]：需在面板手动启用")
                 continue
             # 区域级连坐暂停期间（同一窗口内多个账号被限制）整轮都不碰上游。
