@@ -1206,8 +1206,8 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 
 	messages, _ := body["messages"].([]any)
 	messages = normalizeChatRoles(messages)
-	messages = fillEmptyChatTextParts(messages)
 	messages = sanitizeChatMessages(messages)
+	messages = fillEmptyChatTextParts(messages)
 	messages = backfillChatReasoning(messages, model, chatThinkingEnabled(body, model))
 	messages = mirrorUpstreamReasoning(messages, model)
 	if len(messages) == 0 {
@@ -1273,10 +1273,12 @@ func (p *Provider) canonicalModelID(model string) string {
 	return model
 }
 
-// fillEmptyChatTextParts replaces empty text parts with one space. Upstream
-// validates every type:"text" part and answers 400 / 11151 for empty text,
-// retiring the conversation. Unknown types, non-array content, and non-empty
-// parts are preserved byte-for-byte.
+// fillEmptyChatTextParts replaces empty, null, or missing text parts with one
+// space. Upstream validates every type:"text" part and answers 400 / 11151 for
+// an empty text, retiring the conversation. It also handles the common
+// tool-result shape where a string content starts with "[" and upstream sniffs
+// it as a parts array. Unknown types, non-array content, and non-empty parts
+// are preserved byte-for-byte.
 func fillEmptyChatTextParts(messages []any) []any {
 	out := make([]any, 0, len(messages))
 	for _, raw := range messages {
@@ -1285,35 +1287,64 @@ func fillEmptyChatTextParts(messages []any) []any {
 			out = append(out, raw)
 			continue
 		}
-		parts, ok := message["content"].([]any)
-		if !ok {
-			out = append(out, message)
-			continue
-		}
 		copied := cloneMap(message)
-		filled := make([]any, len(parts))
-		for index, part := range parts {
-			item, ok := part.(map[string]any)
-			if !ok {
-				filled[index] = part
-				continue
+		switch content := message["content"].(type) {
+		case []any:
+			parts, changed := fillEmptyTextPartList(content)
+			if changed {
+				copied["content"] = parts
 			}
-			if creditText(item["type"]) != "text" {
-				filled[index] = part
-				continue
+		case string:
+			if parts, ok := sniffedTextParts(content); ok {
+				if filled, changed := fillEmptyTextPartList(parts); changed {
+					if encoded, err := json.Marshal(filled); err == nil {
+						copied["content"] = string(encoded)
+					}
+				}
 			}
-			if text, ok := item["text"].(string); ok && text == "" {
-				partCopy := cloneMap(item)
-				partCopy["text"] = " "
-				filled[index] = partCopy
-				continue
-			}
-			filled[index] = part
 		}
-		copied["content"] = filled
 		out = append(out, copied)
 	}
 	return out
+}
+
+func fillEmptyTextPartList(parts []any) ([]any, bool) {
+	out := make([]any, len(parts))
+	changed := false
+	for index, part := range parts {
+		item, ok := part.(map[string]any)
+		if !ok || creditText(item["type"]) != "text" {
+			out[index] = part
+			continue
+		}
+		text, exists := item["text"]
+		if exists && text != nil && creditText(text) != "" {
+			out[index] = part
+			continue
+		}
+		copied := cloneMap(item)
+		copied["text"] = " "
+		out[index] = copied
+		changed = true
+	}
+	return out, changed
+}
+
+func sniffedTextParts(content string) ([]any, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "[") {
+		return nil, false
+	}
+	var parts []any
+	if err := json.Unmarshal([]byte(trimmed), &parts); err != nil || len(parts) == 0 {
+		return nil, false
+	}
+	for _, part := range parts {
+		if _, ok := part.(map[string]any); !ok {
+			return nil, false
+		}
+	}
+	return parts, true
 }
 
 func normalizeChatRoles(messages []any) []any {

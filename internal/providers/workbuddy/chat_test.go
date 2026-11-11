@@ -2504,6 +2504,26 @@ func TestFillEmptyChatTextParts(t *testing.T) {
 	}
 }
 
+func TestFillEmptyChatTextPartsSniffsStringArrays(t *testing.T) {
+	messages := fillEmptyChatTextParts([]any{
+		map[string]any{"role": "user", "content": `[{"type":"text","text":null},{"type":"text"},{"type":"text","text":"hi"}]`},
+	})
+	var parts []any
+	if err := json.Unmarshal([]byte(messages[0].(map[string]any)["content"].(string)), &parts); err != nil {
+		t.Fatalf("sniffed content is not JSON: %v", err)
+	}
+	if parts[0].(map[string]any)["text"] != " " || parts[1].(map[string]any)["text"] != " " {
+		t.Fatalf("empty/null parts = %#v", parts)
+	}
+	if parts[2].(map[string]any)["text"] != "hi" {
+		t.Fatalf("non-empty part = %#v", parts[2])
+	}
+	again := fillEmptyChatTextParts(messages)
+	if again[0].(map[string]any)["content"] != messages[0].(map[string]any)["content"] {
+		t.Fatal("fill is not idempotent")
+	}
+}
+
 func TestMirrorUpstreamReasoning(t *testing.T) {
 	messages := []any{
 		map[string]any{"role": "assistant", "content": "a", "reasoning_content": "think"},
