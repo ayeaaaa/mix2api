@@ -1209,6 +1209,7 @@ func (p *Provider) buildChatBody(req providers.ChatRequest) (map[string]any, str
 	messages = fillEmptyChatTextParts(messages)
 	messages = sanitizeChatMessages(messages)
 	messages = backfillChatReasoning(messages, model, chatThinkingEnabled(body, model))
+	messages = mirrorUpstreamReasoning(messages, model)
 	if len(messages) == 0 {
 		messages = []any{map[string]any{"role": "system", "content": defaultChatSystemPrompt}}
 	} else {
@@ -1400,6 +1401,41 @@ func backfillChatReasoning(messages []any, model string, thinkingEnabled bool) [
 			} else {
 				copied["reasoning"] = " "
 			}
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+// mirrorUpstreamReasoning copies a non-empty reasoning_content into the
+// `reasoning` field for models whose upstream reads that legacy field. It does
+// not overwrite an existing non-empty reasoning value and never adds a blank
+// placeholder.
+func mirrorUpstreamReasoning(messages []any, model string) []any {
+	prefixes := []string{"kimi", "glm", "minimax", "mimo", "step", "space-bunny"}
+	name := strings.ToLower(strings.TrimSpace(model))
+	matched := false
+	for _, prefix := range prefixes {
+		if name == prefix || strings.HasPrefix(name, prefix+"-") {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return messages
+	}
+	out := make([]any, 0, len(messages))
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			out = append(out, raw)
+			continue
+		}
+		copied := cloneMap(message)
+		reasoningContent, _ := copied["reasoning_content"].(string)
+		reasoning, _ := copied["reasoning"].(string)
+		if strings.TrimSpace(reasoningContent) != "" && strings.TrimSpace(reasoning) == "" {
+			copied["reasoning"] = reasoningContent
 		}
 		out = append(out, copied)
 	}

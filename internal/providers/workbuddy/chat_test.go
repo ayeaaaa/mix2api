@@ -2503,3 +2503,24 @@ func TestFillEmptyChatTextParts(t *testing.T) {
 		t.Fatalf("string content changed: %#v", messages[1])
 	}
 }
+
+func TestMirrorUpstreamReasoning(t *testing.T) {
+	messages := []any{
+		map[string]any{"role": "assistant", "content": "a", "reasoning_content": "think"},
+		map[string]any{"role": "assistant", "content": "b", "reasoning_content": "new", "reasoning": "keep"},
+		map[string]any{"role": "user", "content": "hi"},
+	}
+	out := mirrorUpstreamReasoning(messages, "kimi-k3")
+	if out[0].(map[string]any)["reasoning"] != "think" {
+		t.Fatalf("mirrored reasoning = %#v", out[0])
+	}
+	if out[1].(map[string]any)["reasoning"] != "keep" {
+		t.Fatalf("existing reasoning overwritten: %#v", out[1])
+	}
+	if _, exists := out[2].(map[string]any)["reasoning"]; exists {
+		t.Fatalf("user message gained reasoning: %#v", out[2])
+	}
+	if got := mirrorUpstreamReasoning(messages, "deepseek-v4.1-flash")[0].(map[string]any)["reasoning"]; got != nil {
+		t.Fatalf("deepseek message was mirrored: %#v", got)
+	}
+}
