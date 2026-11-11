@@ -5,7 +5,7 @@
 | Version | Status |
 | --- | --- |
 | `2.0.0` | current final release; security fixes accepted |
-| v1.6.5 | upstream baseline, maintained in its own repository |
+| v1.6.5 | upstream baseline, retained on `main` of this repository |
 | older v2 snapshots | not supported |
 
 `2.0.0` is the current final release. Gate F evidence and the remaining real
