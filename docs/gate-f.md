@@ -28,6 +28,7 @@ requires a manual run.
 | Dependency vulnerability scan | PASS (no reachable) | `govulncheck -show verbose ./...`: 0 reachable code/package vulnerabilities; one unreachable module finding `GO-2026-5024` in `x/sys@v0.28.0` (fixed `v0.44.0`), recorded in `docs/security-scan.md` |
 | Release workflow syntax/gate guards | PASS (local inspect) | YAML parses; publish and container jobs require publish + Gate F; strict no-`v` version gate; `v`-prefixed image/tag identity tested |
 | Release workflow dry-run in CI | PASS (local act) | `act` workflow_dispatch verify job at `ed3ab31`: make check/race, Windows/macOS builds, 14-asset dist, checksums, inventory, artifact upload all passed; `publish=false` skipped container/publish. Not a GitHub-hosted run: `docs/smoke/2026-11-11-ci-multiarch.md` |
+| v2.0.3 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.3>; tag/commit `1f66ba9`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:ff8d8be...`; arm64 pulled from GHCR, ran `2.0.3`; local containers healthy: `docs/smoke/2026-11-11-release-2.0.3.md` |
 | v2.0.2 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.2>; tag/commit `76e525c`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:6114327...`; arm64 pulled from GHCR, ran `2.0.2`, and `/health` passed: `docs/smoke/2026-11-11-release-2.0.2.md` |
 | v2.0.1 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.1>; tag/commit `f6c500d`; 14 assets checksum-verified; GHCR index `sha256:bba08e0...`; arm64 pulled from GHCR and healthy: `docs/smoke/2026-11-11-release-2.0.1.md` |
 | v2.0.0 tag / GitHub release / GHCR push | **PASS** | Release: <https://github.com/ayeaaaa/mix2api/releases/tag/v2.0.0>; tag/commit `917f683`; 14 assets re-downloaded and checksum-verified; GHCR index `sha256:edb4686...`; arm64 pulled from GHCR and healthy: `docs/smoke/2026-11-11-release.md` |
@@ -51,6 +52,12 @@ column and the Raccoon daily-activity check-in ported from PR #3. The new
 behavior is covered by unit, route, scheduler, dashboard-contract, and fake-
 upstream tests; the existing v1.6.5 oracle baseline predates it and was not
 re-recorded for this patch.
+
+**v2.0.3 addendum:** this patch fixes migrated usage-cache adoption. Copied
+checkpoints are validated by size/offset/tail, and v1 global analytics/series
+checkpoints are reused only by the all-realm view. The change is covered by
+cache, realm-isolation, analytics, and series tests; the full `make check` and
+`make race` suites pass.
 
 ## Required signoff
 
