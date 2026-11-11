@@ -15,7 +15,7 @@ requires a manual run.
 | Dockerfile multi-stage CGO=0 non-root healthcheck | PASS | local `docker build` + healthcheck as UID 10001; `/app` is read-only |
 | Compose assets + data volumes | PASS (inspect) | root/deploy compose files |
 | Update install/backup/rollback + journal recovery | PASS (fake) | exact original-schema journal (no `old_path`/`existed`), per-entry persisted recovery, crash-state, initial-journal, RC→final, manifest-less rollback, and prune tests |
-| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally: `docs/smoke/2026-11-11-update-real-archive.md`; real systemd/Windows service execution still pending |
+| Update on a real service + real archive | **PARTIAL** | Real archive install/rollback passed locally; real systemd stop/start + install/rollback passed: `docs/smoke/2026-11-11-systemd-update.md`; Windows service execution still pending |
 | Migration fixture round-trip, unknown keys, partial failure | PASS | `internal/core/migrate` tests |
 | Migration against real v1.6.5 data | PASS | 8,422,103 bytes / 11,456 usage rows migrated and rolled back byte-identically; source tree unchanged |
 | Oracle harness normalizer/loopback provenance | PASS | `tests/oracle/harness` tests |

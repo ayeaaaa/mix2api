@@ -69,8 +69,8 @@ untouched.
 mix2api update run \
   --request-dir /run/workbuddy2api-hub-updater \
   --root /srv/mix2api \
-  --stop-command /usr/bin/systemctl --stop-arg mix2api \
-  --start-command /usr/bin/systemctl --start-arg mix2api
+  --stop-command /usr/bin/systemctl --stop-arg stop --stop-arg mix2api \
+  --start-command /usr/bin/systemctl --start-arg start --start-arg mix2api
 ```
 
 3. Confirm `/updates` shows `succeeded` and `/updates/backups` lists the
@@ -90,8 +90,8 @@ Use the panel rollback request, or:
 # The normal path is the panel's rollback request plus `mix2api update run`.
 # Direct execution must repeat the stop/start hooks:
 mix2api update rollback --root /srv/mix2api --version <previous-version> \
-  --stop-command /usr/bin/systemctl --stop-arg mix2api \
-  --start-command /usr/bin/systemctl --start-arg mix2api
+  --stop-command /usr/bin/systemctl --stop-arg stop --stop-arg mix2api \
+  --start-command /usr/bin/systemctl --start-arg start --start-arg mix2api
 ```
 
 This verifies the complete backup, stops the service, restores files, removes

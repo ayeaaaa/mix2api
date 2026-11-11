@@ -24,8 +24,8 @@ document covers the privileged command that consumes them.
 mix2api update run \
   --request-dir /run/workbuddy2api-hub-updater \
   --root /srv/mix2api \
-  --stop-command /usr/bin/systemctl --stop-arg mix2api \
-  --start-command /usr/bin/systemctl --start-arg mix2api
+  --stop-command /usr/bin/systemctl --stop-arg stop --stop-arg mix2api \
+  --start-command /usr/bin/systemctl --start-arg start --start-arg mix2api
 
 # Remove a journal left by a crash, restoring the previous files:
 mix2api update recover --root /srv/mix2api --request-dir /run/workbuddy2api-hub-updater
