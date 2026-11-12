@@ -5106,11 +5106,11 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     transform:translateX(-104%);transition:transform .22s ease;box-shadow:var(--shadow-md);
   }
   html[data-ui="next"] body.next-sidebar-open #nextSidebar{transform:translateX(0)}
-  html[data-ui="next"] .next-sidebar-backdrop{
+  html[data-ui="next"] #nextSidebarBackdrop{
     display:block;position:fixed;inset:0;z-index:35;background:var(--overlay-mask);
     opacity:0;pointer-events:none;transition:opacity .2s ease;
   }
-  html[data-ui="next"] body.next-sidebar-open .next-sidebar-backdrop{opacity:1;pointer-events:auto}
+  html[data-ui="next"] body.next-sidebar-open #nextSidebarBackdrop{opacity:1;pointer-events:auto}
   html[data-ui="next"] .next-menu-btn{display:inline-flex}
   html[data-ui="next"] #nextTopbar{height:60px;flex-basis:60px;padding:0 14px;gap:10px}
   html[data-ui="next"] #nextPageTitle{font-size:16px}

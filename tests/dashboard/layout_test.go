@@ -85,6 +85,16 @@ func TestDashboardSettingsHaveProviderAndRoutingGroups(t *testing.T) {
 	}
 }
 
+func TestDashboardMobileSidebarBackdropIsClickable(t *testing.T) {
+	html := string(web.DashboardHTML())
+	if !strings.Contains(html, `html[data-ui="next"] #nextSidebarBackdrop`) {
+		t.Fatal("mobile sidebar backdrop selector does not override the base display:none rule")
+	}
+	if !strings.Contains(html, `onclick="nextOpenSidebar(false)"`) {
+		t.Fatal("mobile sidebar backdrop does not close the sidebar")
+	}
+}
+
 func TestDashboardProviderTabsAreExplicit(t *testing.T) {
 	html := string(web.DashboardHTML())
 	for _, label := range []string{

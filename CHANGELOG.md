@@ -21,6 +21,8 @@ Keep a Changelog and the project uses semantic versioning.
   KPI、Token 时序、最近请求、工作回溯和用量明细；移动端收起页内导航，
   区间选择置顶，KPI 保持两列。
 - 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
+- 修复手机端左侧导航遮罩被基础 `display:none` 规则覆盖的问题：菜单打开后
+  点击非菜单区域会关闭侧栏。
 
 ### English
 
@@ -45,6 +47,8 @@ Keep a Changelog and the project uses semantic versioning.
   KPI grid.
 - Removed the extra accounts section navigation and duplicate headings, and
   normalized card, table, toolbar, and empty-state spacing.
+- Fixed the mobile sidebar backdrop being hidden by the base `display:none`
+  rule; tapping outside the open menu now closes it.
 
 ## [2.2.0] - 2026-11-12
 

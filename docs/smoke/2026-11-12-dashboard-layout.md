@@ -32,6 +32,11 @@ Chrome headless (CDP), viewport `1440x1000` and `800x1000`, authenticated panel:
   - 系统: 5
 - At 800px the settings grid collapses to one column and the group rail becomes
   a horizontal scroller; no horizontal overflow.
+- At 520px, opening the left menu shows a full-viewport backdrop; a tap on the
+  content area hits `#nextSidebarBackdrop` and removes `next-sidebar-open`.
+  The backdrop had been permanently hidden by the base
+  `#nextSidebarBackdrop{display:none}` rule; the media rule now uses the ID
+  selector.
 - No JavaScript exceptions were observed. Only Chrome's verbose advisory that
   password inputs are not inside a form was logged.
 
