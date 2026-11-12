@@ -1024,7 +1024,8 @@ func (p *Provider) handleAccountsCreditsDetail(w http.ResponseWriter, r *http.Re
 			writeWBAdminJSON(w, http.StatusOK, map[string]any{
 				"ok": false, "uid": account.UID(), "nickname": accountNicknameOf(account),
 				"realm": provider.realm, "credits": snapshot,
-				"error": firstNonEmpty(row.Error, "获取积分明细失败"),
+				"expiring": account.ExpirySummary(),
+				"error":    firstNonEmpty(row.Error, "获取积分明细失败"),
 			})
 			return
 		}
@@ -1032,6 +1033,7 @@ func (p *Provider) handleAccountsCreditsDetail(w http.ResponseWriter, r *http.Re
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "uid": account.UID(), "nickname": accountNicknameOf(account),
 		"realm": provider.realm, "credits": snapshot,
+		"expiring": account.ExpirySummary(),
 	})
 }
 

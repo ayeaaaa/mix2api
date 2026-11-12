@@ -84,6 +84,17 @@ type CheckinStatus struct {
 	Active         bool    `json:"active"`
 }
 
+// CreditExpirySummary is the panel-facing total of credits that still have a
+// finite expiry date. It is computed at view time so the statistic follows the
+// account's current expiring-window setting.
+type CreditExpirySummary struct {
+	Credits        float64 `json:"credits"`
+	Packages       int     `json:"packages"`
+	WithinWindow   float64 `json:"within_window"`
+	WithinPackages int     `json:"within_packages"`
+	WindowDays     int     `json:"window_days"`
+}
+
 // CreditSnapshot is the full v1-compatible balance snapshot. The aggregate
 // counters and package expiry fields drive scheduling; the remainder is the
 // exact v1 panel payload persisted under the account's `credits` extra.
@@ -148,36 +159,37 @@ type AccountView struct {
 	// not modeled by v2's simpler account breaker. These fields stay zero/nil
 	// for panel shape compatibility; Fails and FailWindow are real (the current
 	// consecutive-error count and the v1 600s failure window).
-	SoftStreak           int                 `json:"softStreak"`
-	UnscopedStreak       int                 `json:"unscopedStreak"`
-	BreakerFor           any                 `json:"breakerFor"`
-	DegradeFor           any                 `json:"degradeFor"`
-	Fails                int                 `json:"fails"`
-	FailWindow           int                 `json:"failWindow"`
-	LastFailFor          any                 `json:"lastFailFor"`
-	ModelCooldowns       []ModelCooldownView `json:"modelCooldowns"`
-	AddedAt              int64               `json:"addedAt"`
-	File                 string              `json:"file"`
-	Credits              *CreditSnapshot     `json:"credits"`
-	Tier                 any                 `json:"tier"`
-	ReserveCredits       int                 `json:"reserveCredits"`
-	ReserveBlocked       bool                `json:"reserveBlocked"`
-	DailyTokenLimit      int                 `json:"dailyTokenLimit"`
-	DailyTokensToday     *int64              `json:"dailyTokensToday"`
-	DailyLimitBlocked    bool                `json:"dailyLimitBlocked"`
-	DailyCreditLimit     int                 `json:"dailyCreditLimit"`
-	DailyCreditsToday    *float64            `json:"dailyCreditsToday"`
-	CreditLimitReached   bool                `json:"creditLimitReached"`
-	ModelDailyTokenLimit int                 `json:"modelDailyTokenLimit"`
-	ModelDailyTokens     map[string]int64    `json:"modelDailyTokens"`
-	LastCheckin          any                 `json:"lastCheckin"`
-	LastDailyChat        any                 `json:"lastDailyChat"`
-	LastActivityReport   any                 `json:"lastActivityReport"`
-	CanCheckin           bool                `json:"canCheckin"`
-	CanDailyChat         bool                `json:"canDailyChat"`
-	CanReportActivity    bool                `json:"canReportActivity"`
-	MachineID            string              `json:"machineId"`
-	SessionID            string              `json:"sessionId"`
+	SoftStreak           int                  `json:"softStreak"`
+	UnscopedStreak       int                  `json:"unscopedStreak"`
+	BreakerFor           any                  `json:"breakerFor"`
+	DegradeFor           any                  `json:"degradeFor"`
+	Fails                int                  `json:"fails"`
+	FailWindow           int                  `json:"failWindow"`
+	LastFailFor          any                  `json:"lastFailFor"`
+	ModelCooldowns       []ModelCooldownView  `json:"modelCooldowns"`
+	AddedAt              int64                `json:"addedAt"`
+	File                 string               `json:"file"`
+	Credits              *CreditSnapshot      `json:"credits"`
+	Expiring             *CreditExpirySummary `json:"expiring,omitempty"`
+	Tier                 any                  `json:"tier"`
+	ReserveCredits       int                  `json:"reserveCredits"`
+	ReserveBlocked       bool                 `json:"reserveBlocked"`
+	DailyTokenLimit      int                  `json:"dailyTokenLimit"`
+	DailyTokensToday     *int64               `json:"dailyTokensToday"`
+	DailyLimitBlocked    bool                 `json:"dailyLimitBlocked"`
+	DailyCreditLimit     int                  `json:"dailyCreditLimit"`
+	DailyCreditsToday    *float64             `json:"dailyCreditsToday"`
+	CreditLimitReached   bool                 `json:"creditLimitReached"`
+	ModelDailyTokenLimit int                  `json:"modelDailyTokenLimit"`
+	ModelDailyTokens     map[string]int64     `json:"modelDailyTokens"`
+	LastCheckin          any                  `json:"lastCheckin"`
+	LastDailyChat        any                  `json:"lastDailyChat"`
+	LastActivityReport   any                  `json:"lastActivityReport"`
+	CanCheckin           bool                 `json:"canCheckin"`
+	CanDailyChat         bool                 `json:"canDailyChat"`
+	CanReportActivity    bool                 `json:"canReportActivity"`
+	MachineID            string               `json:"machineId"`
+	SessionID            string               `json:"sessionId"`
 }
 
 // Account is one WorkBuddy account: its persisted v1 credential document,
@@ -416,6 +428,52 @@ func (a *Account) expiringPackageLocked() (float64, float64, bool) {
 		return 0, 0, false
 	}
 	return soonest, remain, true
+}
+
+// ExpirySummary returns the panel statistic for every unexpired, finite-expiry
+// package. WithinWindow follows the account's current expiring-window setting;
+// the all-expiry total deliberately ignores that window.
+func (a *Account) ExpirySummary() *CreditExpirySummary {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.expirySummaryLocked()
+}
+
+func (a *Account) expirySummaryLocked() *CreditExpirySummary {
+	if a.Credits == nil {
+		return nil
+	}
+	summary := CreditExpirySummary{WindowDays: a.ExpiringWindowDays}
+	for _, pkg := range a.Credits.Packages {
+		if pkg.NoExpiry || pkg.IsExpired || pkg.Remain <= 0 {
+			continue
+		}
+		if strings.EqualFold(pkg.PackageCode, "enterprise") {
+			continue
+		}
+		if strings.TrimSpace(pkg.ExpireTime) == "" && strings.TrimSpace(pkg.CycleEndTime) == "" {
+			continue
+		}
+		if pkg.DaysLeft != nil && *pkg.DaysLeft < 0 {
+			continue
+		}
+		summary.Credits += pkg.Remain
+		summary.Packages++
+		if summary.WindowDays > 0 && pkg.DaysLeft != nil &&
+			*pkg.DaysLeft <= float64(summary.WindowDays) {
+			summary.WithinWindow += pkg.Remain
+			summary.WithinPackages++
+		}
+	}
+	if summary.Packages == 0 {
+		return nil
+	}
+	summary.Credits = roundCredit(summary.Credits)
+	summary.WithinWindow = roundCredit(summary.WithinWindow)
+	return &summary
 }
 
 // InExpiringWindow reports whether the account should be served before
@@ -691,6 +749,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		AddedAt:              unixSeconds(a.Auth.AddedAt),
 		File:                 file,
 		Credits:              cloneCreditSnapshot(a.Credits),
+		Expiring:             a.expirySummaryLocked(),
 		Tier:                 tierJSONValue(a.Auth.Tier),
 		ReserveCredits:       a.ReserveCredits,
 		ReserveBlocked:       a.reserveBlockedLocked(""),
