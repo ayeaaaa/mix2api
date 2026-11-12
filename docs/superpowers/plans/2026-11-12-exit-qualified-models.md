@@ -129,9 +129,16 @@ Add to `binding_test.go`:
 
 ```go
 func TestAllowsModelAny(t *testing.T) {
-    bare := Entry{Models: NormalizeModelPatterns("deepseek/*")}
-    if !AllowsModelAny(bare, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
-        t.Fatal("upstream fallback should allow canonical request")
+    legacy := Entry{Models: NormalizeModelPatterns("deepseek-*")}
+    if !AllowsModelAny(legacy, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
+        t.Fatal("slashless upstream should match legacy pattern")
+    }
+    slash := Entry{Models: NormalizeModelPatterns("deepseek/*")}
+    if !AllowsModelAny(slash, "cn/deepseek/chat", "deepseek/chat") {
+        t.Fatal("slash-bearing upstream should match slash pattern")
+    }
+    if AllowsModelAny(slash, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
+        t.Fatal("deepseek/* must not match a slashless upstream id")
     }
     qualified := Entry{Models: NormalizeModelPatterns("cn/*")}
     if !AllowsModelAny(qualified, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {

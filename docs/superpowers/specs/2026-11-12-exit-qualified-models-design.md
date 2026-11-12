@@ -81,7 +81,7 @@ raccoon/raccoon-090dd3
 
 - `Entry.Realm` 是绑定出口，`keys.BoundRealm` 归一化；`all` 和未知 realm 被拒绝。
 - `Entry.Models` 是 `fnmatch` 风格的白名单，大小写不敏感；空表示不限制。
-- 当前白名单匹配的是请求里的完整模型字符串。`deepseek/*` 不会匹配 `cn/deepseek-v4.1-flash`。
+- 当前白名单匹配的是请求里的完整模型字符串。`deepseek/*` 只匹配带斜杠的 `deepseek/...`，不会匹配无斜杠的 `deepseek-v4.1-flash`；后者需要 `deepseek-*` 或 `deepseek*`。
 
 ### 3.4 用量与看板
 
@@ -305,12 +305,12 @@ func allowsRequestedModel(entry keys.Entry, ref modelRef) bool {
 
 语义：
 
-- 旧 Key 的裸模式继续匹配裸请求，例如 `deepseek/*`。
-- 旧 Key 的裸模式也能匹配出口限定请求的上游部分，因此升级后旧 Key 不会突然拒绝 `cn/deepseek...`。
+- 旧 Key 的裸模式继续匹配裸请求。模式是否命中取决于它原本是否匹配上游 ID：`deepseek-*` 匹配 `deepseek-v4.1-flash`，`deepseek/*` 只匹配带斜杠的 `deepseek/...`。
+- 旧 Key 的裸模式也会匹配出口限定请求的上游部分，因此只要它原本能匹配上游 ID，升级后就不会因为加了出口前缀而失效。
 - 新 Key 可以写 `cn/*`、`codearts/*`、`intl/deepseek-*`。
 - 裸请求 + 只写 `cn/*` 的 Key：当前阶段仍拒绝；客户端应显式发 `cn/model`。这样避免在解析 provider 之前猜测出口。
 - 空白名单仍表示不限制。
-- 匹配继续使用现有 `fnmatch` 和大小写归一化。
+- 匹配继续使用现有 `fnmatch` 和大小写归一化；不要引入“斜杠不敏感”的新语义。
 
 错误信息里的“请求模型”和“允许列表”使用客户端原始模型，方便用户对照。
 
@@ -438,7 +438,8 @@ func allowsRequestedModel(entry keys.Entry, ref modelRef) bool {
 
 `internal/api/auth_platform_test.go` 或新测试：
 
-- Key `deepseek/*` 允许 `cn/deepseek...`。
+- Key `deepseek-*` 允许 `cn/deepseek-v4.1-flash`（通过上游裸 ID 匹配）。
+- Key `deepseek/*` 允许 `cn/deepseek/chat`（通过带斜杠的上游裸 ID 匹配），但不允许 `cn/deepseek-v4.1-flash`。
 - Key `cn/*` 只允许 cn 规范 ID。
 - Key 裸模式仍允许裸请求。
 - Key `codearts/*` 拒绝 `cn/...`。
