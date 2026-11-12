@@ -32,6 +32,32 @@ func TestKeyModelAllowlist(t *testing.T) {
 	}
 }
 
+func TestAllowsModelAny(t *testing.T) {
+	bare := Entry{Models: NormalizeModelPatterns("deepseek/*")}
+	// A legacy bare pattern keeps matching the upstream fallback. The fallback
+	// here is a provider-qualified upstream id, the shape such a pattern can
+	// match under fnmatch (a pattern's slash is literal).
+	if !AllowsModelAny(bare, "cn/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash") {
+		t.Fatal("upstream fallback should allow canonical request")
+	}
+	// The same guarantee for the real WorkBuddy pairing: a legacy pattern that
+	// matches the bare upstream id alone still admits the qualified request.
+	legacy := Entry{Models: NormalizeModelPatterns("deepseek-*")}
+	if !AllowsModelAny(legacy, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
+		t.Fatal("legacy upstream-only pattern rejected qualified request")
+	}
+	qualified := Entry{Models: NormalizeModelPatterns("cn/*")}
+	if !AllowsModelAny(qualified, "cn/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
+		t.Fatal("canonical pattern rejected")
+	}
+	if AllowsModelAny(qualified, "codearts/deepseek-v4.1-flash", "deepseek-v4.1-flash") {
+		t.Fatal("wrong exit accepted")
+	}
+	if !AllowsModelAny(Entry{}, "cn/anything") {
+		t.Fatal("empty allow-list should remain unrestricted")
+	}
+}
+
 func TestKeyAccountAllowlist(t *testing.T) {
 	if !AllowsAccount(Entry{}, "anything") {
 		t.Fatal("empty account list should be unrestricted")

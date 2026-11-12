@@ -97,6 +97,27 @@ func AllowsModel(entry Entry, model string) bool {
 	if len(patterns) == 0 {
 		return true
 	}
+	return matchModelPatterns(patterns, model)
+}
+
+// AllowsModelAny reports whether a key may use any of the supplied model ids.
+// Callers pass both the canonical exit-qualified id and the bare upstream id,
+// so an allow-list written either way keeps matching. An empty list is
+// unrestricted; blank ids never match a restricted list.
+func AllowsModelAny(entry Entry, models ...string) bool {
+	patterns := normalizeModelPatterns(entry.Models)
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, model := range models {
+		if matchModelPatterns(patterns, model) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchModelPatterns(patterns []string, model string) bool {
 	name := strings.ToLower(strings.TrimSpace(model))
 	if name == "" {
 		return false
