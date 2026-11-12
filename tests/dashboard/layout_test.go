@@ -85,6 +85,16 @@ func TestDashboardSettingsHaveProviderAndRoutingGroups(t *testing.T) {
 	}
 }
 
+func TestDashboardUsageDoesNotDuplicateTitle(t *testing.T) {
+	html := string(web.DashboardHTML())
+	if !strings.Contains(html, `#pageAnalytics .pagehead .pagetitle-text{display:none!important}`) {
+		t.Fatal("usage page still renders a duplicate 数据看板 title")
+	}
+	if !strings.Contains(html, `#pageAnalytics .pagehead .pagetitle{display:block!important}`) {
+		t.Fatal("usage page hides the range summary with the duplicate title")
+	}
+}
+
 func TestDashboardMobileSidebarBackdropIsClickable(t *testing.T) {
 	html := string(web.DashboardHTML())
 	if !strings.Contains(html, `html[data-ui="next"] #nextSidebarBackdrop`) {

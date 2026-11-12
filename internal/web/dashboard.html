@@ -5245,7 +5245,8 @@ html[data-ui="next"] #pageAnalytics .page-nav-top{
   margin:8px 0 0!important;justify-content:center!important;
 }
 html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:2!important;min-width:0!important}
-html[data-ui="next"] #pageAnalytics .pagehead .pagetitle,
+html[data-ui="next"] #pageAnalytics .pagehead .pagetitle{display:block!important}
+html[data-ui="next"] #pageAnalytics .pagehead .pagetitle-text{display:none!important}
 html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
 @media (max-width: 900px){
   html[data-ui="next"] #pageAnalytics.page-nav-on.active{grid-template-columns:minmax(0,1fr)!important;gap:14px!important}
@@ -6156,7 +6157,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
     <div class="wrap">
 <!-- ====================== 页头 + 范围 ====================== -->
   <div class="pagehead">
-    <h1 class="pagetitle">数据看板 <span class="pagesub" id="pageSub">—</span></h1>
+    <h1 class="pagetitle"><span class="pagetitle-text">数据看板</span> <span class="pagesub" id="pageSub">—</span></h1>
     <div class="seg" id="rangeSeg">
       <button data-range="today" class="on">今日</button>
       <button data-range="d3">近 3 日</button>

@@ -17,9 +17,10 @@ Keep a Changelog and the project uses semantic versioning.
   分开显示各自账号、凭证、积分、出口和操作，不再把不同提供商堆在同一屏。
 - 设置页改成左侧分组导航：基础、提供商、模型与定价、路由与限额、自动化、
   稳定性、系统；每次只显示当前模块的设置，提供商接入不再混在通用 API 设置里。
-- 用量页恢复控制台版数据看板形态：保留「本页导航」侧栏、数据看板标题、区间选择、
-  KPI、Token 时序、最近请求、工作回溯和用量明细；移动端收起页内导航，
-  区间选择置顶，KPI 保持两列。
+- 用量页恢复控制台版数据看板形态：保留「本页导航」侧栏、区间选择、KPI、
+  Token 时序、最近请求、工作回溯和用量明细；移动端收起页内导航，区间选择
+  置顶，KPI 保持两列。内容区不再重复显示「数据看板」标题，只保留顶栏标题和
+  区间摘要。
 - 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
 - 修复手机端左侧导航遮罩被基础 `display:none` 规则覆盖的问题：菜单打开后
   点击非菜单区域会关闭侧栏。
@@ -41,10 +42,11 @@ Keep a Changelog and the project uses semantic versioning.
   & limits, Automation, Stability, System. Only the selected module is shown,
   and provider setup is no longer mixed into generic API settings.
 - The Usage page restores the console data-dashboard shape: a page-level
-  navigation rail, the Data dashboard title, range selector, KPIs, token
-  timeline, recent requests, work history, and usage detail; mobile hides the
-  page rail, moves the range selector above the title, and keeps the two-column
-  KPI grid.
+  navigation rail, range selector, KPIs, token timeline, recent requests, work
+  history, and usage detail; mobile hides the page rail, moves the range
+  selector above the KPI grid, and keeps two columns. The content area no longer
+  repeats the Data dashboard heading; only the top bar title and range summary
+  remain.
 - Removed the extra accounts section navigation and duplicate headings, and
   normalized card, table, toolbar, and empty-state spacing.
 - Fixed the mobile sidebar backdrop being hidden by the base `display:none`
