@@ -77,6 +77,12 @@ func TestDashboardSettingsHaveProviderAndRoutingGroups(t *testing.T) {
 	if !strings.Contains(html, "next-settings-groups") || !strings.Contains(html, "position:sticky") {
 		t.Fatal("settings group rail is not present")
 	}
+	if !strings.Contains(html, "analytics: { title: '数据看板'") {
+		t.Fatal("usage page is not using the data-dashboard title")
+	}
+	if !strings.Contains(html, "#pageAnalytics.page-nav-on.active") {
+		t.Fatal("usage page does not restore the console data-dashboard rail")
+	}
 }
 
 func TestDashboardProviderTabsAreExplicit(t *testing.T) {

@@ -13,6 +13,12 @@ Chrome headless (CDP), viewport `1440x1000` and `800x1000`, authenticated panel:
   设置 / 日志`.
 - Accounts page provider tabs: `WorkBuddy 国际`, `WorkBuddy 国内`, `CodeArts`,
   `小浣熊`; only the selected provider's account sections are visible.
+- Usage page at 1440: the console data-dashboard shape is restored. The page
+  grid is `196px + 930px`; the page-level `本页导航` rail, `数据看板` title,
+  range selector, six KPIs, token timeline, recent requests, work history, and
+  usage detail are visible.
+- At 800px the usage page becomes a single column with the page nav above the
+  dashboard; the KPI grid wraps to two columns.
 - Settings page at 1440: left rail `216px`, content `906px`; the seven group
   buttons are visible and only the selected group's sections render.
 - Settings groups and visible section counts:

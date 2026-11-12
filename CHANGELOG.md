@@ -17,6 +17,8 @@ Keep a Changelog and the project uses semantic versioning.
   分开显示各自账号、凭证、积分、出口和操作，不再把不同提供商堆在同一屏。
 - 设置页改成左侧分组导航：基础、提供商、模型与定价、路由与限额、自动化、
   稳定性、系统；每次只显示当前模块的设置，提供商接入不再混在通用 API 设置里。
+- 用量页恢复控制台版数据看板形态：保留「本页导航」侧栏、数据看板标题、区间选择、
+  KPI、Token 时序、最近请求、工作回溯和用量明细；移动端自动折叠为单栏。
 - 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
 
 ### English
@@ -35,6 +37,10 @@ Keep a Changelog and the project uses semantic versioning.
 - Settings use a left module rail: Basics, Providers, Models & pricing, Routing
   & limits, Automation, Stability, System. Only the selected module is shown,
   and provider setup is no longer mixed into generic API settings.
+- The Usage page restores the console data-dashboard shape: a page-level
+  navigation rail, the Data dashboard title, range selector, KPIs, token
+  timeline, recent requests, work history, and usage detail; mobile collapses
+  to one column.
 - Removed the extra accounts section navigation and duplicate headings, and
   normalized card, table, toolbar, and empty-state spacing.
 

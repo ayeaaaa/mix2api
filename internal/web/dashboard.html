@@ -5216,6 +5216,50 @@ html[data-ui="next"] #accountsRealmSwitch button.active{
 }
 html[data-ui="next"] #pageAccounts .page-sidebar,
 html[data-ui="next"] #pageAccounts .page-nav{display:none!important}
+/* Usage keeps the console data-dashboard shape: a real page-level nav rail,
+   visible page title, and the KPI/chart workspace beside it. */
+html[data-ui="next"] #pageAnalytics.page-nav-on.active{
+  display:grid!important;grid-template-columns:196px minmax(0,1fr)!important;
+  gap:20px!important;align-items:start!important;
+}
+html[data-ui="next"] #pageAnalytics.page-nav-on > .page-sidebar{
+  position:sticky!important;top:78px!important;display:flex!important;
+  flex-direction:column!important;align-items:stretch!important;gap:4px!important;
+  overflow:visible!important;max-height:calc(100vh - 100px)!important;
+  padding:8px!important;margin:0!important;background:var(--panel)!important;
+  border:1px solid var(--line)!important;border-radius:12px!important;
+}
+html[data-ui="next"] #pageAnalytics .page-sidebar-head,
+html[data-ui="next"] #pageAnalytics .page-sidebar-title{display:flex!important}
+html[data-ui="next"] #pageAnalytics .page-sidebar-title{padding:2px 8px 7px!important}
+html[data-ui="next"] #pageAnalytics .page-nav{
+  display:flex!important;flex-direction:column!important;gap:2px!important;
+  overflow:visible!important;padding:0!important;order:1!important;
+}
+html[data-ui="next"] #pageAnalytics .page-nav-item{
+  border-radius:8px!important;padding:8px 10px!important;font-size:11.5px!important;
+  text-align:left!important;white-space:normal!important;
+}
+html[data-ui="next"] #pageAnalytics .page-nav-top{
+  order:2!important;width:100%!important;max-width:none!important;
+  margin:8px 0 0!important;justify-content:center!important;
+}
+html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:2!important;min-width:0!important}
+html[data-ui="next"] #pageAnalytics .pagehead .pagetitle,
+html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
+@media (max-width: 900px){
+  html[data-ui="next"] #pageAnalytics.page-nav-on.active{grid-template-columns:minmax(0,1fr)!important;gap:14px!important}
+  html[data-ui="next"] #pageAnalytics.page-nav-on > .page-sidebar{
+    position:static!important;max-height:none!important;flex-direction:row!important;
+    overflow-x:auto!important;padding:4px!important;
+  }
+  html[data-ui="next"] #pageAnalytics .page-sidebar-head,
+  html[data-ui="next"] #pageAnalytics .page-sidebar-title{display:none!important}
+  html[data-ui="next"] #pageAnalytics .page-nav{flex-direction:row!important;overflow-x:auto!important}
+  html[data-ui="next"] #pageAnalytics .page-nav-item{white-space:nowrap!important}
+  html[data-ui="next"] #pageAnalytics .page-nav-top{width:auto!important;margin:0 0 0 auto!important}
+  html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:1!important}
+}
 @media (max-width: 900px){
   html[data-ui="next"] #pageSettings > .page-nav-body{grid-template-columns:minmax(0,1fr);gap:14px}
   html[data-ui="next"] #pageSettings .page-nav-body > .next-settings-groups{
@@ -22746,7 +22790,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     overview: { title: '总览', desc: '出口、账号健康和最近请求一屏看完。' },
     gateway: { title: '模型', desc: '模型目录、能力、思考档位与在售倍率。' },
     accounts: { title: '账号与提供商', desc: '按提供商查看账号池、积分和签到记录。' },
-    analytics: { title: '用量', desc: 'Token、请求、缓存、成本和剩余额度。' },
+    analytics: { title: '数据看板', desc: 'Token、请求、缓存、成本和剩余额度。' },
     tasks: { title: '自动化', desc: '每日活跃、成长任务和后台调度器。' },
     agents: { title: '智能体', desc: '把本机 AI 客户端一键指向当前网关。' },
     media: { title: '媒体', desc: '图片与视频生成任务、额度、价格和账号分配。' },
