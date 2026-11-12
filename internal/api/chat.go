@@ -388,7 +388,9 @@ func (s *Server) applyModelRef(request *chatHTTPRequest) *apiFailure {
 // explicit realm (X-Realm, then query, then body), a unique model match across
 // registered providers, then the only registered provider. A bound key
 // therefore cannot be escaped with X-Realm, ?realm, a body realm, realm=all, or
-// a conflicting exit prefix.
+// a conflicting exit prefix. realm=gateway is a routing scope, not a provider
+// realm: a bare model must match exactly one provider catalog and every catalog
+// must be readable (see resolveGatewayAmong).
 //
 // Explicit-realm and single-provider requests are deliberately not rejected by
 // a catalog pre-check: a stale/empty cache must not hide a model the upstream
@@ -419,6 +421,9 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 	}
 
 	if realm := strings.TrimSpace(request.realm); realm != "" {
+		if realm == "gateway" {
+			return s.resolveGatewayAmong(ctx, request.model)
+		}
 		if realm == "all" {
 			candidates := s.workBuddyProviders()
 			if len(candidates) == 0 {
@@ -475,6 +480,51 @@ func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provid
 			"model not found in WorkBuddy realms intl/cn: "+model)
 	}
 	return nil, localFailure(http.StatusNotFound, "model not found: "+model)
+}
+
+// resolveGatewayAmong resolves one bare model across every registered exit.
+// realm=gateway is a routing scope, not a provider realm, so the lookup must
+// read the whole catalog set. Unlike resolveAmong, which tolerates an unreadable
+// catalog and returns on the first match, this fails closed: a partial snapshot
+// could hide a second match and silently pin the request to one exit. A client
+// that needs a guaranteed route can use exit/model or a concrete realm.
+func (s *Server) resolveGatewayAmong(ctx context.Context, model string) (providers.Provider, error) {
+	var matches []providers.Provider
+	for _, provider := range s.providers {
+		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+		models, err := provider.Models(lookupCtx, false)
+		cancel()
+		if err != nil {
+			return nil, localFailure(http.StatusServiceUnavailable,
+				"gateway model catalog incomplete; use exit/model or a concrete realm")
+		}
+		if modelMatches(models, model) {
+			matches = append(matches, provider)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, localFailure(http.StatusNotFound, "model not found in gateway exits: "+model)
+	case 1:
+		return matches[0], nil
+	}
+
+	// Ambiguity is reported with canonical IDs so the client can retry with the
+	// exact exit prefix. Duplicate realm registrations collapse to one ID.
+	candidates := make([]string, 0, len(matches))
+	seen := make(map[string]bool, len(matches))
+	for _, provider := range matches {
+		candidate := canonicalModelID(providerRealm(provider), model)
+		key := strings.ToLower(candidate)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		candidates = append(candidates, candidate)
+	}
+	return nil, localFailure(http.StatusBadRequest,
+		"model is available in multiple gateway exits; use exit/model: "+strings.Join(candidates, ", "))
 }
 
 func modelMatches(models []providers.Model, model string) bool {
