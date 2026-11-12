@@ -131,6 +131,15 @@ history. Dashboard asset hash/size metadata and a 10th JS suite cover the case.
 `v2.3.2` at `e9b11ea`; evidence: `docs/smoke/2026-11-12-release-2.3.2.md`. No
 media or Windows SCM gate changed.
 
+**v2.4.0 addendum:** exit-qualified model IDs route Chat, Responses, and
+Messages exactly to the named exit while sending bare IDs upstream; a gateway
+catalog covers all exits and `realm=all` remains WorkBuddy-only. Key allow-lists
+match canonical and upstream IDs, and usage records canonical requested models.
+WorkBuddy credit packages are now fully paged with used/expired statuses and
+official cumulative totals. `make check`, `make race`, and the 12/12 dashboard
+JS harness pass. Published as `v2.4.0` at `13260d1`; evidence:
+`docs/smoke/2026-11-12-release-2.4.0.md`. No media or Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
