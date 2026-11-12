@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.1.1] - 2026-11-12
+
+### 中文
+
+#### 修复
+
+- usage cache 保存时只替换同 realm 条目，保留 intl/all/cn 等其他 realm 缓存；
+  snapshot / series / analytics 在日志 offset 未推进时不再重写 checkpoint。
+- Chat Completions 可安全恢复请求中已声明的打印式 DSML / `<run_code>` 工具调用；
+  真实结构化调用优先，未闭合、畸形或未声明的调用不恢复。
+- 流内 SSE 错误不再被当作正常完成，也不会从失败流中恢复工具调用。
+- CodeArts / Raccoon 保留 legacy `functions` 声明并转换为标准 `tools`，同时保留
+  `function_call` / `tool_choice=none` 语义；显式 `tools` 仍优先。
+
+### English
+
+#### Fixed
+
+- Usage cache saves now replace only the same realm entry, preserving intl/all/cn
+  caches; snapshot/series/analytics checkpoints are not rewritten when the log
+  offset has not advanced.
+- Chat Completions safely recovers declared printed DSML / `<run_code>` tool
+  calls; real structured calls win, and unclosed, malformed or undeclared calls
+  are rejected.
+- In-band SSE errors no longer become successful completions or recovered tool
+  calls.
+- CodeArts / Raccoon preserve legacy `functions` declarations by translating
+  them to standard `tools`, while retaining `function_call` / `tool_choice=none`
+  semantics; explicit `tools` still take precedence.
+
 ## [2.1.0] - 2026-11-11
 
 ### 中文
