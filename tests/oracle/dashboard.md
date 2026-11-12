@@ -16,7 +16,7 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `80daa14aae870d1c810c652b5454bc9339806635018c0cd079691fc93183f70d` |
+| v2 SHA-256 | `521bdf5b813193b5d1aa48399fe3322a79cb8e72b99ab96d749bf3f098c2d322` |
 | v1 size | 1,284,387 bytes |
 | v2 size | 1,296,574 bytes |
 | Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls and panel branding controls; otherwise identical to v1.6.5 |

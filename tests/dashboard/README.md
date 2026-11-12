@@ -31,6 +31,6 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 
 `tests/dashboard/node/_dashboard_source.js` accepts `DASHBOARD_HTML`; the Go
 harness points it at a temporary copy of the embedded bytes so the suites always
-execute exactly what the binary serves. The DOM/sandbox helpers and the seven
+execute exactly what the binary serves. The DOM/sandbox helpers and the eight
 selected suites are copied from the MIT-licensed v1.6.5 test tree; the original
 repository remains read-only.

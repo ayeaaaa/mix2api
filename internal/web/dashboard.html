@@ -2163,6 +2163,9 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '个）': ')',
     '个，启用': ', enabled',
     '临期': 'Expiring',
+    '当前版本': 'Current view',
+    '全部区域': 'All realms',
+    '数据区域': 'Data realm',
     '为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。': 'Bind a dedicated exit to each key. Requests made with that key always take the matching region, so both exits run concurrently.',
     '人工映射表 OVERRIDES': 'Manual mapping table OVERRIDES',
     '今日': 'Today',
@@ -6058,6 +6061,10 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button data-range="month">本月</button>
       <button data-range="d30">近 30 天</button>
       <button data-range="all">全部</button>
+    </div>
+    <div class="seg" id="analyticsScopeSeg" aria-label="数据区域">
+      <button data-scope="view" class="on">当前版本</button>
+      <button data-scope="all">全部区域</button>
     </div>
   </div>
 
@@ -14503,6 +14510,7 @@ const MAIN_TABS = ['overview', 'gateway', 'accounts', 'tasks', 'media', 'analyti
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
+let analyticsScope = 'view';
 let cachedMatrixData = null;
 let matrixAcctFilter = '';
 let matrixModelFilter = '';
@@ -19961,8 +19969,52 @@ function onRangeCustomChange(){
 
 /* 三个取数端点共用同一个查询串，避免 /usage 与 /usage/perf 各拼一份而漏掉自定义
  * 区间——那正是「卡片与表格口径不一致」的复发路径。 */
+function analyticsRealmValue(){
+  if(analyticsScope === 'all') return 'all';
+  const realm = window.VIEW_REALM;
+  return (realm === 'intl' || realm === 'cn' || realm === 'codearts' || realm === 'raccoon')
+    ? realm : 'all';
+}
+
+function analyticsScopeLabel(){
+  if(analyticsScope === 'all') return '全部区域';
+  const realm = window.VIEW_REALM;
+  return realm === 'cn' ? '国内版'
+    : realm === 'intl' ? '国际版'
+    : realm === 'codearts' ? 'CodeArts'
+    : realm === 'raccoon' ? '小浣熊' : '全部区域';
+}
+
+function setAnalyticsScope(scope){
+  analyticsScope = scope === 'all' ? 'all' : 'view';
+  const seg = document.getElementById('analyticsScopeSeg');
+  if(seg){
+    [...seg.children].forEach(b => b.classList.toggle('on', b.getAttribute('data-scope') === analyticsScope));
+  }
+}
+
+function analyticsRecentQuery(){
+  return '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+}
+
+function refreshAnalyticsScopeData(){
+  // 新版用量页有自己的一套 loadRange/loadStatic；旧版仍走 loadAnalytics。
+  if(typeof window.__refreshNewAnalytics === 'function') window.__refreshNewAnalytics();
+  else loadAnalytics();
+  loadAnalyticsMatrix();
+}
+
+const analyticsScopeSegEl = document.getElementById('analyticsScopeSeg');
+if(analyticsScopeSegEl){
+  analyticsScopeSegEl.addEventListener('click', ev => {
+    const btn = ev.target.closest('button'); if(!btn) return;
+    setAnalyticsScope(btn.getAttribute('data-scope'));
+    refreshAnalyticsScopeData();
+  });
+}
+
 function analyticsQuery(){
-  let q = '?realm=all&range=' + encodeURIComponent(analyticsRange || 'today');
+  let q = '?realm=' + encodeURIComponent(analyticsRealmValue()) + '&range=' + encodeURIComponent(analyticsRange || 'today');
   if(analyticsRange === 'custom'){
     const sEl = document.getElementById('rangeCustomSince');
     const uEl = document.getElementById('rangeCustomUntil');
@@ -21143,7 +21195,7 @@ async function loadPrevSummary(untilAt){
   const pr = prevRange(untilAt);
   if (!pr) return null;
   try{
-    const p = await api(`/usage/timeseries?realm=all&range=custom&since=${pr[0]}&until=${pr[1]}`);
+    const p = await api(`/usage/timeseries?realm=${encodeURIComponent(analyticsRealmValue())}&range=custom&since=${pr[0]}&until=${pr[1]}`);
     const t = (p.series || []).reduce((a, b) => ({
       tok:    a.tok    + (b.total_tokens   || 0),
       req:    a.req    + (b.requests       || 0),
@@ -21216,7 +21268,7 @@ function recentStamp(iso){
 }
 async function loadRecent(){
   try{
-    const r = await api('/usage/recent?limit=12');
+    const r = await api(analyticsRecentQuery());
     const rows = r.rows || [];
     $('recentMeta').textContent = `共 ${fmtCompact(r.total || 0)} 条记录`;
     $('recentList').innerHTML = rows.map(x => {
@@ -21282,8 +21334,8 @@ async function loadRange(polled){
   const rp = rangeParams(state.range, untilAt);
   try{
     const [analytics, series, prev] = await Promise.all([
-      api(`/usage/analytics?realm=all&${rp}`),
-      api(`/usage/timeseries?realm=all&${rp}`),
+      api(`/usage/analytics?realm=${encodeURIComponent(analyticsRealmValue())}&${rp}`),
+      api(`/usage/timeseries?realm=${encodeURIComponent(analyticsRealmValue())}&${rp}`),
       loadPrevSummary(untilAt),
     ]);
     if (gen !== WBA_GEN) return;
@@ -21308,7 +21360,7 @@ async function loadRange(polled){
 }
 
 async function loadStatic(){
-  try{ state.perf = await api('/usage/perf'); } catch(e){ console.error(e); }
+  try{ state.perf = await api('/usage/perf' + analyticsQuery()); } catch(e){ console.error(e); }
   await loadHeat();
   renderPerfFold();
   // 剩余用量 / 积分扣减 / 积分获取历史：原版区块的数据管道原来挂在旧 loadAnalytics 上，
@@ -21317,6 +21369,7 @@ async function loadStatic(){
   try{ loadCreditHistory(); }catch(e){}
   try{ loadCreditGrants(); }catch(e){}
 }
+window.__refreshNewAnalytics = function(){ loadRange(); loadStatic(); };
 
 /* 热力图按「本地日」取数：since/until 都钉在本地午夜，缓存键一整天不变；
  * until 取到明天 0 点，今天新产生的用量也能落进今天的格子。只在进页面、
@@ -21333,7 +21386,7 @@ async function loadHeat(){
   heatFetchedAt = nowMs/1000;
   heatFetchedDay = fmtDate(nowMs/1000);
   try{
-    state.heat = await api(`/usage/timeseries?realm=all&range=custom&since=${since}&until=${until}&bucket_seconds=86400`);
+    state.heat = await api(`/usage/timeseries?realm=${encodeURIComponent(analyticsRealmValue())}&range=custom&since=${since}&until=${until}&bucket_seconds=86400`);
   } catch(e){ console.error('heat failed', e); }
   heatLoading = false;
   buildHeatGrid(state.heat);
@@ -21413,7 +21466,7 @@ function renderKpis(){
   $('kCost').innerHTML = `<span style="color:var(--red)" ${w.cost_cny != null ? `data-tip="${fullNum(w.cost_cny, 4)} 元"` : ''}>${fmtCostCny(w.cost_cny)}</span>`;
   $('kCostSub').innerHTML = usd != null ? `<span style="color:var(--green)">${usd.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}</span> · 积分消耗 ${numSpan(w.credit, 1)}` : '—';
 
-  $('pageSub').textContent = `区间 ${fmtCompact(w.total_tokens)} tokens · ${fmtCompact(w.requests)} 次请求 · 更新于 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
+  $('pageSub').textContent = `${analyticsScopeLabel()} · 区间 ${fmtCompact(w.total_tokens)} tokens · ${fmtCompact(w.requests)} 次请求 · 更新于 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
 
   // B 版：环比徽章
   const selfCache = w.prompt_tokens ? (w.cached_tokens || 0) / w.prompt_tokens * 100 : null;
@@ -21946,6 +21999,7 @@ $('rangeSeg').addEventListener('click', ev => {
   $('pageSub').textContent = '—';
   loadRange();
 });
+
 $('metricSeg').addEventListener('click', ev => {
   const btn = ev.target.closest('button'); if (!btn) return;
   [...$('metricSeg').children].forEach(b => b.classList.toggle('on', b === btn));
