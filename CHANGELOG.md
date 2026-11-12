@@ -18,7 +18,8 @@ Keep a Changelog and the project uses semantic versioning.
 - 设置页改成左侧分组导航：基础、提供商、模型与定价、路由与限额、自动化、
   稳定性、系统；每次只显示当前模块的设置，提供商接入不再混在通用 API 设置里。
 - 用量页恢复控制台版数据看板形态：保留「本页导航」侧栏、数据看板标题、区间选择、
-  KPI、Token 时序、最近请求、工作回溯和用量明细；移动端自动折叠为单栏。
+  KPI、Token 时序、最近请求、工作回溯和用量明细；移动端收起页内导航，
+  区间选择置顶，KPI 保持两列。
 - 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
 
 ### English
@@ -39,8 +40,9 @@ Keep a Changelog and the project uses semantic versioning.
   and provider setup is no longer mixed into generic API settings.
 - The Usage page restores the console data-dashboard shape: a page-level
   navigation rail, the Data dashboard title, range selector, KPIs, token
-  timeline, recent requests, work history, and usage detail; mobile collapses
-  to one column.
+  timeline, recent requests, work history, and usage detail; mobile hides the
+  page rail, moves the range selector above the title, and keeps the two-column
+  KPI grid.
 - Removed the extra accounts section navigation and duplicate headings, and
   normalized card, table, toolbar, and empty-state spacing.
 

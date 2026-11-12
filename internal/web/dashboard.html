@@ -5261,6 +5261,17 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
   html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:1!important}
 }
 @media (max-width: 900px){
+  html[data-ui="next"] #pageAnalytics.page-nav-on.active{grid-template-columns:minmax(0,1fr)!important;gap:14px!important}
+  html[data-ui="next"] #pageAnalytics.page-nav-on > .page-sidebar{display:none!important}
+  html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:1!important}
+  html[data-ui="next"] #pageAnalytics .pagehead{flex-direction:column!important;align-items:stretch!important}
+  html[data-ui="next"] #pageAnalytics .pagehead .seg{order:-1!important;width:100%!important;overflow-x:auto!important}
+  html[data-ui="next"] #pageAnalytics .kpis{grid-template-columns:1fr 1fr!important}
+}
+@media (max-width: 520px){
+  html[data-ui="next"] #pageAnalytics .kpis{grid-template-columns:1fr 1fr!important}
+}
+@media (max-width: 900px){
   html[data-ui="next"] #pageSettings > .page-nav-body{grid-template-columns:minmax(0,1fr);gap:14px}
   html[data-ui="next"] #pageSettings .page-nav-body > .next-settings-groups{
     grid-column:1;grid-row:auto;position:static;flex-direction:row;overflow-x:auto;
