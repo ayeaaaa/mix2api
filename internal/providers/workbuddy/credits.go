@@ -1761,37 +1761,19 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 
 	freeAccounts := []any{}
 	if len(packageCodes) > 0 {
-		body, _ := json.Marshal(map[string]any{
+		freeAccounts = p.fetchCreditPackagePages(ctx, session, base, creditsFreePackagesPath, map[string]any{
 			"PackageCodes": packageCodes,
-			"PageNumber":   1,
-			"PageSize":     200,
-			"Status":       []int{0},
+			"Status":       []int{0, 1, 2, 3},
 		})
-		freeStatus, freePayload, freeErr := session.postJSON(ctx,
-			creditEndpoint(base, creditsFreePackagesPath), body, false, creditsBillingTimeout)
-		if freeErr == nil && freeStatus >= 200 && freeStatus < 300 {
-			if accounts, ok := anyList(creditObject(freePayload["data"])["Accounts"]); ok {
-				freeAccounts = accounts
-			}
-		}
 	}
 
 	paidAccounts := []any{}
 	if len(packageCodes) > 0 {
-		body, _ := json.Marshal(map[string]any{
+		paidAccounts = p.fetchCreditPackagePages(ctx, session, base, creditsPaidPackagesPath, map[string]any{
 			"PackageCodes":  packageCodes,
-			"PageNumber":    1,
-			"PageSize":      200,
 			"Status":        []int{0, 3},
 			"NeedRenewInfo": true,
 		})
-		paidStatus, paidPayload, paidErr := session.postJSON(ctx,
-			creditEndpoint(base, creditsPaidPackagesPath), body, false, creditsBillingTimeout)
-		if paidErr == nil && paidStatus >= 200 && paidStatus < 300 {
-			if accounts, ok := anyList(creditObject(paidPayload["data"])["Accounts"]); ok {
-				paidAccounts = accounts
-			}
-		}
 	}
 
 	var checkin *CheckinStatus
@@ -1827,15 +1809,71 @@ func (p *Provider) fetchCNCredits(ctx context.Context, session *creditsSession) 
 	}
 
 	snapshot := newCreditSnapshot(packages, paid, checkin, now)
-	// v1 uses the summary totals only when no concrete package rows exist.
-	if len(packages) == 0 && len(summaryPackages) > 0 {
-		summaryRemain, summaryUsed, summarySize := creditSummaryTotals(summaryPackages)
+	// The resource-summary totals are the official cumulative figures. They
+	// remain larger than the package rows once upstream recycles used instances,
+	// so prefer them whenever they carry capacity; only fall back to the row
+	// totals when the summary has no capacity fields at all.
+	summaryRemain, summaryUsed, summarySize := creditSummaryTotals(summaryPackages)
+	if summarySize > 0 {
+		snapshot.Remain = roundCredit(summaryRemain)
+		snapshot.Used = roundCredit(summaryUsed)
+		snapshot.Size = roundCredit(summarySize)
+		updateCreditPercentages(snapshot)
+	} else if len(packages) == 0 && len(summaryPackages) > 0 {
 		snapshot.Remain = roundCredit(snapshot.Remain + summaryRemain)
 		snapshot.Used = roundCredit(snapshot.Used + summaryUsed)
 		snapshot.Size = roundCredit(snapshot.Size + summarySize)
 		updateCreditPercentages(snapshot)
 	}
 	return snapshot, tier, nil
+}
+
+const (
+	creditsPackagePageSize = 200
+	creditsPackageMaxPages = 10
+)
+
+// fetchCreditPackagePages walks the upstream package-instance pages. A single
+// account can accumulate more than 200 daily-credit packages; stopping at page
+// one silently hides the rest of the history. A failed page returns the rows
+// already collected instead of discarding the whole refresh.
+func (p *Provider) fetchCreditPackagePages(ctx context.Context, session *creditsSession, base, path string, body map[string]any) []any {
+	accounts := []any{}
+	total := -1
+	for page := 1; page <= creditsPackageMaxPages; page++ {
+		pageBody := make(map[string]any, len(body)+2)
+		for key, value := range body {
+			pageBody[key] = value
+		}
+		pageBody["PageNumber"] = page
+		pageBody["PageSize"] = creditsPackagePageSize
+		raw, err := json.Marshal(pageBody)
+		if err != nil {
+			break
+		}
+		status, payload, err := session.postJSON(ctx, creditEndpoint(base, path), raw, false, creditsBillingTimeout)
+		if err != nil || status < 200 || status >= 300 {
+			break
+		}
+		data := creditObject(payload["data"])
+		chunk, ok := anyList(data["Accounts"])
+		if !ok || len(chunk) == 0 {
+			break
+		}
+		accounts = append(accounts, chunk...)
+		if total < 0 {
+			if value, ok := numericValue(data["TotalCount"]); ok && value > 0 {
+				total = int(value)
+			}
+		}
+		if len(chunk) < creditsPackagePageSize {
+			break
+		}
+		if total >= 0 && len(accounts) >= total {
+			break
+		}
+	}
+	return accounts
 }
 
 func (p *Provider) refreshIntlTierIfDue(ctx context.Context, session *creditsSession) map[string]any {
