@@ -103,8 +103,8 @@ an in-process uTLS bridge that reproduces the official Node/OpenSSL ClientHello
 (18 ciphers, 10 extensions, no ALPN). JA3/JA4, unauthenticated CONNECT, direct,
 HTTP/HTTPS/SOCKS5 proxy, and live upstream handshakes pass. The build baseline
 moves to Go 1.26 and uTLS 1.8.2; `govulncheck` reports 0 vulnerabilities.
-Evidence: `docs/smoke/2026-11-12-utls-bridge.md`. Real-account WorkBuddy chat
-with the bridge remains part of the release smoke.
+Evidence: `docs/smoke/2026-11-12-utls-bridge.md`. Real-account WorkBuddy China
+chat and SSE through the bridge passed on 2026-11-12.
 
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the

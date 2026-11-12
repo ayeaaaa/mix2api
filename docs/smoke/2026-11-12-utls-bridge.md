@@ -108,6 +108,21 @@ The `WB_TLS_FINGERPRINT=node` alias alone also enabled the bridge. An invalid
 mode (`MIX2API_TLS_FINGERPRINT=nod`) exited with code 1 and
 `startup: uTLS bridge: ... must be node or python`.
 
+## Real-account smoke
+
+A new container from the test image was started with
+`MIX2API_TLS_FINGERPRINT=node` over a **copy** of the WorkBuddy data directory.
+Slot-bound CN accounts were disabled in the copy so the smoke used the one
+direct CN account; production data and the running containers were untouched.
+
+- `GET /v1/models?realm=cn` → 200
+- `POST /v1/chat/completions?realm=cn` with `deepseek-v4.1-flash` → 200,
+  `finish_reason:"stop"`, content `OK`
+- streaming request with the same model → 200, 17 `data:` SSE frames
+- startup log: `uTLS bridge: enabled on 127.0.0.1:<port>`
+
+This is a real-account transport smoke, not a broad model-quality test.
+
 ## Scope
 
 This evidence covers the transport/fingerprint path. It does not prove a real

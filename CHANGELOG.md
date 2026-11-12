@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.2.0] - 2026-11-12
 
 ### 中文
 
@@ -33,8 +33,10 @@ Keep a Changelog and the project uses semantic versioning.
   keep-alive、SSE、代理槽和证书校验行为保持不变。
 - 未启用或使用不支持的模式时保持原行为；不支持的代理 scheme 会明确失败，
   不会静默回退。
-- 新增 ClientHello JA3/JA4、未认证 CONNECT、直连、HTTP 代理和真实上游握手
-  测试；全量 `go test ./...` 通过。
+- 新增 ClientHello JA3/JA4、未认证 CONNECT、直连、HTTP / HTTPS / SOCKS5
+  代理、keep-alive、证书失败和真实上游握手测试；全量 `go test ./...` 通过。
+- 使用 WorkBuddy 国内版真实账号完成非流式 chat 与 SSE 流式 smoke，均返回
+  200；smoke 使用复制数据目录，未修改生产数据。
 
 ### English
 
@@ -69,8 +71,12 @@ Keep a Changelog and the project uses semantic versioning.
   verification stay unchanged.
 - The default path is unchanged; unsupported proxy schemes fail explicitly
   instead of silently falling back.
-- Added ClientHello JA3/JA4, unauthenticated CONNECT, direct, HTTP proxy, and
-  live upstream handshake tests; the full `go test ./...` suite passes.
+- Added ClientHello JA3/JA4, unauthenticated CONNECT, direct, HTTP / HTTPS /
+  SOCKS5 proxy, keep-alive, certificate-failure, and live upstream handshake
+  tests; the full `go test ./...` suite passes.
+- A real WorkBuddy China account completed both non-streaming chat and SSE
+  streaming smoke requests with HTTP 200; the smoke used a copied data
+  directory and did not modify production data.
 
 ## [2.1.1] - 2026-11-12
 
