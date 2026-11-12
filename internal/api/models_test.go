@@ -358,3 +358,191 @@ func TestModelsRealmAllFiltersNonWorkBuddyIdentity(t *testing.T) {
 		t.Fatalf("data = %#v, want only intl-model", data)
 	}
 }
+
+func TestModelsGatewayUnionsAllProviders(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared", "name": "Intl"}}}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared", "name": "CN"}}}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared", "name": "CodeArts"}}}
+	raccoon := &stubProvider{id: "raccoon", realm: "raccoon", models: []providers.Model{{"id": "r1"}}}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts, raccoon}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["object"] != "list" || body["realm"] != "gateway" {
+		t.Fatalf("envelope = %#v", body)
+	}
+	data, ok := body["data"].([]any)
+	if !ok || len(data) != 4 {
+		t.Fatalf("data = %#v, want four gateway entries", body["data"])
+	}
+	wantIDs := []string{"intl/shared", "cn/shared", "codearts/shared", "raccoon/r1"}
+	wantUpstream := []string{"shared", "shared", "shared", "r1"}
+	wantRealm := []string{"intl", "cn", "codearts", "raccoon"}
+	wantProvider := []string{"workbuddy", "workbuddy", "codearts", "raccoon"}
+	for index, raw := range data {
+		entry := raw.(map[string]any)
+		if entry["id"] != wantIDs[index] || entry["qualified_id"] != wantIDs[index] {
+			t.Fatalf("entry %d = %#v, want canonical id %q", index, entry, wantIDs[index])
+		}
+		if entry["upstream_id"] != wantUpstream[index] {
+			t.Fatalf("entry %d upstream_id = %#v, want %q", index, entry["upstream_id"], wantUpstream[index])
+		}
+		if entry["realm"] != wantRealm[index] || entry["provider"] != wantProvider[index] {
+			t.Fatalf("entry %d attribution = %#v, want realm %q provider %q",
+				index, entry, wantRealm[index], wantProvider[index])
+		}
+	}
+	if data[0].(map[string]any)["name"] != "Intl" ||
+		data[2].(map[string]any)["name"] != "CodeArts" {
+		t.Fatalf("gateway entries lost provider metadata: %#v", data)
+	}
+	// Decoration must clone the provider-owned map instead of mutating it.
+	if _, mutated := intl.models[0]["qualified_id"]; mutated {
+		t.Fatalf("gateway decoration mutated the provider-owned model: %#v", intl.models[0])
+	}
+	if _, mutated := codearts.models[0]["upstream_id"]; mutated {
+		t.Fatalf("gateway decoration mutated the provider-owned model: %#v", codearts.models[0])
+	}
+	if catalog, ok := body["catalog"]; ok {
+		t.Fatalf("gateway response kept the singular catalog: %#v", catalog)
+	}
+}
+
+func TestModelsGatewayCatalogsByRealm(t *testing.T) {
+	intl := &stubProvider{
+		id: "workbuddy", realm: "intl",
+		models:  []providers.Model{{"id": "m1"}},
+		catalog: map[string]any{"source": "remote", "fetched_at": 1700000000},
+	}
+	raccoon := &stubProvider{
+		id: "raccoon", realm: "raccoon",
+		models:  []providers.Model{{"id": "r1"}},
+		catalog: map[string]any{"source": "raccoon"},
+	}
+	broken := &stubProvider{
+		id: "codearts", realm: "codearts",
+		modelsErr: errors.New("offline"),
+		catalog:   map[string]any{"source": "codearts"},
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, raccoon, broken}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	catalogs, ok := body["catalogs"].(map[string]any)
+	if !ok {
+		t.Fatalf("catalogs = %#v", body["catalogs"])
+	}
+	if entry, _ := catalogs["intl"].(map[string]any); entry["source"] != "remote" {
+		t.Fatalf("intl catalog = %#v", catalogs["intl"])
+	}
+	if entry, _ := catalogs["raccoon"].(map[string]any); entry["source"] != "raccoon" {
+		t.Fatalf("raccoon catalog = %#v", catalogs["raccoon"])
+	}
+	if _, ok := catalogs["codearts"]; ok {
+		t.Fatalf("failed provider catalog leaked: %#v", catalogs)
+	}
+	if _, ok := body["catalog"]; ok {
+		t.Fatalf("gateway response kept the singular catalog: %#v", body["catalog"])
+	}
+}
+
+func TestModelsGatewayPartialCatalogFailure(t *testing.T) {
+	good := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "m1"}}}
+	broken := &stubProvider{id: "codearts", realm: "codearts", modelsErr: errors.New("offline")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{good, broken}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "cn/m1" {
+		t.Fatalf("data = %#v, want only cn/m1", body["data"])
+	}
+}
+
+func TestModelsGatewayAllCatalogsFailed(t *testing.T) {
+	first := &stubProvider{
+		id: "workbuddy", realm: "cn",
+		modelsErr: &mappedTestError{
+			status: http.StatusServiceUnavailable, errType: "upstream_error", message: "catalog offline",
+		},
+	}
+	second := &stubProvider{id: "codearts", realm: "codearts", modelsErr: errors.New("offline")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{first, second}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	requireErrorEnvelope(t, rec, http.StatusServiceUnavailable, "upstream_error")
+}
+
+func TestModelsGatewayNoProviders(t *testing.T) {
+	srv := newTestHTTPServer(ServerOptions{})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	requireErrorEnvelope(t, rec, http.StatusNotFound, "invalid_request_error")
+}
+
+func TestModelsGatewayBoundKeyFiltersRealm(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "m1"}}}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "m1"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "cn" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["realm"] != "gateway" {
+		t.Fatalf("realm = %#v, want gateway scope", body["realm"])
+	}
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "cn/m1" {
+		t.Fatalf("data = %#v, want only cn/m1", body["data"])
+	}
+	for _, raw := range data {
+		if raw.(map[string]any)["realm"] == "codearts" {
+			t.Fatalf("bound key leaked another exit: %#v", data)
+		}
+	}
+	if codearts.modelCalls != 0 {
+		t.Fatalf("bound gateway read an unbound provider catalog: %d calls", codearts.modelCalls)
+	}
+}
+
+func TestModelsConcreteRealmAddsQualifiedID(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "m1"}}}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=cn", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	data := body["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("data = %#v", body["data"])
+	}
+	entry := data[0].(map[string]any)
+	if entry["id"] != "m1" {
+		t.Fatalf("concrete realm id = %#v, want bare upstream id", entry["id"])
+	}
+	if entry["qualified_id"] != "cn/m1" || entry["upstream_id"] != "m1" {
+		t.Fatalf("concrete realm identity = %#v", entry)
+	}
+	if entry["provider"] != "workbuddy" || entry["realm"] != "cn" {
+		t.Fatalf("concrete realm attribution = %#v", entry)
+	}
+	if cn.models[0]["qualified_id"] != nil {
+		t.Fatalf("concrete realm decoration mutated the provider-owned model: %#v", cn.models[0])
+	}
+}

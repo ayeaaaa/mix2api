@@ -57,6 +57,8 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/GLM-5.2",
+      "realm": "codearts",
       "reasoning_efforts": [
         "none",
         "minimal",
@@ -70,6 +72,7 @@
       "supports_reasoning": true,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "GLM-5.2",
       "vision": false
     },
     {
@@ -113,9 +116,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/GLM-4.7",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "GLM-4.7",
       "vision": false
     },
     {
@@ -169,9 +175,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/Qwen3-VL-235B",
+      "realm": "codearts",
       "supports_images": true,
       "supports_tool_calls": true,
       "supports_vision": true,
+      "upstream_id": "Qwen3-VL-235B",
       "vision": true
     },
     {
@@ -222,9 +231,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/deepseek-v4-pro-0813",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "deepseek-v4-pro-0813",
       "vision": false
     },
     {
@@ -277,9 +289,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/Kimi-K3.1-Pro",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "Kimi-K3.1-Pro",
       "vision": false
     },
     {
@@ -335,6 +350,8 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/GLM-5.3-Flash",
+      "realm": "codearts",
       "reasoning_can_disable": false,
       "reasoning_efforts": [
         "low",
@@ -345,6 +362,7 @@
       "supports_reasoning": true,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "GLM-5.3-Flash",
       "vision": false
     },
     {
@@ -397,9 +415,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/Kimi-K3",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "Kimi-K3",
       "vision": false
     },
     {
@@ -454,6 +475,8 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/DeepSeek-V4.1-Flash",
+      "realm": "codearts",
       "reasoning_efforts": [
         "none",
         "low",
@@ -466,6 +489,7 @@
       "supports_reasoning": true,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "DeepSeek-V4.1-Flash",
       "vision": false
     },
     {
@@ -513,6 +537,8 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/DeepSeek-V4.1-Flash-1017",
+      "realm": "codearts",
       "reasoning_efforts": [
         "none",
         "low",
@@ -525,6 +551,7 @@
       "supports_reasoning": true,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "DeepSeek-V4.1-Flash-1017",
       "vision": false
     },
     {
@@ -578,6 +605,8 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/GLM-5.3",
+      "realm": "codearts",
       "reasoning_efforts": [
         "none",
         "minimal",
@@ -591,6 +620,7 @@
       "supports_reasoning": true,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "GLM-5.3",
       "vision": false
     },
     {
@@ -636,9 +666,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/OpenPangu-2.0-Flash",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "OpenPangu-2.0-Flash",
       "vision": false
     },
     {
@@ -684,9 +717,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/GLM-5.2-ArkTS-SPARK",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "GLM-5.2-ArkTS-SPARK",
       "vision": false
     },
     {
@@ -732,9 +768,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/OpenPangu-2.0-Pro",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "OpenPangu-2.0-Pro",
       "vision": false
     },
     {
@@ -778,9 +817,12 @@
       ],
       "owned_by": "codearts",
       "provider": "codearts",
+      "qualified_id": "codearts/deepseek-v4-flash-0731",
+      "realm": "codearts",
       "supports_images": false,
       "supports_tool_calls": true,
       "supports_vision": false,
+      "upstream_id": "deepseek-v4-flash-0731",
       "vision": false
     }
   ],
