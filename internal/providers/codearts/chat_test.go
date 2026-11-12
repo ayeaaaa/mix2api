@@ -23,6 +23,20 @@ import (
 
 var _ providers.HTTPError = (*APIError)(nil)
 
+func TestChat1017ToolChoiceNoneKeepsDeclarations(t *testing.T) {
+	build, err := buildChatBody(t5Request(t, map[string]any{
+		"model": "deepseek-v4.1-flash-1017", "messages": t5Messages(t5UserMessage("do the thing")),
+		"tool_choice": "none", "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "run_shell", "parameters": map[string]any{"type": "object"}}}},
+	}, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := build.Body["tools"].([]any)
+	if len(tools) != 1 || build.Body["tool_choice"] != "none" || build.Body["model"] != "deepseek-v4.1-flash-1017" {
+		t.Fatalf("1017 tool declarations/choice/model lost: %v", build.Body)
+	}
+}
+
 type t5Capture struct {
 	Method string
 	Path   string
