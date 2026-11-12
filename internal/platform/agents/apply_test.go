@@ -155,6 +155,37 @@ func TestApplyOpenCode(t *testing.T) {
 	}
 }
 
+func TestApplyWritesCanonicalModelIDs(t *testing.T) {
+	service, _, home := newAgentService(t)
+	if err := service.SetSelection([]string{"intl/model-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Apply(context.Background(), "opencode", "http://gateway:8788", "sk-key", "intl/model-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	data, _ := loadJSON(path, "opencode")
+	if data["model"] != "wb-proxy/intl/model-a" {
+		t.Fatalf("model = %#v", data["model"])
+	}
+	models := data["provider"].(map[string]any)["wb-proxy"].(map[string]any)["models"].(map[string]any)
+	if _, ok := models["model-a"]; ok {
+		t.Fatalf("bare model id leaked: %#v", models)
+	}
+	entry, ok := models["intl/model-a"].(map[string]any)
+	if !ok {
+		t.Fatalf("canonical model id missing: %#v", models)
+	}
+	limits, _ := entry["limit"].(map[string]any)
+	if limits["context"] != float64(200000) {
+		t.Fatalf("canonical model was not enriched: %#v", entry)
+	}
+	text, _ := os.ReadFile(path)
+	if !strings.Contains(string(text), `"intl/model-a"`) {
+		t.Fatalf("generated config lacks canonical id:\n%s", text)
+	}
+}
+
 func TestApplyDSH(t *testing.T) {
 	service, _, home := newAgentService(t)
 	patch := filepath.Join(home, ".dsh", "profiles", "desktop", "cordis.patch.yml")
