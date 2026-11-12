@@ -2163,6 +2163,10 @@ try { if(!window.__NEXT_UI__ && localStorage.getItem('wb-console-layout') === '1
     '个）': ')',
     '个，启用': ', enabled',
     '临期': 'Expiring',
+    '到期积分': 'Expiring credits',
+    '全部有到期日': 'All credits with an expiry date',
+    '窗口内': 'within window',
+    '个包': 'packages',
     '为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。': 'Bind a dedicated exit to each key. Requests made with that key always take the matching region, so both exits run concurrently.',
     '人工映射表 OVERRIDES': 'Manual mapping table OVERRIDES',
     '今日': 'Today',
@@ -5449,6 +5453,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         </div>
         <span id="tabIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
+      <div id="tabIntlExpiringLine" style="font-size:11px;color:var(--dim);margin-top:4px;display:none"></div>
     </div>
 
     <!-- 卡片 2: 国内版 (China) -->
@@ -5466,6 +5471,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         </div>
         <span id="tabCnKeyBadge" class="badge warn mini" style="font-weight:600">0 个 Key</span>
       </div>
+      <div id="tabCnExpiringLine" style="font-size:11px;color:var(--dim);margin-top:4px;display:none"></div>
     </div>
 
     <!-- 卡片 3: CodeArts (华为云) -->
@@ -7988,7 +7994,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
             <div id="cmMetricTotal" style="font-size:22px;font-weight:700;color:var(--fg);margin-top:4px">-</div>
           </div>
           <div class="card" style="padding:12px;margin:0;border:1px solid var(--line);background:var(--bg)">
-            <div style="font-size:11px;color:var(--dim)">最近将过期</div>
+            <div style="font-size:11px;color:var(--dim)" title="全部有到期日的剩余积分；下方列出窗口内与最近到期包">到期积分</div>
             <div id="cmExpiryValue" style="font-size:20px;font-weight:700;color:var(--warn);margin-top:4px">-</div>
             <div id="cmExpirySub" style="font-size:11px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="">-</div>
           </div>
@@ -8390,6 +8396,7 @@ function updateUI(){
 
   let intlCred = 0, hasIntlCred = false, intlAvailCred = 0, hasIntlAvail = false;
   let intlSize = 0, hasIntlSize = false;
+  let intlExpiring = 0, hasIntlExpiring = false, intlWithin = 0, hasIntlWithin = false;
   intlAccts.forEach(a => {
     if(a.credits && a.credits.remain != null){
       intlCred += a.credits.remain; hasIntlCred = true;
@@ -8398,9 +8405,15 @@ function updateUI(){
     if(a.credits && a.credits.size != null){
       intlSize += a.credits.size; hasIntlSize = true;
     }
+    if(a.expiring && Number(a.expiring.credits) > 0){
+      intlExpiring += Number(a.expiring.credits); hasIntlExpiring = true;
+      const within = Number(a.expiring.within_window);
+      if(within > 0){ intlWithin += within; hasIntlWithin = true; }
+    }
   });
   let cnCred = 0, hasCnCred = false, cnAvailCred = 0, hasCnAvail = false;
   let cnSize = 0, hasCnSize = false;
+  let cnExpiring = 0, hasCnExpiring = false, cnWithin = 0, hasCnWithin = false;
   cnAccts.forEach(a => {
     if(a.credits && a.credits.remain != null){
       cnCred += a.credits.remain; hasCnCred = true;
@@ -8408,6 +8421,11 @@ function updateUI(){
     }
     if(a.credits && a.credits.size != null){
       cnSize += a.credits.size; hasCnSize = true;
+    }
+    if(a.expiring && Number(a.expiring.credits) > 0){
+      cnExpiring += Number(a.expiring.credits); hasCnExpiring = true;
+      const within = Number(a.expiring.within_window);
+      if(within > 0){ cnWithin += within; hasCnWithin = true; }
     }
   });
 
@@ -8425,6 +8443,17 @@ function updateUI(){
   if(elIntlAvail) elIntlAvail.innerHTML = '<span class="credit-kind">可用</span> ' + (hasIntlAvail ? fmt(intlAvailCred) : "—");
   const elIntlAcct = document.getElementById("tabIntlAccts");
   if(elIntlAcct) elIntlAcct.innerHTML = '<b style="color:var(--accent)">' + intlActive + '</b>/' + intlAccts.length + ' 账号';
+  const elIntlExpiring = document.getElementById("tabIntlExpiringLine");
+  if(elIntlExpiring){
+    if(hasIntlExpiring){
+      elIntlExpiring.style.display = "block";
+      elIntlExpiring.innerHTML = "到期积分 " + fmt(intlExpiring)
+        + (hasIntlWithin ? " · 窗口内 " + fmt(intlWithin) : "");
+      elIntlExpiring.title = "全部有到期日的剩余积分（含停用账号）；窗口内按每个账号的临期窗口统计";
+    } else {
+      elIntlExpiring.style.display = "none";
+    }
+  }
 
   const elCnCred = document.getElementById("tabCnCredits");
   if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
@@ -8434,6 +8463,17 @@ function updateUI(){
   if(elCnAvail) elCnAvail.innerHTML = '<span class="credit-kind">可用</span> ' + (hasCnAvail ? fmt(cnAvailCred) : "—");
   const elCnAcct = document.getElementById("tabCnAccts");
   if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 账号';
+  const elCnExpiring = document.getElementById("tabCnExpiringLine");
+  if(elCnExpiring){
+    if(hasCnExpiring){
+      elCnExpiring.style.display = "block";
+      elCnExpiring.innerHTML = "到期积分 " + fmt(cnExpiring)
+        + (hasCnWithin ? " · 窗口内 " + fmt(cnWithin) : "");
+      elCnExpiring.title = "全部有到期日的剩余积分（含停用账号）；窗口内按每个账号的临期窗口统计";
+    } else {
+      elCnExpiring.style.display = "none";
+    }
+  }
 
   // CodeArts 卡片：健康/总数、模型数、离线标记。没有积分——codearts2api 的
   // stats.credits 实际是健康账号数，不是余额。
@@ -11998,8 +12038,25 @@ function accountRow(a){
         + '<span class="err-info" aria-hidden="true">ⓘ</span></div>';
   }
   const cred = a.credits;
+  const expiry = a.expiring;
   let expBadge = '';
-  if(cred && cred.earliest_expiring && cred.earliest_expiring.days_left !== undefined && cred.earliest_expiring.days_left !== null){
+  if(expiry && Number(expiry.credits) > 0){
+    const expCredits = Number(expiry.credits) || 0;
+    const expPackages = Number(expiry.packages) || 0;
+    const withinWindow = Number(expiry.within_window) || 0;
+    const withinPackages = Number(expiry.within_packages) || 0;
+    const windowDays = Number(expiry.window_days) || 0;
+    const earliest = cred && cred.earliest_expiring ? cred.earliest_expiring : null;
+    const earliestDays = earliest && earliest.days_left != null ? Number(earliest.days_left) : null;
+    let tone = 'mini';
+    if(earliestDays != null && earliestDays <= 3) tone = 'mini bad';
+    else if(windowDays > 0 && earliestDays != null && earliestDays <= windowDays) tone = 'mini warn';
+    const parts = ['全部有到期日：' + fmt(expCredits) + ' 分', expPackages + ' 个包'];
+    if(windowDays > 0) parts.push('其中 ' + windowDays + ' 天内：' + fmt(withinWindow) + ' 分 / ' + withinPackages + ' 个包');
+    if(earliest && earliestDays != null) parts.push('最近包：' + fmt(earliest.remain) + ' 分 / ' + earliestDays.toFixed(1) + ' 天');
+    const amount = expCredits >= 100 ? fmt(Math.round(expCredits)) : fmt(expCredits);
+    expBadge = '<span class="badge ' + tone + '" style="font-size:10px;padding:1px 5px" title="' + esc(parts.join('；')) + '">到期 ' + amount + '</span>';
+  } else if(cred && cred.earliest_expiring && cred.earliest_expiring.days_left !== undefined && cred.earliest_expiring.days_left !== null){
     const d = Number(cred.earliest_expiring.days_left);
     if(d <= 3 && d >= 0){
       const expEnd = String(cred.earliest_expiring.cycle_end_time || '');
@@ -13437,7 +13494,7 @@ async function openCreditsDetail(uid, forceRefresh = false){
   const hasExpiryData = cachedPkgs.length > 0 && cachedPkgs.some(p => p.cycle_end_time || p.cycleEndTime || p.CycleEndTime || p.expired_time || p.ExpiredTime);
   if(!forceRefresh && hasExpiryData){
     CURRENT_CREDITS_DATA = acct.credits;
-    renderCreditsDetail(acct.credits, acct);
+    renderCreditsDetail(acct.credits, acct, acct.expiring);
     return;
   }
 
@@ -13462,12 +13519,13 @@ async function reloadCreditsDetail(btn){
       const acct = (window.ACCOUNTS || []).find(a => a.uid === CURRENT_CREDIT_DETAIL_UID);
       if(acct){
         acct.credits = res.credits;
+        if(res.expiring) acct.expiring = res.expiring;
         acct.tokenExpired = false;
         renderAccounts();
       }
       if(errorEl) errorEl.style.display = "none";
       if(contentEl) contentEl.style.display = "block";
-      renderCreditsDetail(res.credits, acct);
+      renderCreditsDetail(res.credits, acct, res.expiring || (acct && acct.expiring));
     } else {
       const errMsg = (res && res.error) || "请确认后端代理服务已重启以加载新代码";
       const isAuthErr = errMsg.includes("401") || errMsg.includes("登录") || errMsg.includes("过期")
@@ -13531,7 +13589,7 @@ function onCreditsSortChange(val){
   renderCreditsPackagesTable();
 }
 
-function renderCreditsDetail(credits, acct){
+function renderCreditsDetail(credits, acct, expiring){
   if(!credits) return;
   CURRENT_CREDITS_DATA = credits;
   const remain = Number(credits.remain) || 0;
@@ -13569,7 +13627,7 @@ function renderCreditsDetail(credits, acct){
     }
   }
 
-  // 最近到期卡片（优先取后端计算的 earliest_expiring，缺失时前端自动推导）
+  // 到期积分卡片：主数字 = 全部有到期日的剩余积分；副行保留窗口内与最近包
   const elExpVal = document.getElementById("cmExpiryValue");
   const elExpSub = document.getElementById("cmExpirySub");
   if(elExpVal && elExpSub){
@@ -13597,7 +13655,27 @@ function renderCreditsDetail(credits, acct){
       }
     }
 
-    if(ep && ep.days_left !== undefined && ep.days_left !== null){
+    const expiry = expiring || (acct && acct.expiring) || null;
+    const expTotal = expiry ? Number(expiry.credits) || 0 : 0;
+    if(expTotal > 0){
+      const windowDays = Number(expiry.window_days) || 0;
+      const within = Number(expiry.within_window) || 0;
+      const withinPackages = Number(expiry.within_packages) || 0;
+      const parts = ["全部有到期日 · " + (Number(expiry.packages) || 0) + " 个包"];
+      if(windowDays > 0){
+        parts.push("窗口 " + windowDays + " 天内 " + fmt(within) + " 分 / " + withinPackages + " 个包");
+      }
+      if(ep && ep.days_left !== undefined && ep.days_left !== null){
+        parts.push("最近 " + fmt(ep.remain) + " 分 / " + Number(ep.days_left).toFixed(1) + " 天");
+      }
+      elExpVal.textContent = fmt(expTotal);
+      const days = ep && ep.days_left != null ? Number(ep.days_left) : null;
+      elExpVal.style.color = (days != null && days <= 3)
+        ? "var(--bad)"
+        : (windowDays > 0 && days != null && days <= windowDays ? "var(--warn)" : "var(--fg)");
+      elExpSub.textContent = parts.join(" · ");
+      elExpSub.title = (ep ? (ep.name || "") + " (" + String(ep.cycle_end_time || "") + ")" : "全部有到期日的套餐包");
+    } else if(ep && ep.days_left !== undefined && ep.days_left !== null){
       const days = Number(ep.days_left);
       const endStr = String(ep.cycle_end_time || '');
       if(days < 0){
