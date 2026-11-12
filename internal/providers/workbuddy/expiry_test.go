@@ -105,3 +105,74 @@ func TestCreditsDetailIncludesExpirySummary(t *testing.T) {
 		t.Fatalf("detail expiring = %#v", expiring)
 	}
 }
+
+func TestExpirySummaryRecomputesStaleDaysLeft(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.Local)
+	account := &Account{
+		ExpiringWindowDays: 7,
+		Credits: &CreditSnapshot{Packages: []CreditPackage{{
+			Name: "stale", PackageCode: "a", Remain: 100,
+			ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout),
+			DaysLeft:   creditTestFloat(30),
+		}}},
+	}
+	summary := account.expirySummaryAt(now)
+	if summary == nil || summary.WithinWindow != 100 || summary.WithinPackages != 1 {
+		t.Fatalf("stale days_left must be recomputed from expire_time: %+v", summary)
+	}
+	if days, _, ok := account.expiringPackageAt(now); !ok || days != 2 {
+		t.Fatalf("scheduler days = %v ok=%v, want 2 true", days, ok)
+	}
+}
+
+func TestExpirySummaryDropsPackageAfterExpiry(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.Local)
+	account := &Account{
+		ExpiringWindowDays: 7,
+		Credits: &CreditSnapshot{Packages: []CreditPackage{{
+			Name: "soon", PackageCode: "a", Remain: 100,
+			ExpireTime: now.Add(time.Hour).Format(creditsTimeLayout),
+			DaysLeft:   creditTestFloat(0.1),
+		}}},
+	}
+	if summary := account.expirySummaryAt(now); summary == nil || summary.Credits != 100 {
+		t.Fatalf("before expiry summary = %+v", summary)
+	}
+	if summary := account.expirySummaryAt(now.Add(2 * time.Hour)); summary != nil {
+		t.Fatalf("after expiry summary = %+v, want nil", summary)
+	}
+	if _, _, ok := account.expiringPackageAt(now.Add(2 * time.Hour)); ok {
+		t.Fatal("scheduler still picked an expired package")
+	}
+}
+
+func TestExpirySummaryRejectsInvalidAndNoExpiryDates(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.Local)
+	account := &Account{
+		ExpiringWindowDays: 7,
+		Credits: &CreditSnapshot{Packages: []CreditPackage{
+			{Name: "invalid", PackageCode: "a", Remain: 10, ExpireTime: "-", DaysLeft: creditTestFloat(2)},
+			{Name: "no-expiry", PackageCode: "b", Remain: 20, NoExpiry: true},
+			{Name: "enterprise", PackageCode: "Enterprise", Remain: 30, ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout)},
+			{Name: "zero", PackageCode: "c", Remain: 0, ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout)},
+		}},
+	}
+	if summary := account.expirySummaryAt(now); summary != nil {
+		t.Fatalf("summary = %+v, want nil", summary)
+	}
+}
+
+func TestExpirySummaryBoundaryAtWindowEnd(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.Local)
+	account := &Account{
+		ExpiringWindowDays: 7,
+		Credits: &CreditSnapshot{Packages: []CreditPackage{{
+			Name: "boundary", PackageCode: "a", Remain: 42,
+			ExpireTime: now.Add(7 * 24 * time.Hour).Format(creditsTimeLayout),
+		}}},
+	}
+	summary := account.expirySummaryAt(now)
+	if summary == nil || summary.WithinWindow != 42 || summary.WithinPackages != 1 {
+		t.Fatalf("boundary summary = %+v, want within=42 packages=1", summary)
+	}
+}

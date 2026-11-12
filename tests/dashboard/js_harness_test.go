@@ -51,7 +51,7 @@ func TestDashboardJSHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dashboard JS harness failed: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "dashboard JS suites passed: 8/8") {
+	if !strings.Contains(string(output), "dashboard JS suites passed: 9/9") {
 		t.Fatalf("JS harness did not report all suites:\n%s", output)
 	}
 }

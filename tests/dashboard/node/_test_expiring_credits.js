@@ -66,4 +66,10 @@ check('明细副行说明全部有到期日', sub.textContent.includes('全部�
 check('明细副行说明窗口内金额', sub.textContent.includes('窗口 7 天内 968.42 分 / 21 个包'), sub.textContent);
 check('明细副行保留最近包', sub.textContent.includes('最近 36.42 分 / 2.5 天'), sub.textContent);
 
+/* ---- 4. 刷新返回空统计时必须清掉旧值 -------------------------------- */
+check('积分明细刷新用空值覆盖旧 expiring',
+  /acct\.expiring = res\.expiring \|\| null;/.test(html));
+check('积分明细渲染不再回退到旧 expiring',
+  /renderCreditsDetail\(res\.credits, acct, res\.expiring \|\| null\);/.test(html));
+
 console.log('expiring credits suite passed: ' + checks + ' checks');

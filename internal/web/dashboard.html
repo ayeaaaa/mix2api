@@ -2149,6 +2149,9 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '全部有到期日': 'All credits with an expiry date',
     '窗口内': 'within window',
     '个包': 'packages',
+    '当前区域': 'Current realm',
+    '全部区域': 'All realms',
+    '数据区域': 'Data realm',
     '为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。': 'Bind a dedicated exit to each key. Requests made with that key always take the matching region, so both exits run concurrently.',
     '人工映射表 OVERRIDES': 'Manual mapping table OVERRIDES',
     '今日': 'Today',
@@ -3856,6 +3859,9 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "项目": "專案",
     "更新源": "更新來源",
     "当前版本": "目前版本",
+    "当前区域": "目前區域",
+    "全部区域": "全部區域",
+    "数据区域": "資料區域",
     "当前版本暂无模型请求或性能数据": "目前版本暫無模型請求或效能資料",
     "当前版本模型库与能力清单": "目前版本模型庫與能力清單",
     "当前生效": "目前生效",
@@ -5276,6 +5282,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
   html[data-ui="next"] #pageAnalytics > .page-nav-body{grid-column:1!important}
   html[data-ui="next"] #pageAnalytics .pagehead{flex-direction:column!important;align-items:stretch!important}
   html[data-ui="next"] #pageAnalytics .pagehead .seg{order:-1!important;width:100%!important;overflow-x:auto!important}
+  html[data-ui="next"] #pageAnalytics .pagehead .analytics-scope-seg{order:1!important;width:auto!important;align-self:flex-start!important;margin-top:8px!important}
   html[data-ui="next"] #pageAnalytics .kpis{grid-template-columns:1fr 1fr!important}
 }
 @media (max-width: 520px){
@@ -6181,6 +6188,10 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <button data-range="month">本月</button>
       <button data-range="d30">近 30 天</button>
       <button data-range="all">全部</button>
+    </div>
+    <div class="seg analytics-scope-seg" id="analyticsScopeSeg" role="group" aria-label="数据区域">
+      <button type="button" data-scope="view" class="on" aria-pressed="true">当前区域</button>
+      <button type="button" data-scope="all" aria-pressed="false">全部区域</button>
     </div>
   </div>
 
@@ -8693,22 +8704,24 @@ async function switchViewRealm(r){
   setViewRealm(r);
   RECENT_PAGE = 1;
   window.updateUI();
+  heatFetchedAt = 0;
+  heatFetchedDay = '';
   if(r === "codearts"){
     // CodeArts 没有 WorkBuddy 的账号池/成长任务/调度器，别拿空数据去刷那些接口。
     await Promise.all([loadCodeartsOverview(true), loadModels(),
-                       loadAnalytics(), refresh()]);
+                       refreshAnalyticsScopeData(), refresh()]);
     return;
   }
   if(r === "raccoon"){
     // 小浣熊同样没有 WorkBuddy 的成长任务/调度器，只刷它自己的概览与用量。
     await Promise.all([loadRaccoonOverview(true), loadModels(),
-                       loadAnalytics(), refresh()]);
+                       refreshAnalyticsScopeData(), refresh()]);
     return;
   }
   // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
   // 串行排队时后面那些毫秒级的用量接口全被它堵着，切过去看着就是"过几秒才刷新"。
   await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
-                     loadSchedulerStatus(), loadAnalytics(), refresh()]);
+                     loadSchedulerStatus(), refreshAnalyticsScopeData(), refresh()]);
 };
 
 function realmLabel(r){
@@ -8730,15 +8743,17 @@ async function toggleActiveGatewayRealm(){
     toast("网关默认上游已切换并永久保存为: " + realmLabel(window.ACTIVE_GATEWAY_REALM));
     setViewRealm(window.ACTIVE_GATEWAY_REALM);
     window.updateUI();
+    heatFetchedAt = 0;
+    heatFetchedDay = '';
     if(window.ACTIVE_GATEWAY_REALM === "codearts"){
       await Promise.all([loadCodeartsOverview(true), loadModels(),
-                         loadAnalytics(), refresh()]);
+                         refreshAnalyticsScopeData(), refresh()]);
     }else if(window.ACTIVE_GATEWAY_REALM === "raccoon"){
       await Promise.all([loadRaccoonOverview(true), loadModels(),
-                         loadAnalytics(), refresh()]);
+                         refreshAnalyticsScopeData(), refresh()]);
     }else{
       await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
-                         loadSchedulerStatus(), loadAnalytics(), refresh()]);
+                         loadSchedulerStatus(), refreshAnalyticsScopeData(), refresh()]);
     }
   }catch(e){
     alert("切换失败: " + e.message);
@@ -14700,6 +14715,7 @@ const MAIN_TABS = ['overview', 'gateway', 'accounts', 'tasks', 'media', 'analyti
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
+let analyticsScope = 'view';
 let cachedMatrixData = null;
 let matrixAcctFilter = '';
 let matrixModelFilter = '';
@@ -20107,8 +20123,59 @@ function onRangeCustomChange(){
 
 /* 三个取数端点共用同一个查询串，避免 /usage 与 /usage/perf 各拼一份而漏掉自定义
  * 区间——那正是「卡片与表格口径不一致」的复发路径。 */
+function analyticsRealmValue(){
+  if(analyticsScope === 'all') return 'all';
+  const realm = window.VIEW_REALM;
+  return (realm === 'intl' || realm === 'cn' || realm === 'codearts' || realm === 'raccoon')
+    ? realm : 'all';
+}
+
+function analyticsScopeLabel(){
+  if(analyticsScope === 'all') return '全部区域';
+  const realm = window.VIEW_REALM;
+  return realm === 'cn' ? '国内版'
+    : realm === 'intl' ? '国际版'
+    : realm === 'codearts' ? 'CodeArts'
+    : realm === 'raccoon' ? '小浣熊' : '当前区域';
+}
+
+function setAnalyticsScope(scope){
+  analyticsScope = scope === 'all' ? 'all' : 'view';
+  const seg = document.getElementById('analyticsScopeSeg');
+  if(seg){
+    [...seg.children].forEach(b => {
+      const on = b.getAttribute('data-scope') === analyticsScope;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+}
+
+function analyticsRecentQuery(){
+  return '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+}
+
+async function refreshAnalyticsScopeData(){
+  heatFetchedAt = 0;
+  heatFetchedDay = '';
+  RECENT_PAGE = 1;
+  // 新版用量页有自己的一套 loadRange/loadStatic；旧版仍走 loadAnalytics。
+  if(typeof window.__refreshNewAnalytics === 'function') await window.__refreshNewAnalytics();
+  else loadAnalytics();
+  loadAnalyticsMatrix();
+}
+
+const analyticsScopeSegEl = document.getElementById('analyticsScopeSeg');
+if(analyticsScopeSegEl){
+  analyticsScopeSegEl.addEventListener('click', ev => {
+    const btn = ev.target.closest('button'); if(!btn) return;
+    setAnalyticsScope(btn.getAttribute('data-scope'));
+    refreshAnalyticsScopeData();
+  });
+}
+
 function analyticsQuery(){
-  let q = '?realm=all&range=' + encodeURIComponent(analyticsRange || 'today');
+  let q = '?realm=' + encodeURIComponent(analyticsRealmValue()) + '&range=' + encodeURIComponent(analyticsRange || 'today');
   if(analyticsRange === 'custom'){
     const sEl = document.getElementById('rangeCustomSince');
     const uEl = document.getElementById('rangeCustomUntil');
@@ -21289,7 +21356,7 @@ async function loadPrevSummary(untilAt){
   const pr = prevRange(untilAt);
   if (!pr) return null;
   try{
-    const p = await api(`/usage/timeseries?realm=all&range=custom&since=${pr[0]}&until=${pr[1]}`);
+    const p = await api(`/usage/timeseries?realm=${encodeURIComponent(analyticsRealmValue())}&range=custom&since=${pr[0]}&until=${pr[1]}`);
     const t = (p.series || []).reduce((a, b) => ({
       tok:    a.tok    + (b.total_tokens   || 0),
       req:    a.req    + (b.requests       || 0),
@@ -21360,9 +21427,13 @@ function recentStamp(iso){
   const today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
   return s.slice(0, 10) === today ? time : s.slice(5, 16);
 }
+let WBA_RECENT_GEN = 0;
 async function loadRecent(){
+  const gen = ++WBA_RECENT_GEN;
+  const realm = analyticsRealmValue();
   try{
-    const r = await api('/usage/recent?limit=12');
+    const r = await api(analyticsRecentQuery());
+    if(gen !== WBA_RECENT_GEN || realm !== analyticsRealmValue()) return;
     const rows = r.rows || [];
     $('recentMeta').textContent = `共 ${fmtCompact(r.total || 0)} 条记录`;
     $('recentList').innerHTML = rows.map(x => {
@@ -21396,6 +21467,10 @@ function rangeParams(range, untilAt){
   return `range=${range}`;
 }
 
+function perfQuery(){
+  return '?realm=' + encodeURIComponent(analyticsRealmValue()) + '&' + rangeParams(state.range);
+}
+
 /* ============================================================
    主题：跟随面板（documentElement 的 data-theme，由顶部主题菜单控制）。
    切换时重绘画布图表，让配色即时跟上。
@@ -21420,16 +21495,17 @@ let WBA_GEN = 0;
 const WBA_PENDING = new Map();
 async function loadRange(polled){
   const range = state.range;
-  if(polled && WBA_PENDING.has(range)) return;
-  WBA_PENDING.set(range, (WBA_PENDING.get(range) || 0) + 1);
+  const pendingKey = range + '|' + analyticsRealmValue();
+  if(polled && WBA_PENDING.has(pendingKey)) return;
+  WBA_PENDING.set(pendingKey, (WBA_PENDING.get(pendingKey) || 0) + 1);
   const gen = ++WBA_GEN;
   const untilAt = polled ? pollUntil() : null;
   $('kpis').style.opacity = .55;
   const rp = rangeParams(state.range, untilAt);
   try{
     const [analytics, series, prev] = await Promise.all([
-      api(`/usage/analytics?realm=all&${rp}`),
-      api(`/usage/timeseries?realm=all&${rp}`),
+      api(`/usage/analytics?realm=${encodeURIComponent(analyticsRealmValue())}&${rp}`),
+      api(`/usage/timeseries?realm=${encodeURIComponent(analyticsRealmValue())}&${rp}`),
       loadPrevSummary(untilAt),
     ]);
     if (gen !== WBA_GEN) return;
@@ -21440,9 +21516,9 @@ async function loadRange(polled){
     if (gen !== WBA_GEN) return;
     console.error('load range failed', e);
   } finally {
-    const remaining = WBA_PENDING.get(range) - 1;
-    if(remaining) WBA_PENDING.set(range, remaining);
-    else WBA_PENDING.delete(range);
+    const remaining = WBA_PENDING.get(pendingKey) - 1;
+    if(remaining) WBA_PENDING.set(pendingKey, remaining);
+    else WBA_PENDING.delete(pendingKey);
   }
   $('kpis').style.opacity = 1;
   renderKpis();
@@ -21453,9 +21529,17 @@ async function loadRange(polled){
   loadRecent();
 }
 
+let WBA_STATIC_GEN = 0;
 async function loadStatic(){
-  try{ state.perf = await api('/usage/perf'); } catch(e){ console.error(e); }
+  const gen = ++WBA_STATIC_GEN;
+  const realm = analyticsRealmValue();
+  try{
+    const perf = await api('/usage/perf' + perfQuery());
+    if(gen !== WBA_STATIC_GEN || realm !== analyticsRealmValue()) return;
+    state.perf = perf;
+  } catch(e){ console.error(e); }
   await loadHeat();
+  if(gen !== WBA_STATIC_GEN || realm !== analyticsRealmValue()) return;
   renderPerfFold();
   // 剩余用量 / 积分扣减 / 积分获取历史：原版区块的数据管道原来挂在旧 loadAnalytics 上，
   // 页面换成新版后这里补回调用（展开对应折叠区时还会再刷一次）。
@@ -21463,26 +21547,36 @@ async function loadStatic(){
   try{ loadCreditHistory(); }catch(e){}
   try{ loadCreditGrants(); }catch(e){}
 }
+window.__refreshNewAnalytics = function(){ return Promise.all([loadRange(), loadStatic()]); };
 
 /* 热力图按「本地日」取数：since/until 都钉在本地午夜，缓存键一整天不变；
  * until 取到明天 0 点，今天新产生的用量也能落进今天的格子。只在进页面、
  * 跨天或距上次取数满 60 秒时重取——以前只在进页面取一次，跨过午夜后页面
  * 还停在旧的一天（issue #541）。 */
-let heatFetchedAt = 0, heatFetchedDay = '', heatLoading = false;
+let heatFetchedAt = 0, heatFetchedDay = '', heatLoading = false, heatKey = '', WBA_HEAT_GEN = 0;
 async function loadHeat(){
-  if (heatLoading) return;
-  heatLoading = true;
+  const realm = analyticsRealmValue();
   const nowMs = Date.now();
+  const day = fmtDate(nowMs/1000);
+  const key = realm + '|' + day;
+  if (heatLoading && heatKey === key) return;
+  const gen = ++WBA_HEAT_GEN;
+  heatLoading = true;
+  heatKey = key;
   const midnight = new Date(nowMs); midnight.setHours(0,0,0,0);
   const since = Math.floor(midnight.getTime()/1000) - 366*86400;
   const until = Math.floor(midnight.getTime()/1000) + 86400;
   heatFetchedAt = nowMs/1000;
-  heatFetchedDay = fmtDate(nowMs/1000);
+  heatFetchedDay = day;
   try{
-    state.heat = await api(`/usage/timeseries?realm=all&range=custom&since=${since}&until=${until}&bucket_seconds=86400`);
+    const data = await api(`/usage/timeseries?realm=${encodeURIComponent(realm)}&range=custom&since=${since}&until=${until}&bucket_seconds=86400`);
+    if(gen !== WBA_HEAT_GEN || realm !== analyticsRealmValue()) return;
+    state.heat = data;
+    buildHeatGrid(state.heat);
   } catch(e){ console.error('heat failed', e); }
-  heatLoading = false;
-  buildHeatGrid(state.heat);
+  finally{
+    if(gen === WBA_HEAT_GEN) heatLoading = false;
+  }
 }
 function maybeLoadHeat(){
   const now = Date.now()/1000;
@@ -21492,8 +21586,8 @@ function maybeLoadHeat(){
 /* ---------------- KPI ---------------- */
 function renderKpis(){
   const a = state.analytics;
-  if (!a){ return; }
-  const w = a.summary.window;
+  if (!a || !a.summary){ return; }
+  const w = a.summary.window || {};
 
   // ① Token
   $('kTokens').innerHTML = numSpan(w.total_tokens);
@@ -21559,7 +21653,7 @@ function renderKpis(){
   $('kCost').innerHTML = `<span style="color:var(--red)" ${w.cost_cny != null ? `data-tip="${fullNum(w.cost_cny, 4)} 元"` : ''}>${fmtCostCny(w.cost_cny)}</span>`;
   $('kCostSub').innerHTML = usd != null ? `<span style="color:var(--green)">${usd.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}</span> · 积分消耗 ${numSpan(w.credit, 1)}` : '—';
 
-  $('pageSub').textContent = `区间 ${fmtCompact(w.total_tokens)} tokens · ${fmtCompact(w.requests)} 次请求 · 更新于 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
+  $('pageSub').textContent = `${analyticsScopeLabel()} · 区间 ${fmtCompact(w.total_tokens)} tokens · ${fmtCompact(w.requests)} 次请求 · 更新于 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
 
   // B 版：环比徽章
   const selfCache = w.prompt_tokens ? (w.cached_tokens || 0) / w.prompt_tokens * 100 : null;
@@ -21582,7 +21676,7 @@ const seriesCanvas = $('seriesCanvas');
 const seriesTip = $('seriesTip');
 function renderSeriesMeta(){
   const s = state.series;
-  if (!s) return;
+  if (!s || !Array.isArray(s.series)) return;
   const unit = s.bucket_seconds >= 86400 ? '天' : s.bucket_seconds >= 3600 ? '小时' : '分钟';
   const tot = s.series.reduce((acc,b)=>({req:acc.req+b.requests, tok:acc.tok+b.total_tokens, cred:acc.cred+b.credit}),{req:0,tok:0,cred:0});
   $('seriesHint').textContent = `${fmtTime(s.since)}→${fmtTime(s.until)} · ${unit}粒度 · 总 ${fmtCompact(tot.tok)} tok / ${fmtCompact(tot.req)} 请求`;
@@ -21603,6 +21697,7 @@ let seriesLayout = null;
 function drawSeries(){
   const s = state.series;
   const cv = seriesCanvas, tip = seriesTip;
+  if (!cv || !cv.parentElement) return;
   const box = cv.parentElement;
   const dpr = window.devicePixelRatio || 1;
   const W = box.clientWidth, H = 176;
@@ -22091,7 +22186,9 @@ $('rangeSeg').addEventListener('click', ev => {
   // 数字（那一段是页头最长的一行，误读代价最大）。取回后 renderKpis() 会重新写满。
   $('pageSub').textContent = '—';
   loadRange();
+  loadStatic();
 });
+
 $('metricSeg').addEventListener('click', ev => {
   const btn = ev.target.closest('button'); if (!btn) return;
   [...$('metricSeg').children].forEach(b => b.classList.toggle('on', b === btn));
