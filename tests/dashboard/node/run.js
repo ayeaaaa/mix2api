@@ -16,6 +16,7 @@ const SUITES = [
   '_test_page_nav.js',
   '_test_panel_gate_first_paint.js',
   '_test_accounts_realm_switch.js',
+  '_test_key_model_catalog.js',
   '_test_expiring_credits.js',
   '_test_analytics_realm_scope.js',
   '_test_settings_load.js',

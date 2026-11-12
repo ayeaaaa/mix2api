@@ -18631,18 +18631,30 @@ async function loadKeyModelCatalog(){
       if(id && !seen.has(id)){ seen.add(id); out.push(m); }
     }
   };
-  // The unscoped listing is the widest catalogue the gateway advertises; the
-  // per-realm calls fill in anything it omits.
-  try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
-  for(const realm of ['intl', 'cn']){
-    try {
-      const r = await getJSON('/v1/models?realm=' + realm);
-      add(r.data);
-    } catch(e) { /* one realm failing must not blank the picker */ }
+  // The gateway listing is the only catalogue that names each model's exit:
+  // canonical "<realm>/<id>" entries with `realm` attached is exactly what a
+  // realm-bound Key has to store. Only when it fails or is empty do we fall
+  // back to the legacy unscoped/per-realm listings.
+  try { const r = await getJSON('/v1/models?realm=gateway'); add(r.data); } catch(e) { /* fall back below */ }
+  if(!out.length){
+    // The unscoped listing is the widest catalogue the gateway advertises; the
+    // per-realm calls fill in anything it omits.
+    try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
+    for(const realm of ['intl', 'cn']){
+      try {
+        const r = await getJSON('/v1/models?realm=' + realm);
+        add(r.data);
+      } catch(e) { /* one realm failing must not blank the picker */ }
+    }
   }
   if(!out.length && Array.isArray(window.MODELS_DATA)) out.push(...window.MODELS_DATA);
   window.KEY_MODEL_CATALOG = out;
   return out;
+}
+function filterKeyModelsForRealm(models, realm){
+  const want = String(realm || '').trim().toLowerCase();
+  if(!want) return models || [];
+  return (models || []).filter(m => !m || !m.realm || String(m.realm).toLowerCase() === want);
 }
 async function renderKeyPickers(i){
   const row = API_KEY_ROWS[i];
@@ -18660,6 +18672,7 @@ async function renderKeyPickers(i){
     if(!(models || []).length){
       modelList.innerHTML = '<div style="font-size:12px;color:var(--warn);padding:4px">模型清单为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     } else {
+      models = filterKeyModelsForRealm(models, row.realm);
       modelList.innerHTML = models.map(m => {
         const id = String((m && m.id) || '');
         if(!id) return '';
