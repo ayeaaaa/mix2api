@@ -30,10 +30,18 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	realm := scope
-	if boundRealm != "" {
-		// The key's realm is policy: it outranks X-Realm/query/body, including
-		// realm=all. A gateway request keeps its scope and is narrowed to the
-		// bound realm below, so a bound key never discovers another exit.
+	if boundRealm == "gateway" {
+		// An all-provider key defaults to the gateway catalog when the caller
+		// did not ask for a concrete scope. Explicit concrete/all/gateway
+		// scopes are all valid for this key.
+		if realm == "" {
+			realm = "gateway"
+		}
+	} else if boundRealm != "" {
+		// A concrete key binding is policy: it outranks X-Realm/query/body,
+		// including realm=all. A gateway request keeps its scope and is
+		// narrowed to the bound realm below, so a bound key never discovers
+		// another exit.
 		realm = boundRealm
 		if scope == "gateway" {
 			realm = "gateway"
@@ -56,7 +64,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	if realm == "gateway" {
 		candidates := s.providers
-		if boundRealm != "" {
+		if boundRealm != "" && boundRealm != "gateway" {
 			provider := s.providerForRealm(boundRealm)
 			if provider == nil {
 				writeFailure(w, localFailure(http.StatusBadRequest, "invalid api key realm: "+boundRealm))

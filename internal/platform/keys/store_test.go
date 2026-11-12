@@ -156,6 +156,26 @@ func TestKeyStoreSaveSemantics(t *testing.T) {
 	}
 }
 
+func TestKeyStoreGatewayRealmPersists(t *testing.T) {
+	store, _ := testStore(t)
+	live, err := store.Save([]Entry{{
+		ID: "all-providers", Name: "all-providers", Key: "key-all", Realm: "gateway",
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 || live[0].Realm != "gateway" {
+		t.Fatalf("live = %#v", live)
+	}
+	entries, err := store.List(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Realm != "gateway" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func findEntry(entries []Entry, id string) *Entry {
 	for i := range entries {
 		if entries[i].ID == id {

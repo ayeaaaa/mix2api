@@ -2052,3 +2052,98 @@ func TestChatQualifiedModelExplicitProviderConflict(t *testing.T) {
 		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
 	}
 }
+
+func TestChatGatewayKeyRoutesQualifiedExit(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{intl, cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(codearts.opened()) != 1 || len(intl.opened()) != 0 || len(cn.opened()) != 0 {
+		t.Fatalf("opened intl=%d cn=%d codearts=%d", len(intl.opened()), len(cn.opened()), len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v", body["model"])
+	}
+}
+
+func TestChatGatewayKeyBareModelUnique(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "cn-only"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "codearts-only"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"cn-only","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(cn.opened()) != 1 || len(codearts.opened()) != 0 {
+		t.Fatalf("opened cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatGatewayKeyBareModelAmbiguous(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{intl, cn},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "intl/shared") || !strings.Contains(message, "cn/shared") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 {
+		t.Fatalf("ambiguous request reached providers intl=%d cn=%d", len(intl.opened()), len(cn.opened()))
+	}
+}
+
+func TestChatGatewayKeyConcreteRealm(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=codearts",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(codearts.opened()) != 1 || len(cn.opened()) != 0 {
+		t.Fatalf("opened cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatGatewayKeyRealmAll(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "cn-only"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "codearts-only"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=all",
+		`{"model":"cn-only","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(cn.opened()) != 1 || len(codearts.opened()) != 0 {
+		t.Fatalf("opened cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}

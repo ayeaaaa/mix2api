@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- API Key 出口绑定新增“全部提供商（`gateway`）”：该 Key 的 `/v1/models`
+  不带 realm 时返回全出口目录，Chat/Responses/Messages 可使用任意出口；
+  裸模型按全出口唯一匹配。
+- 绑定具体出口的 Key 行为不变；`realm=all` 仍只代表 WorkBuddy intl/cn。
+
 ## [2.4.0] - 2026-11-12
 
 ### 中文

@@ -694,18 +694,25 @@ func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.Ha
 	return s.apiGate()(handler).ServeHTTP
 }
 
-// apiKeyBoundRealm returns the concrete provider realm bound to the request's
-// API key. An empty result means the key is unbound. An unknown realm, the
-// WorkBuddy-only discovery alias "all", or the gateway scope "gateway" is an
-// operator configuration error and is rejected instead of silently falling
-// back to model matching.
+// apiKeyBoundRealm returns the provider realm or explicit "gateway" scope
+// bound to the request's API key. An empty result means the key is unbound.
+//
+// "gateway" is a valid binding: the key may use every registered provider.
+// "all" is not: it is the WorkBuddy-only discovery alias and would make the
+// key's effective scope ambiguous. Unknown realms remain configuration errors.
 func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
+	valid := func(realm string) (string, *apiFailure) {
+		if realm == "gateway" {
+			return realm, nil
+		}
+		if realm == "all" || s == nil || s.providerForRealm(realm) == nil {
+			return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
+		}
+		return realm, nil
+	}
 	if entry := KeyEntryFromContext(r); entry != nil {
 		if realm := keys.BoundRealm(entry); realm != "" {
-			if reservedModelScope(realm) || s.providerForRealm(realm) == nil {
-				return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
-			}
-			return realm, nil
+			return valid(realm)
 		}
 	}
 	if s == nil || s.opts.APIKeyRealm == nil {
@@ -715,10 +722,7 @@ func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
 	if realm == "" {
 		return "", nil
 	}
-	if reservedModelScope(realm) || s.providerForRealm(realm) == nil {
-		return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
-	}
-	return realm, nil
+	return valid(realm)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

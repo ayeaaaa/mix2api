@@ -200,28 +200,43 @@ func TestChatKeyAllowListErrorKeepsClientSpelling(t *testing.T) {
 }
 
 // TestBoundKeyReservedRealmRejected covers the key-entry branch of
-// apiKeyBoundRealm: a binding to a discovery scope is an operator error, not a
-// provider realm. (The key store already normalizes the value away, so build
-// the request context directly to pin the defensive branch.)
+// apiKeyBoundRealm: "all" is a WorkBuddy-only discovery alias, not a provider
+// realm, so it is an operator error. "gateway" is different: it is the
+// explicit all-provider binding and must be accepted.
 func TestBoundKeyReservedRealmRejected(t *testing.T) {
 	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}}
 	server := newTestServer(ServerOptions{Providers: []providers.Provider{cn}})
 
-	for _, realm := range []string{"gateway", "all"} {
-		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		req = req.WithContext(withKeyEntry(req.Context(), &keys.Entry{
-			ID: "bound", Name: "bound", Key: "key-bound", Realm: realm,
-		}))
-		got, failure := server.apiKeyBoundRealm(req)
-		if failure == nil {
-			t.Fatalf("realm %q accepted as binding: %q", realm, got)
-		}
-		if got != "" || failure.Status != http.StatusBadRequest {
-			t.Fatalf("realm %q = %q, failure %#v", realm, got, failure)
-		}
-		if message := failure.Message; !strings.Contains(message, "invalid api key realm: "+realm) {
-			t.Fatalf("realm %q failure = %q", realm, message)
-		}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req = req.WithContext(withKeyEntry(req.Context(), &keys.Entry{
+		ID: "bound", Name: "bound", Key: "key-bound", Realm: "all",
+	}))
+	got, failure := server.apiKeyBoundRealm(req)
+	if failure == nil {
+		t.Fatalf("realm all accepted as binding: %q", got)
+	}
+	if got != "" || failure.Status != http.StatusBadRequest {
+		t.Fatalf("realm all = %q, failure %#v", got, failure)
+	}
+	if message := failure.Message; !strings.Contains(message, "invalid api key realm: all") {
+		t.Fatalf("realm all failure = %q", message)
+	}
+}
+
+func TestBoundKeyGatewayRealmAccepted(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{cn}})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req = req.WithContext(withKeyEntry(req.Context(), &keys.Entry{
+		ID: "all-providers", Name: "all-providers", Key: "key-all", Realm: "gateway",
+	}))
+	got, failure := server.apiKeyBoundRealm(req)
+	if failure != nil {
+		t.Fatalf("gateway binding rejected: %#v", failure)
+	}
+	if got != "gateway" {
+		t.Fatalf("bound realm = %q, want gateway", got)
 	}
 }
 

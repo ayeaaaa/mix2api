@@ -109,6 +109,21 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   check('renderKeyPickers 应调用 filterKeyModelsForRealm(models, keyEditRealm(row))',
     /filterKeyModelsForRealm\(models, keyEditRealm\(row\)\)/.test(html));
 
+  /* ---- 1b. 全部提供商 Key ------------------------------------------ */
+  check('Key 出口选项应包含全部提供商',
+    /\[['"]gateway['"],\s*['"]全部提供商/.test(html));
+  check('全部提供商 Key 的模型过滤返回全部',
+    page.filterKeyModelsForRealm(GATEWAY_MODELS, 'gateway').length === GATEWAY_MODELS.length,
+    JSON.stringify(page.filterKeyModelsForRealm(GATEWAY_MODELS, 'gateway')));
+  const gatewayReconciled = page.reconcileKeyModelsForRealm(['cn/m1', 'codearts/m1'], 'gateway');
+  check('切到全部提供商时保留所有 canonical 选择',
+    JSON.stringify(gatewayReconciled.models) === JSON.stringify(['cn/m1', 'codearts/m1']) &&
+      gatewayReconciled.dropped.length === 0,
+    JSON.stringify(gatewayReconciled));
+  check('Key 列表显示全部提供商',
+    page.keyRealmCell({realm: 'gateway', source: 'panel'}).includes('全部提供商'),
+    page.keyRealmCell({realm: 'gateway', source: 'panel'}));
+
   /* ---- 2. 网关目录优先 ---------------------------------------------- */
   CALLS = [];
   const models = await page.loadKeyModelCatalog();
