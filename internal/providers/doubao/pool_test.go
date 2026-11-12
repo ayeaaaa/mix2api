@@ -26,6 +26,18 @@ func TestPoolAddPickEnableDisableRemove(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, accountFolder, "uid-1.json")); err != nil {
 		t.Fatalf("account file: %v", err)
 	}
+	if err := pool.SetNote("uid-1", "keep me"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Add(map[string]string{"sessionid": "session-2"}, map[string]string{"web_id": "wid2"}, "uid-1", "renamed", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(pool.Accounts()); got != 1 {
+		t.Fatalf("re-import created %d accounts, want 1", got)
+	}
+	if got := pool.account("uid-1"); got == nil || got.Note != "keep me" || got.Nickname != "renamed" {
+		t.Fatalf("re-imported account = %#v", got)
+	}
 	loaded, err := LoadAccounts(dir)
 	if err != nil || len(loaded) != 1 || loaded[0].UID != "uid-1" {
 		t.Fatalf("loaded = %#v, %v", loaded, err)

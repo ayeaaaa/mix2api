@@ -5,8 +5,8 @@
 mix2api v2 is a multi-provider AI gateway rewritten in Go. A single process and
 a single binary expose OpenAI Chat Completions, Responses, Anthropic Messages,
 SSE, and an embedded dashboard, bringing WorkBuddy International / China,
-Huawei Cloud CodeArts（遥遥领先）, and Raccoon（商汤小浣熊） into one API-key and
-account-pool surface.
+Huawei Cloud CodeArts（遥遥领先）, Raccoon（商汤小浣熊）, and Doubao Work into
+one API-key and account-pool surface.
 
 Current version: **2.4.0**. The default branch is `v2`; `main` keeps the frozen
 v1.6.6 history.
@@ -33,7 +33,7 @@ Client / SDK
 mix2api v2 (single binary)
    ├─ API / SSE / embedded dashboard
    ├─ core: config, account state, transport, scheduler, usage, logs
-   ├─ providers: WorkBuddy International / China, CodeArts（遥遥领先）, Raccoon（商汤小浣熊）
+   ├─ providers: WorkBuddy International / China, CodeArts（遥遥领先）, Raccoon（商汤小浣熊）, Doubao Work
    └─ platform: panel, media, agents, pricing, updates
 ```
 
@@ -51,9 +51,9 @@ mix2api v2 (single binary)
 
 ## Capabilities
 
-- Four exits: WorkBuddy International, WorkBuddy China, CodeArts（遥遥领先）,
-  and Raccoon（商汤小浣熊）. API keys can be bound to an exit or follow the
-  dashboard default.
+- Five exits: WorkBuddy International, WorkBuddy China, CodeArts（遥遥领先）,
+  Raccoon（商汤小浣熊）, and Doubao Work. API keys can be bound to an exit or
+  follow the dashboard default.
 - Three protocols: `/v1/chat/completions`, `/v1/responses`, and Anthropic
   Messages, with unified SSE streaming.
 - Account pools, concurrency/cooldown handling, proxy slots, model catalogs,
@@ -66,9 +66,10 @@ mix2api v2 (single binary)
 
 `GET /v1/models?realm=gateway` returns every exit's catalog for an unbound API
 key; a key bound to an exit sees only that exit's models. Each entry's `id` is
-the canonical `<exit>/<upstream-model>` model ID. The four canonical prefixes
-are `intl/`, `cn/`, `codearts/`, and `raccoon/`. Put a prefix in the request
-`model` to select an exit; the gateway strips it before calling the upstream.
+the canonical `<exit>/<upstream-model>` model ID. The five canonical prefixes
+are `intl/`, `cn/`, `codearts/`, `raccoon/`, and `doubao/`. Put a prefix in the
+request `model` to select an exit; the gateway strips it before calling the
+upstream.
 
 ```bash
 curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
@@ -87,9 +88,9 @@ Compatibility rules:
   match exactly one exit; a key bound to an exit resolves to that exit before
   the unique-match check.
 - For bare IDs and catalog discovery, `realm=all` keeps its original meaning:
-  WorkBuddy International / China only, without CodeArts or Raccoon; a key
-  bound to an exit still follows the binding. Qualified requests route by
-  their prefix regardless of `realm=all`.
+  WorkBuddy International / China only, without CodeArts, Raccoon, or Doubao
+  Work; a key bound to an exit still follows the binding. Qualified requests
+  route by their prefix regardless of `realm=all`.
 - API-key realm binding is still a hard policy: an exit prefix must match the
   bound exit or the request fails with 403. A prefix cannot escape the
   binding.
@@ -252,7 +253,9 @@ behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
    - WorkBuddy: follow the dashboard OAuth flow;
    - CodeArts（遥遥领先）: Huawei Cloud OAuth;
    - Raccoon（商汤小浣熊）: import the desktop client's `auth.json` or use the
-     loopback OAuth flow.
+     loopback OAuth flow;
+   - Doubao Work: import cookies/device JSON in the Doubao Work view (at least
+     `sessionid` and `ttwid`).
 3. Create an API key in Settings and bind it to an exit/model as needed.
 4. Verify with `/v1/models` and a minimal chat request:
 

@@ -210,6 +210,75 @@ func TestSettingsMerge(t *testing.T) {
 	}
 }
 
+type availableProviderFake struct {
+	realm string
+}
+
+func (p *availableProviderFake) ID() string                                  { return "available-" + p.realm }
+func (p *availableProviderFake) Realm() string                               { return p.realm }
+func (p *availableProviderFake) Overview(context.Context, bool) (any, error) { return nil, nil }
+func (p *availableProviderFake) Health(context.Context, bool) (providers.Health, error) {
+	return providers.Health{"ok": true}, nil
+}
+func (p *availableProviderFake) Models(context.Context, bool) ([]providers.Model, error) {
+	return nil, nil
+}
+func (p *availableProviderFake) OpenChat(context.Context, providers.ChatRequest) (providers.ChatStream, error) {
+	return nil, nil
+}
+func (p *availableProviderFake) Routes() []providers.Route { return nil }
+func (p *availableProviderFake) Jobs() []scheduler.Job     { return nil }
+func (p *availableProviderFake) RealmAvailable() bool      { return true }
+
+func TestRealmEndpointProviderOnlyRealm(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	selector := &settingsFakeProvider{realm: "intl", active: "intl"}
+	provider := &availableProviderFake{realm: "doubao"}
+	service := NewRealm(store, dir, []providers.Provider{selector, provider})
+	if got := service.Options(); len(got) != 3 || got[2] != "doubao" {
+		t.Fatalf("options = %#v", got)
+	}
+	if err := service.Set(context.Background(), "doubao"); err != nil {
+		t.Fatal(err)
+	}
+	if selector.active != "intl" {
+		t.Fatalf("WorkBuddy selector was notified for doubao: %q", selector.active)
+	}
+	if got := service.Active(context.Background()); got != "doubao" {
+		t.Fatalf("active after doubao = %q", got)
+	}
+	if err := service.Set(context.Background(), "cn"); err != nil {
+		t.Fatal(err)
+	}
+	if selector.active != "cn" {
+		t.Fatalf("WorkBuddy selector active = %q", selector.active)
+	}
+}
+
+func TestAPIKeyAcceptsDoubaoRealm(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	keyStore := keys.New(store)
+	provider := &settingsFakeProvider{realm: "doubao", view: map[string]any{"doubao": map[string]any{"enabled": true}}}
+	service := New(Service{
+		Store: store, Keys: keyStore, Providers: []providers.Provider{provider},
+		AccountsDir: dir, UsageDir: filepath.Join(dir, "usage"),
+	})
+	_, err := service.Save(context.Background(), map[string]any{
+		"api_keys": []any{
+			map[string]any{"key": "doubao-key-1234", "name": "doubao", "realm": "doubao", "enabled": true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := keyStore.List(false)
+	if err != nil || len(entries) != 1 || entries[0].Realm != "doubao" {
+		t.Fatalf("keys = %#v, err = %v", entries, err)
+	}
+}
+
 func TestRealmEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))

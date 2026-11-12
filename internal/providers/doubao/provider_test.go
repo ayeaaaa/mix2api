@@ -2,11 +2,24 @@ package doubao
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 )
+
+func TestNormalizeConfigAcceptsJSONNumbers(t *testing.T) {
+	cfg := normalizeConfig(map[string]any{
+		"max_concurrent":         json.Number("3"),
+		"timeout_seconds":        json.Number("45"),
+		"stream_timeout_seconds": json.Number("900"),
+		"models_ttl_seconds":     json.Number("600"),
+	})
+	if cfg.MaxConcurrent != 3 || cfg.TimeoutSeconds != 45 || cfg.StreamTimeoutSeconds != 900 || cfg.ModelsTTLSeconds != 600 {
+		t.Fatalf("config = %#v", cfg)
+	}
+}
 
 func TestProviderDisabledThenEnabled(t *testing.T) {
 	dir := t.TempDir()
@@ -31,8 +44,7 @@ func TestProviderDisabledThenEnabled(t *testing.T) {
 		t.Fatalf("models = %d, %v", len(models), err)
 	}
 	if !provider.RealmAvailable() {
-		// No accounts yet: models can be served, but /realm should stay hidden.
-		t.Log("realm hidden until an account is imported")
+		t.Fatal("enabled provider is not realm-available; the UI needs the tab before the first account import")
 	}
 	if _, err := provider.pool.Add(map[string]string{"sessionid": "s"}, map[string]string{}, "", "tester", true); err != nil {
 		t.Fatal(err)

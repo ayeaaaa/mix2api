@@ -215,6 +215,32 @@ func (p *Pool) Stats() PoolStats {
 }
 
 func (p *Pool) Add(cookies, device map[string]string, uid, nickname string, enabled bool) (*Account, error) {
+	if len(cookies) == 0 {
+		return nil, errors.New("doubao: cookies are required")
+	}
+	if uid == "" {
+		uid = deriveUID(cookies)
+	}
+	// Re-importing the same browser session refreshes credentials in place.
+	// Preserve the operator's note/proxy/credits instead of creating a second
+	// row that points at the same file.
+	if existing := p.account(uid); existing != nil {
+		existing.mu.Lock()
+		existing.Cookies = cloneStringMap(cookies)
+		existing.Device = cloneStringMap(device)
+		if existing.Device["web_tab_id"] == "" {
+			existing.Device["web_tab_id"] = randomID()
+		}
+		if nickname != "" {
+			existing.Nickname = nickname
+		}
+		existing.Enabled = enabled
+		existing.mu.Unlock()
+		if err := existing.save(); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
 	account, err := newImportedAccount(p.dir, cookies, device, uid, nickname, enabled)
 	if err != nil {
 		return nil, err

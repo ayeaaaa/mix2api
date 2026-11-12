@@ -281,9 +281,9 @@ func (p *Provider) openUpstream(ctx context.Context, account *Account, model *Mo
 	req.Header.Set("referer", base+"/chat/")
 	req.Header.Set("user-agent", userAgent)
 
-	client := p.httpClient
-	if client == nil {
-		client = &http.Client{}
+	client, err := p.clientForProxy(p.proxyURL(account))
+	if err != nil {
+		return nil, &APIError{Kind: KindTransient, Message: "proxy slot is misconfigured"}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -28,6 +30,9 @@ type Provider struct {
 	accountsDir string
 	pool        *Pool
 	httpClient  *http.Client
+
+	clientMu     sync.Mutex
+	proxyClients map[string]*http.Client
 
 	cfgMu sync.RWMutex
 	cfg   Config
@@ -57,6 +62,7 @@ func New(store *config.Store) (*Provider, error) {
 	p := &Provider{
 		store: store, accountsDir: accountsDir, pool: pool,
 		httpClient: defaultHTTPClient(), cfg: cfg,
+		proxyClients:  map[string]*http.Client{},
 		conversations: map[string]conversationEntry{},
 		now:           time.Now,
 	}
@@ -90,27 +96,86 @@ func (p *Provider) SetHTTPClient(client *http.Client) {
 	p.httpClient = client
 }
 
-func defaultHTTPClient() *http.Client {
+func newHTTPTransport(proxyURL string) (*http.Transport, error) {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
+		return nil, errors.New("doubao: default transport is not an *http.Transport")
+	}
+	tr := base.Clone()
+	// Doubao requests go direct unless the account is bound to a proxy slot.
+	tr.Proxy = nil
+	if raw := strings.TrimSpace(proxyURL); raw != "" {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+		tr.Proxy = http.ProxyURL(parsed)
+	}
+	// The reference Node client talks HTTP/1.1. Doubao's SSE endpoint can
+	// leave the HTTP/2 response body unflushed, so force HTTP/1.1 here.
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	tr.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
+	tr.DisableCompression = true
+	// Doubao's IPv6 edge resets TLS connections from this host. The reference
+	// Node client uses IPv4, so pin the dialer to tcp4 for parity.
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+	return tr, nil
+}
+
+func defaultHTTPClient() *http.Client {
+	tr, err := newHTTPTransport("")
+	if err != nil {
 		// Tests and embedders may replace the default transport with a
 		// blocking RoundTripper. Keep it intact rather than panicking.
 		return &http.Client{Transport: http.DefaultTransport}
 	}
-	transport := base.Clone()
-	// The reference Node client talks HTTP/1.1. Doubao's SSE endpoint can
-	// leave the HTTP/2 response body unflushed, so force HTTP/1.1 here.
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	transport.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
-	transport.DisableCompression = true
-	// Doubao's IPv6 edge resets TLS connections from this host. The reference
-	// Node client uses IPv4, so pin the dialer to tcp4 for parity.
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dialer.DialContext(ctx, "tcp4", addr)
+	return &http.Client{Transport: tr}
+}
+
+func (p *Provider) proxyURL(account *Account) string {
+	if p == nil || p.store == nil || account == nil {
+		return ""
 	}
-	return &http.Client{Transport: transport}
+	account.mu.Lock()
+	slot := account.ProxySlot
+	account.mu.Unlock()
+	if strings.TrimSpace(slot) == "" {
+		return ""
+	}
+	data, err := p.store.Load()
+	if err != nil {
+		return ""
+	}
+	return transport.SlotsFromSettings(data).URL(slot)
+}
+
+func (p *Provider) clientForProxy(proxyURL string) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		if p.httpClient != nil {
+			return p.httpClient, nil
+		}
+		return defaultHTTPClient(), nil
+	}
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
+	if p.proxyClients == nil {
+		p.proxyClients = map[string]*http.Client{}
+	}
+	if client := p.proxyClients[proxyURL]; client != nil {
+		return client, nil
+	}
+	tr, err := newHTTPTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Transport: tr}
+	p.proxyClients[proxyURL] = client
+	return client, nil
 }
 
 func (p *Provider) SetNow(now func() time.Time) {
@@ -201,10 +266,11 @@ func (p *Provider) AccountSummaries(ctx context.Context) ([]providers.AccountSum
 }
 
 func (p *Provider) RealmAvailable() bool {
-	if p == nil || !p.currentConfig().Enabled {
+	if p == nil {
 		return false
 	}
-	return p.pool.Stats().Healthy > 0
+	cfg, err := p.applySettings()
+	return err == nil && cfg.Enabled
 }
 
 func (p *Provider) CatalogProvenance() map[string]any {

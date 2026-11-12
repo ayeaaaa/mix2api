@@ -1,6 +1,7 @@
 package doubao
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -163,6 +164,12 @@ func numberValue(value any) (float64, bool) {
 		return float64(typed), true
 	case uint:
 		return float64(typed), true
+	case json.Number:
+		value, err := typed.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return value, true
 	default:
 		return 0, false
 	}

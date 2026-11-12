@@ -106,6 +106,17 @@ func dashboardRoutes() []dashboardRoute {
 		post("/codearts/keepalive"),
 		post("/codearts/test"),
 
+		get("/doubao/overview", false),
+		action("/doubao/accounts/import", "/doubao/accounts/"),
+		action("/doubao/accounts/enable", "/doubao/accounts/"),
+		action("/doubao/accounts/disable", "/doubao/accounts/"),
+		action("/doubao/accounts/delete", "/doubao/accounts/"),
+		action("/doubao/accounts/note", "/doubao/accounts/"),
+		action("/doubao/accounts/proxy", "/doubao/accounts/"),
+		action("/doubao/accounts/test", "/doubao/accounts/"),
+		post("/doubao/models/refresh"),
+		post("/doubao/test"),
+
 		get("/raccoon/overview", false),
 		action("/raccoon/accounts/clear-cooldown", "/raccoon/accounts/"),
 		action("/raccoon/accounts/delete", "/raccoon/accounts/"),
