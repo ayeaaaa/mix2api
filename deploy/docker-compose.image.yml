@@ -13,6 +13,7 @@ services:
       TZ: ${TZ:-UTC}
       PANEL_PASSWORD: ${PANEL_PASSWORD:-}
       MIX2API_API_KEY: ${MIX2API_API_KEY:-}
+      MIX2API_TLS_FINGERPRINT: ${MIX2API_TLS_FINGERPRINT:-python}
       ACCOUNTS_DIR: /app/accounts
       USAGE_DIR: /app/usage
       WB_MEDIA_DIR: /app/media

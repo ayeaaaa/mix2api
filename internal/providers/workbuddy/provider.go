@@ -239,7 +239,7 @@ func New(realm string, store *config.Store) (*Provider, error) {
 		store:             store,
 		accountsDir:       accountsDir,
 		cfg:               LoadConfig(store, normalized),
-		transport:         transport.NewClient(transport.ClientOptions{RefuseRedirects: true}),
+		transport:         transport.NewClient(transport.ClientOptions{RefuseRedirects: true, UTLS: true}),
 		tasksGap:          tasksGapDefault,
 		tasksBackoff:      tasksBackoffDefault,
 		tasksBackoffMax:   tasksBackoffMax,

@@ -3,6 +3,70 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 新增
+
+- WorkBuddy 国际版 / 国内版新增可选 uTLS 出站指纹桥：进程内 loopback
+  CONNECT bridge 复刻官方 Node/OpenSSL ClientHello（18 个 cipher、10 个
+  extension、无 ALPN），JA3 / JA4 与抓包值完全一致。
+- 通过 `MIX2API_TLS_FINGERPRINT=node`（兼容 `WB_TLS_FINGERPRINT=node`）启用，
+  默认关闭；只影响 WorkBuddy 的 HTTPS 出站，CodeArts / Raccoon 继续使用 Go
+  原生 TLS。
+- 代理槽支持 HTTP / HTTPS / SOCKS5；bridge 只监听 loopback，使用随机 secret
+  认证，并继续校验上游证书。
+
+#### 解决的问题
+
+- Go `crypto/tls` 的 ClientHello 与 WorkBuddy 官方客户端不同，HTTP 层即使
+  完全一致，仍可能在 TLS 指纹层被区分。
+- 原有传输路径没有可切换的 TLS 指纹能力，无法在不改业务代码的情况下验证
+  上游对指纹的响应。
+
+#### 结果
+
+- 启用后 WorkBuddy HTTPS 请求使用精确的 Node/OpenSSL ClientHello，HTTP/1.1、
+  keep-alive、SSE、代理槽和证书校验行为保持不变。
+- 未启用或使用不支持的模式时保持原行为；不支持的代理 scheme 会明确失败，
+  不会静默回退。
+- 新增 ClientHello JA3/JA4、未认证 CONNECT、直连、HTTP 代理和真实上游握手
+  测试；全量 `go test ./...` 通过。
+
+### English
+
+#### Added
+
+- Add an optional uTLS outbound fingerprint bridge for WorkBuddy International
+  and China. The in-process loopback CONNECT bridge reproduces the official
+  Node/OpenSSL ClientHello (18 ciphers, 10 extensions, no ALPN), matching the
+  captured JA3 / JA4 exactly.
+- Enable it with `MIX2API_TLS_FINGERPRINT=node` (`WB_TLS_FINGERPRINT=node` is
+  accepted as an alias). It is off by default and only affects WorkBuddy HTTPS
+  upstreams; CodeArts and Raccoon keep Go's native TLS.
+- Proxy slots support HTTP, HTTPS, and SOCKS5. The bridge listens only on
+  loopback, authenticates with a random secret, and still verifies upstream
+  certificates.
+
+#### Problems fixed
+
+- Go `crypto/tls` presents a different ClientHello from the official WorkBuddy
+  client, so matching HTTP headers alone could still be distinguished at the
+  TLS fingerprint layer.
+- The previous transport had no switchable TLS fingerprint path, making it
+  impossible to validate upstream behavior without changing business code.
+
+#### Result
+
+- With the switch enabled, WorkBuddy HTTPS requests use the exact Node/OpenSSL
+  ClientHello while HTTP/1.1, keep-alive, SSE, proxy slots, and certificate
+  verification stay unchanged.
+- The default path is unchanged; unsupported proxy schemes fail explicitly
+  instead of silently falling back.
+- Added ClientHello JA3/JA4, unauthenticated CONNECT, direct, HTTP proxy, and
+  live upstream handshake tests; the full `go test ./...` suite passes.
+
 ## [2.1.1] - 2026-11-12
 
 ### 中文

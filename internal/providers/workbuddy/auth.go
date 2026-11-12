@@ -1092,6 +1092,7 @@ const profileHTTPTimeout = 15 * time.Second
 var defaultProfileTransport ContextHTTPDoer = transport.NewClient(transport.ClientOptions{
 	Timeout:         profileHTTPTimeout,
 	RefuseRedirects: true,
+	UTLS:            true,
 })
 
 const webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

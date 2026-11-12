@@ -187,6 +187,7 @@ are in [`packaging/openwrt/README.md`](packaging/openwrt/README.md).
 | `PANEL_PASSWORD` | none | Panel password; used for initial bootstrap only, later changes in the dashboard take precedence |
 | `MIX2API_API_KEY` | none | `/v1` API key; clients send `Authorization: Bearer <key>` |
 | `MIX2API_API_KEY_REALM` | empty | Optional; binds the bootstrap key to one exit |
+| `MIX2API_TLS_FINGERPRINT` | `python` | WorkBuddy International/China HTTPS TLS fingerprint; `node` enables the built-in uTLS bridge, `python` / `go` / `off` disables it; `WB_TLS_FINGERPRINT` is accepted as an alias |
 | `ACCOUNTS_DIR` | `accounts` | Account and settings directory |
 | `USAGE_DIR` | `usage` | Usage and log directory |
 | `WB_MEDIA_DIR` | `media` | Media task directory |
@@ -195,6 +196,11 @@ are in [`packaging/openwrt/README.md`](packaging/openwrt/README.md).
 `PANEL_PASSWORD` and `MIX2API_API_KEY` are separate credentials: the former only
 opens the dashboard, the latter only calls `/v1`. Use random values in
 production and never put real values in the README, compose files, logs, or Git.
+
+`MIX2API_TLS_FINGERPRINT=node` only affects WorkBuddy International/China HTTPS
+upstreams and reproduces the official Node/OpenSSL ClientHello. It is off by
+default and requires a restart. Proxy slots, certificate verification, and SSE
+behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
 
 ### First use
 

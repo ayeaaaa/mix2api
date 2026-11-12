@@ -7,12 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 )
 
 // Slot is one configured proxy slot from the legacy settings file.
@@ -196,12 +199,23 @@ type ClientOptions struct {
 	// following it. Signed upstream requests must not replay their
 	// Authorization/DPoP headers at a redirect target.
 	RefuseRedirects bool
+
+	// UTLS enables the process-wide uTLS bridge selected by
+	// MIX2API_TLS_FINGERPRINT (or WB_TLS_FINGERPRINT). The default is off.
+	UTLS bool
+
+	// UTLSBridge routes HTTPS requests through the given uTLS bridge. HTTP
+	// requests keep their normal proxy path. It takes precedence over UTLS and
+	// is primarily a test/embedding seam.
+	UTLSBridge *utlsbridge.Bridge
 }
 
 // Client is a shared HTTP client whose transport is selected per request.
 type Client struct {
 	timeout         time.Duration
 	refuseRedirects bool
+	utlsBridge      *utlsbridge.Bridge
+	utlsErr         error
 
 	mu         sync.Mutex
 	transports map[string]*http.Transport
@@ -209,9 +223,16 @@ type Client struct {
 
 // NewClient returns a Client with the given options.
 func NewClient(opts ClientOptions) *Client {
+	bridge := opts.UTLSBridge
+	var bridgeErr error
+	if bridge == nil && opts.UTLS {
+		bridge, bridgeErr = utlsbridge.Default()
+	}
 	return &Client{
 		timeout:         opts.Timeout,
 		refuseRedirects: opts.RefuseRedirects,
+		utlsBridge:      bridge,
+		utlsErr:         bridgeErr,
 		transports:      make(map[string]*http.Transport),
 	}
 }
@@ -224,6 +245,9 @@ func (c *Client) Do(ctx context.Context, req *http.Request, proxyURL string) (*h
 	}
 	if ctx == nil {
 		return nil, errors.New("transport: nil context")
+	}
+	if c.utlsErr != nil {
+		return nil, c.utlsErr
 	}
 
 	tr, err := c.transportFor(proxyURL)
@@ -265,7 +289,7 @@ func (c *Client) transportFor(proxyURL string) (*http.Transport, error) {
 	if tr, ok := c.transports[key]; ok {
 		return tr, nil
 	}
-	tr, err := newTransport(key)
+	tr, err := newTransport(key, c.utlsBridge)
 	if err != nil {
 		return nil, err
 	}
@@ -276,28 +300,46 @@ func (c *Client) transportFor(proxyURL string) (*http.Transport, error) {
 // newTransport builds a transport with the sane defaults of
 // http.DefaultTransport. Direct transports have Proxy nil, which ignores the
 // proxy environment.
-func newTransport(proxyURL string) (*http.Transport, error) {
+func newTransport(proxyURL string, bridge *utlsbridge.Bridge) (*http.Transport, error) {
 	tr := clonedDefaultTransport()
 	tr.Proxy = nil
-	if proxyURL == "" {
+
+	var parsed *url.URL
+	if proxyURL != "" {
+		var err error
+		parsed, err = url.Parse(proxyURL)
+		if err != nil {
+			// Do not echo the parse error: it can contain raw userinfo.
+			return nil, errors.New("transport: invalid proxy URL")
+		}
+		switch parsed.Scheme {
+		case "http", "https", "socks5", "socks5h":
+		default:
+			return nil, fmt.Errorf("transport: unsupported proxy scheme %q", parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return nil, errors.New("transport: proxy URL has no host")
+		}
+	}
+
+	if bridge == nil {
+		if parsed != nil {
+			tr.Proxy = http.ProxyURL(parsed)
+		}
 		return tr, nil
 	}
 
-	parsed, err := url.Parse(proxyURL)
-	if err != nil {
-		// Do not echo the parse error: it can contain raw userinfo.
-		return nil, errors.New("transport: invalid proxy URL")
+	// HTTPS goes through the bridge; HTTP keeps the normal proxy/direct path.
+	tr.Proxy = func(req *http.Request) (*url.URL, error) {
+		if req.URL.Scheme == "https" {
+			return nil, nil
+		}
+		return parsed, nil
 	}
-	switch parsed.Scheme {
-	case "http", "https", "socks5":
-	default:
-		return nil, fmt.Errorf("transport: unsupported proxy scheme %q", parsed.Scheme)
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return bridge.DialTLS(ctx, addr, proxyURL)
 	}
-	if parsed.Host == "" {
-		return nil, errors.New("transport: proxy URL has no host")
-	}
-
-	tr.Proxy = http.ProxyURL(parsed)
+	tr.ForceAttemptHTTP2 = false
 	return tr, nil
 }
 

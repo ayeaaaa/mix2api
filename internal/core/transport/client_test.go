@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 )
 
 func TestDirectRequest(t *testing.T) {
@@ -434,5 +436,17 @@ func TestClientTimeout(t *testing.T) {
 	}
 	if _, err := client.Do(context.Background(), req, ""); err == nil {
 		t.Fatal("Do unexpectedly succeeded without waiting for the timeout")
+	}
+}
+
+func TestNewClientUTLSUsesDefaultBridge(t *testing.T) {
+	t.Setenv("MIX2API_TLS_FINGERPRINT", "node")
+	client := NewClient(ClientOptions{UTLS: true})
+	if client.utlsBridge == nil {
+		t.Fatal("UTLS client has no default bridge")
+	}
+	client.Close()
+	if err := utlsbridge.CloseDefault(); err != nil {
+		t.Fatalf("CloseDefault: %v", err)
 	}
 }

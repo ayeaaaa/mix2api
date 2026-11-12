@@ -13,6 +13,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/agents"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/limits"
@@ -513,6 +514,7 @@ func (p *Platform) Close() {
 		if p.LogStore != nil {
 			_ = p.LogStore.Close()
 		}
+		_ = utlsbridge.CloseDefault()
 	})
 }
 

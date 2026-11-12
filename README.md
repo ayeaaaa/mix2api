@@ -172,6 +172,7 @@ Windows 和 macOS 的发布包结构相同；OpenWrt 的 init/UCI 说明在
 | `PANEL_PASSWORD` | 无 | 面板密码；仅用于首次初始化，之后以看板内修改的密码为准 |
 | `MIX2API_API_KEY` | 无 | `/v1` API Key；客户端用 `Authorization: Bearer <key>` |
 | `MIX2API_API_KEY_REALM` | 空 | 可选，把 Bootstrap Key 固定到一个出口 |
+| `MIX2API_TLS_FINGERPRINT` | `python` | WorkBuddy 国际/国内 HTTPS 出站 TLS 指纹；`node` 启用内置 uTLS 桥，`python` / `go` / `off` 关闭；兼容 `WB_TLS_FINGERPRINT` |
 | `ACCOUNTS_DIR` | `accounts` | 账号和设置目录 |
 | `USAGE_DIR` | `usage` | 用量和日志目录 |
 | `WB_MEDIA_DIR` | `media` | 媒体任务目录 |
@@ -180,6 +181,10 @@ Windows 和 macOS 的发布包结构相同；OpenWrt 的 init/UCI 说明在
 `PANEL_PASSWORD` 和 `MIX2API_API_KEY` 是两套独立凭据：前者只用于打开看板，
 后者只用于调用 `/v1`。生产环境请使用随机值，不要把真实值写进 README、
 compose 文件、日志或 Git。
+
+`MIX2API_TLS_FINGERPRINT=node` 只影响 WorkBuddy 国际版/国内版的 HTTPS
+出站，复刻官方 Node/OpenSSL ClientHello；默认关闭，修改后需要重启。代理槽、
+证书校验和 SSE 行为保持不变，细节见 [`docs/utls-bridge.md`](docs/utls-bridge.md)。
 
 ### 首次使用
 
