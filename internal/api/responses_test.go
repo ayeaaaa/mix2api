@@ -1027,3 +1027,23 @@ func TestResponsesQualifiedWebToolsFailureObservation(t *testing.T) {
 		})
 	}
 }
+
+func TestResponsesGatewayKeyQualifiedExit(t *testing.T) {
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{codearts},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses",
+		`{"model":"codearts/shared","input":"hi"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(codearts.opened()) != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}

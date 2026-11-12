@@ -106,7 +106,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		writeFailure(w, boundFailure)
 		return
 	}
-	if request.exit != "" && boundRealm != "" && boundRealm != request.exit {
+	if request.exit != "" && boundRealm != "" && boundRealm != "gateway" && boundRealm != request.exit {
 		failure := localFailure(http.StatusForbidden, "api key realm does not allow exit "+request.exit)
 		s.observeChatFailure(r, request.requestedModel, request.exit, request.stream, failure)
 		writeFailure(w, failure)
@@ -401,8 +401,11 @@ func (s *Server) applyModelRef(request *chatHTTPRequest) *apiFailure {
 // still needs a catalog match, but each lookup is bounded so discovery cannot
 // stall chat.
 func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPRequest, boundRealm string) (providers.Provider, error) {
+	boundRealm = strings.TrimSpace(boundRealm)
 	if exit := strings.TrimSpace(request.exit); exit != "" {
-		if boundRealm := strings.TrimSpace(boundRealm); boundRealm != "" && boundRealm != exit {
+		// A gateway-bound key may use every registered exit. A concrete key
+		// binding remains a hard policy.
+		if boundRealm != "" && boundRealm != "gateway" && boundRealm != exit {
 			return nil, localFailure(http.StatusForbidden, "api key realm does not allow exit "+exit)
 		}
 		if realm := strings.TrimSpace(request.realm); realm != "" && realm != "all" && realm != "gateway" && realm != exit {
@@ -415,7 +418,7 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		return provider, nil
 	}
 
-	if boundRealm := strings.TrimSpace(boundRealm); boundRealm != "" {
+	if boundRealm != "" && boundRealm != "gateway" {
 		provider := s.providerForRealm(boundRealm)
 		if provider == nil {
 			return nil, localFailure(http.StatusBadRequest, "invalid api key realm: "+boundRealm)
@@ -440,6 +443,12 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 			return nil, localFailure(http.StatusNotFound, "unknown realm: "+realm)
 		}
 		return provider, nil
+	}
+
+	if boundRealm == "gateway" {
+		// The key is explicitly allowed to use every provider. Bare models
+		// therefore use the same fail-closed unique-match rule as realm=gateway.
+		return s.resolveGatewayAmong(ctx, request.model)
 	}
 
 	if len(s.providers) == 0 {

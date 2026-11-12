@@ -98,13 +98,13 @@ type Provider interface {
 
 `resolveChatProvider` 的完整顺序：
 
-1. **API Key 绑定 realm**：硬策略，压过所有请求级 hint。
-2. **规范 ID 的出口**：精确路由；与 Key 绑定冲突 → 403；与显式具体 realm 冲突 → 400；`realm=all`/`gateway` 与规范 ID 兼容，前缀优先。
+1. **API Key 绑定 realm**：具体出口绑定是硬策略，压过所有请求级 hint；`gateway` 绑定是通配，允许任意出口。
+2. **规范 ID 的出口**：精确路由；与具体 Key 绑定冲突 → 403；与显式具体 realm 冲突 → 400；`realm=all`/`gateway` 与规范 ID 兼容，前缀优先。
 3. **显式 realm**：`X-Realm` > `?realm` > body `realm`。
    - `realm=gateway` + 裸模型：读取所有 provider 目录，必须唯一匹配；目录不完整 → 503；多匹配 → 400 并列出候选；无匹配 → 404。
    - `realm=all` + 裸模型：只查 WorkBuddy `intl`/`cn`。
    - 具体 realm：直接用该 provider，不做目录预检查。
-4. **无 realm**：单 provider 直接用；多 provider 先尝试活动出口，再按注册顺序回退；不做唯一性检查。
+4. **无 realm**：绑定 `gateway` 时按 gateway 唯一匹配；否则单 provider 直接用，多 provider 先尝试活动出口，再按注册顺序回退；不做唯一性检查。
 5. 仍无匹配 → 404。
 
 规范 ID 请求必须设置 `AllowRealmFallback=false`。裸请求保持 provider 内部默认回退策略。
@@ -116,10 +116,11 @@ type Provider interface {
 | `/v1/models?realm=gateway` | 所有已注册、目录可读的出口；`id` 为规范 ID；带 `upstream_id`/`qualified_id`/`provider`/`realm` |
 | `/v1/models?realm=<具体>` | 该出口；`id` 保持裸 ID，额外带 `qualified_id` 等 |
 | `/v1/models?realm=all` | 仅 WorkBuddy intl/cn；保持裸 ID 和旧去重规则 |
-| `/v1/models` 多 provider | 400，提示使用 `realm=gateway` |
+| `/v1/models`（绑定 gateway Key） | 等价 `realm=gateway`，返回全出口目录 |
+| `/v1/models` 多 provider（未绑定） | 400，提示使用 `realm=gateway` |
 
 - gateway 目录允许单个 provider 失败（部分返回）；`resolveGatewayAmong` 的裸模型路由要求所有目录可读，失败关闭。
-- 绑定 Key 的 `realm=gateway` 只返回绑定出口。
+- 绑定具体出口的 Key 请求 `realm=gateway` 时只返回绑定出口；绑定“全部提供商”（内部值 `gateway`）的 Key 返回全部出口。
 - `catalog` 是旧的单目录 provenance；gateway 使用 `catalogs` 按 realm 汇总。
 
 ## 5. API 协议约定
@@ -152,9 +153,10 @@ type Provider interface {
 
 ## 6. API Key 策略
 
-- `Entry.Realm` 是绑定出口；`all`/`gateway` 不能作为绑定值。
-- 绑定优先于 `X-Realm`、query、body、`realm=all`、`realm=gateway` 和规范 ID 前缀。
-- 规范 ID 与绑定冲突 → 403；显式具体 realm 与规范 ID 冲突 → 400。
+- `Entry.Realm` 是绑定出口；`gateway` 是合法的“全部提供商”绑定，`all` 仍不能作为绑定值。
+- 绑定具体出口优先于 `X-Realm`、query、body、`realm=all`、`realm=gateway` 和规范 ID 前缀。
+- 绑定 `gateway` 表示该 Key 可使用所有出口：`/v1/models` 不带 realm 默认 gateway，Chat/Responses/Messages 可用任意具体出口；裸模型按 gateway 唯一匹配。
+- 规范 ID 与具体绑定冲突 → 403；显式具体 realm 与规范 ID 冲突 → 400；绑定 `gateway` 时不产生出口冲突。
 - 模型白名单：
   - 先匹配规范 ID，再匹配上游裸 ID。
   - `fnmatch` 大小写不敏感。

@@ -64,11 +64,12 @@ mix2api v2 (single binary)
 
 ## Exit-qualified model IDs
 
-`GET /v1/models?realm=gateway` returns every exit's catalog for an unbound API
-key; a key bound to an exit sees only that exit's models. Each entry's `id` is
-the canonical `<exit>/<upstream-model>` model ID. The four canonical prefixes
-are `intl/`, `cn/`, `codearts/`, and `raccoon/`. Put a prefix in the request
-`model` to select an exit; the gateway strips it before calling the upstream.
+`GET /v1/models?realm=gateway` returns every exit's catalog; a key bound to a
+concrete exit sees only that exit, while an all-provider key sees every exit.
+Each entry's `id` is the canonical `<exit>/<upstream-model>` model ID. The four
+canonical prefixes are `intl/`, `cn/`, `codearts/`, and `raccoon/`. Put a
+prefix in the request `model` to select an exit; the gateway strips it before
+calling the upstream.
 
 ```bash
 curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
@@ -86,13 +87,17 @@ Compatibility rules:
   check. For an unbound key, a bare model under `realm=gateway` must instead
   match exactly one exit; a key bound to an exit resolves to that exit before
   the unique-match check.
+- A key can be bound to “All providers” (`gateway`). Its `/v1/models` request
+  without a realm returns the all-exit catalog, and its Chat/Responses/Messages
+  requests may use any exit. A bare model must match exactly one exit; a
+  same-named model on multiple exits returns 400.
 - For bare IDs and catalog discovery, `realm=all` keeps its original meaning:
   WorkBuddy International / China only, without CodeArts or Raccoon; a key
-  bound to an exit still follows the binding. Qualified requests route by
-  their prefix regardless of `realm=all`.
-- API-key realm binding is still a hard policy: an exit prefix must match the
-  bound exit or the request fails with 403. A prefix cannot escape the
-  binding.
+  bound to a concrete exit still follows the binding. Qualified requests route
+  by their prefix regardless of `realm=all`.
+- API-key realm binding is still a hard policy: a concrete binding requires
+  the exit prefix to match or the request fails with 403; an all-provider
+  binding allows any exit.
 - Key model allow-lists keep `fnmatch` semantics, case-insensitively and
   against both the canonical and upstream IDs: `deepseek/*` only matches
   slash-bearing `deepseek/...` IDs and does not match `deepseek-v4.1-flash`;
@@ -253,7 +258,7 @@ behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
    - CodeArts（遥遥领先）: Huawei Cloud OAuth;
    - Raccoon（商汤小浣熊）: import the desktop client's `auth.json` or use the
      loopback OAuth flow.
-3. Create an API key in Settings and bind it to an exit/model as needed.
+3. Create an API key in Settings and bind it to a concrete exit, all providers, or a model allow-list as needed.
 4. Verify with `/v1/models` and a minimal chat request:
 
 ```sh

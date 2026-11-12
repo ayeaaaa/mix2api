@@ -45,7 +45,7 @@ mix2api v2（单二进制）
 ## 能力概览
 
 - 四个出口：WorkBuddy 国际版、WorkBuddy 国内版、CodeArts（遥遥领先）、Raccoon（商汤小浣熊）；可按
-  API Key 绑定出口，也可以跟随看板默认出口。
+  API Key 绑定具体出口、绑定全部提供商，也可以跟随看板默认出口。
 - 三类协议：`/v1/chat/completions`、`/v1/responses`、Anthropic Messages，
   以及统一的 SSE 流式输出。
 - 账号池、并发/冷却、代理槽、模型目录、积分/额度护栏、用量、日志和活动记录
@@ -54,11 +54,11 @@ mix2api v2（单二进制）
 
 ## 全出口模型 ID
 
-`GET /v1/models?realm=gateway` 在 API Key 未绑定出口时返回全部出口的模型
-目录；Key 绑定出口时只返回该出口的模型。每个条目的 `id` 是规范模型 ID
-`<出口>/<上游模型>`。四个规范前缀是 `intl/`、`cn/`、`codearts/`、
-`raccoon/`；在请求的 `model` 里带上前缀即可指定出口，网关会在发往上游前
-去掉前缀。
+`GET /v1/models?realm=gateway` 返回全部出口的模型目录；绑定具体出口的
+Key 只看到该出口，绑定“全部提供商”的 Key 看到全部。每个条目的 `id` 是
+规范模型 ID `<出口>/<上游模型>`。四个规范前缀是 `intl/`、`cn/`、
+`codearts/`、`raccoon/`；在请求的 `model` 里带上前缀即可指定出口，网关
+会在发往上游前去掉前缀。
 
 ```bash
 curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
@@ -74,11 +74,14 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
   选择；没有显式 realm 时先尝试活动出口，再按注册顺序回退到第一个目录
   命中的出口，不做唯一性检查。未绑定出口的 Key 在 `realm=gateway` 下是
   例外，裸模型要求全出口唯一匹配；绑定出口的 Key 仍先返回绑定出口。
+- Key 的出口绑定新增“全部提供商（gateway）”：该 Key 请求
+  `/v1/models` 不带 realm 时默认返回全出口目录，Chat/Responses/Messages
+  可用任意出口；裸模型按全出口唯一匹配，多个出口同名时返回 400。
 - 对裸 ID 和目录发现，`realm=all` 保持原语义：只合并 WorkBuddy
-  国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定出口的 Key 仍以绑定
-  为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。
-- API Key 的 realm 绑定仍是硬策略：出口前缀必须与绑定出口一致，否则返回
-  403，前缀不能越权访问其他出口。
+  国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定具体出口的 Key 仍以
+  绑定为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。
+- API Key 的 realm 绑定仍是硬策略：绑定具体出口时，出口前缀必须与绑定
+  出口一致，否则返回 403；绑定“全部提供商”时允许任意出口。
 - Key 的模型白名单继续使用 `fnmatch`，大小写不敏感，同时匹配规范 ID 和
   上游 ID：`deepseek/*` 只匹配带斜杠的 `deepseek/...`，不会匹配无斜杠的
   `deepseek-v4.1-flash`；后者需要 `deepseek-*` 或 `deepseek*`。因此
@@ -228,7 +231,7 @@ compose 文件、日志或 Git。
    - WorkBuddy：按看板提示完成 OAuth；
    - CodeArts（遥遥领先）：华为云 OAuth；
    - Raccoon（商汤小浣熊）：导入桌面客户端 `auth.json` 或走本机回环授权。
-3. 在「设置」中创建 API Key，按需绑定出口和模型。
+3. 在「设置」中创建 API Key，按需绑定出口（具体出口或全部提供商）和模型。
 4. 用 `/v1/models` 和一次最小聊天请求验证：
 
 ```sh

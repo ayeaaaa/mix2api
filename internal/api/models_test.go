@@ -519,17 +519,65 @@ func TestModelsReservedScopesAreNotProviders(t *testing.T) {
 	}
 }
 
-func TestModelsGatewayAPIKeyRealmRejected(t *testing.T) {
+func TestModelsAPIKeyRealmAllRejected(t *testing.T) {
 	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
 	srv := newTestHTTPServer(ServerOptions{
 		Providers:   []providers.Provider{alpha},
-		APIKeyRealm: func(*http.Request) string { return "gateway" },
+		APIKeyRealm: func(*http.Request) string { return "all" },
 	})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
 	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
-	if message, _ := failure["message"].(string); !strings.Contains(message, "invalid api key realm: gateway") {
+	if message, _ := failure["message"].(string); !strings.Contains(message, "invalid api key realm: all") {
 		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestModelsGatewayKeyDefaultsToGateway(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "a1"}}}
+	beta := &stubProvider{id: "beta", realm: "beta", models: []providers.Model{{"id": "b1"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{alpha, beta},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["realm"] != "gateway" {
+		t.Fatalf("realm = %#v, want gateway", body["realm"])
+	}
+	data := body["data"].([]any)
+	ids := make([]string, 0, len(data))
+	for _, raw := range data {
+		ids = append(ids, raw.(map[string]any)["id"].(string))
+	}
+	if len(ids) != 2 || ids[0] != "alpha/a1" || ids[1] != "beta/b1" {
+		t.Fatalf("ids = %#v", ids)
+	}
+}
+
+func TestModelsGatewayKeyAllowsConcreteRealm(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "a1"}}}
+	beta := &stubProvider{id: "beta", realm: "beta", models: []providers.Model{{"id": "b1"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{alpha, beta},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=alpha", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if body["realm"] != "alpha" {
+		t.Fatalf("realm = %#v, want alpha", body["realm"])
+	}
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "a1" {
+		t.Fatalf("data = %#v", body["data"])
 	}
 }
 

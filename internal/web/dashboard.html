@@ -18363,6 +18363,7 @@ function randomKeyValue(){
 
 const REALM_CHOICES = [
   ['', '跟随面板切换'],
+  ['gateway', '全部提供商（所有出口）'],
   ['intl', '固定国际版出口'],
   ['cn', '固定国内版出口'],
 ];
@@ -18655,7 +18656,8 @@ async function loadKeyModelCatalog(force){
 }
 function filterKeyModelsForRealm(models, realm){
   const want = String(realm || '').trim().toLowerCase();
-  if(!want) return models || [];
+  // "gateway" means every provider, so it must not filter by m.realm.
+  if(!want || want === 'gateway') return models || [];
   return (models || []).filter(m => !m || !m.realm || String(m.realm).toLowerCase() === want);
 }
 // A canonical gateway id is "<realm>/<upstream-id>". Bare patterns (no known
@@ -18676,6 +18678,9 @@ function reconcileKeyModelsForRealm(models, realm){
   const want = String(realm || '').trim().toLowerCase();
   const kept = [];
   const dropped = [];
+  if(!want || want === 'gateway'){
+    return {models: (models || []).slice(), dropped: dropped};
+  }
   for(const item of (models || [])){
     const prefix = keyModelRealmPrefix(item);
     if(prefix && prefix !== '*' && want && prefix !== want){
@@ -21319,6 +21324,7 @@ async function onKeyBeforeToggle(box){
 }
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
+  if(k.realm === 'gateway') return '<span class="badge ok" style="font-size:10px">全部提供商</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
   if(k.realm === 'raccoon') return '<span class="realm-tag realm-raccoon" style="font-size:10px">小浣熊</span>';
