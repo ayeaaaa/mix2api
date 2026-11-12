@@ -5885,6 +5885,9 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
     </div>
     <div class="toolbar">
       <button onclick="toggleDoubaoImport(true)">+ 添加账号</button>
+      <button class="sec" onclick="doubaoCheckinAll(this)">全员签到</button>
+      <button class="sec" onclick="doubaoRefreshAllCredits(this)">刷新积分</button>
+      <button class="sec" onclick="doubaoRefreshAllTasks(this)">刷新任务</button>
       <button class="sec" onclick="refreshModelCatalog(this)">刷新模型目录</button>
       <button class="sec" onclick="loadDoubaoOverview(true)">刷新</button>
     </div>
@@ -5913,6 +5916,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       </div>
     </div>
     <div id="doubaoAccounts"></div>
+    <div id="doubaoTasksPanel" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px"></div>
   </section>
   <section id="workbuddyAccountsSection">
     <h2 title="多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个">
@@ -6783,6 +6787,15 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <input id="setDoubaoEnabled" type="checkbox" style="width:16px;height:16px">
           <span>启用豆包 Work 出口<br><span style="font-size:11px;color:var(--dim)">启用后才会出现在网关出口列表</span></span>
         </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="setDoubaoCheckinEnabled" type="checkbox" style="width:16px;height:16px">
+          <span>每天自动签到<br><span style="font-size:11px;color:var(--dim)">仅对启用账号执行；签到走桌面端活动接口</span></span>
+        </label>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">签到时间（东八区）</div>
+          <input id="setDoubaoCheckinTime" type="time" value="09:15"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
         <div>
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">Base URL</div>
           <input id="setDoubaoBaseUrl" type="text" placeholder="https://www.doubao.com"
@@ -9623,14 +9636,19 @@ function renderDoubaoCards(r){
   const total = (st.total != null) ? st.total : accounts.length;
   const cooling = (st.cooling != null) ? st.cooling : 0;
   const disabled = (st.disabled != null) ? st.disabled : 0;
-  let active = 0, max = 0;
+  let active = 0, max = 0, checked = 0, totalCredits = 0, hasCredits = false;
   accounts.forEach(function(a){
     active += Number(a.active_concurrent || 0);
     max += Number(a.max_concurrent || 0);
+    const cr = a.credits || {};
+    if(cr.checked_in_today) checked += 1;
+    if(cr.total_amount != null){ totalCredits += Number(cr.total_amount) || 0; hasCredits = true; }
   });
   box.innerHTML =
     card("健康账号", healthy + "/" + total, "cookie / device 账号")
     + card("模型", (r.models || []).length, "豆包 Work 目录")
+    + card("今日签到", checked + "/" + total, "已签 / 账号")
+    + card("累计额度", hasCredits ? fmt(totalCredits) : "—", "签到活动 total_amount")
     + card("并发", active + "/" + max, "账号级并发")
     + card("冷却 / 停用", cooling + " / " + disabled, "自动恢复 / 手动");
 }
@@ -9646,7 +9664,7 @@ function renderDoubaoAccounts(r){
     return;
   }
   let html = '<div class="table-wrap"><table id="doubaoAccountsTable"><thead><tr>'
-    + '<th>账号</th><th>状态</th><th>出口</th><th>并发</th><th>最近错误</th><th>操作</th>'
+    + '<th>账号</th><th>状态</th><th>积分 / 签到</th><th>出口</th><th>并发</th><th>最近错误</th><th>操作</th>'
     + '</tr></thead><tbody>';
   accounts.forEach(function(a){
     const uid = escapeHtml(a.uid || "");
@@ -9660,6 +9678,15 @@ function renderDoubaoAccounts(r){
     else if(a.cooling) status = '<span class="badge warn mini">冷却中</span>';
     const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
       + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
+    const cr = a.credits || {};
+    const creditTotal = (cr.total_amount != null) ? cr.total_amount
+      : (cr.total_credit_num != null ? cr.total_credit_num : "—");
+    const sign = cr.checked_in_today
+      ? '<span class="badge ok mini">已签</span>'
+      : (cr.has_signin_task ? '<span class="badge warn mini">未签</span>' : '<span style="color:var(--dim)">—</span>');
+    const creditsHtml = '<b>' + escapeHtml(String(creditTotal)) + '</b>'
+      + '<div style="font-size:11px;color:var(--dim);margin-top:2px">' + sign
+      + (cr.continuous_days != null ? ' · 连签 ' + escapeHtml(String(cr.continuous_days)) : '') + '</div>';
     const lastError = a.last_error
       ? '<span style="font-size:11px;color:var(--bad)">' + escapeHtml(a.last_error) + '</span>'
       : '<span style="color:var(--dim);font-size:11px">—</span>';
@@ -9669,12 +9696,16 @@ function renderDoubaoAccounts(r){
     }else{
       actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'disable\',\'' + uidSafe + '\')">停用</button>');
     }
+    actions.push('<button class="sec mini" onclick="doubaoAccountCheckin(\'' + uidSafe + '\',this)">签到</button>');
+    actions.push('<button class="sec mini" onclick="doubaoShowTasks(\'' + uidSafe + '\')">任务</button>');
+    actions.push('<button class="sec mini" onclick="doubaoAccountCredits(\'' + uidSafe + '\',this)">积分</button>');
     actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'test\',\'' + uidSafe + '\')">检查</button>');
     actions.push('<button class="sec mini" onclick="doubaoEditNote(\'' + uidSafe + '\')">备注</button>');
     actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'delete\',\'' + uidSafe + '\')">删除</button>');
     html += '<tr><td><b>' + name + '</b>' + note
       + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
-      + '<td>' + status + '</td><td>' + doubaoSlotSelectHtml(a) + '</td><td>' + conc + '</td>'
+      + '<td>' + status + '</td><td>' + creditsHtml + '</td>'
+      + '<td>' + doubaoSlotSelectHtml(a) + '</td><td>' + conc + '</td>'
       + '<td>' + lastError + '</td>'
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
   });
@@ -9707,6 +9738,173 @@ async function doubaoSetProxy(uid, slotId, el){
     toast('出口更新失败: ' + e.message, 'bad');
   }finally{
     if(el) el.disabled = false;
+  }
+}
+
+async function doubaoAccountCheckin(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/doubao/accounts/checkin', {uid: uid});
+    const kind = (r && r.status === 'fail') ? 'bad' : 'ok';
+    toast((r && r.message) || '签到完成', kind);
+    await loadDoubaoOverview(true);
+    await refreshActiveRealm();
+    window.updateUI();
+  }catch(e){
+    toast('签到失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoAccountCredits(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/doubao/credits/refresh', {uid: uid});
+    toast('积分任务已刷新', 'ok');
+    await loadDoubaoOverview(true);
+  }catch(e){
+    toast('刷新积分失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoCheckinAll(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/doubao/checkin', {});
+    const list = (r && r.results) || [];
+    const ok = list.filter(x => x.status === 'success').length;
+    const already = list.filter(x => x.status === 'already').length;
+    const fail = list.filter(x => x.status === 'fail').length;
+    toast('豆包签到：成功 ' + ok + ' · 已签 ' + already + ' · 失败 ' + fail,
+      fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }catch(e){
+    toast('全员签到失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoRefreshAllCredits(btn){
+  const accounts = ((window.DOUBAO_OVERVIEW || {}).accounts || []);
+  if(!accounts.length){ toast('还没有豆包账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  let ok = 0, fail = 0;
+  try{
+    for(const a of accounts){
+      try{
+        await postJSON('/doubao/credits/refresh', {uid: a.uid});
+        ok += 1;
+      }catch(e){ fail += 1; }
+    }
+    toast('积分刷新：成功 ' + ok + ' · 失败 ' + fail, fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoRefreshAllTasks(btn){
+  const accounts = ((window.DOUBAO_OVERVIEW || {}).accounts || []);
+  if(!accounts.length){ toast('还没有豆包账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  let ok = 0, fail = 0;
+  try{
+    for(const a of accounts){
+      try{
+        await postJSON('/doubao/tasks/refresh', {uid: a.uid});
+        ok += 1;
+      }catch(e){ fail += 1; }
+    }
+    toast('任务刷新：成功 ' + ok + ' · 失败 ' + fail, fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function doubaoTaskStatus(task){
+  if(!task || typeof task !== 'object') return '—';
+  if(task.task_kind === 'daily_signin'){
+    const dc = task.daily_checkin || {};
+    return dc.checked_in_today ? '已签到' : '待签到';
+  }
+  const status = Number(task.task_status);
+  if(status === 0) return '未开始';
+  if(status === 1) return '待完成';
+  if(status === 2) return '已完成';
+  return status ? ('状态 ' + status) : '—';
+}
+
+function doubaoRewardText(task){
+  const list = (task && task.reward_summaries) || [];
+  if(list.length){
+    return list.map(x => '+' + (x.reward_amount || 0)).join(' / ');
+  }
+  const dc = (task && task.daily_checkin) || {};
+  if(dc.reward && dc.reward.reward_amount != null) return '+' + dc.reward.reward_amount;
+  return '';
+}
+
+function doubaoShowTasks(uid){
+  const account = ((window.DOUBAO_OVERVIEW || {}).accounts || []).find(a => a.uid === uid) || {};
+  const panel = document.getElementById('doubaoTasksPanel');
+  if(!panel) return;
+  const tasks = (account.tasks || {});
+  const list = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+  const milestones = Array.isArray(tasks.milestones) ? tasks.milestones : [];
+  const progress = tasks.progress || {};
+  let html = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<div><b>豆包任务与福利</b> · ' + escapeHtml(account.nickname || account.uid || '')
+    + '<span style="font-size:11px;color:var(--dim);margin-left:8px">累计额度 '
+    + escapeHtml(String(progress.total_amount != null ? progress.total_amount : '—')) + '</span></div>'
+    + '<button class="sec mini" onclick="doubaoRefreshTasks(\'' + esc(String(uid).replace(/[^\w.@-]/g, '')) + '\',this)">刷新任务</button>'
+    + '</div>';
+  if(!list.length && !milestones.length){
+    html += '<div style="padding:12px;color:var(--dim);font-size:12px">还没有任务缓存。点「刷新任务」从豆包活动接口读取；签到后也会自动刷新。</div>';
+  }else{
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px">';
+    list.forEach(function(task){
+      const reward = doubaoRewardText(task);
+      html += '<div style="border:1px solid var(--line);border-radius:8px;padding:9px 11px">'
+        + '<div style="font-weight:600;font-size:12px">' + escapeHtml(task.title || task.campaign_code || '未命名任务') + '</div>'
+        + '<div style="font-size:11px;color:var(--dim);margin-top:3px">' + escapeHtml(task.subtitle || task.description || '') + '</div>'
+        + '<div style="font-size:11px;margin-top:5px">' + escapeHtml(doubaoTaskStatus(task))
+        + (reward ? ' · ' + escapeHtml(reward) : '') + '</div></div>';
+    });
+    html += '</div>';
+    if(milestones.length){
+      html += '<div style="font-size:12px;font-weight:600;margin:12px 0 6px">里程碑</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">';
+      milestones.forEach(function(task){
+        html += '<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px">'
+          + '<b>' + escapeHtml(task.title || task.campaign_code || '') + '</b>'
+          + '<div style="font-size:11px;color:var(--dim);margin-top:3px">'
+          + escapeHtml(task.subtitle || '') + (doubaoRewardText(task) ? ' · ' + escapeHtml(doubaoRewardText(task)) : '')
+          + '</div></div>';
+      });
+      html += '</div>';
+    }
+  }
+  panel.innerHTML = html;
+  panel.style.display = '';
+  panel.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+
+async function doubaoRefreshTasks(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/doubao/tasks/refresh', {uid: uid});
+    toast('任务已刷新', 'ok');
+    await loadDoubaoOverview(true);
+    doubaoShowTasks(uid);
+  }catch(e){
+    toast('刷新任务失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
   }
 }
 
@@ -9802,6 +10000,10 @@ function renderDoubaoSettings(cfg){
   const enabled = cfg.enabled === true || cfg.configured === true;
   const enabledInput = document.getElementById("setDoubaoEnabled");
   if(enabledInput) enabledInput.checked = enabled;
+  const checkinInput = document.getElementById("setDoubaoCheckinEnabled");
+  if(checkinInput) checkinInput.checked = cfg.checkin_enabled === true;
+  const checkinTime = document.getElementById("setDoubaoCheckinTime");
+  if(checkinTime) checkinTime.value = cfg.checkin_time || "09:15";
   const base = document.getElementById("setDoubaoBaseUrl");
   if(base) base.value = cfg.base_url || "https://www.doubao.com";
   const aid = document.getElementById("setDoubaoAID");
@@ -9830,6 +10032,8 @@ async function saveDoubaoSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
   const payload = {
     enabled: !!(document.getElementById("setDoubaoEnabled") || {}).checked,
+    checkin_enabled: !!(document.getElementById("setDoubaoCheckinEnabled") || {}).checked,
+    checkin_time: String(val("setDoubaoCheckinTime") || "09:15").trim(),
     base_url: String(val("setDoubaoBaseUrl") || "").trim(),
     aid: String(val("setDoubaoAID") || "").trim(),
     max_concurrent: parseInt(val("setDoubaoMaxConcurrent"), 10) || 1,

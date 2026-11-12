@@ -17,6 +17,7 @@ const (
 	defaultStreamTimeoutSeconds = 600.0
 	defaultModelsTTLSeconds     = 300.0
 	defaultMaxConcurrent        = 1
+	defaultCheckinTime          = "09:15"
 )
 
 // Config is the persisted doubao settings section.
@@ -28,6 +29,8 @@ type Config struct {
 	StreamTimeoutSeconds float64 `json:"stream_timeout_seconds"`
 	ModelsTTLSeconds     float64 `json:"models_ttl_seconds"`
 	MaxConcurrent        int     `json:"max_concurrent"`
+	CheckinEnabled       bool    `json:"checkin_enabled"`
+	CheckinTime          string  `json:"checkin_time"`
 }
 
 func defaultConfig() Config {
@@ -39,6 +42,8 @@ func defaultConfig() Config {
 		StreamTimeoutSeconds: defaultStreamTimeoutSeconds,
 		ModelsTTLSeconds:     defaultModelsTTLSeconds,
 		MaxConcurrent:        defaultMaxConcurrent,
+		CheckinEnabled:       false,
+		CheckinTime:          defaultCheckinTime,
 	}
 }
 
@@ -66,7 +71,8 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 	for key, value := range patch {
 		switch key {
 		case "enabled", "base_url", "aid", "timeout_seconds",
-			"stream_timeout_seconds", "models_ttl_seconds", "max_concurrent":
+			"stream_timeout_seconds", "models_ttl_seconds", "max_concurrent",
+			"checkin_enabled", "checkin_time":
 			raw[key] = value
 		}
 	}
@@ -86,6 +92,8 @@ func configValues(cfg Config) map[string]any {
 		"stream_timeout_seconds": cfg.StreamTimeoutSeconds,
 		"models_ttl_seconds":     cfg.ModelsTTLSeconds,
 		"max_concurrent":         cfg.MaxConcurrent,
+		"checkin_enabled":        cfg.CheckinEnabled,
+		"checkin_time":           cfg.CheckinTime,
 	}
 }
 
@@ -105,7 +113,37 @@ func normalizeConfig(raw map[string]any) Config {
 	cfg.StreamTimeoutSeconds = boundedFloat(raw["stream_timeout_seconds"], defaultStreamTimeoutSeconds, 1, 3600)
 	cfg.ModelsTTLSeconds = boundedFloat(raw["models_ttl_seconds"], defaultModelsTTLSeconds, 1, 86400)
 	cfg.MaxConcurrent = boundedInt(raw["max_concurrent"], defaultMaxConcurrent, 1, 32)
+	cfg.CheckinEnabled = boolValue(raw["checkin_enabled"])
+	if value := textValue(raw["checkin_time"]); validClock(value) {
+		cfg.CheckinTime = value
+	}
 	return cfg
+}
+
+func validClock(value string) bool {
+	if len(value) != 5 || value[2] != ':' {
+		return false
+	}
+	hour, err := parseInt(value[:2])
+	if err != nil || hour < 0 || hour > 23 {
+		return false
+	}
+	minute, err := parseInt(value[3:])
+	return err == nil && minute >= 0 && minute <= 59
+}
+
+func parseInt(value string) (int, error) {
+	if value == "" {
+		return 0, errors.New("empty")
+	}
+	n := 0
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, errors.New("not a digit")
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, nil
 }
 
 func boolValue(value any) bool {

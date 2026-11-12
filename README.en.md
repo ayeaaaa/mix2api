@@ -58,7 +58,10 @@ mix2api v2 (single binary)
   Messages, with unified SSE streaming.
 - Account pools, concurrency/cooldown handling, proxy slots, model catalogs,
   credit/quota guards, usage, logs, and activity records are managed by the
-  same process.
+  same process. Doubao Work additionally exposes daily check-in state,
+  cumulative credits, task/milestone data, and a CST-scheduled check-in job;
+  reward submission uses the desktop activity endpoint and reports clearly
+  when a web session is rejected by upstream risk control.
 - The dashboard includes account management, tasks, settings, usage, logs, and
   update/rollback entry points.
 
@@ -255,7 +258,8 @@ behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
    - Raccoon（商汤小浣熊）: import the desktop client's `auth.json` or use the
      loopback OAuth flow;
    - Doubao Work: import cookies/device JSON in the Doubao Work view (at least
-     `sessionid` and `ttwid`).
+     `sessionid` and `ttwid`). Check-in/credits/tasks are shown in the Doubao
+     account table; reward submission requires desktop-client eligibility.
 3. Create an API key in Settings and bind it to an exit/model as needed.
 4. Verify with `/v1/models` and a minimal chat request:
 

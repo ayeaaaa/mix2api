@@ -15,9 +15,14 @@ func TestNormalizeConfigAcceptsJSONNumbers(t *testing.T) {
 		"timeout_seconds":        json.Number("45"),
 		"stream_timeout_seconds": json.Number("900"),
 		"models_ttl_seconds":     json.Number("600"),
+		"checkin_enabled":        true,
+		"checkin_time":           "09:45",
 	})
 	if cfg.MaxConcurrent != 3 || cfg.TimeoutSeconds != 45 || cfg.StreamTimeoutSeconds != 900 || cfg.ModelsTTLSeconds != 600 {
 		t.Fatalf("config = %#v", cfg)
+	}
+	if !cfg.CheckinEnabled || cfg.CheckinTime != "09:45" {
+		t.Fatalf("checkin config = %#v", cfg)
 	}
 }
 

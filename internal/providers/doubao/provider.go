@@ -254,7 +254,12 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 
 func (p *Provider) Routes() []providers.Route { return p.routes() }
 
-func (p *Provider) Jobs() []scheduler.Job { return nil }
+func (p *Provider) Jobs() []scheduler.Job {
+	if p == nil {
+		return nil
+	}
+	return []scheduler.Job{&checkinJob{provider: p}}
+}
 
 func (p *Provider) AccountSummaries(ctx context.Context) ([]providers.AccountSummary, error) {
 	if ctx != nil {

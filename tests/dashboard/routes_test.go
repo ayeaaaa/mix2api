@@ -114,6 +114,10 @@ func dashboardRoutes() []dashboardRoute {
 		action("/doubao/accounts/note", "/doubao/accounts/"),
 		action("/doubao/accounts/proxy", "/doubao/accounts/"),
 		action("/doubao/accounts/test", "/doubao/accounts/"),
+		action("/doubao/accounts/checkin", "/doubao/accounts/"),
+		post("/doubao/checkin"),
+		post("/doubao/credits/refresh"),
+		post("/doubao/tasks/refresh"),
 		post("/doubao/models/refresh"),
 		post("/doubao/test"),
 

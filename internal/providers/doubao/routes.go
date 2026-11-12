@@ -24,6 +24,10 @@ func (p *Provider) routes() []providers.Route {
 		{Method: http.MethodPost, Path: "/doubao/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
 		{Method: http.MethodPost, Path: "/doubao/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
 		{Method: http.MethodPost, Path: "/doubao/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
+		{Method: http.MethodPost, Path: "/doubao/accounts/checkin", Auth: panel, Handler: p.handleAccountCheckin},
+		{Method: http.MethodPost, Path: "/doubao/checkin", Auth: panel, Handler: p.handleCheckinAll},
+		{Method: http.MethodPost, Path: "/doubao/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
+		{Method: http.MethodPost, Path: "/doubao/tasks/refresh", Auth: panel, Handler: p.handleTasksRefresh},
 		{Method: http.MethodPost, Path: "/doubao/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
 		{Method: http.MethodPost, Path: "/doubao/test", Auth: panel, Handler: p.handleConnectionTest},
 	}
@@ -113,6 +117,62 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
+}
+
+func (p *Provider) handleAccountCheckin(w http.ResponseWriter, r *http.Request) {
+	payload, err := readPayload(w, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	uid := textValue(payload["uid"])
+	result, err := p.Checkin(r.Context(), uid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (p *Provider) handleCheckinAll(w http.ResponseWriter, r *http.Request) {
+	results, err := p.CheckinAll(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results})
+}
+
+func (p *Provider) handleCreditsRefresh(w http.ResponseWriter, r *http.Request) {
+	payload, err := readPayload(w, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	data, err := p.RefreshCredits(r.Context(), textValue(payload["uid"]))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "credits": data})
+}
+
+func (p *Provider) handleTasksRefresh(w http.ResponseWriter, r *http.Request) {
+	payload, err := readPayload(w, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	uid := textValue(payload["uid"])
+	status, err := p.CheckinStatus(r.Context(), uid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	account := p.pool.account(uid)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "status": status, "tasks": account.Tasks, "credits": account.Credits,
+	})
 }
 
 func (p *Provider) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {
