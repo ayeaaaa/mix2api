@@ -71,8 +71,10 @@ func TestRollupAnalyticsMatchesColdScan(t *testing.T) {
 func TestRollupAnalyticsScopedAndIncremental(t *testing.T) {
 	now := time.Now()
 	env := newTestEnv(t, []map[string]any{
-		row(float64(now.Add(-2*time.Hour).Unix()), "m", "intl", "a", 100, 10, map[string]any{"key": "k1"}),
-		row(float64(now.Add(-time.Hour).Unix()), "m", "cn", "b", 200, 20, map[string]any{"key": "k2"}),
+		// All fixtures must be in Today, including runs at 00:xx. Scoping
+		// and the append offset are the contracts under test here.
+		row(float64(now.Unix()), "m", "intl", "a", 100, 10, map[string]any{"key": "k1"}),
+		row(float64(now.Unix()), "m", "cn", "b", 200, 20, map[string]any{"key": "k2"}),
 	})
 	env.Now = now
 	t.Setenv("WB_USAGE_CACHE", "0")
@@ -91,7 +93,7 @@ func TestRollupAnalyticsScopedAndIncremental(t *testing.T) {
 	}
 
 	// Append after the checkpoint; the next read must fold only the new row.
-	if err := env.Store.Append(row(float64(now.Add(-time.Minute).Unix()), "m", "intl", "a", 30, 3, map[string]any{"key": "k1"})); err != nil {
+	if err := env.Store.Append(row(float64(now.Unix()), "m", "intl", "a", 30, 3, map[string]any{"key": "k1"})); err != nil {
 		t.Fatal(err)
 	}
 	warm.resultCache = map[string]cachedResult{}

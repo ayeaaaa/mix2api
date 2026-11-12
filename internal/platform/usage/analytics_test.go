@@ -179,7 +179,9 @@ func TestAnalyticsAdoptsGlobalV1DayCache(t *testing.T) {
 func TestAnalyticsRejectsGlobalV1CacheForScopedRealm(t *testing.T) {
 	now := time.Now()
 	rows := []map[string]any{
-		row(float64(now.Add(-time.Hour).Unix()), "m", "intl", "intl-a", 100, 10, nil),
+		// This test checks realm scoping, not a previous-hour window. Keep
+		// the row in Today even when the suite runs just after midnight.
+		row(float64(now.Unix()), "m", "intl", "intl-a", 100, 10, nil),
 	}
 	env := newTestEnv(t, rows)
 	env.Now = now
