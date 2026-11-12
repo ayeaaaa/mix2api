@@ -62,6 +62,39 @@ mix2api v2 (single binary)
 - The dashboard includes account management, tasks, settings, usage, logs, and
   update/rollback entry points.
 
+## Exit-qualified model IDs
+
+`GET /v1/models?realm=gateway` returns the catalog for every exit, with each
+entry's `id` set to the canonical `<exit>/<upstream-model>` model ID. The four
+canonical prefixes are `intl/`, `cn/`, `codearts/`, and `raccoon/`. Put a
+prefix in the request `model` to select an exit; the gateway strips it before
+calling the upstream.
+
+```bash
+curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
+```
+
+```json
+{"model":"codearts/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}
+```
+
+Compatibility rules:
+
+- Bare model IDs are still accepted and keep the existing resolution order:
+  API-key binding first, then an explicit `realm`, then the active exit and
+  unique-match fallback.
+- `realm=all` keeps its original meaning: WorkBuddy International / China
+  only, without CodeArts or Raccoon. Use `realm=gateway` for the all-exit
+  catalog.
+- API-key realm binding is still a hard policy: an exit prefix must match the
+  bound exit or the request fails with 403. A prefix cannot escape the
+  binding.
+- Key model allow-lists keep `fnmatch` semantics: `deepseek-*` matches bare
+  WorkBuddy IDs, while `deepseek/*` only matches IDs that contain a slash.
+
+See the [exit-qualified model design](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)
+for details.
+
 ## Deployment
 
 ### Option 1: Docker image (recommended)
