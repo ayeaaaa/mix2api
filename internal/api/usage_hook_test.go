@@ -44,3 +44,40 @@ func TestProviderUsageSnapshots(t *testing.T) {
 		t.Fatalf("reported credit = %+v", snapshot)
 	}
 }
+
+// TestApplyTrackerKeepsCanonicalRequestedModel pins that a provider-reported
+// alias replaces only the billed Model, never the protocol's canonical
+// RequestedModel (which may differ from both the request model and the alias).
+func TestApplyTrackerKeepsCanonicalRequestedModel(t *testing.T) {
+	stream := newUsageTracker(&hookTestStream{snapshot: providers.UsageSnapshot{
+		Model: "upstream-alias",
+	}}, time.Now())
+	observation := ProtocolObservation{Model: "shared", RequestedModel: "cn/shared"}
+
+	applyTracker(&observation, stream)
+
+	if observation.Model != "upstream-alias" {
+		t.Fatalf("Model = %q, want upstream-alias", observation.Model)
+	}
+	if observation.RequestedModel != "cn/shared" {
+		t.Fatalf("RequestedModel = %q, want cn/shared", observation.RequestedModel)
+	}
+}
+
+// TestApplyTrackerFillsRequestedModelWhenEmpty preserves the older behavior for
+// observations that carry no requested ID: the pre-alias model is used.
+func TestApplyTrackerFillsRequestedModelWhenEmpty(t *testing.T) {
+	stream := newUsageTracker(&hookTestStream{snapshot: providers.UsageSnapshot{
+		Model: "upstream-alias",
+	}}, time.Now())
+	observation := ProtocolObservation{Model: "shared"}
+
+	applyTracker(&observation, stream)
+
+	if observation.Model != "upstream-alias" {
+		t.Fatalf("Model = %q, want upstream-alias", observation.Model)
+	}
+	if observation.RequestedModel != "shared" {
+		t.Fatalf("RequestedModel = %q, want shared", observation.RequestedModel)
+	}
+}

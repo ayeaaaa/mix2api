@@ -169,7 +169,11 @@ func applySnapshot(observation *ProtocolObservation, snapshot providers.UsageSna
 		return
 	}
 	if model := strings.TrimSpace(snapshot.Model); model != "" && model != observation.Model {
-		if observation.Model != "" {
+		// The protocol already knows which model the client requested; a
+		// provider-reported alias may legitimately differ. Only derive
+		// RequestedModel when no protocol supplied one, and never overwrite a
+		// canonical exit-qualified value with the alias.
+		if observation.RequestedModel == "" && observation.Model != "" {
 			observation.RequestedModel = observation.Model
 		}
 		observation.Model = model

@@ -20,12 +20,14 @@ const compactionPrompt = "You are performing a CONTEXT CHECKPOINT COMPACTION. Cr
 // Codex's compaction_trigger turn with exactly one compaction output item. The
 // upstream is a Chat Completions API, so the gateway asks for the handoff
 // summary itself and stores it in the item's opaque encrypted_content field.
-func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request, upstream providers.ChatStream, model string, meta responseMeta) {
-	chat, err := aggregateChatStream(upstream, model)
+// model is the client-visible requested ID; upstreamModel is what the aggregate
+// stream records for pricing.
+func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request, upstream providers.ChatStream, model, upstreamModel string, meta responseMeta) {
+	chat, err := aggregateChatStream(upstream, upstreamModel)
 	if err != nil {
 		failure := failureFromError(err)
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Protocol: "responses", Model: upstreamModel, RequestedModel: model, Effort: meta.Effort,
 			Stream: meta.Streaming, Outcome: "failed", Status: failure.Status,
 			Error: true, Message: failure.Message,
 		}
@@ -37,7 +39,7 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 	summary := chatMessageText(chat)
 	if summary == "" {
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Protocol: "responses", Model: upstreamModel, RequestedModel: model, Effort: meta.Effort,
 			Stream: meta.Streaming, Outcome: "failed",
 			Status: http.StatusBadGateway, Error: true,
 			Message: "compaction produced no summary (the model returned no text); retry",
@@ -59,7 +61,7 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 		writeJSONResponse(w, http.StatusOK, response)
 	}
 	observation := ProtocolObservation{
-		Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+		Protocol: "responses", Model: upstreamModel, RequestedModel: model, Effort: meta.Effort,
 		Stream: meta.Streaming, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(chat["usage"]),
 	}

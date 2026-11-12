@@ -695,13 +695,14 @@ func (s *Server) decorateProviderRoute(auth providers.AuthClass, handler http.Ha
 }
 
 // apiKeyBoundRealm returns the concrete provider realm bound to the request's
-// API key. An empty result means the key is unbound. An unknown realm (or the
-// WorkBuddy-only discovery alias "all") is an operator configuration error and
-// is rejected instead of silently falling back to model matching.
+// API key. An empty result means the key is unbound. An unknown realm, the
+// WorkBuddy-only discovery alias "all", or the gateway scope "gateway" is an
+// operator configuration error and is rejected instead of silently falling
+// back to model matching.
 func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
 	if entry := KeyEntryFromContext(r); entry != nil {
 		if realm := keys.BoundRealm(entry); realm != "" {
-			if realm == "all" || s.providerForRealm(realm) == nil {
+			if reservedModelScope(realm) || s.providerForRealm(realm) == nil {
 				return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
 			}
 			return realm, nil
@@ -714,7 +715,7 @@ func (s *Server) apiKeyBoundRealm(r *http.Request) (string, *apiFailure) {
 	if realm == "" {
 		return "", nil
 	}
-	if realm == "all" || s.providerForRealm(realm) == nil {
+	if reservedModelScope(realm) || s.providerForRealm(realm) == nil {
 		return "", localFailure(http.StatusBadRequest, "invalid api key realm: "+realm)
 	}
 	return realm, nil
@@ -1036,13 +1037,28 @@ func normalizeProviders(list []providers.Provider) []providers.Provider {
 			continue
 		}
 		realm := providerRealm(provider)
-		if realm == "" || seen[realm] {
+		// "all" and "gateway" are discovery/routing scopes, never providers;
+		// accepting them here would let providerForRealm claim a reserved name.
+		if realm == "" || reservedModelScope(realm) || seen[realm] {
 			continue
 		}
 		seen[realm] = true
 		out = append(out, provider)
 	}
 	return out
+}
+
+// reservedModelScope reports the names that select a model-discovery scope
+// rather than a concrete provider: "all" is WorkBuddy-only and "gateway" spans
+// every exit. Both are reserved so providerForRealm can never return a provider
+// for them.
+func reservedModelScope(realm string) bool {
+	switch strings.ToLower(strings.TrimSpace(realm)) {
+	case "all", "gateway":
+		return true
+	default:
+		return false
+	}
 }
 
 func providerRealm(provider providers.Provider) string {

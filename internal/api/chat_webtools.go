@@ -103,6 +103,12 @@ func (s *Server) runChatWebRounds(
 			"finish_reason": "stop",
 		}}}
 	}
+	// Provider rounds speak the upstream ID; only a qualified request forces the
+	// canonical ID into the client-visible completion. Bare requests keep the
+	// upstream echo.
+	if request.exit != "" && request.requestedModel != "" {
+		final["model"] = request.requestedModel
+	}
 	return final, true, nil
 }
 
@@ -121,7 +127,7 @@ func (s *Server) handleChatWithWebTools(
 	if err != nil {
 		failure := failureFromError(err)
 		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, RequestedModel: request.model,
+			Protocol: "chat", Model: request.model, RequestedModel: request.requestedModel,
 			Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 			Stream: false, Outcome: "failed",
 			Status: failure.Status, Error: true, Message: failure.Message,
@@ -131,7 +137,7 @@ func (s *Server) handleChatWithWebTools(
 	}
 	usage, _ := final["usage"].(map[string]any)
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Protocol: "chat", Model: request.model, RequestedModel: request.requestedModel,
 		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usage, ElapsedMS: time.Since(started).Milliseconds(),
@@ -155,7 +161,7 @@ func (s *Server) handleChatWithWebToolsStream(
 	if err != nil {
 		failure := failureFromError(err)
 		s.observeProtocol(r, ProtocolObservation{
-			Protocol: "chat", Model: request.model, RequestedModel: request.model,
+			Protocol: "chat", Model: request.model, RequestedModel: request.requestedModel,
 			Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 			Stream: true, Outcome: "failed",
 			Status: failure.Status, Error: true, Message: failure.Message,
@@ -165,10 +171,10 @@ func (s *Server) handleChatWithWebToolsStream(
 	}
 	stream := newUsageTracker(chatCompletionStream(final), started)
 	defer func() { _ = stream.Close() }()
-	result := writeChatStream(w, r, stream, request.model)
+	result := writeChatStreamFor(w, r, stream, request.requestedModel, request.exit != "")
 	usage, _ := final["usage"].(map[string]any)
 	observation := ProtocolObservation{
-		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Protocol: "chat", Model: request.model, RequestedModel: request.requestedModel,
 		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 		Stream: true, Outcome: result.Outcome, Status: result.Status,
 		Usage: usage, Error: result.Error, Message: result.Message,

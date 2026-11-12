@@ -193,7 +193,7 @@ func (s *Service) foldAnalyticsRow(row Row, realm string, maps *analyticsMaps, w
 		return
 	}
 	isErr := outcome != "completed"
-	model := rowString(row, "model")
+	model := rowModelKey(row)
 	if model == "" {
 		model = "(unknown)"
 	}

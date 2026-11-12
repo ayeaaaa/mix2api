@@ -14,6 +14,7 @@ func TestRollupAnalyticsMatchesColdScan(t *testing.T) {
 		row(float64(now.Add(-2*time.Hour).Unix()), "m", "intl", "a", 100, 10, map[string]any{"key": "k1", "credit": 1.5, "ttft_ms": 100}),
 		row(float64(now.Add(-time.Hour).Unix()), "m", "cn", "b", 200, 20, map[string]any{"key": "k2", "error": true, "status": 429}),
 		row(float64(now.Add(-30*time.Minute).Unix()), "m", "intl", "a", 50, 5, map[string]any{"key": ""}),
+		row(float64(now.Add(-45*time.Minute).Unix()), "m", "codearts", "c", 40, 4, map[string]any{"requested_model": "codearts/m"}),
 	}
 	env := newTestEnv(t, rows)
 	env.Now = now

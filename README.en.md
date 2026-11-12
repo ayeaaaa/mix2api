@@ -62,6 +62,46 @@ mix2api v2 (single binary)
 - The dashboard includes account management, tasks, settings, usage, logs, and
   update/rollback entry points.
 
+## Exit-qualified model IDs
+
+`GET /v1/models?realm=gateway` returns every exit's catalog for an unbound API
+key; a key bound to an exit sees only that exit's models. Each entry's `id` is
+the canonical `<exit>/<upstream-model>` model ID. The four canonical prefixes
+are `intl/`, `cn/`, `codearts/`, and `raccoon/`. Put a prefix in the request
+`model` to select an exit; the gateway strips it before calling the upstream.
+
+```bash
+curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
+```
+
+```json
+{"model":"codearts/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}
+```
+
+Compatibility rules:
+
+- Bare model IDs are still accepted: API-key binding first, then an explicit
+  `realm`; with no explicit realm, the active exit is tried first, then the
+  first registered provider whose catalog matches wins, with no uniqueness
+  check. For an unbound key, a bare model under `realm=gateway` must instead
+  match exactly one exit; a key bound to an exit resolves to that exit before
+  the unique-match check.
+- For bare IDs and catalog discovery, `realm=all` keeps its original meaning:
+  WorkBuddy International / China only, without CodeArts or Raccoon; a key
+  bound to an exit still follows the binding. Qualified requests route by
+  their prefix regardless of `realm=all`.
+- API-key realm binding is still a hard policy: an exit prefix must match the
+  bound exit or the request fails with 403. A prefix cannot escape the
+  binding.
+- Key model allow-lists keep `fnmatch` semantics, case-insensitively and
+  against both the canonical and upstream IDs: `deepseek/*` only matches
+  slash-bearing `deepseek/...` IDs and does not match `deepseek-v4.1-flash`;
+  the latter needs `deepseek-*` or `deepseek*`. So `deepseek-*` also matches
+  the upstream half of `cn/deepseek-v4.1-flash`.
+
+See the [exit-qualified model design](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)
+for details.
+
 ## Deployment
 
 ### Option 1: Docker image (recommended)

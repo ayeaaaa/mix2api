@@ -163,9 +163,10 @@ func (s *sseWriter) Close() {
 // chunks into a trailing choices-less frame before [DONE]. Post-DONE frames are
 // forwarded by the caller so Raccoon's credit accounting frame is preserved.
 type streamNormalizer struct {
-	id      string
-	model   string
-	created int64
+	id         string
+	model      string
+	forceModel bool
+	created    int64
 
 	usage     map[string]any
 	usageSeen bool
@@ -181,10 +182,18 @@ type streamNormalizer struct {
 }
 
 func newStreamNormalizer(model string, printed ...*printedToolRecovery) *streamNormalizer {
+	return newStreamNormalizerForModel(model, false, printed...)
+}
+
+// newStreamNormalizerForModel pins the client-visible model to model when
+// forceModel is set; otherwise upstream chunks keep ownership of the echo, as
+// bare requests expect.
+func newStreamNormalizerForModel(model string, forceModel bool, printed ...*printedToolRecovery) *streamNormalizer {
 	n := &streamNormalizer{
-		id:    randomChatID("chatcmpl-wb-"),
-		model: strings.TrimSpace(model),
-		tools: make(map[int]*chatToolCall),
+		id:         randomChatID("chatcmpl-wb-"),
+		model:      strings.TrimSpace(model),
+		forceModel: forceModel,
+		tools:      make(map[int]*chatToolCall),
 	}
 	if len(printed) > 0 {
 		n.printed.recovery = printed[0]
@@ -208,7 +217,7 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 	chunk := parsed.Fields
 	n.sawAny = true
 
-	if model, ok := chunk["model"].(string); ok && strings.TrimSpace(model) != "" {
+	if model, ok := chunk["model"].(string); ok && strings.TrimSpace(model) != "" && !n.forceModel {
 		n.model = strings.TrimSpace(model)
 	}
 	if created, ok := int64Value(chunk["created"]); ok && created > 0 && n.created == 0 {
@@ -300,7 +309,11 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 	if _, ok := chunk["object"]; !ok && len(choices) > 0 {
 		chunk["object"] = "chat.completion.chunk"
 	}
-	if _, ok := chunk["model"]; !ok && n.model != "" {
+	if n.forceModel {
+		if n.model != "" {
+			chunk["model"] = n.model
+		}
+	} else if _, ok := chunk["model"]; !ok && n.model != "" {
 		chunk["model"] = n.model
 	}
 	encoded, err := marshalJSON(chunk)
@@ -556,7 +569,8 @@ func (n *streamNormalizer) usageFrame(usage map[string]any) []byte {
 }
 
 // rewritePostDoneFrame rewrites the gateway stream id on post-[DONE] provider
-// frames. Choice-less usage/credit frames keep every other field verbatim.
+// frames. Qualified streams also pin the model, while bare streams keep the
+// upstream echo. Choice-less usage/credit frames keep every other field verbatim.
 func (n *streamNormalizer) rewritePostDoneFrame(frame []byte) []byte {
 	if n == nil || len(frame) == 0 {
 		return frame
@@ -573,6 +587,11 @@ func (n *streamNormalizer) rewritePostDoneFrame(frame []byte) []byte {
 	}
 	if _, ok := chunk["id"]; ok {
 		chunk["id"] = n.id
+	}
+	if n.forceModel && n.model != "" {
+		if _, ok := chunk["model"]; ok {
+			chunk["model"] = n.model
+		}
 	}
 	encoded, err := marshalJSON(chunk)
 	if err != nil {

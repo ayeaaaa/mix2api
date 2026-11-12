@@ -303,7 +303,7 @@ func (r *Rollup) rowValues(service *Service, pricer *pricing.RowPricer, row Row)
 	if account == "" {
 		account = "(unattributed)"
 	}
-	model := rowString(row, "model")
+	model := rowModelKey(row)
 	if model == "" {
 		model = "(unknown)"
 	}

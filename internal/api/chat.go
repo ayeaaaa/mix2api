@@ -22,14 +22,17 @@ const maxChatBodyBytes = 16 << 20
 
 // chatHTTPRequest is the parsed gateway view of one /v1/chat/completions call.
 type chatHTTPRequest struct {
-	payload       map[string]json.RawMessage
-	model         string
-	messages      []json.RawMessage
-	stream        bool
-	realm         string
-	explicitRealm bool
-	sessionKey    string
-	headers       http.Header
+	payload        map[string]json.RawMessage
+	model          string // upstream model ID sent to the provider
+	rawModel       string // client spelling before exit canonicalization
+	requestedModel string // canonical when qualified, otherwise the bare ID
+	exit           string // lower-case registered realm, or ""
+	messages       []json.RawMessage
+	stream         bool
+	realm          string
+	explicitRealm  bool
+	sessionKey     string
+	headers        http.Header
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -72,23 +75,52 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		writeFailure(w, failure)
 		return
 	}
-	if failure := s.keyModelFailure(r, request.model); failure != nil {
+	if failure := s.applyModelRef(request); failure != nil {
 		s.observeChatFailure(r, request.model, "", request.stream, failure)
+		writeFailure(w, failure)
+		return
+	}
+	if provider != nil && request.exit != "" &&
+		!strings.EqualFold(strings.TrimSpace(provider.Realm()), request.exit) {
+		failure := localFailure(http.StatusBadRequest, "model exit does not match provider realm")
+		s.observeChatFailure(r, request.requestedModel, provider.Realm(), request.stream, failure)
+		writeFailure(w, failure)
+		return
+	}
+	ref := modelRef{
+		Raw:       request.rawModel,
+		Exit:      request.exit,
+		Upstream:  request.model,
+		Canonical: request.requestedModel,
+		Qualified: request.exit != "",
+	}
+	if failure := s.keyModelFailureForRef(r, ref); failure != nil {
+		s.observeChatFailure(r, request.requestedModel, "", request.stream, failure)
 		writeFailure(w, failure)
 		return
 	}
 
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
-		s.observeChatFailure(r, request.model, "", request.stream, boundFailure)
+		s.observeChatFailure(r, request.requestedModel, "", request.stream, boundFailure)
 		writeFailure(w, boundFailure)
+		return
+	}
+	if request.exit != "" && boundRealm != "" && boundRealm != request.exit {
+		failure := localFailure(http.StatusForbidden, "api key realm does not allow exit "+request.exit)
+		s.observeChatFailure(r, request.requestedModel, request.exit, request.stream, failure)
+		writeFailure(w, failure)
 		return
 	}
 
 	if provider == nil {
 		resolved, err := s.resolveChatProvider(r.Context(), request, boundRealm)
 		if err != nil {
-			s.observeChatFailure(r, request.model, boundRealm, request.stream, failureFromError(err))
+			realm := boundRealm
+			if request.exit != "" {
+				realm = request.exit
+			}
+			s.observeChatFailure(r, request.requestedModel, realm, request.stream, failureFromError(err))
 			writeFailure(w, err)
 			return
 		}
@@ -96,7 +128,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	}
 
 	var allowRealmFallback *bool
-	suppressRealmFallback := request.explicitRealm || boundRealm != ""
+	suppressRealmFallback := request.exit != "" || request.explicitRealm || boundRealm != ""
 	if suppressRealmFallback {
 		disabled := false
 		allowRealmFallback = &disabled
@@ -125,13 +157,13 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 			_ = stream.Close()
 		}
 		failure := failureFromError(err)
-		s.observeChatFailure(r, request.model, provider.Realm(), request.stream, failure)
+		s.observeChatFailure(r, request.requestedModel, provider.Realm(), request.stream, failure)
 		writeFailure(w, err)
 		return
 	}
 	if stream == nil {
 		failure := localFailure(http.StatusBadGateway, "upstream returned no chat stream")
-		s.observeChatFailure(r, request.model, provider.Realm(), request.stream, failure)
+		s.observeChatFailure(r, request.requestedModel, provider.Realm(), request.stream, failure)
 		writeFailure(w, failure)
 		return
 	}
@@ -140,13 +172,16 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	printed := chatPrintedToolRecovery(request.payload)
+	forceModel := request.exit != ""
 	if request.stream {
-		result = writeChatStream(w, r, tracked, request.model, printed)
+		result = writeChatStreamFor(w, r, tracked, request.requestedModel, forceModel, printed)
+	} else if forceModel {
+		result = writeChatCompletionFor(w, tracked, request.requestedModel, true, printed)
 	} else {
-		result = writeChatCompletion(w, tracked, request.model, printed)
+		result = writeChatCompletion(w, tracked, request.requestedModel, printed)
 	}
 	observation := ProtocolObservation{
-		Protocol: "chat", Model: request.model, RequestedModel: request.model,
+		Protocol: "chat", Model: request.model, RequestedModel: request.requestedModel,
 		Realm: provider.Realm(), Kind: "chat", Effort: chatReasoningEffort(request.payload),
 		Stream: request.stream, Outcome: result.Outcome, Status: result.Status,
 		Usage: result.Usage, Error: result.Error, Message: result.Message,
@@ -320,12 +355,45 @@ func chatSessionKey(r *http.Request, payload map[string]json.RawMessage) string 
 	return ""
 }
 
+// applyModelRef parses request.model into an exit and an upstream ID. Only a
+// registered provider realm followed by "/" is qualified; every other prefix is
+// part of a bare model ID. The payload model is rewritten to the upstream ID so
+// the exit prefix is never forwarded upstream.
+func (s *Server) applyModelRef(request *chatHTTPRequest) *apiFailure {
+	if request == nil {
+		return localFailure(http.StatusBadRequest, "model is required")
+	}
+	request.rawModel = strings.TrimSpace(request.model)
+	ref, err := parseModelRef(request.model, func(exit string) bool {
+		return s != nil && s.providerForRealm(exit) != nil
+	})
+	if err != nil {
+		return localFailure(http.StatusBadRequest, err.Error())
+	}
+	request.requestedModel = ref.Requested()
+	request.exit = ref.Exit
+	request.model = ref.Upstream
+
+	encoded, marshalErr := json.Marshal(ref.Upstream)
+	if marshalErr != nil {
+		return localFailure(http.StatusBadRequest, "invalid model")
+	}
+	if request.payload == nil {
+		request.payload = make(map[string]json.RawMessage)
+	}
+	request.payload["model"] = encoded
+	return nil
+}
+
 // resolveChatProvider applies the documented resolution order: the realm bound
 // to the API key is policy and wins over every request-level realm hint; absent
-// a binding, an explicit realm (X-Realm, then query, then body), a unique model
-// match across registered providers, then the only registered provider. A bound
-// key therefore cannot be escaped with X-Realm, ?realm, a body realm, or
-// realm=all.
+// a binding, a qualified model exit routes exactly to that provider, an
+// explicit realm (X-Realm, then query, then body), a unique model match across
+// registered providers, then the only registered provider. A bound key
+// therefore cannot be escaped with X-Realm, ?realm, a body realm, realm=all, or
+// a conflicting exit prefix. realm=gateway is a routing scope, not a provider
+// realm: a bare model must match exactly one provider catalog and every catalog
+// must be readable (see resolveGatewayAmong).
 //
 // Explicit-realm and single-provider requests are deliberately not rejected by
 // a catalog pre-check: a stale/empty cache must not hide a model the upstream
@@ -333,6 +401,20 @@ func chatSessionKey(r *http.Request, payload map[string]json.RawMessage) string 
 // still needs a catalog match, but each lookup is bounded so discovery cannot
 // stall chat.
 func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPRequest, boundRealm string) (providers.Provider, error) {
+	if exit := strings.TrimSpace(request.exit); exit != "" {
+		if boundRealm := strings.TrimSpace(boundRealm); boundRealm != "" && boundRealm != exit {
+			return nil, localFailure(http.StatusForbidden, "api key realm does not allow exit "+exit)
+		}
+		if realm := strings.TrimSpace(request.realm); realm != "" && realm != "all" && realm != "gateway" && realm != exit {
+			return nil, localFailure(http.StatusBadRequest, "realm and model exit conflict")
+		}
+		provider := s.providerForRealm(exit)
+		if provider == nil {
+			return nil, localFailure(http.StatusNotFound, "unknown exit: "+exit)
+		}
+		return provider, nil
+	}
+
 	if boundRealm := strings.TrimSpace(boundRealm); boundRealm != "" {
 		provider := s.providerForRealm(boundRealm)
 		if provider == nil {
@@ -342,6 +424,9 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 	}
 
 	if realm := strings.TrimSpace(request.realm); realm != "" {
+		if realm == "gateway" {
+			return s.resolveGatewayAmong(ctx, request.model)
+		}
 		if realm == "all" {
 			candidates := s.workBuddyProviders()
 			if len(candidates) == 0 {
@@ -386,10 +471,12 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 	return s.resolveAmong(ctx, candidates, request.model, "")
 }
 
-// catalogResolutionTimeout bounds only multi-provider model-to-realm
-// resolution. An expired lookup is treated as "no match" rather than a blocking
-// error; chat then either rejects an ambiguous request or reaches the explicit
-// provider, which classifies the model upstream.
+// catalogResolutionTimeout bounds every catalog read used for model-to-realm
+// resolution, including the /v1/models?realm=gateway fan-out. resolveAmong
+// tolerates an unreadable or timed-out catalog when another candidate can
+// still answer; it only returns the first error when every candidate failed.
+// resolveGatewayAmong instead fails closed on any timeout, because a partial
+// snapshot could hide a second match.
 const catalogResolutionTimeout = 2 * time.Second
 
 func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provider, model, realm string) (providers.Provider, error) {
@@ -418,6 +505,54 @@ func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provid
 			"model not found in WorkBuddy realms intl/cn: "+model)
 	}
 	return nil, localFailure(http.StatusNotFound, "model not found: "+model)
+}
+
+// resolveGatewayAmong resolves one bare model across every registered exit.
+// realm=gateway is a routing scope, not a provider realm, so the lookup must
+// read the whole catalog set. Unlike resolveAmong, which tolerates an unreadable
+// catalog and returns on the first match, this fails closed: a partial snapshot
+// could hide a second match and silently pin the request to one exit. A client
+// that needs a guaranteed route can use exit/model or a concrete realm.
+func (s *Server) resolveGatewayAmong(ctx context.Context, model string) (providers.Provider, error) {
+	var matches []providers.Provider
+	for _, provider := range s.providers {
+		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+		models, err := provider.Models(lookupCtx, false)
+		cancel()
+		if err != nil {
+			return nil, &apiFailure{
+				Status:  http.StatusServiceUnavailable,
+				Type:    "server_error",
+				Message: "gateway model catalog incomplete; use exit/model or a concrete realm",
+			}
+		}
+		if modelMatches(models, model) {
+			matches = append(matches, provider)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, localFailure(http.StatusNotFound, "model not found in gateway exits: "+model)
+	case 1:
+		return matches[0], nil
+	}
+
+	// Ambiguity is reported with canonical IDs so the client can retry with the
+	// exact exit prefix. Duplicate realm registrations collapse to one ID.
+	candidates := make([]string, 0, len(matches))
+	seen := make(map[string]bool, len(matches))
+	for _, provider := range matches {
+		candidate := canonicalModelID(providerRealm(provider), model)
+		key := strings.ToLower(candidate)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		candidates = append(candidates, candidate)
+	}
+	return nil, localFailure(http.StatusBadRequest,
+		"model is available in multiple gateway exits; use exit/model: "+strings.Join(candidates, ", "))
 }
 
 func modelMatches(models []providers.Model, model string) bool {
@@ -474,10 +609,17 @@ func isWorkBuddyProvider(provider providers.Provider) bool {
 // [DONE] the writer keeps reading long enough to forward a provider's post-DONE
 // credit accounting frame; clients that stop at [DONE] never wait for it.
 func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, printed ...*printedToolRecovery) chatStreamResult {
+	return writeChatStreamFor(w, r, stream, model, false, printed...)
+}
+
+// writeChatStreamFor normalizes provider frames into one OpenAI-style stream.
+// forceModel pins every client-visible chunk model to model (the canonical
+// requested ID); bare requests keep the upstream echo.
+func writeChatStreamFor(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, forceModel bool, printed ...*printedToolRecovery) chatStreamResult {
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	writer := newSSEWriter(w)
 	defer writer.Close()
-	normalizer := newStreamNormalizer(model, printed...)
+	normalizer := newStreamNormalizerForModel(model, forceModel, printed...)
 
 	for {
 		frame, err := stream.Next()
@@ -634,6 +776,13 @@ func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatSt
 }
 
 func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, model string, printed ...*printedToolRecovery) chatStreamResult {
+	return writeChatCompletionFor(w, stream, model, false, printed...)
+}
+
+// writeChatCompletionFor aggregates one non-stream response. forceModel makes
+// the client-visible model the canonical requested ID even when the upstream
+// reports an alias; bare requests keep the existing upstream echo.
+func writeChatCompletionFor(w http.ResponseWriter, stream providers.ChatStream, model string, forceModel bool, printed ...*printedToolRecovery) chatStreamResult {
 	completion, err := aggregateChatStream(stream, model, printed...)
 	if err != nil {
 		status := providerFailure(err).Status
@@ -646,6 +795,9 @@ func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, mod
 			message = "upstream request failed"
 		}
 		return chatStreamResult{Outcome: "failed", Status: status, Error: true, Message: message}
+	}
+	if forceModel {
+		completion["model"] = model
 	}
 	usage, _ := completion["usage"].(map[string]any)
 	if tracker, ok := stream.(*usageTracker); ok {

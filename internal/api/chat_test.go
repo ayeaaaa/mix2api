@@ -26,6 +26,9 @@ type stubProvider struct {
 
 	models    []providers.Model
 	modelsErr error
+	// modelsCtx runs before a successful catalog reply so tests can inspect
+	// the per-call context (for example, prove a deadline was applied).
+	modelsCtx func(context.Context) error
 
 	health    providers.Health
 	healthErr error
@@ -61,12 +64,17 @@ func (p *stubProvider) Health(context.Context, bool) (providers.Health, error) {
 	return p.health, nil
 }
 
-func (p *stubProvider) Models(context.Context, bool) ([]providers.Model, error) {
+func (p *stubProvider) Models(ctx context.Context, _ bool) ([]providers.Model, error) {
 	p.mu.Lock()
 	p.modelCalls++
 	p.mu.Unlock()
 	if p.modelsErr != nil {
 		return nil, p.modelsErr
+	}
+	if p.modelsCtx != nil {
+		if err := p.modelsCtx(ctx); err != nil {
+			return nil, err
+		}
 	}
 	out := make([]providers.Model, len(p.models))
 	copy(out, p.models)
@@ -1625,5 +1633,422 @@ func TestChatSessionKeyHashesOverlongValues(t *testing.T) {
 	}
 	if len(requests[0].SessionKey) > providers.MaxSessionKeyBytes {
 		t.Fatalf("SessionKey length = %d", len(requests[0].SessionKey))
+	}
+}
+
+// chatStreamWithModel returns a non-stream-compatible one-chunk fixture whose
+// upstream model field is set explicitly, so tests can distinguish the
+// upstream alias from the client-visible requested model.
+func chatStreamWithModel(model string) providers.ChatStream {
+	return newStubStream(
+		`data: {"id":"chatcmpl-1","model":"`+model+`","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n",
+		"data: [DONE]\n\n",
+	)
+}
+
+func TestChatQualifiedModelRoutesExactExit(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if got := len(intl.opened()); got != 0 {
+		t.Fatalf("intl OpenChat calls = %d, want 0", got)
+	}
+	if got := len(cn.opened()); got != 0 {
+		t.Fatalf("cn OpenChat calls = %d, want 0", got)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if got, ok := decodeJSONString(requests[0].Raw["model"]); !ok || got != "shared" {
+		t.Fatalf("Raw[model] = %q ok=%v, want shared", got, ok)
+	}
+	if flag := requests[0].AllowRealmFallback; flag == nil || *flag {
+		t.Fatalf("AllowRealmFallback = %v, want explicit false", flag)
+	}
+	body := decodeBody(t, rec)
+	if body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+// chatStreamWithModelFrames returns a multi-chunk stream whose frames carry the
+// given upstream model, so tests can prove which model the gateway echoes. The
+// post-[DONE] credit frame also carries the upstream model.
+func chatStreamWithModelFrames(model string) providers.ChatStream {
+	frames := chatSSE(
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}},
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}},
+	)
+	postDone := chatSSE(map[string]any{"id": "chatcmpl-upstream-usage", "object": "chat.completion.chunk",
+		"model": model, "choices": []any{},
+		"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "credit": 2}})
+	frames = append(frames, "data: [DONE]\n\n")
+	frames = append(frames, postDone...)
+	return newStubStream(frames...)
+}
+
+// requireStreamModel asserts that every SSE data chunk carrying a model field
+// reports want, and that at least one chunk carried a model.
+func requireStreamModel(t *testing.T, body, want string) {
+	t.Helper()
+	seen := 0
+	for _, frame := range splitTestFrames(body) {
+		data := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(frame), "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("frame %q: %v", data, err)
+		}
+		model, ok := payload["model"]
+		if !ok {
+			continue
+		}
+		seen++
+		if model != want {
+			t.Fatalf("chunk model = %#v, want %q (frame=%s)", model, want, data)
+		}
+	}
+	if seen == 0 {
+		t.Fatalf("no stream chunk carried a model: %s", body)
+	}
+}
+
+func TestChatQualifiedStreamEchoesCanonicalModel(t *testing.T) {
+	codearts := &stubProvider{
+		id: "codearts", realm: "codearts",
+		models:     []providers.Model{{"id": "shared"}},
+		openStream: chatStreamWithModelFrames("upstream-alias"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream-alias") {
+		t.Fatalf("qualified stream leaked the upstream model: %s", body)
+	}
+	requireStreamModel(t, body, "codearts/shared")
+
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+}
+
+func TestChatBareStreamKeepsUpstreamModel(t *testing.T) {
+	codearts := &stubProvider{
+		id: "codearts", realm: "codearts",
+		models:     []providers.Model{{"id": "shared"}},
+		openStream: chatStreamWithModelFrames("upstream-alias"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=codearts",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `"model":"shared"`) {
+		t.Fatalf("bare stream forced the requested model: %s", body)
+	}
+	requireStreamModel(t, body, "upstream-alias")
+
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+}
+
+func TestChatQualifiedModelRealmConflict(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=codearts",
+		`{"model":"cn/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "realm and model exit conflict") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatQualifiedModelKeyRealmConflict(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "cn" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusForbidden, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "api key realm does not allow exit codearts") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("bound-key conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatQualifiedModelRealmAllRoutesExit(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=all",
+		`{"model":"cn/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if got := len(cn.opened()); got != 1 {
+		t.Fatalf("cn OpenChat calls = %d, want 1", got)
+	}
+	if len(intl.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("realm=all qualified request leaked intl=%d codearts=%d", len(intl.opened()), len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "cn/shared" {
+		t.Fatalf("response model = %#v, want cn/shared", body["model"])
+	}
+}
+
+func TestChatBareModelCompatibility(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatStreamWithModel("shared")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatStreamWithModel("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatStreamWithModel("shared")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=cn",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := cn.opened()
+	if len(requests) != 1 {
+		t.Fatalf("cn OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if got, ok := decodeJSONString(requests[0].Raw["model"]); !ok || got != "shared" {
+		t.Fatalf("Raw[model] = %q ok=%v, want shared", got, ok)
+	}
+	if len(intl.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("bare request leaked intl=%d codearts=%d", len(intl.opened()), len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "shared" {
+		t.Fatalf("response model = %#v, want shared", body["model"])
+	}
+}
+
+func TestChatGatewayBareModelUnique(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "only-intl"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "only-cn"}}, openStream: chatStreamWithModel("only-cn")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
+		`{"model":"only-cn","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := cn.opened()
+	if len(requests) != 1 {
+		t.Fatalf("cn OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "only-cn" {
+		t.Fatalf("ChatRequest.Model = %q, want only-cn", requests[0].Model)
+	}
+	if len(intl.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("unique match leaked intl=%d codearts=%d", len(intl.opened()), len(codearts.opened()))
+	}
+	// Uniqueness requires a complete snapshot: every exit catalog is read.
+	for name, provider := range map[string]*stubProvider{"intl": intl, "cn": cn, "codearts": codearts} {
+		if provider.modelCalls != 1 {
+			t.Fatalf("%s Models calls = %d, want 1", name, provider.modelCalls)
+		}
+	}
+	if body := decodeBody(t, rec); body["model"] != "only-cn" {
+		t.Fatalf("response model = %#v, want only-cn", body["model"])
+	}
+}
+
+func TestChatGatewayBareModelAmbiguous(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	for _, candidate := range []string{"intl/shared", "cn/shared"} {
+		if !strings.Contains(message, candidate) {
+			t.Fatalf("failure message = %q, want candidate %q", message, candidate)
+		}
+	}
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("ambiguous request reached providers intl=%d cn=%d codearts=%d",
+			len(intl.opened()), len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatGatewayBareModelNotFound(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "only-cn"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
+		`{"model":"missing","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusNotFound, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "model not found in gateway exits: missing") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("missing model reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatGatewayBareModelCatalogFailure(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "only-intl"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", modelsErr: errors.New("catalog unavailable")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
+		`{"model":"only-intl","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusServiceUnavailable, "server_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message,
+		"gateway model catalog incomplete; use exit/model or a concrete realm") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("incomplete catalog routed intl=%d cn=%d codearts=%d",
+			len(intl.opened()), len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestChatGatewayQualifiedModelRoutesExactExit(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 {
+		t.Fatalf("qualified gateway route leaked intl=%d cn=%d", len(intl.opened()), len(cn.opened()))
+	}
+	if intl.modelCalls != 0 || cn.modelCalls != 0 {
+		t.Fatalf("qualified gateway route read unrelated catalogs intl=%d cn=%d", intl.modelCalls, cn.modelCalls)
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+func TestChatQualifiedModelObservation(t *testing.T) {
+	var observed []ProtocolObservation
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers: []providers.Provider{codearts},
+		ProtocolObserver: func(observation ProtocolObservation) {
+			observed = append(observed, observation)
+		},
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	observation := observed[0]
+	if observation.Model != "shared" {
+		t.Fatalf("observation Model = %q, want shared", observation.Model)
+	}
+	if observation.RequestedModel != "codearts/shared" {
+		t.Fatalf("observation RequestedModel = %q, want codearts/shared", observation.RequestedModel)
+	}
+	if observation.Realm != "codearts" {
+		t.Fatalf("observation Realm = %q, want codearts", observation.Realm)
+	}
+}
+
+func TestChatQualifiedModelExplicitProviderConflict(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{cn, codearts}})
+
+	serve := func(provider providers.Provider, model string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.HandleChat(rec, req, provider, model)
+		return rec
+	}
+
+	rec := serve(cn, "codearts/shared")
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "model exit") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+
+	rec = serve(codearts, "codearts/shared")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("matching explicit provider status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 || requests[0].Model != "shared" {
+		t.Fatalf("codearts requests = %#v", requests)
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
 	}
 }

@@ -52,6 +52,40 @@ mix2api v2（单二进制）
   都由同一个进程管理。
 - 看板内置账号管理、任务、设置、用量、日志和更新/回滚入口。
 
+## 全出口模型 ID
+
+`GET /v1/models?realm=gateway` 在 API Key 未绑定出口时返回全部出口的模型
+目录；Key 绑定出口时只返回该出口的模型。每个条目的 `id` 是规范模型 ID
+`<出口>/<上游模型>`。四个规范前缀是 `intl/`、`cn/`、`codearts/`、
+`raccoon/`；在请求的 `model` 里带上前缀即可指定出口，网关会在发往上游前
+去掉前缀。
+
+```bash
+curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
+```
+
+```json
+{"model":"codearts/deepseek-v4.1-flash-1017","messages":[{"role":"user","content":"hi"}]}
+```
+
+兼容规则：
+
+- 不带前缀的裸模型 ID 仍然可用：先看 API Key 绑定，再按显式 `realm`
+  选择；没有显式 realm 时先尝试活动出口，再按注册顺序回退到第一个目录
+  命中的出口，不做唯一性检查。未绑定出口的 Key 在 `realm=gateway` 下是
+  例外，裸模型要求全出口唯一匹配；绑定出口的 Key 仍先返回绑定出口。
+- 对裸 ID 和目录发现，`realm=all` 保持原语义：只合并 WorkBuddy
+  国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定出口的 Key 仍以绑定
+  为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。
+- API Key 的 realm 绑定仍是硬策略：出口前缀必须与绑定出口一致，否则返回
+  403，前缀不能越权访问其他出口。
+- Key 的模型白名单继续使用 `fnmatch`，大小写不敏感，同时匹配规范 ID 和
+  上游 ID：`deepseek/*` 只匹配带斜杠的 `deepseek/...`，不会匹配无斜杠的
+  `deepseek-v4.1-flash`；后者需要 `deepseek-*` 或 `deepseek*`。因此
+  `deepseek-*` 也能命中 `cn/deepseek-v4.1-flash` 的上游部分。
+
+细节见[出口限定模型设计](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)。
+
 ## 部署
 
 ### 方式一：Docker 镜像（推荐）

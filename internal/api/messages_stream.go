@@ -49,13 +49,17 @@ type messagesStreamResult struct {
 // stream. The handler calls serveMessagesStream to keep the terminal outcome
 // observable by the usage recorder seam.
 func writeMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) {
-	_ = runMessagesStream(w, r, stream, model)
+	_ = runMessagesStream(w, r, stream, model, false)
 }
 
-func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model, effort string) {
-	result := runMessagesStream(w, r, stream, model)
+// serveMessagesStream writes the Messages SSE form and records its terminal
+// outcome. requestedModel is the client-visible ID; upstreamModel is the bare ID
+// sent to the provider. forceModel pins the client-visible model to
+// requestedModel so an upstream alias cannot leak into message_start.
+func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, requestedModel, upstreamModel string, forceModel bool, effort string) {
+	result := runMessagesStream(w, r, stream, requestedModel, forceModel)
 	observation := ProtocolObservation{
-		Protocol: "messages", Model: model, RequestedModel: model, Effort: effort,
+		Protocol: "messages", Model: upstreamModel, RequestedModel: requestedModel, Effort: effort,
 		Stream: true, Outcome: result.outcome, Status: result.status, Usage: result.usage,
 		Error:   result.outcome == "failed" || result.outcome == "upstream_aborted",
 		Message: "upstream stream error",
@@ -68,7 +72,7 @@ const messagesPostDoneTimeout = 5 * time.Second
 
 var errMessagesPostDoneTimeout = errors.New("post-DONE drain timeout")
 
-func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) messagesStreamResult {
+func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, forceModel bool) messagesStreamResult {
 	writer := newSSEWriter(w)
 	defer writer.Close()
 	w.Header().Set("Connection", "close")
@@ -135,7 +139,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		if chunk.ID != "" {
 			state.id = chunk.ID
 		}
-		if chunk.Model != "" {
+		if chunk.Model != "" && !forceModel {
 			state.model = chunk.Model
 		}
 		if rawError, ok := chunk.Fields["error"].(map[string]any); ok {

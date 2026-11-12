@@ -105,12 +105,15 @@ func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string, pric
 	}
 	outcome := RowOutcome(row)
 	cost := s.costForWith(pricer, row)
-	model := rowString(row, "model")
+	// Pricing keys on the billed upstream model. Aggregation keys on the
+	// requested ID; cost_missing must stay on the model the pricer actually
+	// looked up so it never points at an unpriced canonical ID.
+	billedModel := rowString(row, "model")
 	if outcome != "completed" {
 		stats.Errors++
 		if outcome != "client_aborted" {
 			stats.Credit += number(row, "credit")
-			foldCost(stats, costLike{cost.Known, cost.Disabled, cost.CNY}, model)
+			foldCost(stats, costLike{cost.Known, cost.Disabled, cost.CNY}, billedModel)
 		}
 		return
 	}
@@ -121,7 +124,7 @@ func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string, pric
 	stats.CachedTokens += intNumber(row, "cached_tokens")
 	stats.TotalTokens += intNumber(row, "total_tokens")
 	stats.Credit += number(row, "credit")
-	foldCost(stats, costLike{cost.Known, cost.Disabled, cost.CNY}, model)
+	foldCost(stats, costLike{cost.Known, cost.Disabled, cost.CNY}, billedModel)
 	if value := number(row, "ttft_ms"); value != 0 {
 		stats.TTFTMSSum += value
 		stats.TTFTSamples++
@@ -135,7 +138,7 @@ func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string, pric
 		stats.WallSamples++
 	}
 
-	modelKey := model
+	modelKey := rowModelKey(row)
 	if modelKey == "" {
 		modelKey = "unknown"
 	}

@@ -58,6 +58,8 @@
       ],
       "owned_by": "sensetime",
       "provider": "raccoon",
+      "qualified_id": "raccoon/raccoon-090dd3",
+      "realm": "raccoon",
       "supports_images": true,
       "supports_reasoning": true,
       "supports_tool_calls": true,
@@ -68,6 +70,7 @@
         "vision",
         "reasoning"
       ],
+      "upstream_id": "raccoon-090dd3",
       "vision": true
     },
     {
@@ -119,6 +122,8 @@
       ],
       "owned_by": "sensetime",
       "provider": "raccoon",
+      "qualified_id": "raccoon/sn-glm-5-3",
+      "realm": "raccoon",
       "supports_images": false,
       "supports_reasoning": true,
       "supports_tool_calls": true,
@@ -127,6 +132,7 @@
         "code",
         "reasoning"
       ],
+      "upstream_id": "sn-glm-5-3",
       "vision": false
     }
   ],

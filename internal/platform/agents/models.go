@@ -91,111 +91,68 @@ func ModelSpecsFromCatalog(models []providers.Model) []ModelSpec {
 	return out
 }
 
-// GatewayModels collects agent specs from providers without importing any
-// concrete implementation. The v1 picker uses the current WorkBuddy catalogue
-// only (never Raccoon), then appends configured CodeArts official ids. When no
-// provider exposes the picker hook, the neutral provider scan below remains the
-// fallback for embedders and tests.
+// GatewayModels collects exit-qualified agent specs from providers without
+// importing any concrete implementation. Every provider contributes its picker
+// catalogue (or plain Models catalogue when the picker hook is absent), then
+// its official picker ids. Each id is prefixed with the provider realm, so the
+// generated client configs always carry canonical <realm>/<upstream> ids.
 func GatewayModels(ctx context.Context, list []providers.Provider) []ModelSpec {
-	if specs, ok := pickerModels(ctx, list); ok {
-		return specs
-	}
-	rich := []ModelSpec{}
-	catalogs := []ModelSpec{}
+	return pickerModels(ctx, list)
+}
+
+// pickerModels composes the picker catalogue of every provider, followed by the
+// official picker ids that are not already present under the same exit.
+// MergeModels keeps the richer picker metadata, dedupes canonical ids, sorts
+// them and applies the 80-model cap.
+func pickerModels(ctx context.Context, list []providers.Provider) []ModelSpec {
+	picker := []ModelSpec{}
+	official := []ModelSpec{}
 	for _, provider := range list {
 		if provider == nil {
 			continue
 		}
-		if hook, ok := provider.(providers.AgentModelSpecProvider); ok {
-			specs, err := hook.AgentModelSpecs(ctx)
-			if err == nil {
-				for _, spec := range specs {
-					rich = append(rich, ModelSpec{
-						ID: spec.ID, Name: spec.Name, ContextWindow: spec.ContextWindow,
-						MaxOutput: spec.MaxOutputTokens, ReasoningEfforts: spec.ReasoningEfforts,
-						SupportsVision: spec.SupportsVision,
-					})
-				}
-			}
+		realm := strings.ToLower(strings.TrimSpace(provider.Realm()))
+		if realm == "" {
+			continue
 		}
-		if models, err := provider.Models(ctx, false); err == nil {
-			catalogs = append(catalogs, ModelSpecsFromCatalog(models)...)
+		picker = append(picker, qualifyModelSpecs(realm, providerPickerModels(ctx, provider))...)
+		if hook, ok := provider.(providers.AgentOfficialModelProvider); ok {
+			official = append(official, qualifyModelSpecs(realm, ModelSpecsFromCatalog(hook.AgentOfficialModels()))...)
 		}
 	}
-	return MergeModels(rich, catalogs)
+	return MergeModels(picker, official)
 }
 
-// pickerModels implements v1's _agents_models order: one WorkBuddy realm's
-// bundled/live catalogue, followed by the official CodeArts ids that are not
-// already present. It returns false when the composition has no WorkBuddy
-// picker, so callers keep the neutral fallback.
-func pickerModels(ctx context.Context, list []providers.Provider) ([]ModelSpec, bool) {
-	active := ""
-	for _, provider := range list {
-		if selector, ok := provider.(providers.RealmSelector); ok {
-			active = strings.ToLower(strings.TrimSpace(selector.ActiveRealm(ctx)))
-			break
-		}
+// providerPickerModels prefers the provider's v1 one-click picker catalogue and
+// falls back to the plain catalogue when the hook is not implemented.
+func providerPickerModels(ctx context.Context, provider providers.Provider) []ModelSpec {
+	var (
+		models []providers.Model
+		err    error
+	)
+	if picker, ok := provider.(providers.AgentPickerModelProvider); ok {
+		models, err = picker.AgentPickerModels(ctx, false)
+	} else {
+		models, err = provider.Models(ctx, false)
 	}
-	var selected providers.AgentPickerModelProvider
-	selectedRealm := ""
-	for _, provider := range list {
-		picker, ok := provider.(providers.AgentPickerModelProvider)
-		if !ok {
-			continue
-		}
-		realm := strings.ToLower(strings.TrimSpace(provider.Realm()))
-		if realm != "intl" && realm != "cn" {
-			continue
-		}
-		if realm == active {
-			selected = picker
-			selectedRealm = realm
-			break
-		}
-		if selected == nil || (selectedRealm != "intl" && realm == "intl") {
-			selected = picker
-			selectedRealm = realm
-		}
+	if err != nil {
+		return nil
 	}
-	if selected == nil {
-		return nil, false
-	}
+	return ModelSpecsFromCatalog(models)
+}
 
-	out := []ModelSpec{}
-	seen := map[string]bool{}
-	if models, err := selected.AgentPickerModels(ctx, false); err == nil {
-		for _, spec := range ModelSpecsFromCatalog(models) {
-			key := strings.ToLower(strings.TrimSpace(spec.ID))
-			if key == "" || seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, spec)
-		}
-	}
-	for _, provider := range list {
-		official, ok := provider.(providers.AgentOfficialModelProvider)
-		if !ok {
+// qualifyModelSpecs prefixes every upstream id with its provider realm.
+func qualifyModelSpecs(realm string, specs []ModelSpec) []ModelSpec {
+	out := make([]ModelSpec, 0, len(specs))
+	for _, spec := range specs {
+		id := strings.TrimSpace(spec.ID)
+		if id == "" {
 			continue
 		}
-		for _, model := range official.AgentOfficialModels() {
-			id := strings.ToLower(strings.TrimSpace(stringValue(model["id"])))
-			if id == "" || seen[id] {
-				continue
-			}
-			seen[id] = true
-			name := strings.TrimSpace(stringValue(model["name"]))
-			if name == "" {
-				name = id
-			}
-			out = append(out, ModelSpec{ID: id, Name: name})
-		}
+		spec.ID = realm + "/" + id
+		out = append(out, spec)
 	}
-	if len(out) > MaxModels {
-		out = out[:MaxModels]
-	}
-	return out, true
+	return out
 }
 
 // Enrich fills id-only payload entries from specs. Explicit fields win.

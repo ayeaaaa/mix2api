@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -626,5 +628,402 @@ func TestResponsesRateLimitRetryMetadata(t *testing.T) {
 	failure := requireErrorEnvelope(t, rec, http.StatusTooManyRequests, "rate_limit_error")
 	if failure["reset_at"] == nil || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("rate limit metadata = body %#v headers %#v", failure, rec.Header())
+	}
+}
+
+// responsesStreamWithModel returns a Responses-compatible chat stream whose
+// chunks carry an upstream model alias, so tests can distinguish the provider's
+// model field from the client-visible requested ID.
+func responsesStreamWithModel(model string) providers.ChatStream {
+	return newStubStream(chatSSE(
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}},
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}},
+	)...)
+}
+
+func TestResponsesQualifiedModelRoutesExactExit(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("upstream-alias")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses",
+		`{"model":"codearts/shared","input":"hi"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if got := len(intl.opened()); got != 0 {
+		t.Fatalf("intl OpenChat calls = %d, want 0", got)
+	}
+	if got := len(cn.opened()); got != 0 {
+		t.Fatalf("cn OpenChat calls = %d, want 0", got)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if got, ok := decodeJSONString(requests[0].Raw["model"]); !ok || got != "shared" {
+		t.Fatalf("Raw[model] = %q ok=%v, want shared", got, ok)
+	}
+	if flag := requests[0].AllowRealmFallback; flag == nil || *flag {
+		t.Fatalf("AllowRealmFallback = %v, want explicit false", flag)
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+func TestResponsesQualifiedStreamEchoesCanonicalModel(t *testing.T) {
+	codearts := &stubProvider{
+		id: "codearts", realm: "codearts",
+		models:     []providers.Model{{"id": "shared"}},
+		openStream: responsesStreamWithModel("upstream-alias"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses",
+		`{"model":"codearts/shared","input":"hi","stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream-alias") {
+		t.Fatalf("qualified stream leaked the upstream model: %s", body)
+	}
+	events := parseSSEBody(t, body)
+	seen := map[string]bool{}
+	for _, event := range events {
+		if event.Event != "response.created" && event.Event != "response.completed" {
+			continue
+		}
+		response, _ := event.Data["response"].(map[string]any)
+		if response["model"] != "codearts/shared" {
+			t.Fatalf("%s model = %#v, want codearts/shared", event.Event, response["model"])
+		}
+		seen[event.Event] = true
+	}
+	if !seen["response.created"] || !seen["response.completed"] {
+		t.Fatalf("missing lifecycle events: %s", body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+}
+
+func TestResponsesQualifiedModelKeyRealmConflict(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "cn" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses",
+		`{"model":"codearts/shared","input":"hi"}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusForbidden, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "api key realm does not allow exit codearts") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("bound-key conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+// TestResponsesKeyAllowListErrorKeepsClientSpelling verifies the rejection
+// message uses the client's original model spelling, not the canonical form.
+func TestResponsesKeyAllowListErrorKeepsClientSpelling(t *testing.T) {
+	_, keyStore, _, _, _ := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "denied", Name: "denied", Key: "key-denied", Models: []string{"intl/*"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}},
+		openStream: responsesStreamWithModel("shared")}
+	server := New(ServerOptions{Providers: []providers.Provider{cn}, KeyStore: keyStore})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses",
+		`{"model":"CN/shared","input":"hi"}`,
+		map[string]string{"Authorization": "Bearer key-denied"})
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "CN/shared") {
+		t.Fatalf("failure lost the client spelling: %#v", failure)
+	}
+	if strings.Contains(message, "cn/shared") {
+		t.Fatalf("failure used the canonical spelling only: %#v", failure)
+	}
+	if len(cn.opened()) != 0 {
+		t.Fatal("denied request reached the provider")
+	}
+}
+
+func TestResponsesQualifiedModelRealmConflict(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses?realm=codearts",
+		`{"model":"cn/shared","input":"hi"}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "realm and model exit conflict") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestResponsesGatewayBareModelUnique(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "only-intl"}}, openStream: responsesStreamWithModel("only-intl")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "only-cn"}}, openStream: responsesStreamWithModel("only-cn")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: responsesStreamWithModel("only-codearts")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses?realm=gateway",
+		`{"model":"only-cn","input":"hi"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := cn.opened()
+	if len(requests) != 1 {
+		t.Fatalf("cn OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "only-cn" {
+		t.Fatalf("ChatRequest.Model = %q, want only-cn", requests[0].Model)
+	}
+	if len(intl.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("unique match leaked intl=%d codearts=%d", len(intl.opened()), len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "only-cn" {
+		t.Fatalf("response model = %#v, want only-cn", body["model"])
+	}
+}
+
+func TestResponsesGatewayBareModelAmbiguous(t *testing.T) {
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "only-codearts"}}, openStream: responsesStreamWithModel("only-codearts")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses?realm=gateway",
+		`{"model":"shared","input":"hi"}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	for _, candidate := range []string{"intl/shared", "cn/shared"} {
+		if !strings.Contains(message, candidate) {
+			t.Fatalf("failure message = %q, want candidate %q", message, candidate)
+		}
+	}
+	if len(intl.opened()) != 0 || len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("ambiguous request reached providers intl=%d cn=%d codearts=%d",
+			len(intl.opened()), len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestResponsesQualifiedModelObservation(t *testing.T) {
+	var observed []ProtocolObservation
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("upstream-alias")}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers: []providers.Provider{codearts},
+		ProtocolObserver: func(observation ProtocolObservation) {
+			observed = append(observed, observation)
+		},
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses",
+		`{"model":"codearts/shared","input":"hi"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	observation := observed[0]
+	if observation.Model != "shared" {
+		t.Fatalf("observation Model = %q, want shared", observation.Model)
+	}
+	if observation.RequestedModel != "codearts/shared" {
+		t.Fatalf("observation RequestedModel = %q, want codearts/shared", observation.RequestedModel)
+	}
+	if observation.Realm != "codearts" {
+		t.Fatalf("observation Realm = %q, want codearts", observation.Realm)
+	}
+}
+
+func TestResponsesQualifiedCompactionEchoesCanonicalModel(t *testing.T) {
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: responsesStreamWithModel("upstream-alias")}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses/compact",
+		`{"model":"codearts/shared","input":"do work"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	body := decodeBody(t, rec)
+	if body["model"] != "codearts/shared" {
+		t.Fatalf("compaction model = %#v, want codearts/shared", body["model"])
+	}
+	compactionItemFromBody(t, body)
+}
+
+func TestResponsesQualifiedWebToolsUseUpstreamModel(t *testing.T) {
+	web := webtools.New()
+	web.AllowPrivate = true
+	web.Engines = []string{"bing"}
+	web.EngineURLs = map[string]string{"bing": "http://127.0.0.1:1/?q=%s"}
+	web.SearchBudget = 50 * time.Millisecond
+
+	var observed []ProtocolObservation
+	first := webToolCallStream()
+	second := newStubStream(chatSSE(textChunks("c2", "final answer")...)...)
+	server, provider := responseTestServer(t, nil, ServerOptions{
+		WebTools: web,
+		ProtocolObserver: func(observation ProtocolObservation) {
+			observed = append(observed, observation)
+		},
+	})
+	provider.mu.Lock()
+	provider.openStreams = []providers.ChatStream{first, second}
+	provider.openStream = nil
+	provider.mu.Unlock()
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{
+		"model":"intl/m1","input":"search go","tools":[{"type":"web_search"}]
+	}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	requests := provider.opened()
+	if len(requests) != 2 {
+		t.Fatalf("web rounds = %d, want 2", len(requests))
+	}
+	for index, request := range requests {
+		if request.Model != "m1" {
+			t.Fatalf("round %d ChatRequest.Model = %q, want m1", index, request.Model)
+		}
+		if got, ok := decodeJSONString(request.Raw["model"]); !ok || got != "m1" {
+			t.Fatalf("round %d Raw[model] = %q ok=%v, want m1", index, got, ok)
+		}
+	}
+	body := decodeBody(t, rec)
+	if body["model"] != "intl/m1" {
+		t.Fatalf("web response model = %#v, want intl/m1", body["model"])
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observations = %#v", observed)
+	}
+	if observed[0].Model != "m1" || observed[0].RequestedModel != "intl/m1" {
+		t.Fatalf("observation = %#v", observed[0])
+	}
+}
+
+// requireQualifiedFailureObservation asserts that a post-open failure keeps the
+// upstream ID in Model (pricing) and the canonical requested ID in
+// RequestedModel (attribution).
+func requireQualifiedFailureObservation(t *testing.T, observed []ProtocolObservation, upstream, requested string) {
+	t.Helper()
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	observation := observed[0]
+	if observation.Outcome != "failed" {
+		t.Fatalf("observation outcome = %q, want failed", observation.Outcome)
+	}
+	if observation.Model != upstream {
+		t.Fatalf("observation Model = %q, want upstream %q", observation.Model, upstream)
+	}
+	if observation.RequestedModel != requested {
+		t.Fatalf("observation RequestedModel = %q, want requested %q", observation.RequestedModel, requested)
+	}
+}
+
+func TestResponsesQualifiedCompactionFailureObservation(t *testing.T) {
+	readError := newStubStream()
+	readError.terminal = errors.New("upstream read failed")
+	cases := []struct {
+		name   string
+		stream *stubStream
+	}{
+		{"read error", readError},
+		{"empty summary", newStubStream(chatSSE(
+			map[string]any{"id": "u", "model": "upstream-alias", "choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"content": "   "}, "finish_reason": "stop",
+			}}},
+		)...)},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var observed []ProtocolObservation
+			codearts := &stubProvider{id: "codearts", realm: "codearts",
+				models: []providers.Model{{"id": "shared"}}, openStream: testCase.stream}
+			srv := newTestHTTPServer(ServerOptions{
+				Providers: []providers.Provider{codearts},
+				ProtocolObserver: func(observation ProtocolObservation) {
+					observed = append(observed, observation)
+				},
+			})
+			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses/compact",
+				`{"model":"codearts/shared","input":"do work"}`, nil)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			requireQualifiedFailureObservation(t, observed, "shared", "codearts/shared")
+		})
+	}
+}
+
+func TestResponsesQualifiedWebToolsFailureObservation(t *testing.T) {
+	for _, streamRequest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[streamRequest], func(t *testing.T) {
+			readError := newStubStream()
+			readError.terminal = errors.New("upstream read failed")
+			web := webtools.New()
+			web.AllowPrivate = true
+			web.Engines = []string{"bing"}
+			web.EngineURLs = map[string]string{"bing": "http://127.0.0.1:1/?q=%s"}
+			web.SearchBudget = 50 * time.Millisecond
+
+			var observed []ProtocolObservation
+			codearts := &stubProvider{id: "codearts", realm: "codearts",
+				models: []providers.Model{{"id": "shared"}}, openStream: readError}
+			srv := newTestHTTPServer(ServerOptions{
+				Providers: []providers.Provider{codearts},
+				WebTools:  web,
+				ProtocolObserver: func(observation ProtocolObservation) {
+					observed = append(observed, observation)
+				},
+			})
+
+			body := `{"model":"codearts/shared","input":"search go","tools":[{"type":"web_search"}]}`
+			if streamRequest {
+				body = `{"model":"codearts/shared","input":"search go","tools":[{"type":"web_search"}],"stream":true}`
+			}
+			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses", body, nil)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if len(codearts.opened()) != 1 {
+				t.Fatalf("OpenChat calls = %d, want 1", len(codearts.opened()))
+			}
+			requireQualifiedFailureObservation(t, observed, "shared", "codearts/shared")
+		})
 	}
 }

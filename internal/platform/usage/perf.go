@@ -132,7 +132,7 @@ func (s *Service) Perf(ctx context.Context, opts PerfOptions) (map[string]any, e
 			continue
 		}
 		agg.total++
-		model := rowString(row, "model")
+		model := rowModelKey(row)
 		if model == "" {
 			model = "unknown"
 		}

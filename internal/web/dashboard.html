@@ -18439,7 +18439,7 @@ function renderKeyRows(){
         (window.REALM_OPTIONS || []).includes('raccoon')
           ? [['raccoon', '固定小浣熊出口']] : []);
       const options = realmChoices.map(([val, lbl]) =>
-        '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
+        '<option value="' + val + '"' + (keyEditRealm(row) === val ? ' selected' : '') + '>' + lbl + '</option>'
       ).join('');
       return '<div class="key-card" style="border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
@@ -18454,7 +18454,7 @@ function renderKeyRows(){
         +   '</div>'
         +   '<div>'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">出口绑定</div>'
-        +     '<select id="editKeyRealm_' + i + '" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +     '<select id="editKeyRealm_' + i + '" onchange="changeKeyRealm(' + i + ',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
         +       options
         +       '</select>'
         +   '</div>'
@@ -18591,17 +18591,12 @@ async function copyApiKeyExample(kind, btn){
   }
 }
 
-function keyModelWildcards(row){
-  return (row.models || []).filter(p => String(p).indexOf('*') >= 0);
-}
-function keyModelExact(row){
-  return (row.models || []).filter(p => String(p).indexOf('*') < 0);
-}
 function updateKeyModelSummary(i){
   const row = API_KEY_ROWS[i];
   if(!row) return;
-  const exact = keyModelExact(row).length;
-  const wild = keyModelWildcards(row).length;
+  const models = keyEditModels(row);
+  const exact = models.filter(p => String(p).indexOf('*') < 0).length;
+  const wild = models.filter(p => String(p).indexOf('*') >= 0).length;
   const el = document.getElementById('editKeyModelsSummary_' + i);
   if(el){
     el.textContent = (exact || wild)
@@ -18635,18 +18630,89 @@ async function loadKeyModelCatalog(){
       if(id && !seen.has(id)){ seen.add(id); out.push(m); }
     }
   };
-  // The unscoped listing is the widest catalogue the gateway advertises; the
-  // per-realm calls fill in anything it omits.
-  try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
-  for(const realm of ['intl', 'cn']){
-    try {
-      const r = await getJSON('/v1/models?realm=' + realm);
-      add(r.data);
-    } catch(e) { /* one realm failing must not blank the picker */ }
+  // The gateway listing is the only catalogue that names each model's exit:
+  // canonical "<realm>/<id>" entries with `realm` attached is exactly what a
+  // realm-bound Key has to store. Only when it fails or is empty do we fall
+  // back to the legacy unscoped/per-realm listings.
+  try { const r = await getJSON('/v1/models?realm=gateway'); add(r.data); } catch(e) { /* fall back below */ }
+  if(!out.length){
+    // The unscoped listing is the widest catalogue the gateway advertises; the
+    // per-realm calls fill in anything it omits.
+    try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
+    for(const realm of ['intl', 'cn']){
+      try {
+        const r = await getJSON('/v1/models?realm=' + realm);
+        add(r.data);
+      } catch(e) { /* one realm failing must not blank the picker */ }
+    }
   }
   if(!out.length && Array.isArray(window.MODELS_DATA)) out.push(...window.MODELS_DATA);
   window.KEY_MODEL_CATALOG = out;
   return out;
+}
+function filterKeyModelsForRealm(models, realm){
+  const want = String(realm || '').trim().toLowerCase();
+  if(!want) return models || [];
+  return (models || []).filter(m => !m || !m.realm || String(m.realm).toLowerCase() === want);
+}
+// A canonical gateway id is "<realm>/<upstream-id>". Bare patterns (no known
+// exit prefix) still match the upstream id on every exit through AllowsModelAny,
+// and wildcard prefixes keep matching by design; only a concrete exit prefix
+// would silently stop matching after the Key moves to another exit.
+const KEY_MODEL_REALMS = ['intl', 'cn', 'codearts', 'raccoon'];
+function keyModelRealmPrefix(pattern){
+  const text = String(pattern || '').trim().toLowerCase();
+  const slash = text.indexOf('/');
+  if(slash <= 0) return '';
+  const prefix = text.slice(0, slash);
+  if(prefix.indexOf('*') >= 0) return '*';
+  const known = KEY_MODEL_REALMS.concat((window.REALM_OPTIONS || []).map(v => String(v).toLowerCase()));
+  return known.indexOf(prefix) >= 0 ? prefix : '';
+}
+function reconcileKeyModelsForRealm(models, realm){
+  const want = String(realm || '').trim().toLowerCase();
+  const kept = [];
+  const dropped = [];
+  for(const item of (models || [])){
+    const prefix = keyModelRealmPrefix(item);
+    if(prefix && prefix !== '*' && want && prefix !== want){
+      dropped.push(String(item));
+    } else {
+      kept.push(item);
+    }
+  }
+  return {models: kept, dropped: dropped};
+}
+function warnDroppedKeyModels(dropped){
+  if(!(dropped || []).length) return;
+  toast('已移除 ' + dropped.length + ' 个不属于当前出口的模型选择：' + dropped.join(', '), 'warn');
+}
+/* Editing is a draft. The realm select and the model checkboxes must not touch
+   the committed row until saveSingleKey, because a whole-list save (enable /
+   disable, delete, saving another row) reads every committed row and would
+   otherwise persist a canceled draft. */
+function keyEditRealm(row){
+  const value = row && row._draftRealm !== undefined ? row._draftRealm : (row && row.realm);
+  return String(value || '');
+}
+function keyEditModels(row){
+  if(row && Array.isArray(row._draftModels)) return row._draftModels;
+  return row && Array.isArray(row.models) ? row.models : [];
+}
+function beginKeyEdit(row){
+  if(!row) return;
+  row._draftRealm = String(row.realm || '');
+  row._draftModels = Array.isArray(row.models) ? row.models.slice() : [];
+}
+function ensureKeyEditDraft(row){
+  if(!row) return;
+  if(row._draftRealm === undefined) row._draftRealm = String(row.realm || '');
+  if(!Array.isArray(row._draftModels)) row._draftModels = Array.isArray(row.models) ? row.models.slice() : [];
+}
+function clearKeyEdit(row){
+  if(!row) return;
+  delete row._draftRealm;
+  delete row._draftModels;
 }
 async function renderKeyPickers(i){
   const row = API_KEY_ROWS[i];
@@ -18661,15 +18727,37 @@ async function renderKeyPickers(i){
     if(!(models || []).length && Array.isArray(window.MODELS_DATA)){
       models = window.MODELS_DATA;
     }
-    if(!(models || []).length){
+    models = filterKeyModelsForRealm(models, keyEditRealm(row));
+    const exactModels = (keyEditModels(row) || []).filter(p => String(p).indexOf('*') < 0);
+    // A saved exact model may not exist in the current catalog (an old exit
+    // model, or a catalog that failed to load). It must stay visible and
+    // checked, or select-all/save would silently drop a real permission.
+    const catalogIDs = new Set(models.map(m => String((m && m.id) || '')).filter(Boolean));
+    const legacyModels = [];
+    const legacySeen = new Set();
+    exactModels.forEach(p => {
+      const id = String(p);
+      if(!catalogIDs.has(id) && !legacySeen.has(id)){
+        legacySeen.add(id);
+        legacyModels.push(id);
+      }
+    });
+    const pickerRows = models.map(m => {
+      const id = String((m && m.id) || '');
+      if(!id) return '';
+      const checked = exactModels.indexOf(id) >= 0 ? ' checked' : '';
+      return '<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '"' + checked + ' onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + '</label>';
+    });
+    legacyModels.forEach(id => {
+      pickerRows.push('<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '" checked onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + ' <span style="font-size:10px;color:var(--warn);border:1px solid currentColor;border-radius:6px;padding:0 4px">legacy</span></label>');
+    });
+    if(!pickerRows.length){
       modelList.innerHTML = '<div style="font-size:12px;color:var(--warn);padding:4px">模型清单为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     } else {
-      modelList.innerHTML = models.map(m => {
-        const id = String((m && m.id) || '');
-        if(!id) return '';
-        const checked = keyModelExact(row).indexOf(id) >= 0 ? ' checked' : '';
-        return '<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '"' + checked + ' onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + '</label>';
-      }).join('');
+      modelList.innerHTML = pickerRows.join('');
+      // A realm switch rebuilds the rows; reapply the search box so the list
+      // does not silently jump back to everything.
+      filterKeyModelPicker(i);
     }
     updateKeyModelSummary(i);
   }
@@ -18699,12 +18787,39 @@ async function renderKeyPickers(i){
     updateKeyAccountSummary(i);
   }
 }
+async function changeKeyRealm(i, realm){
+  const row = API_KEY_ROWS[i];
+  if(!row) return;
+  ensureKeyEditDraft(row);
+  const next = String(realm || '').trim().toLowerCase();
+  row._draftRealm = next;
+  const current = keyEditModels(row);
+  const reconciled = reconcileKeyModelsForRealm(current, next);
+  if(current.length && reconciled.dropped.length && !reconciled.models.length){
+    // Dropping the last entry would make the draft empty, which the server
+    // reads as "unrestricted". Keep the old selection in the draft (so
+    // switching back restores it) and let the save guard refuse the empty
+    // commit until a model for this exit is chosen.
+    toast('当前出口没有可用模型；已保留原选择，保存前请先选择模型', 'warn');
+  } else {
+    row._draftModels = reconciled.models;
+    warnDroppedKeyModels(reconciled.dropped);
+  }
+  updateKeyModelSummary(i);
+  // The old list belongs to the previous exit; reload it so the checkboxes and
+  // the canonical ids on offer match the realm the Key is about to be saved
+  // with.
+  await renderKeyPickers(i);
+}
 function toggleKeyModel(i, el){
   const row = API_KEY_ROWS[i];
   if(!row) return;
-  const exact = new Set(keyModelExact(row));
+  ensureKeyEditDraft(row);
+  const models = keyEditModels(row);
+  const exact = new Set(models.filter(p => String(p).indexOf('*') < 0));
+  const wild = models.filter(p => String(p).indexOf('*') >= 0);
   if(el.checked) exact.add(el.value); else exact.delete(el.value);
-  row.models = keyModelWildcards(row).concat(Array.from(exact).sort());
+  row._draftModels = wild.concat(Array.from(exact).sort());
   updateKeyModelSummary(i);
 }
 function toggleKeyAccount(i, el){
@@ -18719,11 +18834,23 @@ function setKeyModelsAll(i, on){
   const list = document.getElementById('editKeyModelList_' + i);
   const row = API_KEY_ROWS[i];
   if(!list || !row) return;
-  list.querySelectorAll('input[type=checkbox]').forEach(el => { el.checked = on; });
+  ensureKeyEditDraft(row);
+  const boxes = Array.from(list.querySelectorAll('input[type=checkbox]'));
+  if(on && !boxes.length){
+    // An empty filtered list must not turn a restricted Key into an
+    // unrestricted one: the server reads [] as "no limit". Keep the draft.
+    toast('当前出口没有可用模型；已保留原选择', 'warn');
+    return;
+  }
+  boxes.forEach(el => { el.checked = on; });
+  const wild = keyEditModels(row).filter(p => String(p).indexOf('*') >= 0);
+  // Start from the saved exact set and add the visible values, so a catalog
+  // that omits a legacy model cannot make select-all drop its permission.
+  const existingExact = keyEditModels(row).filter(p => String(p).indexOf('*') < 0);
   const exact = on
-    ? Array.from(list.querySelectorAll('input[type=checkbox]')).map(el => el.value).sort()
+    ? Array.from(new Set(existingExact.concat(boxes.map(el => el.value)))).sort()
     : [];
-  row.models = keyModelWildcards(row).concat(exact);
+  row._draftModels = wild.concat(exact);
   updateKeyModelSummary(i);
 }
 function setKeyAccountsAll(i, on){
@@ -18777,16 +18904,21 @@ function filterKeyAccountPicker(i){
 
 function openEditKey(index){
   if(!API_KEY_ROWS[index]) return;
+  beginKeyEdit(API_KEY_ROWS[index]);
   API_KEY_ROWS[index]._editing = true;
   renderKeyRows();
 }
 
 function cancelEditKey(index){
-  if(!API_KEY_ROWS[index]) return;
-  if(!API_KEY_ROWS[index].id && !API_KEY_ROWS[index].masked){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  // The committed row was never touched while editing; dropping the draft is
+  // the whole rollback. The next whole-list save reads the original values.
+  clearKeyEdit(row);
+  if(!row.id && !row.masked){
     API_KEY_ROWS.splice(index, 1);
   } else {
-    API_KEY_ROWS[index]._editing = false;
+    row._editing = false;
   }
   renderKeyRows();
 }
@@ -18807,7 +18939,7 @@ async function saveSingleKey(index, btn){
     const concInput = document.getElementById('editKeyConc_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
-  const realm = realmSelect ? realmSelect.value : (row.realm || '');
+  const realm = realmSelect ? realmSelect.value : keyEditRealm(row);
   const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
 
   if(!keyVal && !row.masked){
@@ -18815,9 +18947,23 @@ async function saveSingleKey(index, btn){
     return;
   }
 
+  // The committed row only changes here. Reconcile the draft allow-list with
+  // the realm being saved: a canonical id from the exit the Key is leaving can
+  // never match again, while bare/upstream patterns stay valid.
+  const draftModels = keyEditModels(row);
+  const reconciled = reconcileKeyModelsForRealm(draftModels, realm);
+  if(reconciled.dropped.length && !reconciled.models.length && draftModels.length){
+    // An empty allow-list means "unrestricted" on the server. Refuse to widen
+    // a restricted Key just because the target exit has no matching entries.
+    toast('当前出口没有可用模型，已取消保存；请选择模型或取消编辑', 'warn');
+    return;
+  }
+  warnDroppedKeyModels(reconciled.dropped);
+
   row.name = name || '未命名';
   row.realm = realm;
-  row.models = Array.isArray(row.models) ? row.models.slice() : [];
+  row.models = reconciled.models;
+  clearKeyEdit(row);
   row.accounts = Array.isArray(row.accounts) ? row.accounts.slice() : [];
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
   if(keyVal) row.key = keyVal;
@@ -18872,7 +19018,7 @@ async function removeKeyRow(index){
 }
 
 function addApiKeyRow(){
-  API_KEY_ROWS.push({
+  const row = {
     id: '',
     name: '',
     key: randomKeyValue(),
@@ -18882,7 +19028,9 @@ function addApiKeyRow(){
     enabled: true,
     masked: '',
     _editing: true
-  });
+  };
+  beginKeyEdit(row);
+  API_KEY_ROWS.push(row);
   renderKeyRows();
   setTimeout(() => {
     const el = document.getElementById('editKeyName_' + (API_KEY_ROWS.length - 1));
@@ -20193,12 +20341,15 @@ function analyticsQuery(){
 
 /* 模型性能指标与用量一览
  *
- * Reads the combined view on purpose. The table carries its own 区域
- * column, so scoping it to the gateway's current exit would hide exactly the
- * models this page exists to compare. */
-// /v1/models?realm=all 的目录在这里只作展示白名单（哪些模型算"已知模型"），
-// 内容变化极慢，却跟着 5 秒轮询每轮重取一份（实测统计页开着约 12~15 次/分钟、
-// 约 24KB/次）。改成一个 TTL：进统计页时取一次，之后最多每 10 分钟回源一次；
+ * 用量数据仍读全区域合并视图。The table carries its own 区域 column, so
+ * scoping the data to the gateway's current exit would hide exactly the models
+ * this page exists to compare. 白名单只决定「哪些 id 算已知模型」，所以改读
+ * 网关目录：它的 `m.id` 是带出口前缀的 canonical id（`cn/deepseek`），与用量
+ * 聚合的分组键一致；旧的 `/v1/models?realm=all` 只有裸 id，会把已限定的模型
+ * 全部滤掉。 */
+// 网关目录在这里只作展示白名单（哪些模型算"已知模型"），内容变化极慢，却跟着
+// 5 秒轮询每轮重取一份（实测统计页开着约 12~15 次/分钟、约 24KB/次）。改成一个
+// TTL：进统计页时取一次，之后最多每 10 分钟回源一次；
 // 取失败不刷新时间戳，下一轮继续重试（和原来"失败也不清空白名单"一致）。
 let matrixModelsAt = 0;
 const MATRIX_MODELS_TTL_MS = 10 * 60 * 1000;
@@ -20210,11 +20361,22 @@ async function loadAnalyticsMatrix(){
       getJSON('/usage' + q, POLL_READ),
       getJSON('/usage/perf' + q, POLL_READ),
       // The catalog is only a display filter, so a failure here must not
-      // blank the table; null keeps the previous allowlist.
-      needModels ? getJSON('/v1/models?realm=all').catch(() => null) : Promise.resolve(null),
+      // blank the table; null keeps the previous allowlist. Gateway ids are
+      // canonical (`cn/deepseek`), so they match the usage grouping keys.
+      needModels ? getJSON('/v1/models?realm=gateway').catch(() => null) : Promise.resolve(null),
     ]);
     if(models && models.data){
-      MATRIX_MODELS = new Set(models.data.map(m => m.id));
+      // The whitelist answers "which ids are known models". Gateway rows carry
+      // both the canonical id (intl/deepseek) and the upstream id (deepseek):
+      // bare requests and pre-upgrade usage rows still aggregate under the
+      // latter, so dropping it would hide them while the totals keep counting.
+      const allowed = new Set();
+      models.data.forEach(m => {
+        [m && m.id, m && m.upstream_id].forEach(id => {
+          if(typeof id === 'string' && id) allowed.add(id.toLowerCase());
+        });
+      });
+      MATRIX_MODELS = allowed;
       matrixModelsAt = Date.now();
     }
     cachedMatrixData = { usage: usage, perf: perf };
@@ -20278,12 +20440,12 @@ function renderPerfMatrix(usage, perf){
   const validModels = MATRIX_MODELS;
   const modelMap = {};
   Object.entries(usage.by_model || {}).forEach(([id, m]) => {
-    if((!validModels.size || validModels.has(id)) && m.requests > 0 && !id.endsWith('-model')){
+    if((!validModels.size || validModels.has(String(id).toLowerCase())) && m.requests > 0 && !id.endsWith('-model')){
       modelMap[id] = Object.assign({id: id}, m);
     }
   });
   Object.entries(bmPerf).forEach(([id, p]) => {
-    if((!validModels.size || validModels.has(id)) && p.requests > 0 && !id.endsWith('-model') && !modelMap[id]){
+    if((!validModels.size || validModels.has(String(id).toLowerCase())) && p.requests > 0 && !id.endsWith('-model') && !modelMap[id]){
       modelMap[id] = {
         id: id,
         requests: p.requests || 0,
