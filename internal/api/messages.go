@@ -616,20 +616,31 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
+	// Parse the exit-qualified reference before translation so the chat map and
+	// the provider payload only carry the upstream model ID. The default
+	// max-output lookup therefore sees the same ID the provider does, and the
+	// prefix never reaches the provider.
+	rawModel := strings.TrimSpace(anthropicText(payload["model"]))
+	ref, err := parseModelRef(rawModel, func(exit string) bool {
+		return s != nil && s.providerForRealm(exit) != nil
+	})
+	if err != nil {
+		failure := &apiFailure{Status: http.StatusBadRequest, Message: err.Error()}
+		s.observeMessagesFailureDetail(r, rawModel, false, failure, "")
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
+		return
+	}
+	if ref.Qualified {
+		payload["model"] = ref.Upstream
+	}
 	chat, err := messagesToChatWithDefault(payload, s.defaultMaxOutputTokens)
 	if err != nil {
 		failure := &apiFailure{Status: http.StatusBadRequest, Message: err.Error()}
-		s.observeMessagesFailureDetail(r, "", false, failure, "")
+		s.observeMessagesFailureDetail(r, ref.Requested(), false, failure, "")
 		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
-	model := strings.TrimSpace(anthropicText(chat["model"]))
-	if failure := s.keyModelFailure(r, model); failure != nil {
-		s.observeMessagesFailureDetail(r, model, boolValue(chat["stream"]), failure, "")
-		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
-		return
-	}
-	s.serveMessagesRequest(w, r, payload, chat)
+	s.serveMessagesRequest(w, r, payload, chat, ref.Requested(), ref.Exit)
 }
 
 func (s *Server) parseMessagesPayload(w http.ResponseWriter, r *http.Request) (map[string]any, *apiFailure) {
@@ -644,10 +655,27 @@ func (s *Server) parseMessagesPayload(w http.ResponseWriter, r *http.Request) (m
 	return payload, nil
 }
 
-func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, payload, chat map[string]any) {
+// serveMessagesRequest opens the upstream for one translated Messages request.
+// requestedModel is the client-visible ID (canonical when exit-qualified) and
+// exit is the parsed routing prefix; the chat map's model is the upstream ID.
+// The key allow-list is enforced here once, after the reference is parsed, so a
+// qualified request can match either its canonical or its upstream spelling.
+func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, payload, chat map[string]any, requestedModel, exit string) {
 	started := time.Now()
-	model := strings.TrimSpace(anthropicText(chat["model"]))
+	upstreamModel := strings.TrimSpace(anthropicText(chat["model"]))
 	stream := boolValue(chat["stream"])
+	ref := modelRef{
+		Raw:       requestedModel,
+		Exit:      exit,
+		Upstream:  upstreamModel,
+		Canonical: requestedModel,
+		Qualified: exit != "",
+	}
+	if failure := s.keyModelFailureForRef(r, ref); failure != nil {
+		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, "")
+		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
+		return
+	}
 	realm, explicitRealm := realmFromRequest(r)
 	if realm == "" {
 		if bodyRealm := strings.TrimSpace(anthropicText(payload["realm"])); bodyRealm != "" {
@@ -657,7 +685,7 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	}
 	boundRealm, boundFailure := s.apiKeyBoundRealm(r)
 	if boundFailure != nil {
-		s.observeMessagesFailureDetail(r, model, stream, boundFailure, "")
+		s.observeMessagesFailureDetail(r, requestedModel, stream, boundFailure, "")
 		writeAnthropicError(w, boundFailure.Status, boundFailure.Message, protocol.AnthropicErrorType(boundFailure.Status), time.Time{})
 		return
 	}
@@ -665,53 +693,62 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	rawChat, err := chatMapToRaw(chat)
 	if err != nil {
 		failure := localFailure(http.StatusBadRequest, "invalid request")
-		s.observeMessagesFailureDetail(r, model, stream, failure, realm)
+		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, realm)
 		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
 	request := &chatHTTPRequest{
-		payload:       rawChat,
-		model:         model,
-		stream:        stream,
-		realm:         realm,
-		explicitRealm: explicitRealm,
-		sessionKey:    chatSessionKey(r, rawChat),
-		headers:       r.Header.Clone(),
+		payload:        rawChat,
+		model:          upstreamModel,
+		requestedModel: requestedModel,
+		exit:           exit,
+		stream:         stream,
+		realm:          realm,
+		explicitRealm:  explicitRealm,
+		sessionKey:     chatSessionKey(r, rawChat),
+		headers:        r.Header.Clone(),
 	}
 	provider, resolveErr := s.resolveChatProvider(r.Context(), request, boundRealm)
 	if resolveErr != nil {
 		failure := failureFromError(resolveErr)
-		s.observeMessagesFailureDetail(r, model, stream, failure, boundRealm)
+		failureRealm := boundRealm
+		if exit != "" {
+			failureRealm = exit
+		}
+		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, failureRealm)
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), time.Time{})
 		return
 	}
 	var allowRealmFallback *bool
-	if explicitRealm || boundRealm != "" {
+	if exit != "" || explicitRealm || boundRealm != "" {
 		disabled := false
 		allowRealmFallback = &disabled
 	}
 	chatRequest := providers.ChatRequest{
 		Raw:                rawChat,
 		Headers:            r.Header.Clone(),
-		Model:              model,
+		Model:              upstreamModel,
 		Messages:           chatMessagesRaw(chat),
 		SessionKey:         request.sessionKey,
 		AllowRealmFallback: allowRealmFallback,
 		AllowedAccounts:    keyAllowedAccounts(r),
 	}
+	// The provider payload and ChatRequest above carry the upstream ID. Output
+	// helpers must echo the canonical requested ID instead of an upstream alias.
+	chat["model"] = requestedModel
 	upstream, openErr := provider.OpenChat(r.Context(), chatRequest)
 	if openErr != nil {
 		if upstream != nil {
 			_ = upstream.Close()
 		}
 		failure := failureFromError(openErr)
-		s.observeMessagesFailureDetail(r, model, stream, failure, provider.Realm())
+		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, provider.Realm())
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), retryReset(openErr))
 		return
 	}
 	if upstream == nil {
 		failure := localFailure(http.StatusBadGateway, "upstream returned no chat stream")
-		s.observeMessagesFailureDetail(r, model, stream, failure, provider.Realm())
+		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, provider.Realm())
 		writeAnthropicError(w, failure.Status, failure.Message, "api_error", time.Time{})
 		return
 	}
@@ -719,14 +756,14 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	defer func() { _ = tracked.Close() }()
 
 	if stream {
-		s.serveMessagesStream(w, r, tracked, model, anthropicText(chat["reasoning_effort"]))
+		s.serveMessagesStream(w, r, tracked, requestedModel, upstreamModel, exit != "", anthropicText(chat["reasoning_effort"]))
 		return
 	}
-	chatObject, aggregateErr := aggregateChatStream(tracked, model)
+	chatObject, aggregateErr := aggregateChatStream(tracked, requestedModel)
 	if aggregateErr != nil {
 		failure := failureFromError(aggregateErr)
 		observation := ProtocolObservation{
-			Protocol: "messages", Model: model, RequestedModel: model,
+			Protocol: "messages", Model: upstreamModel, RequestedModel: requestedModel,
 			Realm: provider.Realm(), Effort: anthropicText(chat["reasoning_effort"]),
 			Stream: false, Outcome: "failed", Status: failure.Status,
 			Error: true, Message: failure.Message,
@@ -736,9 +773,12 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 		writeAnthropicError(w, failure.Status, failure.Message, protocol.AnthropicErrorType(failure.Status), retryReset(aggregateErr))
 		return
 	}
+	if exit != "" {
+		chatObject["model"] = requestedModel
+	}
 	result := chatToMessages(chatObject)
 	observation := ProtocolObservation{
-		Protocol: "messages", Model: model, RequestedModel: model,
+		Protocol: "messages", Model: upstreamModel, RequestedModel: requestedModel,
 		Realm: provider.Realm(), Effort: anthropicText(chat["reasoning_effort"]),
 		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(chatObject["usage"]),

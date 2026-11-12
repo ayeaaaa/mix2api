@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -16,6 +17,19 @@ func messagesTestServer(t *testing.T, stream *stubStream, options ServerOptions)
 	options.Version = "2.0.0-test"
 	options.Providers = []providers.Provider{provider}
 	return newTestServer(options), provider
+}
+
+// messagesChatStream returns a Messages-compatible chat stream whose chunks
+// carry the given model, so tests can distinguish the provider's model field
+// from the client-visible requested ID.
+func messagesChatStream(model string) providers.ChatStream {
+	return newStubStream(chatSSE(
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}},
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}},
+	)...)
 }
 
 func requireAnthropicError(t *testing.T, rec *httptest.ResponseRecorder, status int, errType string) map[string]any {
@@ -281,5 +295,216 @@ func TestMessagesAliases(t *testing.T) {
 		if rec.Header().Get("Allow") != http.MethodPost {
 			t.Fatalf("%s Allow = %q", path, rec.Header().Get("Allow"))
 		}
+	}
+}
+
+func TestMessagesQualifiedModelRoutesExactExit(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	if got := len(intl.opened()); got != 0 {
+		t.Fatalf("intl OpenChat calls = %d, want 0", got)
+	}
+	if got := len(cn.opened()); got != 0 {
+		t.Fatalf("cn OpenChat calls = %d, want 0", got)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if got, ok := decodeJSONString(requests[0].Raw["model"]); !ok || got != "shared" {
+		t.Fatalf("Raw[model] = %q ok=%v, want shared", got, ok)
+	}
+	if flag := requests[0].AllowRealmFallback; flag == nil || *flag {
+		t.Fatalf("AllowRealmFallback = %v, want explicit false", flag)
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+func TestMessagesQualifiedNonStreamEchoesCanonicalModel(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}},
+		openStream: messagesChatStream("upstream-alias")}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "upstream-alias") {
+		t.Fatalf("qualified response leaked the upstream model: %s", rec.Body)
+	}
+	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
+		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+func TestMessagesQualifiedModelRealmConflict(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{cn, codearts}})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages?realm=codearts",
+		`{"model":"cn/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireAnthropicError(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "realm and model exit conflict") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestMessagesQualifiedModelKeyRealmConflict(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	server := newTestServer(ServerOptions{
+		Providers:   []providers.Provider{cn, codearts},
+		APIKeyRealm: func(*http.Request) string { return "cn" },
+	})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireAnthropicError(t, rec, http.StatusForbidden, "permission_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "api key realm does not allow exit codearts") {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("bound-key conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+func TestMessagesQualifiedModelKeyAllowList(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	_, keyStore, _, _, _ := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{
+		{ID: "upstream", Name: "upstream", Key: "key-upstream", Models: []string{"shared"}},
+		{ID: "denied", Name: "denied", Key: "key-denied", Models: []string{"cn/*"}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}},
+		openStream: messagesChatStream("shared")}
+	// Use New, not newTestServer: the panel gate must not pass through, or the
+	// API-key row never reaches request context.
+	server := New(ServerOptions{Providers: []providers.Provider{codearts}, KeyStore: keyStore})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"x-api-key": "key-upstream"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upstream allow-list status = %d body=%s", rec.Code, rec.Body)
+	}
+	if got := len(codearts.opened()); got != 1 {
+		t.Fatalf("codearts OpenChat calls = %d, want 1", got)
+	}
+
+	rec = serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"x-api-key": "key-denied"})
+	requireAnthropicError(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if got := len(codearts.opened()); got != 1 {
+		t.Fatalf("denied request reached the provider: OpenChat calls = %d, want 1", got)
+	}
+}
+
+func TestMessagesQualifiedModelObservation(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	var observed []ProtocolObservation
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}},
+		openStream: messagesChatStream("upstream-alias")}
+	server := newTestServer(ServerOptions{
+		Providers:        []providers.Provider{codearts},
+		ProtocolObserver: func(observation ProtocolObservation) { observed = append(observed, observation) },
+	})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	observation := observed[0]
+	if observation.Model != "shared" {
+		t.Fatalf("observation Model = %q, want shared", observation.Model)
+	}
+	if observation.RequestedModel != "codearts/shared" {
+		t.Fatalf("observation RequestedModel = %q, want codearts/shared", observation.RequestedModel)
+	}
+	if observation.Realm != "codearts" {
+		t.Fatalf("observation Realm = %q, want codearts", observation.Realm)
+	}
+}
+
+func TestMessagesQualifiedModelDefaultMaxOutput(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}},
+		openStream: messagesChatStream("shared")}
+	server := newTestServer(ServerOptions{
+		Providers: []providers.Provider{codearts},
+		DefaultMaxOutputTokens: func(model string) int {
+			if model == "shared" {
+				return 128
+			}
+			return 0
+		},
+	})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if got := string(requests[0].Raw["max_tokens"]); got != "128" {
+		t.Fatalf("defaulted max_tokens = %q, want 128", got)
+	}
+}
+
+func TestMessagesBareModelRealmUnchanged(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	intl := &stubProvider{id: "workbuddy", realm: "intl", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: messagesChatStream("shared")}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{intl, cn, codearts}})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages?realm=cn",
+		`{"model":"shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	requests := cn.opened()
+	if len(requests) != 1 {
+		t.Fatalf("cn OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if len(intl.opened()) != 0 || len(codearts.opened()) != 0 {
+		t.Fatalf("bare request leaked intl=%d codearts=%d", len(intl.opened()), len(codearts.opened()))
+	}
+	if body := decodeBody(t, rec); body["model"] != "shared" {
+		t.Fatalf("response model = %#v, want shared", body["model"])
 	}
 }

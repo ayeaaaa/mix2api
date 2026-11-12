@@ -254,3 +254,53 @@ func TestMessagesStreamJSONDataMatchesEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestMessagesQualifiedStreamEchoesCanonicalModel(t *testing.T) {
+	t.Setenv("WB_ENABLE_ANTHROPIC_MESSAGES", "1")
+	var observed []ProtocolObservation
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}},
+		openStream: messagesChatStream("upstream-alias")}
+	server := newTestServer(ServerOptions{
+		Providers:        []providers.Provider{codearts},
+		ProtocolObserver: func(observation ProtocolObservation) { observed = append(observed, observation) },
+	})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
+		`{"model":"codearts/shared","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream-alias") {
+		t.Fatalf("qualified stream leaked the upstream model: %s", body)
+	}
+	seen := false
+	for _, event := range parseSSEBody(t, body) {
+		if event.Event != "message_start" {
+			continue
+		}
+		message, _ := event.Data["message"].(map[string]any)
+		if message["model"] != "codearts/shared" {
+			t.Fatalf("message_start model = %#v, want codearts/shared", message["model"])
+		}
+		seen = true
+	}
+	if !seen {
+		t.Fatalf("missing message_start event: %s", body)
+	}
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	if observation := observed[0]; observation.Model != "shared" ||
+		observation.RequestedModel != "codearts/shared" ||
+		observation.Realm != "codearts" || !observation.Stream {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
