@@ -107,6 +107,15 @@ handshakes pass. The build baseline moved to Go 1.26 and uTLS 1.8.2;
 SSE through the bridge passed on 2026-11-12. Published as `v2.2.0` at
 `de1d650`; evidence: `docs/smoke/2026-11-12-release-2.2.0.md`.
 
+**v2.3.0 addendum:** the dashboard is now single-layout, with module-grouped
+navigation and provider-scoped accounts/settings; CodeArts uses the shared
+daily check-in scheduler; WorkBuddy account views expose finite-expiry credit
+totals; and the Usage page can scope every analytics request to the selected
+realm with stale-response guards. `make check`, `make race`, and the 9/9
+dashboard JS suites pass. Published as `v2.3.0` at `62fddc7`; evidence:
+`docs/smoke/2026-11-12-release-2.3.0.md`. No real media or Windows SCM execution
+was added; the existing media waiver and Windows gate remain unchanged.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
