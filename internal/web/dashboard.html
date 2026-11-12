@@ -11781,16 +11781,20 @@ function activityStatusOf(a){
   }
 
   // 国内版：加油站
+  // lastCheckin 是已经成功的权威记录。当天已经有它时，更早的定时重试失败不能再
+  // 把徽章盖成“失败”；失败行仍留在活动历史里，供排查用。
   const event = ACTIVITY_TODAY.byUid[uid];
   const gasDone = a && a.lastCheckin;
+  const gasDoneToday = gasDone && String(gasDone).startsWith(todayStamp());
   let gas = {kind: 'none', label: '加油站', state: '无本地记录', at: '', message: ''};
-  if(event && event.task === 'checkin'){
+  if(gasDoneToday){
+    gas = {kind: 'done', label: '加油站', state: '已领',
+           at: String(gasDone).replace('T', ' ').slice(0, 19), message: ''};
+  } else if(event && event.task === 'checkin'){
     gas = {kind: event.ok ? 'ok' : 'failed', label: '加油站',
            state: event.ok ? '已领' : '失败',
            at: String(event.ts || '').replace('T', ' ').slice(0, 19),
            message: String(event.message || '')};
-  } else if(gasDone && String(gasDone).startsWith(todayStamp())){
-    gas = {kind: 'done', label: '加油站', state: '已领', at: '', message: ''};
   }
 
   // 国内版：成长计划连登打卡

@@ -3,7 +3,7 @@
 日期：2026-11-12
 状态：已实施
 基线：`origin/v2` v2.3.0
-相关：PR #14（活动出口优先）、PR #15（Buddy 签到状态）；两者与本设计独立，合并后再 rebase。
+相关：PR #14（活动出口优先）、PR #15（Buddy 签到状态）；基线 v2.3.2 已包含两者。
 
 ## 1. 意图
 
@@ -72,7 +72,7 @@ raccoon/raccoon-090dd3
 2. 显式 realm：`X-Realm` → `?realm` → body `realm`。
 3. `realm=all`：只在 WorkBuddy `intl`/`cn` 里按模型匹配。
 4. 单 provider：直接使用。
-5. 多 provider 且无 realm：按注册顺序做模型匹配；PR #14 合并后先尝试活动出口，再回退到其余 provider。
+5. 多 provider 且无 realm：先尝试活动出口，再按注册顺序回退到其余 provider；不做唯一性检查。
 6. 匹配不到返回 404。
 
 `Provider.OpenChat` 收到的 `ChatRequest.Model` 和 `Raw["model"]` 都是客户端原始模型 ID；provider 不做前缀解析。
@@ -251,7 +251,7 @@ func parseModelRef(raw string, isExit func(string) bool) (modelRef, error)
    - 没有 → 404。
    - `realm=gateway` 的模型列表仍允许部分 provider 失败；只有路由时的裸模型唯一性判断要求完整目录。
 4. 显式具体 realm：直接使用该 provider。
-5. 无 realm：单 provider 直接用；多 provider 先按活动出口偏好，再做唯一匹配（PR #14 合并后的行为）。
+5. 无 realm：单 provider 直接用；多 provider 先按活动出口偏好，再按注册顺序回退；不做唯一性检查。
 6. 匹配不到：404。
 
 ### 6.3 错误语义

@@ -7,7 +7,7 @@ OpenAI Chat Completions、Responses、Anthropic Messages、SSE 和内嵌看板�
 WorkBuddy 国际版 / 国内版、华为云 CodeArts（遥遥领先）、Raccoon（商汤小浣熊）收进同一套
 API Key 和账号池。
 
-当前版本：**2.3.0**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
+当前版本：**2.3.2**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
 
 ## 由来
 
@@ -71,9 +71,9 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 兼容规则：
 
 - 不带前缀的裸模型 ID 仍然可用：先看 API Key 绑定，再按显式 `realm`
-  选择；没有显式 realm 时按注册顺序取第一个目录命中的出口，不做唯一性
-  检查。未绑定出口的 Key 在 `realm=gateway` 下是例外，裸模型要求全出口
-  唯一匹配；绑定出口的 Key 仍先返回绑定出口。
+  选择；没有显式 realm 时先尝试活动出口，再按注册顺序回退到第一个目录
+  命中的出口，不做唯一性检查。未绑定出口的 Key 在 `realm=gateway` 下是
+  例外，裸模型要求全出口唯一匹配；绑定出口的 Key 仍先返回绑定出口。
 - 对裸 ID 和目录发现，`realm=all` 保持原语义：只合并 WorkBuddy
   国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定出口的 Key 仍以绑定
   为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。
@@ -93,7 +93,7 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 镜像已发布到 GHCR，支持 `linux/amd64` 和 `linux/arm64`：
 
 ```sh
-docker pull ghcr.io/ayeaaaa/mix2api:v2.3.0
+docker pull ghcr.io/ayeaaaa/mix2api:v2.3.2
 ```
 
 先在当前 shell 生成两个独立凭据，不要把真实值写进仓库或提交到 Git：
@@ -124,7 +124,7 @@ docker run -d --name mix2api \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   -v "$PWD/data/media:/app/media" \
-  ghcr.io/ayeaaaa/mix2api:v2.3.0
+  ghcr.io/ayeaaaa/mix2api:v2.3.2
 ```
 
 这里只把端口发布到 `127.0.0.1`，适合前置反向代理或用 SSH 隧道访问。需要让
@@ -172,8 +172,8 @@ compose 默认发布 `58675` 到所有网卡。公网部署前请加反向代理
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf mix2api-2.3.0-linux-amd64.tar.gz
-cd mix2api-2.3.0-linux-amd64
+tar -xzf mix2api-2.3.2-linux-amd64.tar.gz
+cd mix2api-2.3.2-linux-amd64
 ```
 
 启动。`HOST` 默认是 `127.0.0.1`；数据目录默认是当前目录下的

@@ -8,7 +8,7 @@ SSE, and an embedded dashboard, bringing WorkBuddy International / China,
 Huawei Cloud CodeArts（遥遥领先）, and Raccoon（商汤小浣熊） into one API-key and
 account-pool surface.
 
-Current version: **2.3.0**. The default branch is `v2`; `main` keeps the frozen
+Current version: **2.3.2**. The default branch is `v2`; `main` keeps the frozen
 v1.6.6 history.
 
 ## Origin
@@ -81,10 +81,11 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 Compatibility rules:
 
 - Bare model IDs are still accepted: API-key binding first, then an explicit
-  `realm`; with no explicit realm, the first registered provider whose catalog
-  matches wins, with no uniqueness check. For an unbound key, a bare model
-  under `realm=gateway` must instead match exactly one exit; a key bound to an
-  exit resolves to that exit before the unique-match check.
+  `realm`; with no explicit realm, the active exit is tried first, then the
+  first registered provider whose catalog matches wins, with no uniqueness
+  check. For an unbound key, a bare model under `realm=gateway` must instead
+  match exactly one exit; a key bound to an exit resolves to that exit before
+  the unique-match check.
 - For bare IDs and catalog discovery, `realm=all` keeps its original meaning:
   WorkBuddy International / China only, without CodeArts or Raccoon; a key
   bound to an exit still follows the binding. Qualified requests route by
@@ -108,7 +109,7 @@ for details.
 Images are published to GHCR for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/ayeaaaa/mix2api:v2.3.0
+docker pull ghcr.io/ayeaaaa/mix2api:v2.3.2
 ```
 
 Generate two independent credentials in the current shell. Do not write real
@@ -140,7 +141,7 @@ docker run -d --name mix2api \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   -v "$PWD/data/media:/app/media" \
-  ghcr.io/ayeaaaa/mix2api:v2.3.0
+  ghcr.io/ayeaaaa/mix2api:v2.3.2
 ```
 
 This publishes the port only on `127.0.0.1`, suitable for a reverse proxy or an
@@ -192,8 +193,8 @@ extract it:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf mix2api-2.3.0-linux-amd64.tar.gz
-cd mix2api-2.3.0-linux-amd64
+tar -xzf mix2api-2.3.2-linux-amd64.tar.gz
+cd mix2api-2.3.2-linux-amd64
 ```
 
 Start it. `HOST` defaults to `127.0.0.1`; the data directories default to

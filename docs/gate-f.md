@@ -116,6 +116,21 @@ dashboard JS suites pass. Published as `v2.3.0` at `62fddc7`; evidence:
 `docs/smoke/2026-11-12-release-2.3.0.md`. No real media or Windows SCM execution
 was added; the existing media waiver and Windows gate remain unchanged.
 
+**v2.3.1 addendum:** an API key without a bound realm now prefers the persisted
+active realm when multiple providers expose the same model, then falls back to
+the previous provider order if the active catalog does not contain it. Explicit
+realm and bound-key precedence are unchanged. Regression tests and `make check`
+/ `make race` pass. Published as `v2.3.1` at `8a26e9a`; evidence:
+`docs/smoke/2026-11-12-release-2.3.1.md`. No media or Windows SCM gate changed.
+
+**v2.3.2 addendum:** the Buddy check-in badge now treats a successful
+`lastCheckin` record for the current day as authoritative, so an earlier
+scheduler retry failure cannot overwrite it; failures remain in the activity
+history. Dashboard asset hash/size metadata and a 10th JS suite cover the case.
+`make check`, `make race`, and the 10/10 dashboard JS harness pass. Published as
+`v2.3.2` at `e9b11ea`; evidence: `docs/smoke/2026-11-12-release-2.3.2.md`. No
+media or Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.

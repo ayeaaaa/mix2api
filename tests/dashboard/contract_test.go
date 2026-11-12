@@ -66,6 +66,7 @@ func TestDashboardContract(t *testing.T) {
 		filepath.Join(root, "tests", "dashboard", "node", "_test_analytics_realm_scope.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_settings_load.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_daily_chat_pending.js"),
+		filepath.Join(root, "tests", "dashboard", "node", "_test_buddy_checkin_status.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_settings_update_ui.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_update_rollback_ui.js"),
 		filepath.Join(root, "tests", "oracle", "dashboard.md"),

@@ -3,6 +3,75 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.3.2] - 2026-11-12
+
+### 中文
+
+#### 修复
+
+- 国内版 Buddy 加油站徽章不再被更早的定时重试失败覆盖：只要账号当天已有
+  `lastCheckin` 成功记录，就显示「已领」；失败记录仍保留在活动历史里供排查。
+- 同步更新 dashboard 资产哈希与文件大小元数据，并新增该场景的 dashboard
+  JS 回归测试。
+
+#### 验证
+
+- `make check`、`go test -race ./internal/web ./tests/dashboard` 通过；
+  dashboard JS 套件 10/10 通过。
+
+### English
+
+#### Fixed
+
+- The China Buddy check-in badge is no longer overwritten by an earlier
+  scheduler retry failure. When the account already has a successful
+  `lastCheckin` record for today, the badge shows Claimed; failed attempts
+  remain in the activity history for diagnosis.
+- Updated the dashboard asset hash and size metadata and added a dashboard JS
+  regression test for this case.
+
+#### Verification
+
+- `make check` and `go test -race ./internal/web ./tests/dashboard` pass; the
+  dashboard JS harness passes 10/10 suites.
+
+## [2.3.1] - 2026-11-12
+
+### 中文
+
+#### 修复
+
+- 未绑定 realm 的 API Key 请求多个 provider 共有的模型时，优先使用持久化的
+  活动出口；如果活动出口的模型目录没有该模型，再按原 provider 顺序回退。
+  显式 realm 和 API Key 绑定 realm 的优先级不变。修复国内版活动出口下，
+  `deepseek-v4.1-flash` 这类同名模型被 CodeArts 抢先路由、usage 记到
+  `realm=codearts` 的问题。
+- 新增活动出口优先与模型缺失回退的回归测试。
+
+#### 验证
+
+- `go test ./internal/api`、`go test -race ./internal/api` 和 `make check`
+  通过。
+
+### English
+
+#### Fixed
+
+- An API key without a bound realm now prefers the persisted active realm when
+  several providers expose the same model. If the active realm's catalog does
+  not carry the model, resolution falls back to the previous provider order.
+  Explicit realm and API-key-bound realm precedence is unchanged. This fixes
+  shared models such as `deepseek-v4.1-flash` being routed to CodeArts while
+  the active exit was WorkBuddy China, which recorded usage under
+  `realm=codearts`.
+- Added regression tests for active-realm preference and fallback when the
+  model is missing from the active catalog.
+
+#### Verification
+
+- `go test ./internal/api`, `go test -race ./internal/api`, and `make check`
+  pass.
+
 ## [2.3.0] - 2026-11-12
 
 ### 中文

@@ -448,7 +448,27 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 	if len(s.providers) == 1 {
 		return s.providers[0], nil
 	}
-	return s.resolveAmong(ctx, s.providers, request.model, "")
+	// When several providers expose the same model, registration order is not
+	// an operator intent. Try the persisted active realm first, then fall back
+	// to the remaining providers if that realm's catalog does not carry the
+	// model. Without a realm service (tests/embedded callers) keep the legacy
+	// provider order.
+	candidates := s.providers
+	if s.realm != nil {
+		if preferred := strings.TrimSpace(s.realm.Active(ctx)); preferred != "" {
+			if provider := s.providerForRealm(preferred); provider != nil {
+				ordered := make([]providers.Provider, 0, len(s.providers))
+				ordered = append(ordered, provider)
+				for _, candidate := range s.providers {
+					if candidate != provider {
+						ordered = append(ordered, candidate)
+					}
+				}
+				candidates = ordered
+			}
+		}
+	}
+	return s.resolveAmong(ctx, candidates, request.model, "")
 }
 
 // catalogResolutionTimeout bounds every catalog read used for model-to-realm
