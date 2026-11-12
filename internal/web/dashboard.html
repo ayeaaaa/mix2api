@@ -18618,8 +18618,11 @@ function toggleKeyPicker(kind, i){
   const el = document.getElementById(id);
   if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
-async function loadKeyModelCatalog(){
-  if(Array.isArray(window.KEY_MODEL_CATALOG) && window.KEY_MODEL_CATALOG.length){
+async function loadKeyModelCatalog(force){
+  // `force` lets a caller bypass the in-memory cache; tests use it to make the
+  // fallback path deterministic when an earlier background load may still be
+  // settling. Normal UI callers keep the cache.
+  if(!force && Array.isArray(window.KEY_MODEL_CATALOG) && window.KEY_MODEL_CATALOG.length){
     return window.KEY_MODEL_CATALOG;
   }
   const out = [];

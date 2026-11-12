@@ -138,10 +138,13 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
     JSON.stringify(page.filterKeyModelsForRealm(LEGACY_MODELS, 'cn')));
 
   /* ---- 4. 网关失败回退到无范围列表，选择器不能空 -------------------- */
+  // Let any initial background catalog load settle, then force a fresh read so
+  // the assertion does not depend on cache timing.
+  await settle();
   delete page.KEY_MODEL_CATALOG;
   gatewayMode = 'fail';
   CALLS = [];
-  const fallback = await page.loadKeyModelCatalog();
+  const fallback = await page.loadKeyModelCatalog(true);
   check('网关失败后仍然先尝试网关目录',
     CALLS[0] === '/v1/models?realm=gateway', JSON.stringify(CALLS));
   check('网关失败后回退到 /v1/models',
