@@ -20,6 +20,7 @@ const SUITES = [
   '_test_analytics_realm_scope.js',
   '_test_settings_load.js',
   '_test_daily_chat_pending.js',
+  '_test_buddy_checkin_status.js',
   '_test_settings_update_ui.js',
   '_test_update_rollback_ui.js',
 ];
