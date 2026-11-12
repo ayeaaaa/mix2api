@@ -56,6 +56,17 @@ zero). The scan uses Go 1.26.11 and uTLS 1.8.2.
 - darwin/amd64
 - darwin/arm64
 
+## Release matrix
+
+```sh
+GOTOOLCHAIN=go1.26.11 make dist VERSION=2.1.2-utls-test
+cd dist && sha256sum -c SHA256SUMS
+```
+
+The tool wrote 14 assets (11 archives plus `SHA256SUMS`, `release.json`, and
+`sbom.spdx.json`); all checksum entries passed. The SBOM contains
+`refraction-networking/utls`.
+
 ## Container smoke
 
 Built `mix2api:utls-test` from the working tree with
