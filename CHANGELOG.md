@@ -24,6 +24,8 @@ Keep a Changelog and the project uses semantic versioning.
 - 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
 - 修复手机端左侧导航遮罩被基础 `display:none` 规则覆盖的问题：菜单打开后
   点击非菜单区域会关闭侧栏。
+- 修复左上角菜单图标被按钮默认 padding 压缩成小点的问题：图标按钮改为无
+  padding，并使用更清晰的列表/菜单图标。
 
 ### English
 
@@ -51,6 +53,8 @@ Keep a Changelog and the project uses semantic versioning.
   normalized card, table, toolbar, and empty-state spacing.
 - Fixed the mobile sidebar backdrop being hidden by the base `display:none`
   rule; tapping outside the open menu now closes it.
+- Fixed the top-left menu icon being squeezed into a dot by the button's default
+  padding; icon buttons now use zero padding and a clearer list/menu glyph.
 
 ## [2.2.0] - 2026-11-12
 

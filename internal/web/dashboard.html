@@ -4813,10 +4813,15 @@ html[data-ui="next"] .next-pill{
 html[data-ui="next"] .next-icon-btn{
   appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--dim);
   width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
-  cursor:pointer;flex:0 0 34px;
+  cursor:pointer;flex:0 0 34px;padding:0;
 }
 html[data-ui="next"] .next-icon-btn svg{width:16px;height:16px}
 html[data-ui="next"] .next-menu-btn{display:none}
+html[data-ui="next"] #nextMenuBtn{
+  width:36px;height:36px;flex-basis:36px;border-color:rgba(79,70,229,.28);
+  background:var(--accent-soft);color:var(--accent);box-shadow:0 2px 7px rgba(79,70,229,.12);
+}
+html[data-ui="next"] #nextMenuBtn svg{width:20px;height:20px}
 html[data-ui="next"] .theme-style-group,
 html[data-ui="next"] .theme-style-group + .theme-sep{display:none!important}
 html[data-ui="next"] #settingsCatBar{display:none!important}
@@ -5470,9 +5475,11 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
     <div id="nextTopbar">
       <div class="next-topbar-left">
         <button type="button" id="nextMenuBtn" class="next-icon-btn next-menu-btn" onclick="nextOpenSidebar()" aria-label="打开导航">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3.5" y="4" width="17" height="16" rx="2.5"/>
-            <path d="M9 4v16"/>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" aria-hidden="true">
+            <path d="M9 7h10M9 12h10M9 17h10"/>
+            <circle cx="4.8" cy="7" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="4.8" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="4.8" cy="17" r="1.15" fill="currentColor" stroke="none"/>
           </svg>
         </button>
         <div class="next-page-heading">
