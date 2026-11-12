@@ -28,6 +28,7 @@ func copyPlatformFixture(t *testing.T, name, dest string) {
 }
 
 func TestGateDDataRoundTrip(t *testing.T) {
+	t.Setenv("WB_UPDATE_ALLOW_CURRENT_OWNER", "1")
 	root := t.TempDir()
 	accounts := filepath.Join(root, "accounts")
 	usageDir := filepath.Join(root, "usage")

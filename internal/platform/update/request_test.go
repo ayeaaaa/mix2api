@@ -21,7 +21,7 @@ func systemdManager(t *testing.T) (*RequestManager, string) {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_UPDATE_INSTALL_ENABLED", "1")
-	executor := &Executor{Dir: dir, UnitPath: unit, EnabledLink: link}
+	executor := &Executor{Dir: dir, UnitPath: unit, EnabledLink: link, AllowOwner: func(uint32) bool { return true }}
 	now := time.Unix(1700000000, 0)
 	manager := NewRequestManager(RequestManagerOptions{
 		Dir: dir, Executor: executor, Now: func() time.Time { return now },
@@ -236,6 +236,7 @@ func TestExecutorContractDocumented(t *testing.T) {
 func TestBackupsLocalSource(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WB_UPDATE_INSTALL_ENABLED", "1")
+	t.Setenv("WB_UPDATE_ALLOW_CURRENT_OWNER", "1")
 	if err := os.WriteFile(filepath.Join(dir, ExecutorMarker), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestStatusUpdatedAt(t *testing.T) {
 		"state": "succeeded", "version": "1.2.3", "message": "ok",
 		"updated_at": "2026-01-02 03:04:05",
 	})
-	status, ok := (&Executor{Dir: dir, UnitPath: "/none"}).ReadStatus()
+	status, ok := (&Executor{Dir: dir, UnitPath: "/none", AllowOwner: func(uint32) bool { return true }}).ReadStatus()
 	if !ok || status.UpdatedAt != "2026-01-02 03:04:05" {
 		t.Fatalf("status = %#v ok=%v", status, ok)
 	}

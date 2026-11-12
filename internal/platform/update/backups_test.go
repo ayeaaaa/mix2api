@@ -30,7 +30,7 @@ func TestReadBackupsFiltersUnknownVersion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, BackupsFile), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	items, ok := (&Executor{Dir: dir}).ReadBackups()
+	items, ok := (&Executor{Dir: dir, AllowOwner: func(uint32) bool { return true }}).ReadBackups()
 	if !ok || len(items) != 1 || items[0].Version != "2.0.0-rc.1" {
 		t.Fatalf("ReadBackups = %#v ok=%v", items, ok)
 	}
