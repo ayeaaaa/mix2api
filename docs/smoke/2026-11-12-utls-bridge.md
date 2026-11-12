@@ -7,6 +7,7 @@ Commits:
 - `2b03cd0` — `feat(workbuddy): add optional uTLS fingerprint bridge`
 - `2e58634` — `build: require Go 1.26 and uTLS 1.8.2`
 - `e7c26cf` — `fix(utlsbridge): address review findings`
+- `cec7490` — `fix(utlsbridge): harden lifecycle and defaults`
 
 ## Automated tests
 
@@ -29,6 +30,8 @@ Both passed. The new package tests cover:
 - certificate verification failure is reported with detail
 - `Bridge.Close` returns when an upstream stalls
 - unsupported proxy schemes fail without fallback
+- control characters in CONNECT hosts are rejected
+- repeated `Default` / `CloseDefault` calls are idempotent
 
 ## Live handshake
 
@@ -75,14 +78,18 @@ Independent review found and this branch fixed:
 - Certificate/proxy failures now include sanitized detail; invalid modes fail
   startup instead of leaving a healthy-looking process.
 - Transient `Accept` errors no longer stop the bridge permanently.
+- `Default` can restart after `CloseDefault`; repeated tests and a future
+  in-process restart no longer silently fall back to native TLS.
+- Control characters in CONNECT hosts are rejected, and the half-close
+  capability that the bridge did not honor was removed.
 - OpenWrt UCI exposes `tls_fingerprint`.
 
 ## Release matrix
 
 ```sh
-OUT=/tmp/opencode/dist-utls-final GOTOOLCHAIN=go1.26.11 \
-  make dist VERSION=2.1.2-utls-test2
-cd /tmp/opencode/dist-utls-final && sha256sum -c SHA256SUMS
+OUT=/tmp/opencode/dist-utls-final4 GOTOOLCHAIN=go1.26.11 \
+  make dist VERSION=2.1.2-utls-test4
+cd /tmp/opencode/dist-utls-final4 && sha256sum -c SHA256SUMS
 ```
 
 The tool wrote 14 assets (11 archives plus `SHA256SUMS`, `release.json`, and
@@ -91,7 +98,7 @@ The tool wrote 14 assets (11 archives plus `SHA256SUMS`, `release.json`, and
 
 ## Container smoke
 
-Built `mix2api:utls-test2` from the working tree with
+Built `mix2api:utls-test4` from commit `cec7490` with
 `golang:1.26-alpine`, then ran it with `MIX2API_TLS_FINGERPRINT=node` and an
 empty data directory. `/health` returned `ok:true` and
 `version:"2.1.1-utls-test"`; startup logged
