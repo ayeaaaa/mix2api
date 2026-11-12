@@ -54,10 +54,11 @@ mix2api v2（单二进制）
 
 ## 全出口模型 ID
 
-`GET /v1/models?realm=gateway` 返回全部出口的模型目录，每个条目的 `id` 是
-规范模型 ID `<出口>/<上游模型>`。四个规范前缀是 `intl/`、`cn/`、
-`codearts/`、`raccoon/`；在请求的 `model` 里带上前缀即可指定出口，网关会
-在发往上游前去掉前缀。
+`GET /v1/models?realm=gateway` 在 API Key 未绑定出口时返回全部出口的模型
+目录；Key 绑定出口时只返回该出口的模型。每个条目的 `id` 是规范模型 ID
+`<出口>/<上游模型>`。四个规范前缀是 `intl/`、`cn/`、`codearts/`、
+`raccoon/`；在请求的 `model` 里带上前缀即可指定出口，网关会在发往上游前
+去掉前缀。
 
 ```bash
 curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
@@ -69,14 +70,18 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 
 兼容规则：
 
-- 不带前缀的裸模型 ID 仍然可用，解析顺序不变：先看 API Key 绑定，再看
-  显式 `realm`，最后才做活动出口和唯一匹配。
-- `realm=all` 保持原语义：只合并 WorkBuddy 国际版 / 国内版，不包含
-  CodeArts 和 Raccoon；需要全出口目录时使用 `realm=gateway`。
+- 不带前缀的裸模型 ID 仍然可用：先看 API Key 绑定，再按显式 `realm`
+  选择；没有显式 realm 时按注册顺序取第一个目录命中的出口，不做唯一性
+  检查。`realm=gateway` 的裸模型例外，要求全出口唯一匹配。
+- 对裸 ID 和目录发现，`realm=all` 保持原语义：只合并 WorkBuddy
+  国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定出口的 Key 仍以绑定
+  为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。
 - API Key 的 realm 绑定仍是硬策略：出口前缀必须与绑定出口一致，否则返回
   403，前缀不能越权访问其他出口。
-- Key 的模型白名单继续使用 `fnmatch`：`deepseek-*` 匹配裸 WorkBuddy ID，
-  `deepseek/*` 只匹配带斜杠的 ID。
+- Key 的模型白名单继续使用 `fnmatch`，大小写不敏感，同时匹配规范 ID 和
+  上游 ID：`deepseek/*` 只匹配带斜杠的 `deepseek/...`，不会匹配无斜杠的
+  `deepseek-v4.1-flash`；后者需要 `deepseek-*` 或 `deepseek*`。因此
+  `deepseek-*` 也能命中 `cn/deepseek-v4.1-flash` 的上游部分。
 
 细节见[出口限定模型设计](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)。
 
