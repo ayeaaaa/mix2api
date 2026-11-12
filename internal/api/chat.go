@@ -139,10 +139,11 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 	defer func() { _ = tracked.Close() }()
 
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
+	printed := chatPrintedToolRecovery(request.payload)
 	if request.stream {
-		result = writeChatStream(w, r, tracked, request.model)
+		result = writeChatStream(w, r, tracked, request.model, printed)
 	} else {
-		result = writeChatCompletion(w, tracked, request.model)
+		result = writeChatCompletion(w, tracked, request.model, printed)
 	}
 	observation := ProtocolObservation{
 		Protocol: "chat", Model: request.model, RequestedModel: request.model,
@@ -452,11 +453,11 @@ func isWorkBuddyProvider(provider providers.Provider) bool {
 // silent upstreams alive, and the normalizer hoists usage/finish fields. After
 // [DONE] the writer keeps reading long enough to forward a provider's post-DONE
 // credit accounting frame; clients that stop at [DONE] never wait for it.
-func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string) chatStreamResult {
+func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, printed ...*printedToolRecovery) chatStreamResult {
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	writer := newSSEWriter(w)
 	defer writer.Close()
-	normalizer := newStreamNormalizer(model)
+	normalizer := newStreamNormalizer(model, printed...)
 
 	for {
 		frame, err := stream.Next()
@@ -490,6 +491,14 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 				result.Outcome = "client_aborted"
 				return result
 			}
+			// A read failure is not a completed tool call. Release buffered
+			// candidate text verbatim before the error, without finish/[DONE].
+			if text, _ := normalizer.printed.flush(true, ""); text != "" {
+				if writeErr := writer.Write(normalizer.chunk(map[string]any{"content": text}, nil)); writeErr != nil {
+					result.Outcome = "client_aborted"
+					return result
+				}
+			}
 			failure := providerFailure(err)
 			result.Outcome = "upstream_aborted"
 			result.Status = failure.Status
@@ -508,6 +517,27 @@ func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.Ch
 		}
 		if len(frame) == 0 {
 			continue
+		}
+		// A provider may signal failure inside an SSE data frame instead of
+		// returning a Next error. Do not turn that failed turn into recovered
+		// calls or a successful [DONE]. Forward the actual error once.
+		parsed := protocol.ParseFrame(frame)
+		if parsed.Valid && parsed.Fields["error"] != nil {
+			if text, _ := normalizer.printed.flush(true, ""); text != "" {
+				if writeErr := writer.Write(normalizer.chunk(map[string]any{"content": text}, nil)); writeErr != nil {
+					result.Outcome = "client_aborted"
+					return result
+				}
+			}
+			if writeErr := writer.Write(frame); writeErr != nil {
+				result.Outcome = "client_aborted"
+				return result
+			}
+			result.Outcome = "upstream_aborted"
+			result.Status = http.StatusBadGateway
+			result.Error = true
+			result.Message = "upstream stream error"
+			return result
 		}
 		if sseFrameDone(frame) {
 			for _, out := range normalizer.finalize() {
@@ -583,8 +613,8 @@ func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatSt
 	}
 }
 
-func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, model string) chatStreamResult {
-	completion, err := aggregateChatStream(stream, model)
+func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, model string, printed ...*printedToolRecovery) chatStreamResult {
+	completion, err := aggregateChatStream(stream, model, printed...)
 	if err != nil {
 		status := providerFailure(err).Status
 		if status == 0 {
@@ -610,11 +640,14 @@ func writeChatCompletion(w http.ResponseWriter, stream providers.ChatStream, mod
 	return chatStreamResult{Outcome: "completed", Status: http.StatusOK, Usage: usage}
 }
 
-func aggregateChatStream(stream providers.ChatStream, model string) (map[string]any, error) {
+func aggregateChatStream(stream providers.ChatStream, model string, printed ...*printedToolRecovery) (map[string]any, error) {
 	if stream == nil {
 		return nil, localFailure(http.StatusBadGateway, "upstream returned no chat stream")
 	}
 	aggregate := &chatAggregate{tools: make(map[int]*chatToolCall)}
+	if len(printed) > 0 {
+		aggregate.printed = printed[0]
+	}
 	reader := protocol.NewReader(stream)
 	for {
 		chunk, err := reader.Next()
@@ -628,6 +661,16 @@ func aggregateChatStream(stream providers.ChatStream, model string) (map[string]
 			// Keep reading: Raccoon emits its credit usage frame after [DONE].
 			aggregate.sawDone = true
 			continue
+		}
+		if aggregate.printed != nil {
+			if chunk.ChoiceCount > 1 {
+				aggregate.printed = nil
+			}
+			for _, choice := range chunk.Choices {
+				if choice.Index != 0 {
+					aggregate.printed = nil
+				}
+			}
 		}
 		aggregate.addChunk(chunk)
 	}
@@ -694,6 +737,7 @@ func ssePayload(frame []byte) string {
 // chatAggregate folds OpenAI-style SSE chunks into one chat.completion. It
 // intentionally understands only the generic wire shape; no Raccoon fields.
 type chatAggregate struct {
+	printed     *printedToolRecovery
 	id          string
 	model       string
 	content     []string
@@ -897,6 +941,17 @@ func (a *chatAggregate) completion(requestedModel string) (map[string]any, bool)
 		}
 	} else if finish == "tool_calls" {
 		finish = "stop"
+	}
+	if len(a.tools) == 0 && a.printed != nil && (finish == "stop" || finish == "length") {
+		if calls, clean := a.printed.parse(strings.Join(a.content, "")); len(calls) > 0 {
+			message["content"] = clean
+			toolCalls := make([]any, 0, len(calls))
+			for _, call := range calls {
+				toolCalls = append(toolCalls, map[string]any{"id": call.id, "type": "function", "function": map[string]any{"name": call.name, "arguments": call.arguments}})
+			}
+			message["tool_calls"] = toolCalls
+			finish = "tool_calls"
+		}
 	}
 
 	created := a.lastCreated

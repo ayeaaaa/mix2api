@@ -177,14 +177,19 @@ type streamNormalizer struct {
 	tools   map[int]*chatToolCall
 	content strings.Builder
 	reason  strings.Builder
+	printed printedTextBuffer
 }
 
-func newStreamNormalizer(model string) *streamNormalizer {
-	return &streamNormalizer{
+func newStreamNormalizer(model string, printed ...*printedToolRecovery) *streamNormalizer {
+	n := &streamNormalizer{
 		id:    randomChatID("chatcmpl-wb-"),
 		model: strings.TrimSpace(model),
 		tools: make(map[int]*chatToolCall),
 	}
+	if len(printed) > 0 {
+		n.printed.recovery = printed[0]
+	}
+	return n
 }
 
 func (n *streamNormalizer) absorb(frame []byte) [][]byte {
@@ -219,6 +224,21 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 	}
 
 	choices, _ := chunk["choices"].([]any)
+	var prefixFrames [][]byte
+	multipleChoices := len(choices) > 1
+	for _, rawChoice := range choices {
+		if choice, ok := rawChoice.(map[string]any); ok {
+			if index, ok := intValue(choice["index"]); ok && index != 0 {
+				multipleChoices = true
+			}
+		}
+	}
+	if multipleChoices {
+		if text, _ := n.printed.flush(true, ""); text != "" {
+			prefixFrames = append(prefixFrames, n.chunk(map[string]any{"content": text}, nil))
+		}
+		n.printed.disabled = true
+	}
 	if len(choices) > 0 {
 		n.sawChoice = true
 	}
@@ -232,9 +252,21 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 		deltaMeaningful := false
 		finishPresent := false
 		delta, _ := choice["delta"].(map[string]any)
+		if delta == nil {
+			if message, ok := choice["message"].(map[string]any); ok {
+				delta = message
+				choice["delta"] = delta
+				delete(choice, "message")
+			}
+		}
 		if delta != nil {
 			if piece, ok := delta["content"].(string); ok && piece != "" {
 				n.content.WriteString(piece)
+				if text := n.printed.feed(piece); text != "" {
+					delta["content"] = text
+				} else {
+					delete(delta, "content")
+				}
 			}
 			if piece, ok := delta["reasoning_content"].(string); ok && piece != "" {
 				n.reason.WriteString(piece)
@@ -258,10 +290,10 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 		}
 	}
 	if len(choices) == 0 && usageSeenHere {
-		return nil
+		return prefixFrames
 	}
 	if len(choices) > 0 && !meaningful {
-		return nil
+		return prefixFrames
 	}
 
 	chunk["id"] = n.id
@@ -275,7 +307,7 @@ func (n *streamNormalizer) absorb(frame []byte) [][]byte {
 	if err != nil {
 		return [][]byte{frame}
 	}
-	return [][]byte{[]byte("data: " + string(encoded) + "\n\n")}
+	return append(prefixFrames, []byte("data: "+string(encoded)+"\n\n"))
 }
 
 func betterUsage(current, candidate map[string]any) map[string]any {
@@ -383,6 +415,16 @@ func (n *streamNormalizer) finalize() [][]byte {
 	}
 
 	out := make([][]byte, 0, len(n.tools)+2)
+	blocked := n.finish != "" && n.finish != "stop" && n.finish != "length" && n.finish != "tool_calls"
+	prefix := n.content.String()
+	prefix = prefix[:len(prefix)-n.printed.buffer.Len()]
+	text, recovered := n.printed.flush(len(n.tools) > 0 || blocked, prefix)
+	if text != "" {
+		out = append(out, n.chunk(map[string]any{"content": text}, nil))
+	}
+	for index, call := range recovered {
+		n.tools[index] = &chatToolCall{id: call.id, kind: "function", name: call.name, arguments: call.arguments}
+	}
 	indexes := make([]int, 0, len(n.tools))
 	for index := range n.tools {
 		indexes = append(indexes, index)
@@ -419,6 +461,9 @@ func (n *streamNormalizer) finalize() [][]byte {
 	}
 
 	finish := n.finish
+	if len(recovered) > 0 {
+		finish = "tool_calls"
+	}
 	if kept > 0 {
 		if finish == "" || finish == "stop" {
 			finish = "tool_calls"
