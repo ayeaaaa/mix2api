@@ -23,6 +23,72 @@ import (
 
 var _ providers.HTTPError = (*APIError)(nil)
 
+func TestChat1017ToolChoiceNoneKeepsDeclarations(t *testing.T) {
+	build, err := buildChatBody(t5Request(t, map[string]any{
+		"model": "deepseek-v4.1-flash-1017", "messages": t5Messages(t5UserMessage("do the thing")),
+		"tool_choice": "none", "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "run_shell", "parameters": map[string]any{"type": "object"}}}},
+	}, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, _ := build.Body["tools"].([]any)
+	if len(tools) != 1 || build.Body["tool_choice"] != "none" || build.Body["model"] != "deepseek-v4.1-flash-1017" {
+		t.Fatalf("1017 tool declarations/choice/model lost: %v", build.Body)
+	}
+}
+
+func TestChat1017NoneChoiceKeepsLegacyFunctions(t *testing.T) {
+	for _, choice := range []any{"none", map[string]any{"type": "none"}} {
+		for _, legacy := range []bool{false, true} {
+			payload := map[string]any{"model": "deepseek-v4.1-flash-1017", "messages": t5Messages(t5UserMessage("do the thing")), "tool_choice": choice}
+			function := map[string]any{"name": "run_shell", "parameters": map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []any{"command"}}}
+			if legacy {
+				payload["functions"] = []any{function}
+			} else {
+				payload["tools"] = []any{map[string]any{"type": "function", "function": function}}
+			}
+			build, err := buildChatBody(t5Request(t, payload, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools, _ := build.Body["tools"].([]any)
+			if len(tools) != 1 || build.Body["tool_choice"] != "none" {
+				t.Fatalf("choice=%v legacy=%v: tool declarations or none selection lost: %v", choice, legacy, build.Body)
+			}
+			fn := tools[0].(map[string]any)["function"].(map[string]any)
+			params := fn["parameters"].(map[string]any)
+			if fn["name"] != "run_shell" || params["properties"].(map[string]any)["command"] == nil {
+				t.Fatalf("function schema lost: %v", fn)
+			}
+			if _, exists := build.Body["functions"]; exists {
+				t.Fatal("legacy declarations must be represented as modern tools on the upstream wire")
+			}
+		}
+	}
+}
+
+func TestChat1017LegacyFunctionSelection(t *testing.T) {
+	for _, tc := range []struct {
+		legacy any
+		modern string
+		want   string
+	}{
+		{"none", "", "none"}, {"auto", "", "auto"}, {"none", "auto", "auto"}, {map[string]any{"name": "run_shell"}, "", "required"},
+	} {
+		payload := map[string]any{"model": "deepseek-v4.1-flash-1017", "messages": t5Messages(t5UserMessage("hi")), "functions": []any{map[string]any{"name": "run_shell", "parameters": map[string]any{"type": "object"}}}, "function_call": tc.legacy}
+		if tc.modern != "" {
+			payload["tool_choice"] = tc.modern
+		}
+		build, err := buildChatBody(t5Request(t, payload, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if build.Body["tool_choice"] != tc.want || len(chatList(build.Body["tools"])) != 1 {
+			t.Fatalf("legacy=%v modern=%s: selection/schema lost: %v", tc.legacy, tc.modern, build.Body)
+		}
+	}
+}
+
 type t5Capture struct {
 	Method string
 	Path   string

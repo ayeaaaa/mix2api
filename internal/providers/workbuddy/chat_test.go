@@ -2099,6 +2099,32 @@ func TestChatToolChoiceUnknownAndTupleItems(t *testing.T) {
 	}
 }
 
+// Pin upstream PR #57 at the actual outbound request boundary: disabling
+// tool selection must not remove the schemas the agent supplied.
+func TestChatToolChoiceNoneKeepsDeclarations(t *testing.T) {
+	for _, choice := range []any{"none", map[string]any{"type": "none"}} {
+		dir := t.TempDir()
+		writeChatAccount(t, dir, "none-contract", realmIntl, map[string]any{"product": productDesktop})
+		provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+		fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+		server := newChatTestServer(t, fake)
+		provider.chatBaseURL = server.URL
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model": "deepseek-v4.1-flash", "messages": []any{map[string]any{"role": "user", "content": "do the thing"}},
+			"tool_choice": choice, "tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "run_shell", "parameters": map[string]any{"type": "object"}}}},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = stream.Close()
+		body := decodeChatBody(t, fake.snapshot()[0])
+		tools, _ := body["tools"].([]any)
+		if len(tools) != 1 || body["tool_choice"] != "none" {
+			t.Fatalf("choice=%v outbound tools/choice lost: %v", choice, body)
+		}
+	}
+}
+
 func TestChatResetClockUnescapeAndNestedRestriction(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	body := `{"msg":"\u5c06\u5728 2099-01-01 08:00:00 UTC+8 \u91cd\u7f6e"}`

@@ -631,6 +631,29 @@ func buildChatBody(req providers.ChatRequest) (*chatBuild, *APIError) {
 			body[key] = value
 		}
 	}
+	// Accept legacy function declarations as an input alias, not an upstream
+	// field. Dropping them here would recreate the PR #57 failure mode: an
+	// agent supplied function schemas, but the model receives none.
+	if _, hasTools := payload["tools"]; !hasTools {
+		if functions, exists := payload["functions"]; exists {
+			body["functions"] = functions
+			// Converting declarations must also preserve the legacy client's
+			// selection. In particular function_call=none must not become auto.
+			if _, modernChoice := payload["tool_choice"]; !modernChoice {
+				switch choice := payload["function_call"].(type) {
+				case string:
+					mode := strings.ToLower(strings.TrimSpace(choice))
+					if mode == "none" || mode == "auto" {
+						body["tool_choice"] = mode
+					}
+				case map[string]any:
+					if name, ok := choice["name"].(string); ok && strings.TrimSpace(name) != "" {
+						body["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": strings.TrimSpace(name)}}
+					}
+				}
+			}
+		}
+	}
 	model := defaultChatModel
 	if provided, ok := payload["model"]; ok {
 		if text := chatTruthyText(provided); text != "" {
@@ -1176,6 +1199,18 @@ func cleanupOrphanToolCalls(messages []any) []any {
 }
 
 func normalizeChatTools(body map[string]any) {
+	if functions, exists := body["functions"]; exists {
+		if _, hasTools := body["tools"]; !hasTools {
+			tools := make([]any, 0)
+			for _, raw := range chatList(functions) {
+				if function, ok := raw.(map[string]any); ok {
+					tools = append(tools, map[string]any{"type": "function", "function": function})
+				}
+			}
+			body["tools"] = tools
+		}
+		delete(body, "functions")
+	}
 	rawTools := chatList(body["tools"])
 	if len(rawTools) == 0 {
 		delete(body, "tools")
@@ -1429,6 +1464,14 @@ func deepNormalizeChatSchema(schema map[string]any) map[string]any {
 func normalizeChatToolChoice(body map[string]any) {
 	choice, _ := body["tool_choice"].(map[string]any)
 	if choice != nil {
+		if kind, _ := choice["type"].(string); strings.EqualFold(strings.TrimSpace(kind), "none") {
+			if len(chatList(body["tools"])) > 0 {
+				body["tool_choice"] = "none"
+			} else {
+				delete(body, "tool_choice")
+			}
+			return
+		}
 		function, _ := choice["function"].(map[string]any)
 		name := strings.TrimSpace(modelText(function["name"]))
 		tools := chatList(body["tools"])
@@ -1450,6 +1493,9 @@ func normalizeChatToolChoice(body map[string]any) {
 			return
 		}
 		delete(body, "tool_choice")
+	}
+	if value, ok := body["tool_choice"].(string); ok && strings.EqualFold(strings.TrimSpace(value), "none") {
+		body["tool_choice"] = "none"
 	}
 	if len(chatList(body["tools"])) == 0 {
 		delete(body, "tool_choice")

@@ -195,7 +195,7 @@ func (c *Cache) Save(kind string, entry map[string]any) error {
 	merged := make([]map[string]any, 0, len(existing)+1)
 	for _, old := range existing {
 		oldRealm, _ := old["realm"].(string)
-		if kind == "by_account" || kind == "remaining" || oldRealm != realm {
+		if kind == "by_account" || kind == "remaining" || oldRealm == realm {
 			continue
 		}
 		merged = append(merged, old)

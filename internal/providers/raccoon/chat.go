@@ -657,6 +657,50 @@ func buildChatBody(req providers.ChatRequest) (map[string]json.RawMessage, strin
 		}
 		body[key] = append(json.RawMessage(nil), value...)
 	}
+	// Legacy declarations are an input alias for tools. Preserve their
+	// schemas instead of silently filtering them out of the wire body.
+	if _, hasTools := raw["tools"]; !hasTools {
+		if functions, exists := raw["functions"]; exists {
+			var list []map[string]any
+			decoder := json.NewDecoder(bytes.NewReader(functions))
+			decoder.UseNumber()
+			if decoder.Decode(&list) != nil {
+				return nil, "", &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest, Message: "functions must be an array of function declarations"}
+			}
+			tools := make([]any, 0, len(list))
+			for _, function := range list {
+				if function != nil {
+					tools = append(tools, map[string]any{"type": "function", "function": function})
+				}
+			}
+			body["tools"] = mustRawJSON(tools)
+			if _, modernChoice := raw["tool_choice"]; !modernChoice {
+				var selection any
+				if value, exists := raw["function_call"]; exists && json.Unmarshal(value, &selection) == nil {
+					switch choice := selection.(type) {
+					case string:
+						mode := strings.ToLower(strings.TrimSpace(choice))
+						if mode == "none" || mode == "auto" {
+							body["tool_choice"] = mustRawJSON(mode)
+						}
+					case map[string]any:
+						if name, ok := choice["name"].(string); ok && strings.TrimSpace(name) != "" {
+							body["tool_choice"] = mustRawJSON(map[string]any{"type": "function", "function": map[string]any{"name": strings.TrimSpace(name)}})
+						}
+					}
+				}
+			}
+		}
+	}
+	if value, exists := body["tool_choice"]; exists {
+		var choice struct {
+			Type string `json:"type"`
+		}
+		var text string
+		if json.Unmarshal(value, &choice) == nil && strings.EqualFold(strings.TrimSpace(choice.Type), "none") || json.Unmarshal(value, &text) == nil && strings.EqualFold(strings.TrimSpace(text), "none") {
+			body["tool_choice"] = json.RawMessage(`"none"`)
+		}
+	}
 
 	model, hasModel := body["model"]
 	modelName := ""
