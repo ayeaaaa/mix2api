@@ -33,7 +33,7 @@ func newUpdateFixture(t *testing.T) (*Server, *update.Checker, *update.RequestMa
 	_ = os.WriteFile(link, []byte("l"), 0o600)
 	t.Setenv("WB_UPDATE_INSTALL_ENABLED", "1")
 	manager := update.NewRequestManager(update.RequestManagerOptions{
-		Dir: dir, Executor: &update.Executor{Dir: dir, UnitPath: unit, EnabledLink: link},
+		Dir: dir, Executor: &update.Executor{Dir: dir, UnitPath: unit, EnabledLink: link, AllowOwner: func(uint32) bool { return true }},
 		Now: func() time.Time { return now }, Port: 8788, Root: "/srv/app",
 	})
 	server := New(ServerOptions{Updates: checker, UpdateRequests: manager, PanelAuth: passThroughAuth, Version: "1.0.0"})
@@ -162,7 +162,7 @@ func TestUpdateBackupsKeepBackupsJSONNumber(t *testing.T) {
 	_ = os.WriteFile(link, []byte("l"), 0o600)
 	t.Setenv("WB_UPDATE_INSTALL_ENABLED", "1")
 	manager := update.NewRequestManager(update.RequestManagerOptions{
-		Dir: dir, Executor: &update.Executor{Dir: dir, UnitPath: unit, EnabledLink: link},
+		Dir: dir, Executor: &update.Executor{Dir: dir, UnitPath: unit, EnabledLink: link, AllowOwner: func(uint32) bool { return true }},
 	})
 	settingsService := settings.New(settings.Service{Store: store})
 	server := New(ServerOptions{UpdateRequests: manager, Settings: settingsService, PanelAuth: passThroughAuth})
