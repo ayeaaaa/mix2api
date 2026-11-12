@@ -104,9 +104,9 @@ const page = loadDashboard({
 const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
 
 (async () => {
-  /* ---- 1. 结构：renderKeyPickers 按行 realm 过滤 --------------------- */
-  check('renderKeyPickers 应调用 filterKeyModelsForRealm(models, row.realm)',
-    /filterKeyModelsForRealm\(models, row\.realm\)/.test(html));
+  /* ---- 1. 结构：renderKeyPickers 按编辑行的 realm 过滤 --------------- */
+  check('renderKeyPickers 应调用 filterKeyModelsForRealm(models, keyEditRealm(row))',
+    /filterKeyModelsForRealm\(models, keyEditRealm\(row\)\)/.test(html));
 
   /* ---- 2. 网关目录优先 ---------------------------------------------- */
   CALLS = [];
@@ -169,9 +169,10 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
       && allList.includes('value="intl/m1"'),
     allList);
 
-  /* ---- 6. 编辑中切换出口：旧出口的 canonical 选择必须清理 ------------ */
+  /* ---- 6. 编辑中切换出口：只改草稿，已保存的行不动 ------------------ */
   check('出口下拉框切换时应重算模型清单', /onchange="changeKeyRealm\('/.test(html));
 
+  page.openEditKey(0);
   const realmSelect = document.getElementById('editKeyRealm_0');
   realmSelect.value = 'intl';
   const logs = [];
@@ -183,21 +184,58 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
     console.log = realLog;
   }
 
-  const switchedRow = page.API_KEY_ROWS[0];
-  check('切换后行 realm 更新为 intl', switchedRow.realm === 'intl', switchedRow.realm);
-  check('切换后旧出口的 canonical 选择被移除',
-    JSON.stringify(switchedRow.models) === JSON.stringify(['m-legacy']),
-    JSON.stringify(switchedRow.models));
+  const editingRow = page.API_KEY_ROWS[0];
+  check('切换出口只更新草稿，不改动已保存的 realm',
+    editingRow.realm === 'cn', editingRow.realm);
+  check('切换出口只更新草稿，不改动已保存的模型',
+    JSON.stringify(editingRow.models) === JSON.stringify(['cn/m1', 'm-legacy']),
+    JSON.stringify(editingRow.models));
+  check('草稿按新出口清理了旧 canonical 选择',
+    editingRow._draftRealm === 'intl'
+      && JSON.stringify(editingRow._draftModels) === JSON.stringify(['m-legacy']),
+    JSON.stringify([editingRow._draftRealm, editingRow._draftModels]));
   check('切换后给出移除提示', logs.some(line => line.includes('已移除')), JSON.stringify(logs));
   const switchedList = document.getElementById('editKeyModelList_0').innerHTML;
   check('切换后选择器只列目标出口的模型',
     switchedList.includes('value="intl/m1"') && !switchedList.includes('cn/m1'),
     switchedList);
 
-  /* ---- 7. 保存兜底：旧列表漏网也不能把旧出口的 canonical id 写出去 --- */
-  page.API_KEY_ROWS[0].models = ['cn/m1', 'm-legacy'];
-  document.getElementById('editKeyName_0').value = '固定国际版';
+  /* ---- 7. 取消：草稿丢弃，之后整表保存不得提交被取消的出口 ---------- */
+  page.cancelEditKey(0);
+  check('取消后已保存的 realm 仍是 cn', editingRow.realm === 'cn', editingRow.realm);
+  check('取消后已保存的模型仍是原列表',
+    JSON.stringify(editingRow.models) === JSON.stringify(['cn/m1', 'm-legacy']),
+    JSON.stringify(editingRow.models));
+  check('取消后草稿被丢弃',
+    editingRow._draftRealm === undefined && editingRow._draftModels === undefined,
+    JSON.stringify([editingRow._draftRealm, editingRow._draftModels]));
+  check('取消后编辑状态结束', editingRow._editing === false, editingRow._editing);
+  const canceledCard = document.getElementById('keyList').innerHTML;
+  check('取消后卡片回到原出口', canceledCard.includes('固定国内版出口'), canceledCard);
+  check('取消后卡片回到原模型', canceledCard.includes('限 cn/m1, m-legacy'), canceledCard);
+
+  POSTS = [];
+  // 取消后再触发一次整表保存（启用/禁用另一把 Key 走的就是 saveApiKeys）。
+  await page.toggleKeyRow(1);
+  const cancelPost = POSTS.find(p => p.url === '/settings/save');
+  const cancelSaved = cancelPost && cancelPost.body && cancelPost.body.api_keys
+    && cancelPost.body.api_keys[0];
+  check('取消后的整表保存仍提交 cn', !!cancelSaved && cancelSaved.realm === 'cn',
+    JSON.stringify(cancelSaved));
+  check('取消后的整表保存仍提交原模型列表',
+    !!cancelSaved && JSON.stringify(cancelSaved.models) === JSON.stringify(['cn/m1', 'm-legacy']),
+    JSON.stringify(cancelSaved && cancelSaved.models));
+
+  /* ---- 8. 保存：提交草稿里的新出口并清掉旧 canonical 选择 ----------- */
+  await page.loadSettings(true);
+  await settle();
+  page.openEditKey(0);
   document.getElementById('editKeyRealm_0').value = 'intl';
+  await page.changeKeyRealm(0, 'intl');
+  // Simulate a stale canonical entry surviving in the draft; save must still
+  // reconcile it away instead of posting an id from the old exit.
+  page.API_KEY_ROWS[0]._draftModels = ['cn/m1', 'm-legacy'];
+  document.getElementById('editKeyName_0').value = '固定国际版';
   document.getElementById('editKeyValue_0').value = '';
   POSTS = [];
   await page.saveSingleKey(0);
@@ -209,6 +247,21 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   check('保存时不会提交旧出口的 canonical id',
     !!savedKey && JSON.stringify(savedKey.models) === JSON.stringify(['m-legacy']),
     JSON.stringify(savedKey && savedKey.models));
+
+  /* ---- 9. 切到没有模型的出口：不能静默放宽成「不限制」 --------------- */
+  await page.loadSettings(true);
+  await settle();
+  page.openEditKey(0);
+  page.API_KEY_ROWS[0]._draftModels = ['cn/m1'];
+  document.getElementById('editKeyRealm_0').value = 'raccoon';
+  await page.changeKeyRealm(0, 'raccoon');
+  POSTS = [];
+  await page.saveSingleKey(0);
+  check('目标出口没有模型时不提交空限制',
+    !POSTS.some(p => p.url === '/settings/save'), JSON.stringify(POSTS));
+  check('目标出口没有模型时已保存的模型列表保持原样',
+    JSON.stringify(page.API_KEY_ROWS[0].models) === JSON.stringify(['cn/m1', 'm-legacy']),
+    JSON.stringify(page.API_KEY_ROWS[0].models));
 
   console.log('key model catalog assertions passed (' + checks + ' checks)');
 })().catch(e => { console.error(e); process.exit(1); });

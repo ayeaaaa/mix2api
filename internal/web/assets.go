@@ -23,7 +23,7 @@ var dashboardHTML []byte
 
 // DashboardSHA256 is the lowercase hex digest of the embedded dashboard. It is
 // recorded in tests/oracle/dashboard.md and checked by the contract test.
-const DashboardSHA256 = "6681fc9823d9e7137aa24fcc112fa7d125f38210658ba796836e3540111c97e8"
+const DashboardSHA256 = "126066ab908d70ab6c7f08cf2cd942acabaa8958f9ae784c332e4b55814f7a3b"
 
 // DashboardV1SHA256 is the original v1.6.5 digest. It differs from
 // DashboardSHA256 because the v2 asset adds the top-bar total-quota columns

@@ -18435,7 +18435,7 @@ function renderKeyRows(){
         (window.REALM_OPTIONS || []).includes('raccoon')
           ? [['raccoon', '固定小浣熊出口']] : []);
       const options = realmChoices.map(([val, lbl]) =>
-        '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
+        '<option value="' + val + '"' + (keyEditRealm(row) === val ? ' selected' : '') + '>' + lbl + '</option>'
       ).join('');
       return '<div class="key-card" style="border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
@@ -18587,17 +18587,12 @@ async function copyApiKeyExample(kind, btn){
   }
 }
 
-function keyModelWildcards(row){
-  return (row.models || []).filter(p => String(p).indexOf('*') >= 0);
-}
-function keyModelExact(row){
-  return (row.models || []).filter(p => String(p).indexOf('*') < 0);
-}
 function updateKeyModelSummary(i){
   const row = API_KEY_ROWS[i];
   if(!row) return;
-  const exact = keyModelExact(row).length;
-  const wild = keyModelWildcards(row).length;
+  const models = keyEditModels(row);
+  const exact = models.filter(p => String(p).indexOf('*') < 0).length;
+  const wild = models.filter(p => String(p).indexOf('*') >= 0).length;
   const el = document.getElementById('editKeyModelsSummary_' + i);
   if(el){
     el.textContent = (exact || wild)
@@ -18688,6 +18683,33 @@ function warnDroppedKeyModels(dropped){
   if(!(dropped || []).length) return;
   toast('已移除 ' + dropped.length + ' 个不属于当前出口的模型选择：' + dropped.join(', '), 'warn');
 }
+/* Editing is a draft. The realm select and the model checkboxes must not touch
+   the committed row until saveSingleKey, because a whole-list save (enable /
+   disable, delete, saving another row) reads every committed row and would
+   otherwise persist a canceled draft. */
+function keyEditRealm(row){
+  const value = row && row._draftRealm !== undefined ? row._draftRealm : (row && row.realm);
+  return String(value || '');
+}
+function keyEditModels(row){
+  if(row && Array.isArray(row._draftModels)) return row._draftModels;
+  return row && Array.isArray(row.models) ? row.models : [];
+}
+function beginKeyEdit(row){
+  if(!row) return;
+  row._draftRealm = String(row.realm || '');
+  row._draftModels = Array.isArray(row.models) ? row.models.slice() : [];
+}
+function ensureKeyEditDraft(row){
+  if(!row) return;
+  if(row._draftRealm === undefined) row._draftRealm = String(row.realm || '');
+  if(!Array.isArray(row._draftModels)) row._draftModels = Array.isArray(row.models) ? row.models.slice() : [];
+}
+function clearKeyEdit(row){
+  if(!row) return;
+  delete row._draftRealm;
+  delete row._draftModels;
+}
 async function renderKeyPickers(i){
   const row = API_KEY_ROWS[i];
   if(!row) return;
@@ -18704,13 +18726,17 @@ async function renderKeyPickers(i){
     if(!(models || []).length){
       modelList.innerHTML = '<div style="font-size:12px;color:var(--warn);padding:4px">模型清单为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     } else {
-      models = filterKeyModelsForRealm(models, row.realm);
+      models = filterKeyModelsForRealm(models, keyEditRealm(row));
+      const exactModels = (keyEditModels(row) || []).filter(p => String(p).indexOf('*') < 0);
       modelList.innerHTML = models.map(m => {
         const id = String((m && m.id) || '');
         if(!id) return '';
-        const checked = keyModelExact(row).indexOf(id) >= 0 ? ' checked' : '';
+        const checked = exactModels.indexOf(id) >= 0 ? ' checked' : '';
         return '<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '"' + checked + ' onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + '</label>';
       }).join('');
+      // A realm switch rebuilds the rows; reapply the search box so the list
+      // does not silently jump back to everything.
+      filterKeyModelPicker(i);
     }
     updateKeyModelSummary(i);
   }
@@ -18743,10 +18769,21 @@ async function renderKeyPickers(i){
 async function changeKeyRealm(i, realm){
   const row = API_KEY_ROWS[i];
   if(!row) return;
-  row.realm = String(realm || '').trim().toLowerCase();
-  const reconciled = reconcileKeyModelsForRealm(row.models, row.realm);
-  row.models = reconciled.models;
-  warnDroppedKeyModels(reconciled.dropped);
+  ensureKeyEditDraft(row);
+  const next = String(realm || '').trim().toLowerCase();
+  row._draftRealm = next;
+  const current = keyEditModels(row);
+  const reconciled = reconcileKeyModelsForRealm(current, next);
+  if(current.length && reconciled.dropped.length && !reconciled.models.length){
+    // Dropping the last entry would make the draft empty, which the server
+    // reads as "unrestricted". Keep the old selection in the draft (so
+    // switching back restores it) and let the save guard refuse the empty
+    // commit until a model for this exit is chosen.
+    toast('当前出口没有可用模型；已保留原选择，保存前请先选择模型', 'warn');
+  } else {
+    row._draftModels = reconciled.models;
+    warnDroppedKeyModels(reconciled.dropped);
+  }
   updateKeyModelSummary(i);
   // The old list belongs to the previous exit; reload it so the checkboxes and
   // the canonical ids on offer match the realm the Key is about to be saved
@@ -18756,9 +18793,12 @@ async function changeKeyRealm(i, realm){
 function toggleKeyModel(i, el){
   const row = API_KEY_ROWS[i];
   if(!row) return;
-  const exact = new Set(keyModelExact(row));
+  ensureKeyEditDraft(row);
+  const models = keyEditModels(row);
+  const exact = new Set(models.filter(p => String(p).indexOf('*') < 0));
+  const wild = models.filter(p => String(p).indexOf('*') >= 0);
   if(el.checked) exact.add(el.value); else exact.delete(el.value);
-  row.models = keyModelWildcards(row).concat(Array.from(exact).sort());
+  row._draftModels = wild.concat(Array.from(exact).sort());
   updateKeyModelSummary(i);
 }
 function toggleKeyAccount(i, el){
@@ -18773,11 +18813,13 @@ function setKeyModelsAll(i, on){
   const list = document.getElementById('editKeyModelList_' + i);
   const row = API_KEY_ROWS[i];
   if(!list || !row) return;
+  ensureKeyEditDraft(row);
   list.querySelectorAll('input[type=checkbox]').forEach(el => { el.checked = on; });
   const exact = on
     ? Array.from(list.querySelectorAll('input[type=checkbox]')).map(el => el.value).sort()
     : [];
-  row.models = keyModelWildcards(row).concat(exact);
+  const wild = keyEditModels(row).filter(p => String(p).indexOf('*') >= 0);
+  row._draftModels = wild.concat(exact);
   updateKeyModelSummary(i);
 }
 function setKeyAccountsAll(i, on){
@@ -18831,16 +18873,21 @@ function filterKeyAccountPicker(i){
 
 function openEditKey(index){
   if(!API_KEY_ROWS[index]) return;
+  beginKeyEdit(API_KEY_ROWS[index]);
   API_KEY_ROWS[index]._editing = true;
   renderKeyRows();
 }
 
 function cancelEditKey(index){
-  if(!API_KEY_ROWS[index]) return;
-  if(!API_KEY_ROWS[index].id && !API_KEY_ROWS[index].masked){
+  const row = API_KEY_ROWS[index];
+  if(!row) return;
+  // The committed row was never touched while editing; dropping the draft is
+  // the whole rollback. The next whole-list save reads the original values.
+  clearKeyEdit(row);
+  if(!row.id && !row.masked){
     API_KEY_ROWS.splice(index, 1);
   } else {
-    API_KEY_ROWS[index]._editing = false;
+    row._editing = false;
   }
   renderKeyRows();
 }
@@ -18861,7 +18908,7 @@ async function saveSingleKey(index, btn){
     const concInput = document.getElementById('editKeyConc_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
-  const realm = realmSelect ? realmSelect.value : (row.realm || '');
+  const realm = realmSelect ? realmSelect.value : keyEditRealm(row);
   const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
 
   if(!keyVal && !row.masked){
@@ -18869,15 +18916,23 @@ async function saveSingleKey(index, btn){
     return;
   }
 
+  // The committed row only changes here. Reconcile the draft allow-list with
+  // the realm being saved: a canonical id from the exit the Key is leaving can
+  // never match again, while bare/upstream patterns stay valid.
+  const draftModels = keyEditModels(row);
+  const reconciled = reconcileKeyModelsForRealm(draftModels, realm);
+  if(reconciled.dropped.length && !reconciled.models.length && draftModels.length){
+    // An empty allow-list means "unrestricted" on the server. Refuse to widen
+    // a restricted Key just because the target exit has no matching entries.
+    toast('当前出口没有可用模型，已取消保存；请选择模型或取消编辑', 'warn');
+    return;
+  }
+  warnDroppedKeyModels(reconciled.dropped);
+
   row.name = name || '未命名';
   row.realm = realm;
-  // The select can be changed and saved without a change event ever reaching
-  // the handler (for example an older row left over from a previous session).
-  // Reconcile here too so the payload cannot carry a canonical id from the
-  // exit it is moving away from; bare/upstream patterns stay valid.
-  const reconciled = reconcileKeyModelsForRealm(row.models, realm);
   row.models = reconciled.models;
-  warnDroppedKeyModels(reconciled.dropped);
+  clearKeyEdit(row);
   row.accounts = Array.isArray(row.accounts) ? row.accounts.slice() : [];
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
   if(keyVal) row.key = keyVal;
@@ -18932,7 +18987,7 @@ async function removeKeyRow(index){
 }
 
 function addApiKeyRow(){
-  API_KEY_ROWS.push({
+  const row = {
     id: '',
     name: '',
     key: randomKeyValue(),
@@ -18942,7 +18997,9 @@ function addApiKeyRow(){
     enabled: true,
     masked: '',
     _editing: true
-  });
+  };
+  beginKeyEdit(row);
+  API_KEY_ROWS.push(row);
   renderKeyRows();
   setTimeout(() => {
     const el = document.getElementById('editKeyName_' + (API_KEY_ROWS.length - 1));
