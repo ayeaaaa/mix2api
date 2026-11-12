@@ -7,31 +7,58 @@ Keep a Changelog and the project uses semantic versioning.
 
 ### 中文
 
-#### 修复
+#### 修复的问题
 
-- usage cache 保存时只替换同 realm 条目，保留 intl/all/cn 等其他 realm 缓存；
-  snapshot / series / analytics 在日志 offset 未推进时不再重写 checkpoint。
-- Chat Completions 可安全恢复请求中已声明的打印式 DSML / `<run_code>` 工具调用；
-  真实结构化调用优先，未闭合、畸形或未声明的调用不恢复。
-- 流内 SSE 错误不再被当作正常完成，也不会从失败流中恢复工具调用。
-- CodeArts / Raccoon 保留 legacy `functions` 声明并转换为标准 `tools`，同时保留
+- 看板切换国际版 / 国内版 / 全部时，usage cache 保存会删除其他 realm 的缓存
+  条目，导致每次切换重新全量扫描 `usage.jsonl`；生产/备用端实测切换卡顿约
+  6.5–17 秒。
+- snapshot / series / analytics 在日志没有新增时仍会每 5 秒重写数 MB 的
+  checkpoint，造成持续 CPU 和磁盘 IO。
+- 部分模型没有走结构化 `tool_calls`，而是把 DSML / `<run_code>` 工具调用
+  打印在正文里；Agent 客户端收不到调用，可能重复追问并让上下文持续变长。
+- 带内 SSE `error` 可能被当成正常完成，失败流也可能被恢复成可执行的工具调用。
+- CodeArts / Raccoon 的 legacy `functions` 在 allowlist 阶段被丢弃；
+  `tool_choice=none` 时工具声明被清空，模型拿不到函数 schema。
+
+#### 修复结果
+
+- cache 按 realm 独立保存，切换视图不再互相清缓存；日志 offset 没有推进时
+  不重写 checkpoint。
+- Chat Completions 只恢复请求中已声明的打印式工具调用；真实结构化调用优先；
+  未闭合、畸形、未声明的调用不恢复。
+- 流内错误按失败处理：不补成功 finish，不从失败流中恢复工具调用。
+- CodeArts / Raccoon 保留 legacy `functions` 并转换为标准 `tools`，同时保留
   `function_call` / `tool_choice=none` 语义；显式 `tools` 仍优先。
 
 ### English
 
-#### Fixed
+#### Problems fixed
 
-- Usage cache saves now replace only the same realm entry, preserving intl/all/cn
-  caches; snapshot/series/analytics checkpoints are not rewritten when the log
-  offset has not advanced.
-- Chat Completions safely recovers declared printed DSML / `<run_code>` tool
-  calls; real structured calls win, and unclosed, malformed or undeclared calls
-  are rejected.
-- In-band SSE errors no longer become successful completions or recovered tool
-  calls.
-- CodeArts / Raccoon preserve legacy `functions` declarations by translating
-  them to standard `tools`, while retaining `function_call` / `tool_choice=none`
-  semantics; explicit `tools` still take precedence.
+- Saving the usage cache for one realm deleted entries for the other realms, so
+  switching between intl / cn / all forced a full `usage.jsonl` rescan
+  (observed 6.5-17s stalls on production/backup).
+- snapshot / series / analytics rewrote multi-megabyte checkpoints every five
+  seconds even when the log had not advanced, causing sustained CPU and disk IO.
+- Some models printed DSML / `<run_code>` tool calls in the message body instead
+  of emitting structured `tool_calls`; agent clients saw no call and could ask
+  again, growing the context.
+- An in-band SSE `error` could be treated as a successful completion, and a
+  failed stream could still be recovered into executable tool calls.
+- CodeArts / Raccoon dropped legacy `functions` during the allowlist stage, and
+  `tool_choice=none` cleared the tool declarations so the model received no
+  function schema.
+
+#### Result
+
+- Caches are kept per realm, so switching views no longer clears the others;
+  unchanged log offsets no longer rewrite checkpoints.
+- Chat Completions only recovers printed tool calls declared by the request;
+  real structured calls win, and unclosed, malformed or undeclared calls are
+  rejected.
+- In-band errors fail closed: no successful finish and no recovered calls.
+- CodeArts / Raccoon preserve legacy `functions` by converting them to standard
+  `tools`, and retain `function_call` / `tool_choice=none` semantics; explicit
+  `tools` still take precedence.
 
 ## [2.1.0] - 2026-11-11
 
