@@ -72,6 +72,9 @@ type Provider struct {
 	// streamIdleTimeout is a test seam for the live
 	// cfg.StreamTimeoutSeconds per-read SSE idle limit. Zero uses the setting.
 	streamIdleTimeout time.Duration
+
+	jobsOnce   sync.Once
+	checkinJob *codeartsCheckinJob
 }
 
 type healthCacheEntry struct {
@@ -238,9 +241,17 @@ func (p *Provider) ID() string { return ProviderID }
 // Realm returns the unique realm this instance serves.
 func (p *Provider) Realm() string { return ProviderRealm }
 
-// Jobs returns no background jobs in this slice; scheduler wiring is added
-// later without changing the provider contract.
-func (p *Provider) Jobs() []scheduler.Job { return nil }
+// Jobs returns the provider's background jobs. The daily check-in job follows
+// the shared WorkBuddy check-in slots and is gated by credits_auto_claim.
+func (p *Provider) Jobs() []scheduler.Job {
+	if p == nil {
+		return nil
+	}
+	p.jobsOnce.Do(func() {
+		p.checkinJob = &codeartsCheckinJob{provider: p}
+	})
+	return []scheduler.Job{p.checkinJob}
+}
 
 // Health returns the small v1-compatible health block consumed by /health.
 // Values are cached for five seconds; force bypasses the cache. Account

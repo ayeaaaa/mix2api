@@ -230,8 +230,9 @@ func TestCodeArtsRoutesPanelMetadata(t *testing.T) {
 	if got := f.p.Realm(); got != "codearts" {
 		t.Fatalf("Realm = %q", got)
 	}
-	if jobs := f.p.Jobs(); jobs != nil {
-		t.Fatalf("Jobs = %#v, want nil", jobs)
+	jobs := f.p.Jobs()
+	if len(jobs) != 1 || jobs[0].Name() != codeartsCheckinJobName {
+		t.Fatalf("Jobs = %#v, want one %s job", jobs, codeartsCheckinJobName)
 	}
 	if _, ok := any(f.p).(providers.Provider); !ok {
 		t.Fatal("Provider does not implement providers.Provider")
