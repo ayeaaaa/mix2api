@@ -148,7 +148,12 @@ func (s *Server) serveResponsesWithWebTools(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, upstreamModel)
 	if err != nil {
-		s.observeResponseFailureDetail(r, requestedModel, false, failureFromError(err), provider.Realm())
+		failure := failureFromError(err)
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "responses", Model: upstreamModel, RequestedModel: requestedModel,
+			Realm: provider.Realm(), Stream: false, Outcome: "failed",
+			Status: failure.Status, Error: true, Message: failure.Message,
+		})
 		writeFailure(w, err)
 		return true
 	}
@@ -180,7 +185,12 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	}
 	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, upstreamModel)
 	if err != nil {
-		s.observeResponseFailureDetail(r, requestedModel, true, failureFromError(err), provider.Realm())
+		failure := failureFromError(err)
+		s.observeProtocol(r, ProtocolObservation{
+			Protocol: "responses", Model: upstreamModel, RequestedModel: requestedModel,
+			Realm: provider.Realm(), Stream: true, Outcome: "failed",
+			Status: failure.Status, Error: true, Message: failure.Message,
+		})
 		writeFailure(w, err)
 		return true
 	}

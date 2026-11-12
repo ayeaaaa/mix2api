@@ -904,3 +904,96 @@ func TestResponsesQualifiedWebToolsUseUpstreamModel(t *testing.T) {
 		t.Fatalf("observation = %#v", observed[0])
 	}
 }
+
+// requireQualifiedFailureObservation asserts that a post-open failure keeps the
+// upstream ID in Model (pricing) and the canonical requested ID in
+// RequestedModel (attribution).
+func requireQualifiedFailureObservation(t *testing.T, observed []ProtocolObservation, upstream, requested string) {
+	t.Helper()
+	if len(observed) != 1 {
+		t.Fatalf("observations = %d, want 1: %#v", len(observed), observed)
+	}
+	observation := observed[0]
+	if observation.Outcome != "failed" {
+		t.Fatalf("observation outcome = %q, want failed", observation.Outcome)
+	}
+	if observation.Model != upstream {
+		t.Fatalf("observation Model = %q, want upstream %q", observation.Model, upstream)
+	}
+	if observation.RequestedModel != requested {
+		t.Fatalf("observation RequestedModel = %q, want requested %q", observation.RequestedModel, requested)
+	}
+}
+
+func TestResponsesQualifiedCompactionFailureObservation(t *testing.T) {
+	readError := newStubStream()
+	readError.terminal = errors.New("upstream read failed")
+	cases := []struct {
+		name   string
+		stream *stubStream
+	}{
+		{"read error", readError},
+		{"empty summary", newStubStream(chatSSE(
+			map[string]any{"id": "u", "model": "upstream-alias", "choices": []any{map[string]any{
+				"index": 0, "delta": map[string]any{"content": "   "}, "finish_reason": "stop",
+			}}},
+		)...)},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var observed []ProtocolObservation
+			codearts := &stubProvider{id: "codearts", realm: "codearts",
+				models: []providers.Model{{"id": "shared"}}, openStream: testCase.stream}
+			srv := newTestHTTPServer(ServerOptions{
+				Providers: []providers.Provider{codearts},
+				ProtocolObserver: func(observation ProtocolObservation) {
+					observed = append(observed, observation)
+				},
+			})
+			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses/compact",
+				`{"model":"codearts/shared","input":"do work"}`, nil)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			requireQualifiedFailureObservation(t, observed, "shared", "codearts/shared")
+		})
+	}
+}
+
+func TestResponsesQualifiedWebToolsFailureObservation(t *testing.T) {
+	for _, streamRequest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[streamRequest], func(t *testing.T) {
+			readError := newStubStream()
+			readError.terminal = errors.New("upstream read failed")
+			web := webtools.New()
+			web.AllowPrivate = true
+			web.Engines = []string{"bing"}
+			web.EngineURLs = map[string]string{"bing": "http://127.0.0.1:1/?q=%s"}
+			web.SearchBudget = 50 * time.Millisecond
+
+			var observed []ProtocolObservation
+			codearts := &stubProvider{id: "codearts", realm: "codearts",
+				models: []providers.Model{{"id": "shared"}}, openStream: readError}
+			srv := newTestHTTPServer(ServerOptions{
+				Providers: []providers.Provider{codearts},
+				WebTools:  web,
+				ProtocolObserver: func(observation ProtocolObservation) {
+					observed = append(observed, observation)
+				},
+			})
+
+			body := `{"model":"codearts/shared","input":"search go","tools":[{"type":"web_search"}]}`
+			if streamRequest {
+				body = `{"model":"codearts/shared","input":"search go","tools":[{"type":"web_search"}],"stream":true}`
+			}
+			rec := serveRequest(srv.Handler, http.MethodPost, "/v1/responses", body, nil)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if len(codearts.opened()) != 1 {
+				t.Fatalf("OpenChat calls = %d, want 1", len(codearts.opened()))
+			}
+			requireQualifiedFailureObservation(t, observed, "shared", "codearts/shared")
+		})
+	}
+}

@@ -27,7 +27,7 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		failure := failureFromError(err)
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Protocol: "responses", Model: upstreamModel, RequestedModel: model, Effort: meta.Effort,
 			Stream: meta.Streaming, Outcome: "failed", Status: failure.Status,
 			Error: true, Message: failure.Message,
 		}
@@ -39,7 +39,7 @@ func (s *Server) writeResponsesCompaction(w http.ResponseWriter, r *http.Request
 	summary := chatMessageText(chat)
 	if summary == "" {
 		observation := ProtocolObservation{
-			Protocol: "responses", Model: model, RequestedModel: model, Effort: meta.Effort,
+			Protocol: "responses", Model: upstreamModel, RequestedModel: model, Effort: meta.Effort,
 			Stream: meta.Streaming, Outcome: "failed",
 			Status: http.StatusBadGateway, Error: true,
 			Message: "compaction produced no summary (the model returned no text); retry",
