@@ -1674,6 +1674,108 @@ func TestChatQualifiedModelRoutesExactExit(t *testing.T) {
 	}
 }
 
+// chatStreamWithModelFrames returns a multi-chunk stream whose frames carry the
+// given upstream model, so tests can prove which model the gateway echoes. The
+// post-[DONE] credit frame also carries the upstream model.
+func chatStreamWithModelFrames(model string) providers.ChatStream {
+	frames := chatSSE(
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}},
+		map[string]any{"id": "upstream-one", "object": "chat.completion.chunk", "model": model,
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}},
+	)
+	postDone := chatSSE(map[string]any{"id": "chatcmpl-upstream-usage", "object": "chat.completion.chunk",
+		"model": model, "choices": []any{},
+		"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "credit": 2}})
+	frames = append(frames, "data: [DONE]\n\n")
+	frames = append(frames, postDone...)
+	return newStubStream(frames...)
+}
+
+// requireStreamModel asserts that every SSE data chunk carrying a model field
+// reports want, and that at least one chunk carried a model.
+func requireStreamModel(t *testing.T, body, want string) {
+	t.Helper()
+	seen := 0
+	for _, frame := range splitTestFrames(body) {
+		data := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(frame), "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("frame %q: %v", data, err)
+		}
+		model, ok := payload["model"]
+		if !ok {
+			continue
+		}
+		seen++
+		if model != want {
+			t.Fatalf("chunk model = %#v, want %q (frame=%s)", model, want, data)
+		}
+	}
+	if seen == 0 {
+		t.Fatalf("no stream chunk carried a model: %s", body)
+	}
+}
+
+func TestChatQualifiedStreamEchoesCanonicalModel(t *testing.T) {
+	codearts := &stubProvider{
+		id: "codearts", realm: "codearts",
+		models:     []providers.Model{{"id": "shared"}},
+		openStream: chatStreamWithModelFrames("upstream-alias"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "upstream-alias") {
+		t.Fatalf("qualified stream leaked the upstream model: %s", body)
+	}
+	requireStreamModel(t, body, "codearts/shared")
+
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+}
+
+func TestChatBareStreamKeepsUpstreamModel(t *testing.T) {
+	codearts := &stubProvider{
+		id: "codearts", realm: "codearts",
+		models:     []providers.Model{{"id": "shared"}},
+		openStream: chatStreamWithModelFrames("upstream-alias"),
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{codearts}})
+
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=codearts",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `"model":"shared"`) {
+		t.Fatalf("bare stream forced the requested model: %s", body)
+	}
+	requireStreamModel(t, body, "upstream-alias")
+
+	requests := codearts.opened()
+	if len(requests) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "shared" {
+		t.Fatalf("ChatRequest.Model = %q, want shared", requests[0].Model)
+	}
+}
+
 func TestChatQualifiedModelRealmConflict(t *testing.T) {
 	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
 	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}

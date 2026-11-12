@@ -171,9 +171,10 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	printed := chatPrintedToolRecovery(request.payload)
+	forceModel := request.exit != ""
 	if request.stream {
-		result = writeChatStream(w, r, tracked, request.requestedModel, printed)
-	} else if request.exit != "" {
+		result = writeChatStreamFor(w, r, tracked, request.requestedModel, forceModel, printed)
+	} else if forceModel {
 		result = writeChatCompletionFor(w, tracked, request.requestedModel, true, printed)
 	} else {
 		result = writeChatCompletion(w, tracked, request.requestedModel, printed)
@@ -581,10 +582,17 @@ func isWorkBuddyProvider(provider providers.Provider) bool {
 // [DONE] the writer keeps reading long enough to forward a provider's post-DONE
 // credit accounting frame; clients that stop at [DONE] never wait for it.
 func writeChatStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, printed ...*printedToolRecovery) chatStreamResult {
+	return writeChatStreamFor(w, r, stream, model, false, printed...)
+}
+
+// writeChatStreamFor normalizes provider frames into one OpenAI-style stream.
+// forceModel pins every client-visible chunk model to model (the canonical
+// requested ID); bare requests keep the upstream echo.
+func writeChatStreamFor(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, forceModel bool, printed ...*printedToolRecovery) chatStreamResult {
 	result := chatStreamResult{Outcome: "completed", Status: http.StatusOK}
 	writer := newSSEWriter(w)
 	defer writer.Close()
-	normalizer := newStreamNormalizer(model, printed...)
+	normalizer := newStreamNormalizerForModel(model, forceModel, printed...)
 
 	for {
 		frame, err := stream.Next()
