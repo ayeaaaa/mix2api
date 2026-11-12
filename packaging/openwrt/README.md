@@ -35,3 +35,13 @@ make package/mix2api/compile \
 Data directories are created under `/srv/mix2api`. Keep the v1.6.5 gateway
 stopped before migrating data, and never point v1 and v2 at the same live
 directory.
+
+The UCI option `mix2api.main.tls_fingerprint` defaults to `python` (off). Set it
+to `node` to enable the WorkBuddy Node/OpenSSL uTLS bridge, then restart the
+service:
+
+```sh
+uci set mix2api.main.tls_fingerprint='node'
+uci commit mix2api
+/etc/init.d/mix2api restart
+```

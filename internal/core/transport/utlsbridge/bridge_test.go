@@ -123,8 +123,11 @@ func TestDefaultBridgeFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Default after close: %v", err)
 	}
-	if after != nil {
-		t.Fatal("Default returned a closed bridge")
+	if after == nil {
+		t.Fatal("Default did not restart after close")
+	}
+	if err := utlsbridge.CloseDefault(); err != nil {
+		t.Fatalf("CloseDefault after restart: %v", err)
 	}
 }
 
@@ -326,6 +329,20 @@ func TestLiveWorkBuddyHandshake(t *testing.T) {
 			}
 			_ = conn.Close()
 		})
+	}
+}
+
+func TestDialTLSRejectsControlCharactersInHost(t *testing.T) {
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	defer bridge.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = bridge.DialTLS(ctx, "127.0.0.1\x0b:443", "")
+	if err == nil || !strings.Contains(err.Error(), "invalid CONNECT host") {
+		t.Fatalf("error = %v, want invalid CONNECT host", err)
 	}
 }
 

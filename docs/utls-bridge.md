@@ -79,7 +79,8 @@ HTTPS 目标走 bridge 时，代理 URL 通过 loopback CONNECT 的
 ## 限制
 
 - 固定无 ALPN，因此只使用 HTTP/1.1；这与官方 Node 客户端和现有 SSE 路径一致。
-- 使用系统信任库；暂不支持 `WB_CA_BUNDLE` 这类自定义 CA。
+- 使用系统信任库；Unix 上可用 `SSL_CERT_FILE` 指定额外根证书，暂不支持
+  `WB_CA_BUNDLE` 这种 v1 专用变量。
 - 开关是进程级环境变量，不支持看板热切换。
 - 复刻抓包指纹只能减少 TLS 层差异，不构成免封保证。
 - 不做订阅桥（subbridge）；该功能已明确拒绝。
@@ -95,7 +96,10 @@ go test ./internal/core/transport/utlsbridge
 - JA3 / JA3 MD5 / JA4 与抓包值完全一致
 - TLS record 长度为 255 字节、session id 长度为 32、无 ALPN
 - 未认证 CONNECT 返回 403
-- 直连和 HTTP 代理下的 HTTPS 请求都能完成，且协议为 HTTP/1.1
+- 直连、HTTP / HTTPS / SOCKS5 代理下的 HTTPS 请求都能完成，且协议为 HTTP/1.1
+- HTTP 代理 Basic auth、SOCKS5 用户名密码认证和 keep-alive 复用
+- 证书校验失败会返回可读的错误详情
+- 上游停住时 `Bridge.Close` 仍能返回
 - 不支持的代理 scheme 会失败
 
 可选的真实上游握手验证：

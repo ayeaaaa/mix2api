@@ -348,8 +348,10 @@ func validateTarget(target string) error {
 	if err != nil || strings.TrimSpace(host) == "" {
 		return errors.New("utlsbridge: invalid CONNECT target")
 	}
-	if strings.ContainsAny(host, " \t\r\n") {
-		return errors.New("utlsbridge: invalid CONNECT host")
+	for _, r := range host {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("utlsbridge: invalid CONNECT host")
+		}
 	}
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 1 || number > 65535 {
@@ -387,10 +389,6 @@ func proxyBidirectional(client net.Conn, clientReader io.Reader, upstream net.Co
 	<-done
 	closeBoth()
 	<-done
-}
-
-type closeWriter interface {
-	CloseWrite() error
 }
 
 func writeHTTPError(conn net.Conn, status int, reason string) {
@@ -437,11 +435,4 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) {
 	return c.reader.Read(p)
-}
-
-func (c *bufferedConn) CloseWrite() error {
-	if writer, ok := c.Conn.(closeWriter); ok {
-		return writer.CloseWrite()
-	}
-	return nil
 }
