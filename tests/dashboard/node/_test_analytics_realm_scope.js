@@ -93,8 +93,8 @@ check('轮询去重键包含区域，避免 CN/INTL 互相挡请求',
 const matrixFn = (html.match(/async function loadAnalyticsMatrix\(\)\{[\s\S]*?\n\}/) || [''])[0];
 check('矩阵白名单来自网关目录', matrixFn.includes("getJSON('/v1/models?realm=gateway')"), matrixFn);
 check('矩阵白名单不再请求 realm=all 目录', !matrixFn.includes('/v1/models?realm=all'), matrixFn);
-check('矩阵白名单把 m.id 当 canonical 键',
-  /MATRIX_MODELS = new Set\(models\.data\.map\(m => m\.id\)\)/.test(matrixFn), matrixFn);
+check('矩阵白名单同时收录 canonical 与 upstream id',
+  /upstream_id/.test(matrixFn) && /toLowerCase\(\)/.test(matrixFn), matrixFn);
 
 function runMatrixWhitelist(){
   const calls = [];

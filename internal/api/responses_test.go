@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/webtools"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -735,6 +736,35 @@ func TestResponsesQualifiedModelKeyRealmConflict(t *testing.T) {
 	}
 	if len(cn.opened()) != 0 || len(codearts.opened()) != 0 {
 		t.Fatalf("bound-key conflict reached providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+}
+
+// TestResponsesKeyAllowListErrorKeepsClientSpelling verifies the rejection
+// message uses the client's original model spelling, not the canonical form.
+func TestResponsesKeyAllowListErrorKeepsClientSpelling(t *testing.T) {
+	_, keyStore, _, _, _ := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "denied", Name: "denied", Key: "key-denied", Models: []string{"intl/*"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}},
+		openStream: responsesStreamWithModel("shared")}
+	server := New(ServerOptions{Providers: []providers.Provider{cn}, KeyStore: keyStore})
+
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses",
+		`{"model":"CN/shared","input":"hi"}`,
+		map[string]string{"Authorization": "Bearer key-denied"})
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "CN/shared") {
+		t.Fatalf("failure lost the client spelling: %#v", failure)
+	}
+	if strings.Contains(message, "cn/shared") {
+		t.Fatalf("failure used the canonical spelling only: %#v", failure)
+	}
+	if len(cn.opened()) != 0 {
+		t.Fatal("denied request reached the provider")
 	}
 }
 

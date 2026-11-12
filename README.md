@@ -72,7 +72,8 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 
 - 不带前缀的裸模型 ID 仍然可用：先看 API Key 绑定，再按显式 `realm`
   选择；没有显式 realm 时按注册顺序取第一个目录命中的出口，不做唯一性
-  检查。`realm=gateway` 的裸模型例外，要求全出口唯一匹配。
+  检查。未绑定出口的 Key 在 `realm=gateway` 下是例外，裸模型要求全出口
+  唯一匹配；绑定出口的 Key 仍先返回绑定出口。
 - 对裸 ID 和目录发现，`realm=all` 保持原语义：只合并 WorkBuddy
   国际版 / 国内版，不包含 CodeArts 和 Raccoon；绑定出口的 Key 仍以绑定
   为准。带出口前缀的请求按前缀路由，不受 `realm=all` 限制。

@@ -46,7 +46,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(s.providers) != 1 {
 			writeFailure(w, localFailure(http.StatusBadRequest,
-				"realm is required when multiple providers are registered"))
+				"realm is required when multiple providers are registered; use realm=gateway for the all-exit catalog"))
 			return
 		}
 		realm = providerRealm(s.providers[0])
@@ -115,8 +115,13 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	data := make([]providers.Model, 0, len(models))
 	for _, model := range models {
 		// Concrete realms keep the bare upstream id for older clients and add
-		// the qualified identity beside it.
-		data = append(data, decorateModel(model, provider, false))
+		// the qualified identity beside it. Entries without a usable string id
+		// are skipped so the response never invents "<realm>/".
+		entry := decorateModel(model, provider, false)
+		if entry == nil {
+			continue
+		}
+		data = append(data, entry)
 	}
 	writeModelsResponse(w, providerRealm(provider), data, catalogProvenance(provider))
 }
@@ -167,14 +172,17 @@ func writeGatewayModelsResponse(w http.ResponseWriter, data []providers.Model, c
 // shared with provider caches. Concrete realms keep the bare id, while gateway
 // entries replace it with the canonical "<realm>/<upstream-id>".
 func decorateModel(model providers.Model, provider providers.Provider, canonicalID bool) providers.Model {
+	if provider == nil {
+		return nil
+	}
+	upstream, ok := model["id"].(string)
+	if !ok || strings.TrimSpace(upstream) == "" {
+		return nil
+	}
 	out := make(providers.Model, len(model)+4)
 	for key, value := range model {
 		out[key] = value
 	}
-	if provider == nil {
-		return out
-	}
-	upstream, _ := model["id"].(string)
 	realm := providerRealm(provider)
 	qualified := canonicalModelID(realm, upstream)
 	out["upstream_id"] = upstream
@@ -188,9 +196,10 @@ func decorateModel(model providers.Model, provider providers.Provider, canonical
 }
 
 // gatewayModels unions every candidate catalog under canonical IDs, preserving
-// provider order. Entries are deduplicated by lowercased qualified ID. A
-// failure from one exit does not hide the others; the first error is returned
-// only when no candidate produced a catalog.
+// provider order. Entries are deduplicated by lowercased qualified ID. Each
+// catalog read is bounded by catalogResolutionTimeout; a timeout counts as that
+// provider's failure. A failure from one exit does not hide the others; the
+// first error is returned only when no candidate produced a catalog.
 func (s *Server) gatewayModels(ctx context.Context, candidates []providers.Provider, force bool) ([]providers.Model, map[string]any, error) {
 	out := make([]providers.Model, 0)
 	seen := make(map[string]bool)
@@ -199,7 +208,9 @@ func (s *Server) gatewayModels(ctx context.Context, candidates []providers.Provi
 	var firstErr error
 
 	for _, provider := range candidates {
-		models, err := provider.Models(ctx, force)
+		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+		models, err := provider.Models(lookupCtx, force)
+		cancel()
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -213,6 +224,9 @@ func (s *Server) gatewayModels(ctx context.Context, candidates []providers.Provi
 		}
 		for _, model := range models {
 			entry := decorateModel(model, provider, true)
+			if entry == nil {
+				continue
+			}
 			qualified, _ := entry["qualified_id"].(string)
 			key := strings.ToLower(strings.TrimSpace(qualified))
 			if key != "" {

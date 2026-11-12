@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -110,7 +111,11 @@ func TestModelsMultipleProvidersRequireRealm(t *testing.T) {
 	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{first, second}})
 
 	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models", "", nil)
-	requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "realm=gateway") {
+		t.Fatalf("multi-provider error should point at realm=gateway: %#v", failure)
+	}
 }
 
 func TestModelsAPIKeyRealmOutranksExplicitRealm(t *testing.T) {
@@ -465,6 +470,100 @@ func TestModelsGatewayPartialCatalogFailure(t *testing.T) {
 	data := body["data"].([]any)
 	if len(data) != 1 || data[0].(map[string]any)["id"] != "cn/m1" {
 		t.Fatalf("data = %#v, want only cn/m1", body["data"])
+	}
+}
+
+// TestModelsGatewayCatalogReadsAreBounded pins the per-provider deadline: a
+// hung catalog must count as that provider's failure instead of hanging the
+// whole gateway listing.
+func TestModelsGatewayCatalogReadsAreBounded(t *testing.T) {
+	bounded := &stubProvider{
+		id: "workbuddy", realm: "cn",
+		models: []providers.Model{{"id": "m1"}},
+		modelsCtx: func(ctx context.Context) error {
+			if _, ok := ctx.Deadline(); !ok {
+				return errors.New("catalog read has no deadline")
+			}
+			return nil
+		},
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{bounded}})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	data := body["data"].([]any)
+	if len(data) != 1 || data[0].(map[string]any)["id"] != "cn/m1" {
+		t.Fatalf("data = %#v, want cn/m1", body["data"])
+	}
+}
+
+// TestModelsReservedScopesAreNotProviders proves a provider registered under a
+// discovery scope cannot become the target of providerForRealm.
+func TestModelsReservedScopesAreNotProviders(t *testing.T) {
+	gateway := &stubProvider{id: "fake-gateway", realm: "gateway", models: []providers.Model{{"id": "gw"}}}
+	all := &stubProvider{id: "fake-all", realm: "all", models: []providers.Model{{"id": "everything"}}}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "m1"}}}
+	srv := newTestServer(ServerOptions{Providers: []providers.Provider{gateway, all, cn}})
+
+	if got := srv.providerForRealm("gateway"); got != nil {
+		t.Fatalf("providerForRealm(gateway) = %#v, want nil", got)
+	}
+	if got := srv.providerForRealm("all"); got != nil {
+		t.Fatalf("providerForRealm(all) = %#v, want nil", got)
+	}
+	if len(srv.providers) != 1 || providerRealm(srv.providers[0]) != "cn" {
+		t.Fatalf("providers = %#v, want only cn", srv.providers)
+	}
+}
+
+func TestModelsGatewayAPIKeyRealmRejected(t *testing.T) {
+	alpha := &stubProvider{id: "alpha", realm: "alpha", models: []providers.Model{{"id": "alpha-model"}}}
+	srv := newTestHTTPServer(ServerOptions{
+		Providers:   []providers.Provider{alpha},
+		APIKeyRealm: func(*http.Request) string { return "gateway" },
+	})
+
+	rec := serveRequest(srv.Handler, http.MethodGet, "/v1/models?realm=gateway", "", nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "invalid api key realm: gateway") {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+// TestModelsSkipsEntriesWithoutStringID keeps malformed provider metadata out
+// of both gateway and concrete-realm responses instead of emitting "<realm>/".
+func TestModelsSkipsEntriesWithoutStringID(t *testing.T) {
+	cn := &stubProvider{
+		id: "workbuddy", realm: "cn",
+		models: []providers.Model{
+			{"name": "missing id"},
+			{"id": 42},
+			{"id": "  "},
+			{"id": "m1"},
+		},
+	}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn}})
+
+	for _, request := range []struct {
+		path  string
+		realm string
+		want  string
+	}{
+		{path: "/v1/models?realm=gateway", realm: "gateway", want: "cn/m1"},
+		{path: "/v1/models?realm=cn", realm: "cn", want: "m1"},
+	} {
+		rec := serveRequest(srv.Handler, http.MethodGet, request.path, "", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", request.path, rec.Code, rec.Body)
+		}
+		body := decodeBody(t, rec)
+		data := body["data"].([]any)
+		if len(data) != 1 || data[0].(map[string]any)["id"] != request.want {
+			t.Fatalf("%s data = %#v, want %q", request.path, body["data"], request.want)
+		}
 	}
 }
 

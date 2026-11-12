@@ -416,9 +416,15 @@ func TestMessagesQualifiedModelKeyAllowList(t *testing.T) {
 	}
 
 	rec = serveRequest(server.Handler(), http.MethodPost, "/v1/messages",
-		`{"model":"codearts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
+		`{"model":"CodeArts/shared","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
 		map[string]string{"x-api-key": "key-denied"})
-	requireAnthropicError(t, rec, http.StatusBadRequest, "invalid_request_error")
+	failure := requireAnthropicError(t, rec, http.StatusBadRequest, "invalid_request_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "CodeArts/shared") {
+		t.Fatalf("failure lost the client spelling: %#v", failure)
+	}
+	if message, _ := failure["message"].(string); strings.Contains(message, "codearts/shared") {
+		t.Fatalf("failure used the canonical spelling only: %#v", failure)
+	}
 	if got := len(codearts.opened()); got != 1 {
 		t.Fatalf("denied request reached the provider: OpenChat calls = %d, want 1", got)
 	}

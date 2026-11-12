@@ -24,6 +24,7 @@ const maxChatBodyBytes = 16 << 20
 type chatHTTPRequest struct {
 	payload        map[string]json.RawMessage
 	model          string // upstream model ID sent to the provider
+	rawModel       string // client spelling before exit canonicalization
 	requestedModel string // canonical when qualified, otherwise the bare ID
 	exit           string // lower-case registered realm, or ""
 	messages       []json.RawMessage
@@ -87,7 +88,7 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		return
 	}
 	ref := modelRef{
-		Raw:       request.requestedModel,
+		Raw:       request.rawModel,
 		Exit:      request.exit,
 		Upstream:  request.model,
 		Canonical: request.requestedModel,
@@ -362,6 +363,7 @@ func (s *Server) applyModelRef(request *chatHTTPRequest) *apiFailure {
 	if request == nil {
 		return localFailure(http.StatusBadRequest, "model is required")
 	}
+	request.rawModel = strings.TrimSpace(request.model)
 	ref, err := parseModelRef(request.model, func(exit string) bool {
 		return s != nil && s.providerForRealm(exit) != nil
 	})
@@ -449,10 +451,12 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 	return s.resolveAmong(ctx, s.providers, request.model, "")
 }
 
-// catalogResolutionTimeout bounds only multi-provider model-to-realm
-// resolution. An expired lookup is treated as "no match" rather than a blocking
-// error; chat then either rejects an ambiguous request or reaches the explicit
-// provider, which classifies the model upstream.
+// catalogResolutionTimeout bounds every catalog read used for model-to-realm
+// resolution, including the /v1/models?realm=gateway fan-out. resolveAmong
+// tolerates an unreadable or timed-out catalog when another candidate can
+// still answer; it only returns the first error when every candidate failed.
+// resolveGatewayAmong instead fails closed on any timeout, because a partial
+// snapshot could hide a second match.
 const catalogResolutionTimeout = 2 * time.Second
 
 func (s *Server) resolveAmong(ctx context.Context, candidates []providers.Provider, model, realm string) (providers.Provider, error) {
@@ -496,8 +500,11 @@ func (s *Server) resolveGatewayAmong(ctx context.Context, model string) (provide
 		models, err := provider.Models(lookupCtx, false)
 		cancel()
 		if err != nil {
-			return nil, localFailure(http.StatusServiceUnavailable,
-				"gateway model catalog incomplete; use exit/model or a concrete realm")
+			return nil, &apiFailure{
+				Status:  http.StatusServiceUnavailable,
+				Type:    "server_error",
+				Message: "gateway model catalog incomplete; use exit/model or a concrete realm",
+			}
 		}
 		if modelMatches(models, model) {
 			matches = append(matches, provider)

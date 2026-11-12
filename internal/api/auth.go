@@ -140,15 +140,6 @@ func (s *Server) staticAPIKeyPasses(r *http.Request) bool {
 	return passed
 }
 
-// keyModelFailure enforces a key's model allow-list before the request reaches
-// upstream. Unrestricted keys are a no-op.
-func (s *Server) keyModelFailure(r *http.Request, model string) *apiFailure {
-	requested := strings.TrimSpace(model)
-	return s.keyModelFailureForRef(r, modelRef{
-		Raw: requested, Upstream: requested, Canonical: requested,
-	})
-}
-
 // keyModelFailureForRef enforces a key's model allow-list over both the
 // canonical requested ID and the bare upstream ID, so allow-lists written
 // either way keep matching a qualified request. Unrestricted keys are a no-op.
@@ -157,7 +148,13 @@ func (s *Server) keyModelFailureForRef(r *http.Request, ref modelRef) *apiFailur
 	if entry == nil || keys.AllowsModelAny(*entry, ref.Canonical, ref.Upstream) {
 		return nil
 	}
-	return modelAllowListFailure(*entry, ref.Requested())
+	// Error text uses the client's original spelling when it survives the
+	// parse, not the lower-cased canonical exit prefix.
+	asked := strings.TrimSpace(ref.Raw)
+	if asked == "" {
+		asked = ref.Requested()
+	}
+	return modelAllowListFailure(*entry, asked)
 }
 
 func modelAllowListFailure(entry keys.Entry, model string) *apiFailure {

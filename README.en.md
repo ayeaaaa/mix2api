@@ -82,8 +82,9 @@ Compatibility rules:
 
 - Bare model IDs are still accepted: API-key binding first, then an explicit
   `realm`; with no explicit realm, the first registered provider whose catalog
-  matches wins, with no uniqueness check. A bare model under `realm=gateway`
-  must instead match exactly one exit.
+  matches wins, with no uniqueness check. For an unbound key, a bare model
+  under `realm=gateway` must instead match exactly one exit; a key bound to an
+  exit resolves to that exit before the unique-match check.
 - For bare IDs and catalog discovery, `realm=all` keeps its original meaning:
   WorkBuddy International / China only, without CodeArts or Raccoon; a key
   bound to an exit still follows the binding. Qualified requests route by

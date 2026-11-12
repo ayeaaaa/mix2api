@@ -19,6 +19,7 @@
 const assert = require('assert');
 const {dashboardHtml} = require('./_dashboard_source.js');
 const {loadDashboard} = require('./_dashboard_sandbox.js');
+const dom = require('./_dom_stub.js');
 
 // installDom() 会把 global.setTimeout 换成 no-op；等异步落定要自己先抓住平台定时器。
 const PLATFORM_SET_TIMEOUT = setTimeout;
@@ -161,6 +162,54 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
     cnList.includes('value="cn/m1"') && !cnList.includes('codearts/m1')
       && !cnList.includes('intl/m1'),
     cnList);
+  check('目录里没有的已保存精确模型作为勾选的 legacy 行出现',
+    /value="m-legacy"[^>]*checked/.test(cnList) && cnList.includes('legacy'),
+    cnList);
+
+  // The DOM stub does not materialize the rows written through innerHTML, so
+  // build the checkboxes the panel would have rendered for the select-all test.
+  const checkboxValues = (inner) => {
+    const values = [];
+    const re = /<input type="checkbox" value="([^"]+)"/g;
+    let match;
+    while((match = re.exec(inner))) values.push(match[1]);
+    return values;
+  };
+  const modelList0 = document.getElementById('editKeyModelList_0');
+  const boxes0 = checkboxValues(cnList).map(value => {
+    const el = dom.makeElement('input');
+    el.value = value;
+    return el;
+  });
+  modelList0.querySelectorAll = () => boxes0;
+  page.openEditKey(0);
+  await page.renderKeyPickers(0);
+  page.setKeyModelsAll(0, true);
+  check('全选从已有精确集合出发，不会丢掉目录里没有的 legacy 模型',
+    JSON.stringify(page.API_KEY_ROWS[0]._draftModels)
+      === JSON.stringify(['cn/m1', 'm-legacy']),
+    JSON.stringify(page.API_KEY_ROWS[0]._draftModels));
+
+  // An empty filtered list must not be read as "select nothing", which the
+  // server interprets as an unrestricted allow-list.
+  page.openEditKey(1);
+  page.API_KEY_ROWS[1]._draftRealm = 'raccoon';
+  page.API_KEY_ROWS[1]._draftModels = ['raccoon/hidden'];
+  const emptyList1 = document.getElementById('editKeyModelList_1');
+  emptyList1.innerHTML = '';
+  emptyList1.querySelectorAll = () => [];
+  const warnLog = console.log;
+  const warnings = [];
+  console.log = (...args) => warnings.push(args.join(' '));
+  try {
+    page.setKeyModelsAll(1, true);
+  } finally {
+    console.log = warnLog;
+  }
+  check('空筛选列表全选保留原限制，不会放宽成「不限制」',
+    JSON.stringify(page.API_KEY_ROWS[1]._draftModels) === JSON.stringify(['raccoon/hidden']),
+    JSON.stringify(page.API_KEY_ROWS[1]._draftModels));
+  page.cancelEditKey(1);
 
   await page.renderKeyPickers(1);
   const allList = document.getElementById('editKeyModelList_1').innerHTML;

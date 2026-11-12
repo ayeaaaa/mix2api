@@ -171,6 +171,60 @@ func TestChatKeyRealmQualifiedAllowlist(t *testing.T) {
 	}
 }
 
+// TestChatKeyAllowListErrorKeepsClientSpelling verifies the rejection message
+// shows the model string the client sent, not the lower-cased canonical exit.
+func TestChatKeyAllowListErrorKeepsClientSpelling(t *testing.T) {
+	_, keyStore, _, _, _ := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "denied", Name: "denied", Key: "key-denied", Models: []string{"intl/*"},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	server := New(ServerOptions{Providers: []providers.Provider{cn}, KeyStore: keyStore})
+
+	rec := doRequest(server, http.MethodPost, "/v1/chat/completions",
+		`{"model":"CN/shared","messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"Authorization": "Bearer key-denied"})
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	if !strings.Contains(message, "CN/shared") {
+		t.Fatalf("failure lost the client spelling: %#v", failure)
+	}
+	if strings.Contains(message, "cn/shared") {
+		t.Fatalf("failure used the canonical spelling only: %#v", failure)
+	}
+	if len(cn.opened()) != 0 {
+		t.Fatal("denied request reached the provider")
+	}
+}
+
+// TestBoundKeyReservedRealmRejected covers the key-entry branch of
+// apiKeyBoundRealm: a binding to a discovery scope is an operator error, not a
+// provider realm. (The key store already normalizes the value away, so build
+// the request context directly to pin the defensive branch.)
+func TestBoundKeyReservedRealmRejected(t *testing.T) {
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}}
+	server := newTestServer(ServerOptions{Providers: []providers.Provider{cn}})
+
+	for _, realm := range []string{"gateway", "all"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req = req.WithContext(withKeyEntry(req.Context(), &keys.Entry{
+			ID: "bound", Name: "bound", Key: "key-bound", Realm: realm,
+		}))
+		got, failure := server.apiKeyBoundRealm(req)
+		if failure == nil {
+			t.Fatalf("realm %q accepted as binding: %q", realm, got)
+		}
+		if got != "" || failure.Status != http.StatusBadRequest {
+			t.Fatalf("realm %q = %q, failure %#v", realm, got, failure)
+		}
+		if message := failure.Message; !strings.Contains(message, "invalid api key realm: "+realm) {
+			t.Fatalf("realm %q failure = %q", realm, message)
+		}
+	}
+}
+
 func TestMessagesAuthPreservesNon401(t *testing.T) {
 	_, keyStore, _, _, _ := platformFixture(t)
 	if _, err := keyStore.Save([]keys.Entry{{

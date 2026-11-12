@@ -1436,7 +1436,7 @@ func (s *Server) serveResponses(w http.ResponseWriter, r *http.Request) {
 	upstreamModel := request.model
 	requestedModel := request.requestedModel
 	ref := modelRef{
-		Raw:       requestedModel,
+		Raw:       request.rawModel,
 		Exit:      request.exit,
 		Upstream:  upstreamModel,
 		Canonical: requestedModel,

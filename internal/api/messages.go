@@ -640,7 +640,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})
 		return
 	}
-	s.serveMessagesRequest(w, r, payload, chat, ref.Requested(), ref.Exit)
+	s.serveMessagesRequest(w, r, payload, chat, ref)
 }
 
 func (s *Server) parseMessagesPayload(w http.ResponseWriter, r *http.Request) (map[string]any, *apiFailure) {
@@ -656,21 +656,17 @@ func (s *Server) parseMessagesPayload(w http.ResponseWriter, r *http.Request) (m
 }
 
 // serveMessagesRequest opens the upstream for one translated Messages request.
-// requestedModel is the client-visible ID (canonical when exit-qualified) and
-// exit is the parsed routing prefix; the chat map's model is the upstream ID.
-// The key allow-list is enforced here once, after the reference is parsed, so a
-// qualified request can match either its canonical or its upstream spelling.
-func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, payload, chat map[string]any, requestedModel, exit string) {
+// ref carries the client spelling, canonical requested ID and parsed routing
+// prefix; the chat map's model is the upstream ID. The key allow-list is
+// enforced here once, after the reference is parsed, so a qualified request can
+// match either its canonical or its upstream spelling while error text keeps
+// the client's original spelling.
+func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, payload, chat map[string]any, ref modelRef) {
 	started := time.Now()
+	requestedModel := ref.Requested()
+	exit := ref.Exit
 	upstreamModel := strings.TrimSpace(anthropicText(chat["model"]))
 	stream := boolValue(chat["stream"])
-	ref := modelRef{
-		Raw:       requestedModel,
-		Exit:      exit,
-		Upstream:  upstreamModel,
-		Canonical: requestedModel,
-		Qualified: exit != "",
-	}
 	if failure := s.keyModelFailureForRef(r, ref); failure != nil {
 		s.observeMessagesFailureDetail(r, requestedModel, stream, failure, "")
 		writeAnthropicError(w, failure.Status, failure.Message, "invalid_request_error", time.Time{})

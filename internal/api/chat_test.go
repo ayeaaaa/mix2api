@@ -26,6 +26,9 @@ type stubProvider struct {
 
 	models    []providers.Model
 	modelsErr error
+	// modelsCtx runs before a successful catalog reply so tests can inspect
+	// the per-call context (for example, prove a deadline was applied).
+	modelsCtx func(context.Context) error
 
 	health    providers.Health
 	healthErr error
@@ -61,12 +64,17 @@ func (p *stubProvider) Health(context.Context, bool) (providers.Health, error) {
 	return p.health, nil
 }
 
-func (p *stubProvider) Models(context.Context, bool) ([]providers.Model, error) {
+func (p *stubProvider) Models(ctx context.Context, _ bool) ([]providers.Model, error) {
 	p.mu.Lock()
 	p.modelCalls++
 	p.mu.Unlock()
 	if p.modelsErr != nil {
 		return nil, p.modelsErr
+	}
+	if p.modelsCtx != nil {
+		if err := p.modelsCtx(ctx); err != nil {
+			return nil, err
+		}
 	}
 	out := make([]providers.Model, len(p.models))
 	copy(out, p.models)
@@ -1939,7 +1947,7 @@ func TestChatGatewayBareModelCatalogFailure(t *testing.T) {
 
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions?realm=gateway",
 		`{"model":"only-intl","messages":[{"role":"user","content":"hi"}]}`, nil)
-	failure := requireErrorEnvelope(t, rec, http.StatusServiceUnavailable, "invalid_request_error")
+	failure := requireErrorEnvelope(t, rec, http.StatusServiceUnavailable, "server_error")
 	if message, _ := failure["message"].(string); !strings.Contains(message,
 		"gateway model catalog incomplete; use exit/model or a concrete realm") {
 		t.Fatalf("failure = %#v", failure)

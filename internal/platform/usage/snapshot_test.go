@@ -204,3 +204,25 @@ func TestSnapshotGroupsByRequestedModelKey(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotCostMissingUsesBilledModel keeps cost_missing on the model the
+// pricer looked up: the billed upstream ID, not the canonical requested ID.
+func TestSnapshotCostMissingUsesBilledModel(t *testing.T) {
+	now := float64(time.Now().Unix())
+	env := newTestEnv(t, []map[string]any{
+		row(now, "unpriced-upstream", "cn", "acct-a", 10, 1, map[string]any{
+			"requested_model": "cn/unpriced-upstream",
+		}),
+	})
+	snapshot, err := env.service().Snapshot(context.Background(), SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := mustMap(t, snapshot["cost_missing"])
+	if mustNumber(t, missing["unpriced-upstream"]) != 1 {
+		t.Fatalf("cost_missing = %#v, want one unpriced-upstream entry", missing)
+	}
+	if _, ok := missing["cn/unpriced-upstream"]; ok {
+		t.Fatalf("cost_missing points at the canonical id: %#v", missing)
+	}
+}
