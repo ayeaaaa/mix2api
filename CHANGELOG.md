@@ -3,6 +3,85 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.4.0] - 2026-11-12
+
+### 中文
+
+#### 新增
+
+- 模型 ID 支持出口限定写法：`intl/<model>`、`cn/<model>`、
+  `codearts/<model>`、`raccoon/<model>`。Chat Completions、Responses 和
+  Anthropic Messages 会精确路由到对应出口，向上游发送裸模型 ID，并在响应中
+  回显出口限定 ID；裸模型 ID 保持兼容。
+- 新增 `GET /v1/models?realm=gateway`，汇总所有已注册出口的模型目录，返回
+  带 `realm` / `provider` / `upstream_id` / `qualified_id` 的 canonical ID。
+  `realm=all` 仍只表示 WorkBuddy `intl` / `cn`。
+- API Key 模型白名单同时匹配 canonical ID 和上游裸 ID；Key 绑定出口仍是硬
+  策略，出口前缀不能越权。显式 realm 与模型出口冲突时返回明确错误。
+- 看板 Key 选择器改为 gateway-first 并按出口过滤；分析矩阵和 Agent 配置
+  使用出口限定 ID，避免不同出口同名模型混淆。
+- Usage 继续用上游裸 `model` 做计费/定价，同时记录 canonical
+  `requested_model`；分析按请求 ID 分组，保留“客户端实际请求的是哪个出口”。
+- WorkBuddy 积分包改为分页拉取（200 条/页，最多 10 页），免费包纳入
+  `Status:[0,1,2,3]`，并使用官方 `resource-summary` 累计容量作为积分总量。
+
+#### 修复
+
+- 活跃账号超过 200 个积分包时，历史不再被第一页截断。
+- 已用完/过期的签到、成长积分包不再从积分获取历史里消失。
+- 套餐明细求和低于官方累计值时，积分总量、已用和剩余改为以官方 summary
+  为准；summary 没有容量字段时才回退到明细求和。
+- 某一页积分请求失败时保留已拉到的数据，不会让整次刷新失败。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 12/12 通过。
+- 新增出口限定模型路由、Key 白名单、Usage 归属、网关目录和积分分页回归测试。
+
+### English
+
+#### Added
+
+- Model IDs now accept exit-qualified forms: `intl/<model>`, `cn/<model>`,
+  `codearts/<model>`, and `raccoon/<model>`. Chat Completions, Responses, and
+  Anthropic Messages route exactly to that exit, send the bare upstream ID to
+  the provider, and echo the canonical qualified ID to clients. Bare model IDs
+  remain compatible.
+- Added `GET /v1/models?realm=gateway`, an all-exit catalog with `realm`,
+  `provider`, `upstream_id`, and `qualified_id` fields on canonical entries.
+  `realm=all` still means WorkBuddy `intl` / `cn` only.
+- API-key model allow-lists match both canonical and upstream IDs. A key's bound
+  realm remains hard policy, so an exit prefix cannot escape it; conflicting
+  explicit realms and model exits are rejected clearly.
+- The dashboard key picker is gateway-first and realm-filtered; the analytics
+  matrix and agent configuration use exit-qualified IDs so same-named models on
+  different exits no longer collapse together.
+- Usage keeps the bare upstream `model` for billing/pricing and records the
+  canonical `requested_model` for analytics, preserving which exit the client
+  actually requested.
+- WorkBuddy credit packages are fetched across pages (200 per page, up to 10
+  pages), free packages include `Status:[0,1,2,3]`, and the official
+  `resource-summary` cumulative capacity is preferred for credit totals.
+
+#### Fixed
+
+- Accounts with more than 200 credit packages no longer lose the rest of their
+  history after the first page.
+- Used or expired check-in/growth packages no longer disappear from the credit
+  grants view.
+- When package-row totals are lower than the official cumulative value, total,
+  used, and remaining credits now follow the official summary; row totals are
+  used only when the summary has no capacity fields.
+- A failed credit page keeps the rows already fetched instead of failing the
+  whole refresh.
+
+#### Verification
+
+- `make check` and `make race` pass; the dashboard JS harness passes 12/12
+  suites.
+- Added regression coverage for exit-qualified routing, key allow-lists, usage
+  attribution, the gateway catalog, and credit package pagination.
+
 ## [2.3.2] - 2026-11-12
 
 ### 中文

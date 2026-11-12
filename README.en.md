@@ -8,7 +8,7 @@ SSE, and an embedded dashboard, bringing WorkBuddy International / China,
 Huawei Cloud CodeArts（遥遥领先）, and Raccoon（商汤小浣熊） into one API-key and
 account-pool surface.
 
-Current version: **2.3.2**. The default branch is `v2`; `main` keeps the frozen
+Current version: **2.4.0**. The default branch is `v2`; `main` keeps the frozen
 v1.6.6 history.
 
 ## Origin
@@ -109,7 +109,7 @@ for details.
 Images are published to GHCR for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/ayeaaaa/mix2api:v2.3.2
+docker pull ghcr.io/ayeaaaa/mix2api:v2.4.0
 ```
 
 Generate two independent credentials in the current shell. Do not write real
@@ -141,7 +141,7 @@ docker run -d --name mix2api \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   -v "$PWD/data/media:/app/media" \
-  ghcr.io/ayeaaaa/mix2api:v2.3.2
+  ghcr.io/ayeaaaa/mix2api:v2.4.0
 ```
 
 This publishes the port only on `127.0.0.1`, suitable for a reverse proxy or an
@@ -193,8 +193,8 @@ extract it:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf mix2api-2.3.2-linux-amd64.tar.gz
-cd mix2api-2.3.2-linux-amd64
+tar -xzf mix2api-2.4.0-linux-amd64.tar.gz
+cd mix2api-2.4.0-linux-amd64
 ```
 
 Start it. `HOST` defaults to `127.0.0.1`; the data directories default to
