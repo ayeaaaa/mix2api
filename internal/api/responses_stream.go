@@ -82,11 +82,15 @@ func writeResponsesStream(w http.ResponseWriter, r *http.Request, stream provide
 	_ = runResponsesStream(w, r, stream, model, meta)
 }
 
-func (s *Server) serveResponsesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, meta responseMeta) {
+// serveResponsesStream emits a provider chat stream as Responses SSE events.
+// model is the client-visible requested ID (canonical for qualified requests);
+// upstreamModel is what the provider actually served and what observations
+// record for pricing.
+func (s *Server) serveResponsesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model, upstreamModel string, meta responseMeta) {
 	result := runResponsesStream(w, r, stream, model, meta)
 	observation := ProtocolObservation{
 		Protocol:       "responses",
-		Model:          model,
+		Model:          upstreamModel,
 		RequestedModel: model,
 		Effort:         meta.Effort,
 		Stream:         true,

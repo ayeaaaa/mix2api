@@ -15,13 +15,15 @@ import (
 )
 
 // runResponsesWebRounds executes local web tools and returns the final chat
-// completion plus the web items/sources the client should see.
+// completion plus the web items/sources the client should see. Provider rounds
+// always use the upstream model ID; the requested ID is applied by the caller
+// only to the client-visible response.
 func (s *Server) runResponsesWebRounds(
 	ctx context.Context,
 	provider providers.Provider,
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
-	model string,
+	upstreamModel string,
 ) (map[string]any, responseMeta, error) {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
@@ -71,7 +73,7 @@ func (s *Server) runResponsesWebRounds(
 			}
 			return nil, translated.Meta, openErr
 		}
-		chat, aggregateErr := aggregateChatStream(upstream, model)
+		chat, aggregateErr := aggregateChatStream(upstream, upstreamModel)
 		_ = upstream.Close()
 		if aggregateErr != nil {
 			return nil, translated.Meta, aggregateErr
@@ -136,23 +138,24 @@ func (s *Server) serveResponsesWithWebTools(
 	provider providers.Provider,
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
-	model string,
+	requestedModel string,
+	upstreamModel string,
 	started time.Time,
 ) bool {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
 		return false
 	}
-	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
+	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, upstreamModel)
 	if err != nil {
-		s.observeResponseFailureDetail(r, model, false, failureFromError(err), provider.Realm())
+		s.observeResponseFailureDetail(r, requestedModel, false, failureFromError(err), provider.Realm())
 		writeFailure(w, err)
 		return true
 	}
-	response := chatToResponse(final, model, meta)
+	response := chatToResponse(final, requestedModel, meta)
 	attachWebItems(response, meta.WebItems, meta.Sources)
 	s.observeProtocol(r, ProtocolObservation{
-		Protocol: "responses", Model: model, RequestedModel: model,
+		Protocol: "responses", Model: upstreamModel, RequestedModel: requestedModel,
 		Realm: provider.Realm(), Effort: translated.Meta.Effort,
 		Stream: false, Outcome: "completed", Status: http.StatusOK,
 		Usage: usageMap(final["usage"]), ElapsedMS: time.Since(started).Milliseconds(),
@@ -167,21 +170,22 @@ func (s *Server) serveResponsesWithWebToolsStream(
 	provider providers.Provider,
 	chatRequest providers.ChatRequest,
 	translated *responsesTranslation,
-	model string,
+	requestedModel string,
+	upstreamModel string,
 	started time.Time,
 ) bool {
 	wants := webtools.WantsFromTools(metaTools(translated.Meta.Tools))
 	if !wants.Search && !wants.Fetch {
 		return false
 	}
-	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, model)
+	final, meta, err := s.runResponsesWebRounds(r.Context(), provider, chatRequest, translated, upstreamModel)
 	if err != nil {
-		s.observeResponseFailureDetail(r, model, true, failureFromError(err), provider.Realm())
+		s.observeResponseFailureDetail(r, requestedModel, true, failureFromError(err), provider.Realm())
 		writeFailure(w, err)
 		return true
 	}
-	stream := newUsageTracker(newSnapshotStream(chatCompletionStream(final), snapshotFromChat(final, provider.Realm(), model)), started)
-	s.serveResponsesStream(w, r, stream, model, meta)
+	stream := newUsageTracker(newSnapshotStream(chatCompletionStream(final), snapshotFromChat(final, provider.Realm(), upstreamModel)), started)
+	s.serveResponsesStream(w, r, stream, requestedModel, upstreamModel, meta)
 	return true
 }
 
