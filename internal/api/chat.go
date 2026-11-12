@@ -662,6 +662,9 @@ func aggregateChatStream(stream providers.ChatStream, model string, printed ...*
 			aggregate.sawDone = true
 			continue
 		}
+		if chunk.Valid && chunk.Fields["error"] != nil {
+			return nil, localFailure(http.StatusBadGateway, "upstream stream error")
+		}
 		if aggregate.printed != nil {
 			if chunk.ChoiceCount > 1 {
 				aggregate.printed = nil

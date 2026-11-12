@@ -273,6 +273,15 @@ func TestChatPrintedToolsErrorFrameDoesNotFinalize(t *testing.T) {
 	}
 }
 
+func TestChatPrintedToolsNonStreamErrorFrame(t *testing.T) {
+	delta, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": printedDSMLFixture}}}})
+	stream := newStubStream("data: "+string(delta)+"\n\n", `data: {"error":{"type":"upstream_error","message":"generation aborted"}}`+"\n\n")
+	out, err := aggregateChatStream(stream, "m1", &printedToolRecovery{names: map[string]bool{"run_shell": true}})
+	if err == nil || out != nil {
+		t.Fatalf("nonstream error became executable completion: %v %v", out, err)
+	}
+}
+
 func BenchmarkChatPrintedOrdinaryHTML(b *testing.B) {
 	text := strings.Repeat("<div>x", 16000)
 	p := &printedToolRecovery{names: map[string]bool{"run_shell": true}}
