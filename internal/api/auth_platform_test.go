@@ -127,6 +127,50 @@ func TestKeyModelAllowlistAPI(t *testing.T) {
 	}
 }
 
+func TestChatKeyRealmQualifiedAllowlist(t *testing.T) {
+	_, keyStore, _, _, _ := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{
+		{ID: "canonical", Name: "canonical", Key: "key-canonical", Models: []string{"cn/*"}},
+		{ID: "upstream", Name: "upstream", Key: "key-upstream", Models: []string{"shared"}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cn := &stubProvider{id: "workbuddy", realm: "cn", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	codearts := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	server := New(ServerOptions{Providers: []providers.Provider{cn, codearts}, KeyStore: keyStore})
+
+	rec := doRequest(server, http.MethodPost, "/v1/chat/completions", `{"model":"cn/shared","messages":[{"role":"user","content":"hi"}]}`, map[string]string{
+		"Authorization": "Bearer key-canonical",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("canonical allow-list status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(cn.opened()) != 1 || len(codearts.opened()) != 0 {
+		t.Fatalf("providers cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
+	}
+
+	rec = doRequest(server, http.MethodPost, "/v1/chat/completions", `{"model":"codearts/shared","messages":[{"role":"user","content":"hi"}]}`, map[string]string{
+		"Authorization": "Bearer key-canonical",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-exit allow-list status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(codearts.opened()) != 0 {
+		t.Fatal("wrong-exit request reached provider")
+	}
+
+	cn.openStream = chatSuccessStream()
+	rec = doRequest(server, http.MethodPost, "/v1/chat/completions", `{"model":"cn/shared","messages":[{"role":"user","content":"hi"}]}`, map[string]string{
+		"Authorization": "Bearer key-upstream",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upstream allow-list status=%d body=%s", rec.Code, rec.Body)
+	}
+	if len(cn.opened()) != 2 {
+		t.Fatalf("cn OpenChat calls=%d, want 2", len(cn.opened()))
+	}
+}
+
 func TestMessagesAuthPreservesNon401(t *testing.T) {
 	_, keyStore, _, _, _ := platformFixture(t)
 	if _, err := keyStore.Save([]keys.Entry{{
