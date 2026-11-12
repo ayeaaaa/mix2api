@@ -158,6 +158,11 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   delete page.KEY_MODEL_CATALOG;
   await page.loadSettings(true);
   await settle();
+  // A background settings/catalog load may have populated the fallback list
+  // from step 4. Force the gateway catalog before rendering so this assertion
+  // is independent of that timing.
+  await page.loadKeyModelCatalog(true);
+  await settle();
 
   await page.renderKeyPickers(0);
   const cnList = document.getElementById('editKeyModelList_0').innerHTML;
