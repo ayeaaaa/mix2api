@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.3.2] - 2026-11-12
+
+### 中文
+
+#### 修复
+
+- 国内版 Buddy 加油站徽章不再被更早的定时重试失败覆盖：只要账号当天已有
+  `lastCheckin` 成功记录，就显示「已领」；失败记录仍保留在活动历史里供排查。
+- 同步更新 dashboard 资产哈希与文件大小元数据，并新增该场景的 dashboard
+  JS 回归测试。
+
+#### 验证
+
+- `make check`、`go test -race ./internal/web ./tests/dashboard` 通过；
+  dashboard JS 套件 10/10 通过。
+
+### English
+
+#### Fixed
+
+- The China Buddy check-in badge is no longer overwritten by an earlier
+  scheduler retry failure. When the account already has a successful
+  `lastCheckin` record for today, the badge shows Claimed; failed attempts
+  remain in the activity history for diagnosis.
+- Updated the dashboard asset hash and size metadata and added a dashboard JS
+  regression test for this case.
+
+#### Verification
+
+- `make check` and `go test -race ./internal/web ./tests/dashboard` pass; the
+  dashboard JS harness passes 10/10 suites.
+
 ## [2.3.1] - 2026-11-12
 
 ### 中文
