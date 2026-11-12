@@ -85,6 +85,7 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
   `deepseek-*` 也能命中 `cn/deepseek-v4.1-flash` 的上游部分。
 
 细节见[出口限定模型设计](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)。
+新增 provider、出口/模型或跨层功能时，按[开发说明](docs/development.md)的清单执行。
 
 ## 部署
 

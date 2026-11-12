@@ -100,7 +100,8 @@ Compatibility rules:
   the upstream half of `cn/deepseek-v4.1-flash`.
 
 See the [exit-qualified model design](docs/superpowers/specs/2026-11-12-exit-qualified-models-design.md)
-for details.
+for details. For adding providers, exits/models, or cross-layer features, follow
+the [development guide](docs/development.md).
 
 ## Deployment
 
