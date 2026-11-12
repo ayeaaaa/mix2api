@@ -34,12 +34,13 @@ func TestSetupProvidersFromEnv(t *testing.T) {
 	if setup.Paths.AccountsDir != accountsDir || setup.Paths.UsageDir != usageDir {
 		t.Fatalf("paths = %#v", setup.Paths)
 	}
-	if len(setup.Providers) != 4 {
-		t.Fatalf("providers = %d, want raccoon, codearts, and workbuddy intl/cn", len(setup.Providers))
+	if len(setup.Providers) != 5 {
+		t.Fatalf("providers = %d, want raccoon, codearts, doubao, and workbuddy intl/cn", len(setup.Providers))
 	}
 	wantedRealms := map[string]string{
 		"raccoon":        "raccoon",
 		"codearts":       "codearts",
+		"doubao":         "doubao",
 		"workbuddy-intl": "intl",
 		"workbuddy-cn":   "cn",
 	}

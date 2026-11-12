@@ -538,19 +538,19 @@ func TestCodeArtsCompositionAndDisabledOverview(t *testing.T) {
 
 func codeartsSliceRequireRegistration(t *testing.T, setup *app.Setup) {
 	t.Helper()
-	if len(setup.Providers) != 4 {
-		t.Fatalf("providers = %d, want raccoon, codearts, and workbuddy intl/cn", len(setup.Providers))
+	if len(setup.Providers) != 5 {
+		t.Fatalf("providers = %d, want raccoon, codearts, doubao, and workbuddy intl/cn", len(setup.Providers))
 	}
 	byID := make(map[string]int, len(setup.Providers))
 	for _, provider := range setup.Providers {
 		byID[provider.ID()]++
 	}
-	for _, id := range []string{"raccoon", "codearts", "workbuddy-intl", "workbuddy-cn"} {
+	for _, id := range []string{"raccoon", "codearts", "doubao", "workbuddy-intl", "workbuddy-cn"} {
 		if byID[id] != 1 {
 			t.Fatalf("provider ID %q count = %d, want exactly 1", id, byID[id])
 		}
 	}
-	for _, realm := range []string{"raccoon", "codearts", "intl", "cn"} {
+	for _, realm := range []string{"raccoon", "codearts", "doubao", "intl", "cn"} {
 		provider, ok := setup.Registry.Get(realm)
 		if !ok || provider == nil {
 			t.Fatalf("registry has no %q realm", realm)
