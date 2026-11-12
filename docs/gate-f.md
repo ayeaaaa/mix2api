@@ -98,13 +98,14 @@ calls, in-band stream errors fail closed, and CodeArts/Raccoon preserve legacy
 `functions` / `tool_choice=none` declarations. Covered by Go tests and the full
 `make check` / `make race` suites.
 
-**uTLS bridge addendum (unreleased):** WorkBuddy International/China can opt into
-an in-process uTLS bridge that reproduces the official Node/OpenSSL ClientHello
-(18 ciphers, 10 extensions, no ALPN). JA3/JA4, unauthenticated CONNECT, direct,
-HTTP/HTTPS/SOCKS5 proxy, and live upstream handshakes pass. The build baseline
-moves to Go 1.26 and uTLS 1.8.2; `govulncheck` reports 0 vulnerabilities.
-Evidence: `docs/smoke/2026-11-12-utls-bridge.md`. Real-account WorkBuddy China
-chat and SSE through the bridge passed on 2026-11-12.
+**v2.2.0 addendum:** WorkBuddy International/China can opt into an in-process
+uTLS bridge that reproduces the official Node/OpenSSL ClientHello (18 ciphers,
+10 extensions, no ALPN). JA3/JA4, unauthenticated CONNECT, direct,
+HTTP/HTTPS/SOCKS5 proxy, keep-alive, certificate failure, and live upstream
+handshakes pass. The build baseline moved to Go 1.26 and uTLS 1.8.2;
+`govulncheck` reports 0 vulnerabilities. Real-account WorkBuddy China chat and
+SSE through the bridge passed on 2026-11-12. Published as `v2.2.0` at
+`de1d650`; evidence: `docs/smoke/2026-11-12-release-2.2.0.md`.
 
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
