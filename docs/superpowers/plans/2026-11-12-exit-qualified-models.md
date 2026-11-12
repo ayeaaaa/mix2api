@@ -557,6 +557,7 @@ git commit -m "feat(api): support exit-qualified responses models"
 
 **Interfaces:**
 - Parse the reference in `handleMessages` before `messagesToChatWithDefault` so default max-output lookup uses the upstream ID.
+- Rewrite `payload["model"]` to the upstream ID before calling `messagesToChatWithDefault`; pass the requested model and exit separately into `serveMessagesRequest`.
 - Pass the requested model into `serveMessagesRequest` and `serveMessagesStream`.
 - `chat["model"]` must be the upstream ID while building `rawChat` and the `ChatRequest`; after `chatMapToRaw`, set `chat["model"]` back to the requested ID for output helpers.
 - `ProtocolObservation.Model` receives upstream; `RequestedModel` receives requested.
