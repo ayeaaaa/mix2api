@@ -11,8 +11,8 @@
 
 | 出口 | Provider ID | Realm | 说明 |
 |---|---|---|---|
-| WorkBuddy 国际版 | `workbuddy` | `intl` | 与国内版共用 provider |
-| WorkBuddy 国内版 | `workbuddy` | `cn` | 与国际化版共用 provider |
+| WorkBuddy 国际版 | `workbuddy-intl` | `intl` | `Provider.ID()` 的实例 ID |
+| WorkBuddy 国内版 | `workbuddy-cn` | `cn` | `Provider.ID()` 的实例 ID |
 | CodeArts | `codearts` | `codearts` | 华为 |
 | Raccoon | `raccoon` | `raccoon` | 小浣熊 |
 
@@ -106,7 +106,9 @@ raccoon/raccoon-090dd3
 
 ### 4.2 为什么不用 `provider/model`
 
-WorkBuddy 的 `intl` 和 `cn` 共用 provider ID `workbuddy`。`workbuddy/deepseek...` 无法区分国际版和国内版，会丢掉本设计最重要的出口差异。因此规范前缀使用**出口/realm**，不是 provider 名。
+WorkBuddy 的 `intl` 和 `cn` 是同一个 provider 实现的两个实例，`Provider.ID()` 分别是 `workbuddy-intl` 和 `workbuddy-cn`。它们虽然能区分出口，但这是**实例 ID**，不是模型前缀的最佳命名；用 `workbuddy-intl/deepseek...` 会比 `intl/deepseek...` 更长，而且和请求里已有的 `realm=intl`/`realm=cn` 词汇不一致。
+
+因此规范前缀使用**出口/realm**，不是 provider 名。provider 元数据继续用 `Provider.ID()`，所以 gateway 目录里 WorkBuddy 国内/国际条目的 `provider` 分别是 `workbuddy-cn`/`workbuddy-intl`，`realm` 仍是 `cn`/`intl`。
 
 如果未来需要更长的可读别名，可以额外接受 `workbuddy-intl/...`、`workbuddy-cn/...`，但规范 ID 仍是 `intl/...`、`cn/...`，避免一个模型两个规范名。
 
@@ -154,7 +156,7 @@ func parseModelRef(raw string, isExit func(string) bool) (modelRef, error)
       "id": "cn/deepseek-v4.1-flash",
       "qualified_id": "cn/deepseek-v4.1-flash",
       "upstream_id": "deepseek-v4.1-flash",
-      "provider": "workbuddy",
+      "provider": "workbuddy-cn",
       "realm": "cn",
       "object": "model",
       "...": "保留 provider 原有元数据"
