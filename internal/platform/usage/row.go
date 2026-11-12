@@ -27,6 +27,16 @@ func RowISO(row Row) string { return stringValue(row, "iso") }
 // RowModel returns the billed model id.
 func RowModel(row Row) string { return stringValue(row, "model") }
 
+// rowModelKey is the analytics grouping key: the exit-qualified id the caller
+// requested when the row carries one, otherwise the billed model id. Rows
+// written before requested_model existed keep grouping by model.
+func rowModelKey(row Row) string {
+	if requested := rowString(row, "requested_model"); requested != "" {
+		return requested
+	}
+	return rowString(row, "model")
+}
+
 // RowStream reports whether the request used streaming.
 func RowStream(row Row) bool { return truthy(row["stream"]) }
 
@@ -246,6 +256,7 @@ type scanRow struct {
 	At               float64        `json:"at"`
 	ISO              string         `json:"iso"`
 	Model            string         `json:"model"`
+	RequestedModel   string         `json:"requested_model"`
 	Stream           bool           `json:"stream"`
 	Outcome          string         `json:"outcome"`
 	Error            bool           `json:"error"`
@@ -296,6 +307,9 @@ func decodeScanRow(line []byte) (Row, error) {
 	}
 	if decoded.Model != "" {
 		row["model"] = decoded.Model
+	}
+	if decoded.RequestedModel != "" {
+		row["requested_model"] = decoded.RequestedModel
 	}
 	if decoded.Stream {
 		row["stream"] = true

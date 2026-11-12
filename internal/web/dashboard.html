@@ -20310,12 +20310,15 @@ function analyticsQuery(){
 
 /* 模型性能指标与用量一览
  *
- * Reads the combined view on purpose. The table carries its own 区域
- * column, so scoping it to the gateway's current exit would hide exactly the
- * models this page exists to compare. */
-// /v1/models?realm=all 的目录在这里只作展示白名单（哪些模型算"已知模型"），
-// 内容变化极慢，却跟着 5 秒轮询每轮重取一份（实测统计页开着约 12~15 次/分钟、
-// 约 24KB/次）。改成一个 TTL：进统计页时取一次，之后最多每 10 分钟回源一次；
+ * 用量数据仍读全区域合并视图。The table carries its own 区域 column, so
+ * scoping the data to the gateway's current exit would hide exactly the models
+ * this page exists to compare. 白名单只决定「哪些 id 算已知模型」，所以改读
+ * 网关目录：它的 `m.id` 是带出口前缀的 canonical id（`cn/deepseek`），与用量
+ * 聚合的分组键一致；旧的 `/v1/models?realm=all` 只有裸 id，会把已限定的模型
+ * 全部滤掉。 */
+// 网关目录在这里只作展示白名单（哪些模型算"已知模型"），内容变化极慢，却跟着
+// 5 秒轮询每轮重取一份（实测统计页开着约 12~15 次/分钟、约 24KB/次）。改成一个
+// TTL：进统计页时取一次，之后最多每 10 分钟回源一次；
 // 取失败不刷新时间戳，下一轮继续重试（和原来"失败也不清空白名单"一致）。
 let matrixModelsAt = 0;
 const MATRIX_MODELS_TTL_MS = 10 * 60 * 1000;
@@ -20327,8 +20330,9 @@ async function loadAnalyticsMatrix(){
       getJSON('/usage' + q, POLL_READ),
       getJSON('/usage/perf' + q, POLL_READ),
       // The catalog is only a display filter, so a failure here must not
-      // blank the table; null keeps the previous allowlist.
-      needModels ? getJSON('/v1/models?realm=all').catch(() => null) : Promise.resolve(null),
+      // blank the table; null keeps the previous allowlist. Gateway ids are
+      // canonical (`cn/deepseek`), so they match the usage grouping keys.
+      needModels ? getJSON('/v1/models?realm=gateway').catch(() => null) : Promise.resolve(null),
     ]);
     if(models && models.data){
       MATRIX_MODELS = new Set(models.data.map(m => m.id));

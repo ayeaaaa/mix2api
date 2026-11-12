@@ -63,3 +63,29 @@ func TestPerfPercentiles(t *testing.T) {
 		t.Fatalf("sample_capped = %+v", capped["sample_capped"])
 	}
 }
+
+// TestPerfGroupsByRequestedModelKey keeps perf buckets keyed by the
+// exit-qualified id when the row carries one; bare rows still key by model.
+func TestPerfGroupsByRequestedModelKey(t *testing.T) {
+	now := float64(time.Now().Unix())
+	env := newTestEnv(t, []map[string]any{
+		row(now, "deepseek", "cn", "acct-a", 10, 1, map[string]any{"requested_model": "cn/deepseek"}),
+		row(now+1, "deepseek", "codearts", "acct-b", 20, 2, map[string]any{"requested_model": "codearts/deepseek"}),
+		row(now+2, "deepseek", "intl", "acct-c", 30, 3, nil),
+	})
+	perf, err := env.service().Perf(context.Background(), PerfOptions{Sample: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byModel := mustMap(t, perf["by_model"])
+	want := []string{"cn/deepseek", "codearts/deepseek", "deepseek"}
+	if len(byModel) != len(want) {
+		t.Fatalf("by_model keys = %#v, want %#v", byModel, want)
+	}
+	for _, id := range want {
+		bucket := mustMap(t, byModel[id])
+		if mustNumber(t, bucket["requests"]) != 1 {
+			t.Fatalf("by_model[%q] = %#v, want exactly one request", id, bucket)
+		}
+	}
+}

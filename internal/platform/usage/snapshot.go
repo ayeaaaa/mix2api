@@ -105,7 +105,7 @@ func (s *Service) foldSnapshotRow(stats *UsageStats, row Row, realm string, pric
 	}
 	outcome := RowOutcome(row)
 	cost := s.costForWith(pricer, row)
-	model := rowString(row, "model")
+	model := rowModelKey(row)
 	if outcome != "completed" {
 		stats.Errors++
 		if outcome != "client_aborted" {

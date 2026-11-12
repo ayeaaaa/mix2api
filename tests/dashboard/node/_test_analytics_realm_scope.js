@@ -12,6 +12,7 @@
  */
 'use strict';
 const assert = require('assert');
+const vm = require('node:vm');
 const {dashboardHtml} = require('./_dashboard_source.js');
 const {loadDashboard} = require('./_dashboard_sandbox.js');
 
@@ -84,4 +85,54 @@ check('切区域会清热力图缓存并刷新静态区',
 check('轮询去重键包含区域，避免 CN/INTL 互相挡请求',
   /const pendingKey = range \+ '\\|' \+ analyticsRealmValue\(\)/.test(html));
 
-console.log('analytics realm scope suite passed: ' + checks + ' checks');
+/* ---- 5. 模型矩阵白名单：网关目录的 canonical id ---------------------- */
+/* 用量数据仍是全区域口径，但白名单只回答「哪些 id 算已知模型」。网关目录的
+ * m.id 带出口前缀（cn/deepseek），与用量聚合的分组键一致；旧的 realm=all
+ * 目录只有裸 id，会把已限定的模型全部滤掉。这里把 loadAnalyticsMatrix 的
+ * 源码取出来单独跑一遍，确认它真的请求网关目录并使用 canonical id。 */
+const matrixFn = (html.match(/async function loadAnalyticsMatrix\(\)\{[\s\S]*?\n\}/) || [''])[0];
+check('矩阵白名单来自网关目录', matrixFn.includes("getJSON('/v1/models?realm=gateway')"), matrixFn);
+check('矩阵白名单不再请求 realm=all 目录', !matrixFn.includes('/v1/models?realm=all'), matrixFn);
+check('矩阵白名单把 m.id 当 canonical 键',
+  /MATRIX_MODELS = new Set\(models\.data\.map\(m => m\.id\)\)/.test(matrixFn), matrixFn);
+
+function runMatrixWhitelist(){
+  const calls = [];
+  const context = {
+    console: console,
+    POLL_READ: {},
+    MATRIX_MODELS: new Set(),
+    matrixModelsAt: 0,
+    MATRIX_MODELS_TTL_MS: 0,
+    cachedMatrixData: null,
+    analyticsQuery: () => '?realm=all',
+    getJSON: (url) => {
+      calls.push(url);
+      if(url === '/v1/models?realm=gateway'){
+        return Promise.resolve({object: 'list', realm: 'gateway', data: [
+          {id: 'cn/deepseek', realm: 'cn'},
+          {id: 'codearts/deepseek', realm: 'codearts'},
+          {id: 'deepseek', realm: 'intl'},
+        ]});
+      }
+      return Promise.resolve({
+        by_model: {}, by_model_realm: {}, by_model_acct: {}, accounts_map: {},
+      });
+    },
+    fillMatrixFilters: () => {},
+    renderPerfMatrix: () => {},
+    isAuthError: () => false,
+  };
+  vm.createContext(context);
+  return vm.runInContext(matrixFn + '\nloadAnalyticsMatrix()', context)
+    .then(() => ({calls: calls, models: Array.from(context.MATRIX_MODELS)}));
+}
+
+runMatrixWhitelist().then(result => {
+  check('矩阵白名单实际请求网关目录',
+    result.calls.includes('/v1/models?realm=gateway'), JSON.stringify(result.calls));
+  check('矩阵白名单保留 canonical id',
+    result.models.join(',') === 'cn/deepseek,codearts/deepseek,deepseek',
+    JSON.stringify(result.models));
+  console.log('analytics realm scope suite passed: ' + checks + ' checks');
+}).catch(e => { console.error(e); process.exit(1); });

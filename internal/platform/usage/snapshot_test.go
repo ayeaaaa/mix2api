@@ -178,3 +178,29 @@ func TestSnapshotUsesLiveAccountInventory(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotGroupsByRequestedModelKey keeps by_model keyed by the
+// exit-qualified id when the row carries one; bare rows still key by model.
+func TestSnapshotGroupsByRequestedModelKey(t *testing.T) {
+	now := float64(time.Now().Unix())
+	env := newTestEnv(t, []map[string]any{
+		row(now, "deepseek", "cn", "acct-a", 10, 1, map[string]any{"requested_model": "cn/deepseek"}),
+		row(now-10, "deepseek", "codearts", "acct-b", 20, 2, map[string]any{"requested_model": "codearts/deepseek"}),
+		row(now-20, "deepseek", "intl", "acct-c", 30, 3, nil),
+	})
+	all, err := env.service().Snapshot(context.Background(), SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byModel := mustMap(t, all["by_model"])
+	want := []string{"cn/deepseek", "codearts/deepseek", "deepseek"}
+	if len(byModel) != len(want) {
+		t.Fatalf("by_model keys = %#v, want %#v", byModel, want)
+	}
+	for _, id := range want {
+		bucket := mustMap(t, byModel[id])
+		if mustNumber(t, bucket["requests"]) != 1 {
+			t.Fatalf("by_model[%q] = %#v, want exactly one request", id, bucket)
+		}
+	}
+}

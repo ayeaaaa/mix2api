@@ -248,3 +248,32 @@ func TestAnalyticsDayWindowAllowsEmptyCurrentDay(t *testing.T) {
 		t.Fatalf("current-day requests = %d, want 0", got.Summary.Requests)
 	}
 }
+
+// TestAnalyticsGroupsByRequestedModelKey pins the exit-qualified grouping key:
+// rows that carry requested_model group by it, while legacy rows without the
+// field keep grouping by the billed model.
+func TestAnalyticsGroupsByRequestedModelKey(t *testing.T) {
+	now := float64(time.Now().Unix())
+	env := newTestEnv(t, []map[string]any{
+		row(now, "deepseek", "cn", "acct-a", 10, 1, map[string]any{"requested_model": "cn/deepseek"}),
+		row(now-10, "deepseek", "codearts", "acct-b", 20, 2, map[string]any{"requested_model": "codearts/deepseek"}),
+		row(now-20, "deepseek", "intl", "acct-c", 30, 3, nil),
+	})
+	payload, err := env.service().Analytics(context.Background(), AnalyticsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, entry := range payload["models"].([]map[string]any) {
+		got[entry["model"].(string)] = mustNumber(t, mustMap(t, entry["all_time"])["requests"])
+	}
+	want := map[string]float64{"cn/deepseek": 1, "codearts/deepseek": 1, "deepseek": 1}
+	if len(got) != len(want) {
+		t.Fatalf("analytics model keys = %#v, want %#v", got, want)
+	}
+	for id, requests := range want {
+		if got[id] != requests {
+			t.Fatalf("analytics model keys = %#v, want %#v", got, want)
+		}
+	}
+}
