@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 界面
+
+- 看板统一为单一的新导航布局，移除「传统布局 / 控制台布局」切换；`/classic`
+  仅保留为兼容静态别名，不再切换到旧壳。
+- 侧栏导航按「工作台 / 资源 / 系统」分组，入口依次为总览、用量、账号与提供商、
+  模型、自动化、媒体、智能体、设置、日志，减少同义页面和重复入口。
+- 账号页改成提供商标签视图：WorkBuddy 国际、WorkBuddy 国内、CodeArts、小浣熊
+  分开显示各自账号、凭证、积分、出口和操作，不再把不同提供商堆在同一屏。
+- 设置页改成左侧分组导航：基础、提供商、模型与定价、路由与限额、自动化、
+  稳定性、系统；每次只显示当前模块的设置，提供商接入不再混在通用 API 设置里。
+- 去掉账号页多余的区块导航和重复标题，统一卡片、表格、工具栏和空状态间距。
+
+### English
+
+#### Interface
+
+- The dashboard now uses one navigation layout. The classic/console layout
+  switch and its menu entries were removed; `/classic` remains only as a
+  byte-compatible alias and no longer switches shells.
+- The sidebar is grouped into Workspace, Resources, and System: Overview,
+  Usage, Accounts & providers, Models, Automation, Media, Agents, Settings,
+  Logs.
+- Accounts are provider-scoped tabs: WorkBuddy International, WorkBuddy China,
+  CodeArts, and Raccoon show their own accounts, credentials, credits, exits,
+  and actions instead of stacking every provider on one screen.
+- Settings use a left module rail: Basics, Providers, Models & pricing, Routing
+  & limits, Automation, Stability, System. Only the selected module is shown,
+  and provider setup is no longer mixed into generic API settings.
+- Removed the extra accounts section navigation and duplicate headings, and
+  normalized card, table, toolbar, and empty-state spacing.
+
 ## [2.2.0] - 2026-11-12
 
 ### 中文
