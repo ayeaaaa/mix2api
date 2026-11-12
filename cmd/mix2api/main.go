@@ -16,6 +16,7 @@ import (
 
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
 	"github.com/ayeaaaa/mix2api-v2/internal/app"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/version"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -135,6 +136,13 @@ func runServer() {
 	}
 	if err := validateAPIKeyRealm(cfg.APIKeyRealm, setup.Registry); err != nil {
 		log.Fatalf("startup: %v", err)
+	}
+	bridge, err := utlsbridge.Default()
+	if err != nil {
+		log.Fatalf("startup: uTLS bridge: %v", err)
+	}
+	if bridge != nil {
+		log.Printf("uTLS bridge: enabled on %s", bridge.Addr())
 	}
 
 	listener, err := net.Listen("tcp", cfg.Addr())

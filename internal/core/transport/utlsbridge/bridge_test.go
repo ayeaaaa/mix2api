@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -26,18 +27,21 @@ import (
 const (
 	officialJA3    = "771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-13-51-45-43,29-23-24,0"
 	officialJA3MD5 = "71dc8c533dd919ae9f4963224a4ba8fd"
-	officialJA4    = "t13d0a1200_5d04281c6031_b76c5ee2507d"
+	officialJA4    = "t13d120a00_5d04281c6031_78e6aca7449b"
 )
 
 type helloFields struct {
-	legacyVersion int
-	sessionIDLen  int
-	ciphers       []int
-	extensions    []int
-	groups        []int
-	ecpf          []int
-	sigalgs       []int
-	hasALPN       bool
+	legacyVersion     int
+	sessionIDLen      int
+	ciphers           []int
+	extensions        []int
+	groups            []int
+	ecpf              []int
+	sigalgs           []int
+	supportedVersions []int
+	keyShareGroups    []int
+	compression       []int
+	hasALPN           bool
 }
 
 func TestOfficialClientHelloFingerprint(t *testing.T) {
@@ -74,11 +78,26 @@ func TestOfficialClientHelloFingerprint(t *testing.T) {
 		if fields.sessionIDLen != 32 {
 			t.Fatalf("session id length = %d, want 32", fields.sessionIDLen)
 		}
+		if fields.legacyVersion != 0x0303 {
+			t.Fatalf("legacy version = %d, want 771", fields.legacyVersion)
+		}
+		if fmt.Sprint(fields.compression) != "[0]" {
+			t.Fatalf("compression = %v, want [0]", fields.compression)
+		}
+		if fmt.Sprint(fields.sigalgs) != "[1027 2052 1025 1283 2053 1281 2054 1537 513]" {
+			t.Fatalf("signature algorithms = %v", fields.sigalgs)
+		}
+		if fmt.Sprint(fields.supportedVersions) != "[772 771]" {
+			t.Fatalf("supported versions = %v, want [772 771]", fields.supportedVersions)
+		}
+		if fmt.Sprint(fields.keyShareGroups) != "[29]" {
+			t.Fatalf("key share groups = %v, want [29]", fields.keyShareGroups)
+		}
 		if fields.hasALPN {
 			t.Fatal("ClientHello unexpectedly advertises ALPN")
 		}
 		if len(raw) != 255 {
-			t.Fatalf("ClientHello length = %d, want 255", len(raw))
+			t.Fatalf("TLS record length = %d, want 255", len(raw))
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for ClientHello")
@@ -96,6 +115,16 @@ func TestDefaultBridgeFromEnv(t *testing.T) {
 	}
 	if err := utlsbridge.CloseDefault(); err != nil {
 		t.Fatalf("CloseDefault: %v", err)
+	}
+	if err := utlsbridge.CloseDefault(); err != nil {
+		t.Fatalf("second CloseDefault: %v", err)
+	}
+	after, err := utlsbridge.Default()
+	if err != nil {
+		t.Fatalf("Default after close: %v", err)
+	}
+	if after != nil {
+		t.Fatal("Default returned a closed bridge")
 	}
 }
 
@@ -157,6 +186,47 @@ func TestTransportUsesBridge(t *testing.T) {
 	}
 }
 
+func TestBridgeKeepsHTTP11KeepAlive(t *testing.T) {
+	var mu sync.Mutex
+	var remotes []string
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remotes = append(remotes, r.RemoteAddr)
+		mu.Unlock()
+		_, _ = io.WriteString(w, "keepalive-ok")
+	}))
+	defer target.Close()
+
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{RootCAs: rootsFor(t, target)})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	defer bridge.Close()
+
+	client := newBridgeClient(bridge)
+	defer client.Close()
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodGet, target.URL+"/v1/test", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		resp, err := client.Do(context.Background(), req, "")
+		if err != nil {
+			t.Fatalf("Do %d: %v", i, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(remotes) != 2 {
+		t.Fatalf("requests = %d, want 2", len(remotes))
+	}
+	if remotes[0] != remotes[1] {
+		t.Fatalf("remote addresses differ (%q, %q); connection was not reused", remotes[0], remotes[1])
+	}
+}
+
 func TestTransportUsesBridgeWithHTTPProxy(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "proxied-ok")
@@ -164,6 +234,7 @@ func TestTransportUsesBridgeWithHTTPProxy(t *testing.T) {
 	defer target.Close()
 
 	var proxyHits int
+	var proxyAuth string
 	var proxyMu sync.Mutex
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
@@ -172,6 +243,7 @@ func TestTransportUsesBridgeWithHTTPProxy(t *testing.T) {
 		}
 		proxyMu.Lock()
 		proxyHits++
+		proxyAuth = r.Header.Get("Proxy-Authorization")
 		proxyMu.Unlock()
 		upstream, err := net.Dial("tcp", r.Host)
 		if err != nil {
@@ -211,7 +283,8 @@ func TestTransportUsesBridgeWithHTTPProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	resp, err := client.Do(context.Background(), req, proxy.URL)
+	proxyURL := strings.Replace(proxy.URL, "http://", "http://alice:s3cret@", 1)
+	resp, err := client.Do(context.Background(), req, proxyURL)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -227,6 +300,10 @@ func TestTransportUsesBridgeWithHTTPProxy(t *testing.T) {
 	defer proxyMu.Unlock()
 	if proxyHits != 1 {
 		t.Fatalf("proxy hits = %d, want 1", proxyHits)
+	}
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:s3cret"))
+	if proxyAuth != wantAuth {
+		t.Fatalf("proxy authorization = %q, want %q", proxyAuth, wantAuth)
 	}
 }
 
@@ -252,6 +329,55 @@ func TestLiveWorkBuddyHandshake(t *testing.T) {
 	}
 }
 
+func TestBridgeReportsCertificateFailure(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	defer bridge.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = bridge.DialTLS(ctx, target.Listener.Addr().String(), "")
+	if err == nil {
+		t.Fatal("DialTLS succeeded, want certificate failure")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "certificate") {
+		t.Fatalf("error = %v, want certificate detail", err)
+	}
+}
+
+func TestBridgeCloseDoesNotHangOnIdleUpstream(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer target.Close()
+
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{RootCAs: rootsFor(t, target)})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := bridge.DialTLS(ctx, target.Listener.Addr().String(), "")
+	if err != nil {
+		bridge.Close()
+		t.Fatalf("DialTLS: %v", err)
+	}
+	defer conn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		_ = bridge.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Bridge.Close hung on an idle upstream")
+	}
+}
+
 func TestUnsupportedProxySchemeFails(t *testing.T) {
 	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{})
 	if err != nil {
@@ -265,8 +391,8 @@ func TestUnsupportedProxySchemeFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("DialTLS succeeded, want unsupported proxy error")
 	}
-	if !strings.Contains(err.Error(), "CONNECT failed") {
-		t.Fatalf("error = %v, want a failed CONNECT", err)
+	if !strings.Contains(err.Error(), "unsupported proxy scheme") {
+		t.Fatalf("error = %v, want unsupported proxy scheme", err)
 	}
 }
 
@@ -339,7 +465,11 @@ func parseClientHello(t *testing.T, raw []byte) helloFields {
 	}
 	offset += cipherLen
 	compressionLen := int(body[offset])
-	offset += 1 + compressionLen
+	offset++
+	for _, value := range body[offset : offset+compressionLen] {
+		fields.compression = append(fields.compression, int(value))
+	}
+	offset += compressionLen
 	extLen := int(body[offset])<<8 | int(body[offset+1])
 	offset += 2
 	end := offset + extLen
@@ -370,6 +500,22 @@ func parseClientHello(t *testing.T, raw []byte) helloFields {
 			fields.ecpf = append(fields.ecpf, int(value))
 		}
 	}
+	if versionsData := extData[43]; len(versionsData) >= 1 {
+		length := int(versionsData[0])
+		for pos := 1; pos+1 < 1+length; pos += 2 {
+			fields.supportedVersions = append(fields.supportedVersions, int(versionsData[pos])<<8|int(versionsData[pos+1]))
+		}
+	}
+	if shareData := extData[51]; len(shareData) >= 2 {
+		length := int(shareData[0])<<8 | int(shareData[1])
+		pos := 2
+		for pos+4 <= 2+length {
+			group := int(shareData[pos])<<8 | int(shareData[pos+1])
+			keyLen := int(shareData[pos+2])<<8 | int(shareData[pos+3])
+			fields.keyShareGroups = append(fields.keyShareGroups, group)
+			pos += 4 + keyLen
+		}
+	}
 	_, fields.hasALPN = extData[16]
 	return fields
 }
@@ -387,9 +533,8 @@ func ja4(fields helloFields) string {
 	for _, sig := range fields.sigalgs {
 		sigParts = append(sigParts, fmt.Sprintf("%04x", sig))
 	}
-	sortStrings(sigParts)
 	extHash := sha256.Sum256([]byte(strings.Join(extParts, ",") + "_" + strings.Join(sigParts, ",")))
-	return fmt.Sprintf("t13d%02x%02x00_%s_%s", len(fields.extensions), len(fields.ciphers), hex.EncodeToString(cipherHash[:])[:12], hex.EncodeToString(extHash[:])[:12])
+	return fmt.Sprintf("t13d%02x%02x00_%s_%s", len(fields.ciphers), len(fields.extensions), hex.EncodeToString(cipherHash[:])[:12], hex.EncodeToString(extHash[:])[:12])
 }
 
 func sortedHex(values []int) string {

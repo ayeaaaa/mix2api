@@ -9,7 +9,7 @@ ClientHello 与 WorkBuddy 官方客户端不同。官方 chat 走的是 Node 主
 ```text
 JA3: 771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-13-51-45-43,29-23-24,0
 JA3 MD5: 71dc8c533dd919ae9f4963224a4ba8fd
-JA4: t13d0a1200_5d04281c6031_b76c5ee2507d
+JA4: t13d120a00_5d04281c6031_78e6aca7449b
 ```
 
 特征：18 个 cipher、10 个 extension、**不带 ALPN**、groups 为
@@ -47,7 +47,7 @@ WorkBuddy provider
 # 启用 WorkBuddy 国际版 / 国内版的 uTLS 指纹
 MIX2API_TLS_FINGERPRINT=node
 
-# 兼容 wb-hub 的旧变量名
+# 兼容 wb-hub 的旧变量名；两者同时设置时 MIX2API 优先
 WB_TLS_FINGERPRINT=node
 ```
 
@@ -93,7 +93,7 @@ go test ./internal/core/transport/utlsbridge
 测试会真实启动 bridge 并抓 ClientHello，断言：
 
 - JA3 / JA3 MD5 / JA4 与抓包值完全一致
-- ClientHello 长度为 255 字节、session id 长度为 32、无 ALPN
+- TLS record 长度为 255 字节、session id 长度为 32、无 ALPN
 - 未认证 CONNECT 返回 403
 - 直连和 HTTP 代理下的 HTTPS 请求都能完成，且协议为 HTTP/1.1
 - 不支持的代理 scheme 会失败
@@ -113,3 +113,15 @@ MIX2API_UTLS_LIVE=1 go test ./internal/core/transport/utlsbridge \
 - 指纹参考：`misakano7545/workbuddy2api-panel` 的
   `internal/upstream/tlsfingerprint.go`
 - 本项目实现：`internal/core/transport/utlsbridge`
+
+## English summary
+
+The bridge is opt-in and WorkBuddy-only. `MIX2API_TLS_FINGERPRINT=node` (or the
+`WB_TLS_FINGERPRINT` alias) starts an in-process loopback CONNECT bridge that
+reproduces the captured Node/OpenSSL ClientHello (18 ciphers, 10 extensions, no
+ALPN). HTTPS requests use the bridge; HTTP requests keep the existing proxy
+path. HTTP, HTTPS, and SOCKS5 proxy slots are supported. The bridge listens only
+on loopback, authenticates each CONNECT with a random secret, and still verifies
+upstream certificates with the system trust store. The default is off; changing
+the mode requires a restart. It reduces the TLS-layer difference but is not a
+guarantee against account enforcement.

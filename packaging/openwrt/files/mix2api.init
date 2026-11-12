@@ -14,6 +14,7 @@ start_service() {
 	config_get usage_dir main usage_dir "/srv/mix2api/usage"
 	config_get media_dir main media_dir "/srv/mix2api/media"
 	config_get panel_password main panel_password ""
+	config_get tls_fingerprint main tls_fingerprint "python"
 
 	mkdir -p "$accounts_dir" "$usage_dir" "$media_dir"
 
@@ -24,6 +25,7 @@ start_service() {
 	procd_append_param env "ACCOUNTS_DIR=$accounts_dir"
 	procd_append_param env "USAGE_DIR=$usage_dir"
 	procd_append_param env "WB_MEDIA_DIR=$media_dir"
+	procd_append_param env "MIX2API_TLS_FINGERPRINT=$tls_fingerprint"
 	[ -n "$panel_password" ] && procd_append_param env "PANEL_PASSWORD=$panel_password"
 	procd_set_param respawn 3600 5 5
 	procd_set_param file /etc/config/mix2api

@@ -17,11 +17,16 @@ GOTOOLCHAIN=go1.26.11 make race
 Both passed. The new package tests cover:
 
 - exact JA3 `71dc8c533dd919ae9f4963224a4ba8fd`
-- exact JA4 `t13d0a1200_5d04281c6031_b76c5ee2507d`
-- ClientHello length 255, session id length 32, no ALPN
+- exact JA4 `t13d120a00_5d04281c6031_78e6aca7449b`
+- TLS record length 255, session id length 32, no ALPN, exact sigalg and
+  supported-version order
 - unauthenticated CONNECT returns 403
-- direct HTTPS, HTTP proxy, HTTPS proxy, and SOCKS5 proxy
+- direct HTTPS, HTTP proxy (including Basic auth), HTTPS proxy, and SOCKS5
+  proxy (including RFC 1929 auth)
 - HTTP targets keep the normal proxy path
+- keep-alive connection reuse
+- certificate verification failure is reported with detail
+- `Bridge.Close` returns when an upstream stalls
 - unsupported proxy schemes fail without fallback
 
 ## Live handshake
@@ -56,11 +61,27 @@ zero). The scan uses Go 1.26.11 and uTLS 1.8.2.
 - darwin/amd64
 - darwin/arm64
 
+## Review fixes
+
+Independent review found and this branch fixed:
+
+- JA4 was computed with the cipher/extension counts reversed and sigalgs
+  sorted; the corrected value is `t13d120a00_5d04281c6031_78e6aca7449b`.
+- `Bridge.Close` could hang on a stalled upstream; upstream connections are now
+  tracked and closed, and the wait is bounded.
+- Docker Compose now passes both `MIX2API_TLS_FINGERPRINT` and the
+  `WB_TLS_FINGERPRINT` alias.
+- Certificate/proxy failures now include sanitized detail; invalid modes fail
+  startup instead of leaving a healthy-looking process.
+- Transient `Accept` errors no longer stop the bridge permanently.
+- OpenWrt UCI exposes `tls_fingerprint`.
+
 ## Release matrix
 
 ```sh
-GOTOOLCHAIN=go1.26.11 make dist VERSION=2.1.2-utls-test
-cd dist && sha256sum -c SHA256SUMS
+OUT=/tmp/opencode/dist-utls-final GOTOOLCHAIN=go1.26.11 \
+  make dist VERSION=2.1.2-utls-test2
+cd /tmp/opencode/dist-utls-final && sha256sum -c SHA256SUMS
 ```
 
 The tool wrote 14 assets (11 archives plus `SHA256SUMS`, `release.json`, and
@@ -69,11 +90,15 @@ The tool wrote 14 assets (11 archives plus `SHA256SUMS`, `release.json`, and
 
 ## Container smoke
 
-Built `mix2api:utls-test` from the working tree with
+Built `mix2api:utls-test2` from the working tree with
 `golang:1.26-alpine`, then ran it with `MIX2API_TLS_FINGERPRINT=node` and an
 empty data directory. `/health` returned `ok:true` and
-`version:"2.1.1-utls-test"`; the process logged four providers and no bridge
-startup error.
+`version:"2.1.1-utls-test"`; startup logged
+`uTLS bridge: enabled on 127.0.0.1:<port>` and four providers.
+
+The `WB_TLS_FINGERPRINT=node` alias alone also enabled the bridge. An invalid
+mode (`MIX2API_TLS_FINGERPRINT=nod`) exited with code 1 and
+`startup: uTLS bridge: ... must be node or python`.
 
 ## Scope
 

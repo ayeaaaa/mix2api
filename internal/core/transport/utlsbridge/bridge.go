@@ -30,6 +30,7 @@ const (
 
 	defaultDialTimeout      = 10 * time.Second
 	defaultHandshakeTimeout = 15 * time.Second
+	closeWaitTimeout        = 5 * time.Second
 )
 
 // Config configures a Bridge.
@@ -131,6 +132,9 @@ func (b *Bridge) DialTLS(ctx context.Context, target, proxyURL string) (net.Conn
 	if b == nil {
 		return nil, errors.New("utlsbridge: nil bridge")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := validateTarget(target); err != nil {
 		return nil, err
 	}
@@ -173,6 +177,10 @@ func (b *Bridge) DialTLS(ctx context.Context, target, proxyURL string) (net.Conn
 		return nil, fmt.Errorf("utlsbridge: read CONNECT response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		detail := bridgeErrorDetail(resp.Body)
+		if detail != "" {
+			return nil, fmt.Errorf("utlsbridge: CONNECT failed: %s: %s", resp.Status, detail)
+		}
 		return nil, fmt.Errorf("utlsbridge: CONNECT failed: %s", resp.Status)
 	}
 	_ = conn.SetDeadline(time.Time{})
@@ -196,7 +204,19 @@ func (b *Bridge) Close() error {
 			_ = conn.Close()
 		}
 		b.mu.Unlock()
-		b.wg.Wait()
+
+		done := make(chan struct{})
+		go func() {
+			b.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(closeWaitTimeout):
+			if err == nil {
+				err = errors.New("utlsbridge: close timed out")
+			}
+		}
 	})
 	return err
 }
@@ -206,7 +226,13 @@ func (b *Bridge) acceptLoop() {
 	for {
 		conn, err := b.ln.Accept()
 		if err != nil {
-			return
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// A transient accept failure (for example EMFILE) must not
+			// permanently wedge the bridge; back off and keep serving.
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
 		if !b.track(conn) {
 			_ = conn.Close()
@@ -275,9 +301,14 @@ func (b *Bridge) serve(conn net.Conn) {
 	defer cancel()
 	raw, err := b.dialUpstream(ctx, target, proxyURL)
 	if err != nil {
-		writeHTTPError(conn, http.StatusBadGateway, "Upstream Connect Failed")
+		writeHTTPErrorDetail(conn, http.StatusBadGateway, "Upstream Connect Failed", err)
 		return
 	}
+	if !b.track(raw) {
+		_ = raw.Close()
+		return
+	}
+	defer b.untrack(raw)
 	defer raw.Close()
 	_ = raw.SetDeadline(time.Now().Add(b.handshakeTimeout))
 
@@ -296,11 +327,11 @@ func (b *Bridge) serve(conn net.Conn) {
 		MinVersion: tls.VersionTLS12,
 	}, utls.HelloCustom)
 	if err := tlsConn.ApplyPreset(officialHelloSpec()); err != nil {
-		writeHTTPError(conn, http.StatusBadGateway, "TLS Fingerprint Failed")
+		writeHTTPErrorDetail(conn, http.StatusBadGateway, "TLS Fingerprint Failed", err)
 		return
 	}
 	if err := tlsConn.Handshake(); err != nil {
-		writeHTTPError(conn, http.StatusBadGateway, "TLS Handshake Failed")
+		writeHTTPErrorDetail(conn, http.StatusBadGateway, "TLS Handshake Failed", err)
 		return
 	}
 	_ = raw.SetDeadline(time.Time{})
@@ -316,6 +347,9 @@ func validateTarget(target string) error {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil || strings.TrimSpace(host) == "" {
 		return errors.New("utlsbridge: invalid CONNECT target")
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return errors.New("utlsbridge: invalid CONNECT host")
 	}
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 1 || number > 65535 {
@@ -334,29 +368,29 @@ func isLoopbackHost(host string) bool {
 }
 
 func proxyBidirectional(client net.Conn, clientReader io.Reader, upstream net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+	var once sync.Once
+	closeBoth := func() {
+		once.Do(func() {
+			_ = client.Close()
+			_ = upstream.Close()
+		})
+	}
+	done := make(chan struct{}, 2)
 	go func() {
-		defer wg.Done()
 		_, _ = io.Copy(upstream, clientReader)
-		closeWrite(upstream)
+		done <- struct{}{}
 	}()
 	go func() {
-		defer wg.Done()
 		_, _ = io.Copy(client, upstream)
-		closeWrite(client)
+		done <- struct{}{}
 	}()
-	wg.Wait()
+	<-done
+	closeBoth()
+	<-done
 }
 
 type closeWriter interface {
 	CloseWrite() error
-}
-
-func closeWrite(conn net.Conn) {
-	if writer, ok := conn.(closeWriter); ok {
-		_ = writer.CloseWrite()
-	}
 }
 
 func writeHTTPError(conn net.Conn, status int, reason string) {
@@ -364,6 +398,36 @@ func writeHTTPError(conn net.Conn, status int, reason string) {
 	_, _ = fmt.Fprintf(conn,
 		"HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		status, http.StatusText(status), len(body), body)
+}
+
+func writeHTTPErrorDetail(conn net.Conn, status int, reason string, err error) {
+	if err != nil {
+		detail := strings.TrimSpace(err.Error())
+		detail = strings.ReplaceAll(detail, "\r", " ")
+		detail = strings.ReplaceAll(detail, "\n", " ")
+		if len(detail) > 256 {
+			detail = detail[:256]
+		}
+		if detail != "" {
+			reason += ": " + detail
+		}
+	}
+	writeHTTPError(conn, status, reason)
+}
+
+func bridgeErrorDetail(body io.ReadCloser) string {
+	if body == nil {
+		return ""
+	}
+	data, _ := io.ReadAll(io.LimitReader(body, 4096))
+	_ = body.Close()
+	text := strings.TrimSpace(string(data))
+	text = strings.ReplaceAll(text, "\r", " ")
+	text = strings.ReplaceAll(text, "\n", " ")
+	if len(text) > 512 {
+		text = text[:512]
+	}
+	return text
 }
 
 type bufferedConn struct {

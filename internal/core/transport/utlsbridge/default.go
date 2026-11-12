@@ -9,6 +9,7 @@ import (
 
 var (
 	defaultOnce   sync.Once
+	defaultMu     sync.Mutex
 	defaultBridge *Bridge
 	defaultErr    error
 )
@@ -23,26 +24,42 @@ func Default() (*Bridge, error) {
 		if mode == "" {
 			mode = strings.ToLower(strings.TrimSpace(os.Getenv("WB_TLS_FINGERPRINT")))
 		}
+		var bridge *Bridge
+		var err error
 		switch mode {
 		case "", "python", "go", "native", "stdlib", "0", "off", "false", "no":
-			return
 		case "node":
 			if strings.TrimSpace(os.Getenv("WB_CA_BUNDLE")) != "" {
-				defaultErr = fmt.Errorf("utlsbridge: WB_CA_BUNDLE is not supported; unset it or use MIX2API_TLS_FINGERPRINT=python")
-				return
+				err = fmt.Errorf("utlsbridge: WB_CA_BUNDLE is not supported; use SSL_CERT_FILE or disable the bridge")
+			} else {
+				bridge, err = NewWithConfig(Config{})
 			}
-			defaultBridge, defaultErr = NewWithConfig(Config{})
 		default:
-			defaultErr = fmt.Errorf("utlsbridge: MIX2API_TLS_FINGERPRINT must be node or python, got %q", mode)
+			err = fmt.Errorf("utlsbridge: MIX2API_TLS_FINGERPRINT must be node or python, got %q", mode)
 		}
+		defaultMu.Lock()
+		defaultBridge = bridge
+		defaultErr = err
+		defaultMu.Unlock()
 	})
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
 	return defaultBridge, defaultErr
 }
 
 // CloseDefault stops the process-wide bridge, if it was started.
 func CloseDefault() error {
-	if defaultBridge == nil {
+	defaultMu.Lock()
+	bridge := defaultBridge
+	defaultMu.Unlock()
+	if bridge == nil {
 		return nil
 	}
-	return defaultBridge.Close()
+	err := bridge.Close()
+	defaultMu.Lock()
+	if defaultBridge == bridge {
+		defaultBridge = nil
+	}
+	defaultMu.Unlock()
+	return err
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -98,6 +99,39 @@ func TestTransportUsesBridgeWithSOCKS5Proxy(t *testing.T) {
 	}
 }
 
+func TestTransportUsesBridgeWithSOCKS5Auth(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "socks-auth-ok")
+	}))
+	defer target.Close()
+
+	socksURL := startSOCKS5WithAuth(t, "alice", "s3cret")
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{RootCAs: rootsFor(t, target)})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	defer bridge.Close()
+
+	client := newBridgeClient(bridge)
+	defer client.Close()
+	req, err := http.NewRequest(http.MethodGet, target.URL+"/v1/test", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := client.Do(context.Background(), req, socksURL)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "socks-auth-ok" {
+		t.Fatalf("response = %d %q", resp.StatusCode, body)
+	}
+}
+
 func TestBridgeKeepsHTTPProxyPath(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "plain-ok")
@@ -181,6 +215,10 @@ func connectProxyHandler(onHit func()) http.Handler {
 }
 
 func startSOCKS5(t *testing.T) string {
+	return startSOCKS5WithAuth(t, "", "")
+}
+
+func startSOCKS5WithAuth(t *testing.T, user, password string) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -202,14 +240,18 @@ func startSOCKS5(t *testing.T) string {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				serveSOCKS5(conn)
+				serveSOCKS5(conn, user, password)
 			}()
 		}
 	}()
-	return "socks5://" + ln.Addr().String()
+	address := ln.Addr().String()
+	if user != "" {
+		return "socks5://" + url.UserPassword(user, password).String() + "@" + address
+	}
+	return "socks5://" + address
 }
 
-func serveSOCKS5(conn net.Conn) {
+func serveSOCKS5(conn net.Conn, user, password string) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	header := make([]byte, 2)
@@ -220,8 +262,48 @@ func serveSOCKS5(conn net.Conn) {
 	if _, err := io.ReadFull(conn, methods); err != nil {
 		return
 	}
-	if _, err := conn.Write([]byte{5, 0}); err != nil {
-		return
+	if user == "" {
+		if _, err := conn.Write([]byte{5, 0}); err != nil {
+			return
+		}
+	} else {
+		offered := false
+		for _, method := range methods {
+			if method == 2 {
+				offered = true
+				break
+			}
+		}
+		if !offered {
+			_, _ = conn.Write([]byte{5, 0xff})
+			return
+		}
+		if _, err := conn.Write([]byte{5, 2}); err != nil {
+			return
+		}
+		authHeader := make([]byte, 2)
+		if _, err := io.ReadFull(conn, authHeader); err != nil || authHeader[0] != 1 {
+			return
+		}
+		username := make([]byte, int(authHeader[1]))
+		if _, err := io.ReadFull(conn, username); err != nil {
+			return
+		}
+		passwordLen := make([]byte, 1)
+		if _, err := io.ReadFull(conn, passwordLen); err != nil {
+			return
+		}
+		pass := make([]byte, int(passwordLen[0]))
+		if _, err := io.ReadFull(conn, pass); err != nil {
+			return
+		}
+		if string(username) != user || string(pass) != password {
+			_, _ = conn.Write([]byte{1, 1})
+			return
+		}
+		if _, err := conn.Write([]byte{1, 0}); err != nil {
+			return
+		}
 	}
 	request := make([]byte, 4)
 	if _, err := io.ReadFull(conn, request); err != nil || request[0] != 5 || request[1] != 1 {

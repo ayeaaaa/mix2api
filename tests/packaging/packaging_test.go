@@ -70,6 +70,8 @@ func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 			"healthcheck:",
 			"$${PORT}/health",
 			"user:",
+			"MIX2API_TLS_FINGERPRINT:",
+			"WB_TLS_FINGERPRINT:",
 		} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s missing %q", name, want)
@@ -84,13 +86,13 @@ func TestComposeAssetsMountDataAndHealthcheck(t *testing.T) {
 
 func TestOpenWrtAssets(t *testing.T) {
 	initScript := repoFile(t, "packaging/openwrt/files/mix2api.init")
-	for _, want := range []string{"USE_PROCD=1", "procd_open_instance", "procd_append_param env", "ACCOUNTS_DIR", "WB_MEDIA_DIR"} {
+	for _, want := range []string{"USE_PROCD=1", "procd_open_instance", "procd_append_param env", "ACCOUNTS_DIR", "WB_MEDIA_DIR", "MIX2API_TLS_FINGERPRINT"} {
 		if !strings.Contains(initScript, want) {
 			t.Fatalf("init script missing %q", want)
 		}
 	}
 	config := repoFile(t, "packaging/openwrt/files/mix2api.config")
-	if !strings.Contains(config, "config mix2api 'main'") || !strings.Contains(config, "option port '58675'") {
+	if !strings.Contains(config, "config mix2api 'main'") || !strings.Contains(config, "option port '58675'") || !strings.Contains(config, "tls_fingerprint") {
 		t.Fatalf("UCI config = %s", config)
 	}
 	makefile := repoFile(t, "packaging/openwrt/Makefile")
