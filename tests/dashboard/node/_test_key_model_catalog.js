@@ -8,7 +8,9 @@
  *   1. 先读 `/v1/models?realm=gateway`，成功就不再打旧接口；
  *   2. 网关目录失败或为空时，保留原来的 `/v1/models` → intl / cn 回退；
  *   3. 选择器按 `row.realm` 过滤；空 realm（跟随面板切换）显示全部；
- *      旧条目没有 realm，不能被过滤掉。
+ *      旧条目没有 realm，不能被过滤掉；
+ *   4. 编辑中切换出口时，旧出口的 canonical 选择会失效（`cn/m1` 在 intl 下
+ *      永远匹配不上），必须在切换与保存两处清掉并提示；裸模式仍然有效。
  *
  * Run with Node:
  *   node tests/dashboard/node/_test_key_model_catalog.js
@@ -50,7 +52,7 @@ const LEGACY_MODELS = [
 const SETTINGS = {
   panel_password_is_default: false,
   api_keys: [
-    {id: 'k1', name: '固定国内版', realm: 'cn', models: [], enabled: true,
+    {id: 'k1', name: '固定国内版', realm: 'cn', models: ['cn/m1', 'm-legacy'], enabled: true,
      masked: 'wb-aaaa****1111', created_at: '2026-09-01'},
     {id: 'k2', name: '跟随面板切换', realm: '', models: [], enabled: true,
      masked: 'wb-bbbb****2222', created_at: '2026-09-02'},
@@ -63,6 +65,7 @@ const SETTINGS = {
 
 let gatewayMode = 'ok';
 let CALLS = [];
+let POSTS = [];
 
 function payloadFor(url){
   if(url === '/settings') return SETTINGS;
@@ -78,9 +81,12 @@ function payloadFor(url){
 }
 
 const page = loadDashboard({
-  fetch: (url) => {
+  fetch: (url, opts) => {
     const u = String(url);
     CALLS.push(u);
+    if(opts && opts.method === 'POST'){
+      POSTS.push({url: u, body: JSON.parse(String(opts.body || '{}'))});
+    }
     if(u === '/v1/models?realm=gateway'){
       if(gatewayMode === 'fail'){
         return Promise.resolve({
@@ -151,7 +157,7 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
 
   await page.renderKeyPickers(0);
   const cnList = document.getElementById('editKeyModelList_0').innerHTML;
-  check('固定国内版的 Key 只渲染 cn/m1',
+  check('固定国内版的 Key 只渲染国内版模型（旧条目照常保留）',
     cnList.includes('value="cn/m1"') && !cnList.includes('codearts/m1')
       && !cnList.includes('intl/m1'),
     cnList);
@@ -162,6 +168,47 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
     allList.includes('value="cn/m1"') && allList.includes('value="codearts/m1"')
       && allList.includes('value="intl/m1"'),
     allList);
+
+  /* ---- 6. 编辑中切换出口：旧出口的 canonical 选择必须清理 ------------ */
+  check('出口下拉框切换时应重算模型清单', /onchange="changeKeyRealm\('/.test(html));
+
+  const realmSelect = document.getElementById('editKeyRealm_0');
+  realmSelect.value = 'intl';
+  const logs = [];
+  const realLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    await page.changeKeyRealm(0, realmSelect.value);
+  } finally {
+    console.log = realLog;
+  }
+
+  const switchedRow = page.API_KEY_ROWS[0];
+  check('切换后行 realm 更新为 intl', switchedRow.realm === 'intl', switchedRow.realm);
+  check('切换后旧出口的 canonical 选择被移除',
+    JSON.stringify(switchedRow.models) === JSON.stringify(['m-legacy']),
+    JSON.stringify(switchedRow.models));
+  check('切换后给出移除提示', logs.some(line => line.includes('已移除')), JSON.stringify(logs));
+  const switchedList = document.getElementById('editKeyModelList_0').innerHTML;
+  check('切换后选择器只列目标出口的模型',
+    switchedList.includes('value="intl/m1"') && !switchedList.includes('cn/m1'),
+    switchedList);
+
+  /* ---- 7. 保存兜底：旧列表漏网也不能把旧出口的 canonical id 写出去 --- */
+  page.API_KEY_ROWS[0].models = ['cn/m1', 'm-legacy'];
+  document.getElementById('editKeyName_0').value = '固定国际版';
+  document.getElementById('editKeyRealm_0').value = 'intl';
+  document.getElementById('editKeyValue_0').value = '';
+  POSTS = [];
+  await page.saveSingleKey(0);
+  const savePost = POSTS.find(p => p.url === '/settings/save');
+  const savedKey = savePost && savePost.body && savePost.body.api_keys
+    && savePost.body.api_keys[0];
+  check('保存时提交新的出口', !!savedKey && savedKey.realm === 'intl',
+    JSON.stringify(savedKey));
+  check('保存时不会提交旧出口的 canonical id',
+    !!savedKey && JSON.stringify(savedKey.models) === JSON.stringify(['m-legacy']),
+    JSON.stringify(savedKey && savedKey.models));
 
   console.log('key model catalog assertions passed (' + checks + ' checks)');
 })().catch(e => { console.error(e); process.exit(1); });

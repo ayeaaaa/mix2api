@@ -18450,7 +18450,7 @@ function renderKeyRows(){
         +   '</div>'
         +   '<div>'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">出口绑定</div>'
-        +     '<select id="editKeyRealm_' + i + '" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +     '<select id="editKeyRealm_' + i + '" onchange="changeKeyRealm(' + i + ',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
         +       options
         +       '</select>'
         +   '</div>'
@@ -18656,6 +18656,38 @@ function filterKeyModelsForRealm(models, realm){
   if(!want) return models || [];
   return (models || []).filter(m => !m || !m.realm || String(m.realm).toLowerCase() === want);
 }
+// A canonical gateway id is "<realm>/<upstream-id>". Bare patterns (no known
+// exit prefix) still match the upstream id on every exit through AllowsModelAny,
+// and wildcard prefixes keep matching by design; only a concrete exit prefix
+// would silently stop matching after the Key moves to another exit.
+const KEY_MODEL_REALMS = ['intl', 'cn', 'codearts', 'raccoon'];
+function keyModelRealmPrefix(pattern){
+  const text = String(pattern || '').trim().toLowerCase();
+  const slash = text.indexOf('/');
+  if(slash <= 0) return '';
+  const prefix = text.slice(0, slash);
+  if(prefix.indexOf('*') >= 0) return '*';
+  const known = KEY_MODEL_REALMS.concat((window.REALM_OPTIONS || []).map(v => String(v).toLowerCase()));
+  return known.indexOf(prefix) >= 0 ? prefix : '';
+}
+function reconcileKeyModelsForRealm(models, realm){
+  const want = String(realm || '').trim().toLowerCase();
+  const kept = [];
+  const dropped = [];
+  for(const item of (models || [])){
+    const prefix = keyModelRealmPrefix(item);
+    if(prefix && prefix !== '*' && want && prefix !== want){
+      dropped.push(String(item));
+    } else {
+      kept.push(item);
+    }
+  }
+  return {models: kept, dropped: dropped};
+}
+function warnDroppedKeyModels(dropped){
+  if(!(dropped || []).length) return;
+  toast('已移除 ' + dropped.length + ' 个不属于当前出口的模型选择：' + dropped.join(', '), 'warn');
+}
 async function renderKeyPickers(i){
   const row = API_KEY_ROWS[i];
   if(!row) return;
@@ -18707,6 +18739,19 @@ async function renderKeyPickers(i){
     }).join('') || '<div style="font-size:12px;color:var(--warn);padding:4px">账号列表为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     updateKeyAccountSummary(i);
   }
+}
+async function changeKeyRealm(i, realm){
+  const row = API_KEY_ROWS[i];
+  if(!row) return;
+  row.realm = String(realm || '').trim().toLowerCase();
+  const reconciled = reconcileKeyModelsForRealm(row.models, row.realm);
+  row.models = reconciled.models;
+  warnDroppedKeyModels(reconciled.dropped);
+  updateKeyModelSummary(i);
+  // The old list belongs to the previous exit; reload it so the checkboxes and
+  // the canonical ids on offer match the realm the Key is about to be saved
+  // with.
+  await renderKeyPickers(i);
 }
 function toggleKeyModel(i, el){
   const row = API_KEY_ROWS[i];
@@ -18826,7 +18871,13 @@ async function saveSingleKey(index, btn){
 
   row.name = name || '未命名';
   row.realm = realm;
-  row.models = Array.isArray(row.models) ? row.models.slice() : [];
+  // The select can be changed and saved without a change event ever reaching
+  // the handler (for example an older row left over from a previous session).
+  // Reconcile here too so the payload cannot carry a canonical id from the
+  // exit it is moving away from; bare/upstream patterns stay valid.
+  const reconciled = reconcileKeyModelsForRealm(row.models, realm);
+  row.models = reconciled.models;
+  warnDroppedKeyModels(reconciled.dropped);
   row.accounts = Array.isArray(row.accounts) ? row.accounts.slice() : [];
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
   if(keyVal) row.key = keyVal;
