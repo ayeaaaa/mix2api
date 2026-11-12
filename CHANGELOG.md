@@ -17,6 +17,8 @@ Keep a Changelog and the project uses semantic versioning.
   原生 TLS。
 - 代理槽支持 HTTP / HTTPS / SOCKS5；bridge 只监听 loopback，使用随机 secret
   认证，并继续校验上游证书。
+- 构建工具链升至 Go 1.26，uTLS 升至 1.8.2，并升级 brotli / compress /
+  x/net / x/crypto / x/sys；`govulncheck` 复扫为 0 漏洞。
 
 #### 解决的问题
 
@@ -48,6 +50,9 @@ Keep a Changelog and the project uses semantic versioning.
 - Proxy slots support HTTP, HTTPS, and SOCKS5. The bridge listens only on
   loopback, authenticates with a random secret, and still verifies upstream
   certificates.
+- The build baseline moves to Go 1.26, uTLS to 1.8.2, and brotli / compress /
+  x/net / x/crypto / x/sys to their fixed versions; a fresh `govulncheck` scan
+  reports 0 vulnerabilities.
 
 #### Problems fixed
 

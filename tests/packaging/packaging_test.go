@@ -22,7 +22,7 @@ func repoFile(t *testing.T, name string) string {
 func TestDockerfileIsMultiStageCGOFreeNonRootAndHealthchecked(t *testing.T) {
 	dockerfile := repoFile(t, "Dockerfile")
 	for _, want := range []string{
-		"FROM golang:1.22-alpine AS build",
+		"FROM golang:1.26-alpine AS build",
 		"FROM alpine:3.20",
 		"CGO_ENABLED=0",
 		"TARGETOS",

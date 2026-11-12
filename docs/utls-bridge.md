@@ -30,6 +30,7 @@ WorkBuddy provider
 ```
 
 - `internal/core/transport/utlsbridge` 负责监听、认证、代理拨号和 uTLS 握手。
+- 使用 uTLS 1.8.2 和 Go 1.26 构建基线；`govulncheck` 复扫为 0 漏洞。
 - `transport.Client` 的 HTTPS 请求通过 `DialTLSContext` 进入 bridge；HTTP 请求
   保持原来的直连/代理路径。
 - bridge 只监听 loopback，启动时生成 32 字节随机 secret；CONNECT 必须携带

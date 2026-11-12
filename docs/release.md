@@ -15,7 +15,7 @@ update it cannot install. v1 update checks are off by default.
 
 ## Prerequisites
 
-- Go 1.22+ (the module pins `go 1.22`).
+- Go 1.26+ (the module pins `go 1.26`).
 - `git`, `sha256sum`, and Docker/buildx for optional container verification.
 - No network is required for a build after `go mod download` has populated the
   module cache. The release command itself makes no network calls.

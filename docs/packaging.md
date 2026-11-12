@@ -28,7 +28,7 @@ docker compose up -d --build
 curl -fsS http://127.0.0.1:58675/health
 ```
 
-The image is multi-stage and final-stage minimal: `golang:1.22-alpine` builds
+The image is multi-stage and final-stage minimal: `golang:1.26-alpine` builds
 with `CGO_ENABLED=0`, and `alpine:3.20` runs as UID/GID `10001`. The healthcheck
 uses BusyBox `wget` against the container's `PORT`. The application directory
 is read-only; only the three data volumes are writable.

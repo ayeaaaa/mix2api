@@ -35,7 +35,7 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.26"
   RELEASE_REPOSITORY: "ayeaaaa/mix2api"
   IMAGE_REPOSITORY: "ghcr.io/ayeaaaa/mix2api"
 

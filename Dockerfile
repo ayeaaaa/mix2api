@@ -6,7 +6,7 @@
 # CGO is disabled and the dashboard is embedded in the binary, so the runtime
 # stage needs no toolchain, shell scripts, or writable application directory.
 
-FROM golang:1.22-alpine AS build
+FROM golang:1.26-alpine AS build
 ARG VERSION=2.1.1
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
