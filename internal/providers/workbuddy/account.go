@@ -402,9 +402,38 @@ func (a *Account) expiringPackage() (float64, float64, bool) {
 	return a.expiringPackageLocked()
 }
 
+// creditPackageDaysLeft returns the package's current days-to-expiry using
+// the same finite-expiry eligibility as the scheduler. Dates are re-evaluated
+// at view time so a stale credits snapshot cannot keep an expired package in
+// the expiring total.
+func creditPackageDaysLeft(pkg CreditPackage, now time.Time) (float64, bool) {
+	if pkg.Remain <= 0 || pkg.NoExpiry || pkg.IsExpired ||
+		strings.EqualFold(pkg.PackageCode, "enterprise") {
+		return 0, false
+	}
+	for _, raw := range []string{pkg.ExpireTime, pkg.CycleEndTime} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		days, noExpiry, expired := creditPackageExpiry(raw, now)
+		if days == nil || noExpiry || expired {
+			return 0, false
+		}
+		return *days, true
+	}
+	if pkg.DaysLeft != nil && *pkg.DaysLeft >= 0 {
+		return *pkg.DaysLeft, true
+	}
+	return 0, false
+}
+
 // expiringPackageLocked is expiringPackage for callers already holding
 // Account.mu.
 func (a *Account) expiringPackageLocked() (float64, float64, bool) {
+	return a.expiringPackageAt(time.Now())
+}
+
+func (a *Account) expiringPackageAt(now time.Time) (float64, float64, bool) {
 	if a.Credits == nil {
 		return 0, 0, false
 	}
@@ -412,14 +441,12 @@ func (a *Account) expiringPackageLocked() (float64, float64, bool) {
 	remain := 0.0
 	found := false
 	for _, pkg := range a.Credits.Packages {
-		if pkg.NoExpiry || pkg.PackageCode == "enterprise" || pkg.IsExpired {
+		days, ok := creditPackageDaysLeft(pkg, now)
+		if !ok {
 			continue
 		}
-		if pkg.DaysLeft == nil || *pkg.DaysLeft < 0 || pkg.Remain <= 0 {
-			continue
-		}
-		if *pkg.DaysLeft < soonest {
-			soonest = *pkg.DaysLeft
+		if days < soonest {
+			soonest = days
 			remain = pkg.Remain
 			found = true
 		}
@@ -437,33 +464,39 @@ func (a *Account) ExpirySummary() *CreditExpirySummary {
 	if a == nil {
 		return nil
 	}
+	return a.expirySummaryAt(time.Now())
+}
+
+func (a *Account) expirySummaryAt(now time.Time) *CreditExpirySummary {
+	if a == nil {
+		return nil
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.expirySummaryLocked()
+	return a.expirySummaryLockedAt(now)
 }
 
 func (a *Account) expirySummaryLocked() *CreditExpirySummary {
+	return a.expirySummaryLockedAt(time.Now())
+}
+
+func (a *Account) expirySummaryLockedAt(now time.Time) *CreditExpirySummary {
 	if a.Credits == nil {
 		return nil
 	}
-	summary := CreditExpirySummary{WindowDays: a.ExpiringWindowDays}
+	window := a.ExpiringWindowDays
+	if window < 0 {
+		window = 0
+	}
+	summary := CreditExpirySummary{WindowDays: window}
 	for _, pkg := range a.Credits.Packages {
-		if pkg.NoExpiry || pkg.IsExpired || pkg.Remain <= 0 {
-			continue
-		}
-		if strings.EqualFold(pkg.PackageCode, "enterprise") {
-			continue
-		}
-		if strings.TrimSpace(pkg.ExpireTime) == "" && strings.TrimSpace(pkg.CycleEndTime) == "" {
-			continue
-		}
-		if pkg.DaysLeft != nil && *pkg.DaysLeft < 0 {
+		days, ok := creditPackageDaysLeft(pkg, now)
+		if !ok {
 			continue
 		}
 		summary.Credits += pkg.Remain
 		summary.Packages++
-		if summary.WindowDays > 0 && pkg.DaysLeft != nil &&
-			*pkg.DaysLeft <= float64(summary.WindowDays) {
+		if summary.WindowDays > 0 && days <= float64(summary.WindowDays) {
 			summary.WithinWindow += pkg.Remain
 			summary.WithinPackages++
 		}

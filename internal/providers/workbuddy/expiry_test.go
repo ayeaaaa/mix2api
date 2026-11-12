@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func expiryNumber(value any) float64 {
@@ -20,20 +21,21 @@ func expiryNumber(value any) float64 {
 }
 
 func TestAccountExpirySummaryCountsAllFinitePackages(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.Local)
 	account := &Account{
 		ExpiringWindowDays: 7,
 		Credits: &CreditSnapshot{Packages: []CreditPackage{
-			{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: "2026-11-20 00:00:00", DaysLeft: creditTestFloat(2)},
-			{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: "2026-12-20 00:00:00", DaysLeft: creditTestFloat(20)},
-			{Name: "dated-no-days", PackageCode: "d", Remain: 5, CycleEndTime: "2026-12-01 00:00:00"},
+			{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout), DaysLeft: creditTestFloat(2)},
+			{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: now.AddDate(0, 0, 20).Format(creditsTimeLayout), DaysLeft: creditTestFloat(20)},
+			{Name: "dated-no-days", PackageCode: "d", Remain: 5, CycleEndTime: now.AddDate(0, 0, 19).Format(creditsTimeLayout)},
 			{Name: "no-expiry", PackageCode: "free", Remain: 100, NoExpiry: true},
-			{Name: "expired", PackageCode: "x", Remain: 20, ExpireTime: "2026-11-01 00:00:00", DaysLeft: creditTestFloat(-1), IsExpired: true},
-			{Name: "enterprise", PackageCode: "enterprise", Remain: 30, ExpireTime: "2026-11-20 00:00:00", DaysLeft: creditTestFloat(2)},
-			{Name: "zero", PackageCode: "z", Remain: 0, ExpireTime: "2026-11-20 00:00:00", DaysLeft: creditTestFloat(2)},
+			{Name: "expired", PackageCode: "x", Remain: 20, ExpireTime: now.AddDate(0, 0, -1).Format(creditsTimeLayout), DaysLeft: creditTestFloat(-1), IsExpired: true},
+			{Name: "enterprise", PackageCode: "enterprise", Remain: 30, ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout), DaysLeft: creditTestFloat(2)},
+			{Name: "zero", PackageCode: "z", Remain: 0, ExpireTime: now.AddDate(0, 0, 2).Format(creditsTimeLayout), DaysLeft: creditTestFloat(2)},
 		}},
 	}
 
-	summary := account.ExpirySummary()
+	summary := account.expirySummaryAt(now)
 	if summary == nil {
 		t.Fatal("ExpirySummary returned nil")
 	}
@@ -57,8 +59,8 @@ func TestAccountViewIncludesExpirySummary(t *testing.T) {
 		Auth:               Auth{UID: "expiry-view", Realm: realmCN, Platform: "CLI", Source: sourceOAuth},
 		ExpiringWindowDays: 7,
 		Credits: &CreditSnapshot{Packages: []CreditPackage{
-			{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: "2026-11-20 00:00:00", DaysLeft: creditTestFloat(2)},
-			{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: "2026-12-20 00:00:00", DaysLeft: creditTestFloat(20)},
+			{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: time.Now().AddDate(0, 0, 2).Format(creditsTimeLayout), DaysLeft: creditTestFloat(2)},
+			{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: time.Now().AddDate(0, 0, 20).Format(creditsTimeLayout), DaysLeft: creditTestFloat(20)},
 		}},
 	}
 
@@ -80,8 +82,8 @@ func TestCreditsDetailIncludesExpirySummary(t *testing.T) {
 	account.ExpiringWindowDays = 7
 	account.mu.Unlock()
 	if err := f.cn.Pool().SetCredits("uid-expiry", &CreditSnapshot{Packages: []CreditPackage{
-		{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: "2026-11-20 00:00:00", DaysLeft: creditTestFloat(2)},
-		{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: "2026-12-20 00:00:00", DaysLeft: creditTestFloat(20)},
+		{Name: "within", PackageCode: "a", Remain: 100, ExpireTime: time.Now().AddDate(0, 0, 2).Format(creditsTimeLayout), DaysLeft: creditTestFloat(2)},
+		{Name: "later", PackageCode: "b", Remain: 50, ExpireTime: time.Now().AddDate(0, 0, 20).Format(creditsTimeLayout), DaysLeft: creditTestFloat(20)},
 		{Name: "no-expiry", PackageCode: "free", Remain: 100, NoExpiry: true},
 	}}); err != nil {
 		t.Fatalf("seed credits: %v", err)

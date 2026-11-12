@@ -1415,7 +1415,7 @@ func newCreditSnapshot(packages []CreditPackage, paid bool, checkin *CheckinStat
 		UpdatedISO: now.Format(creditsTimeLayout),
 	}
 	updateCreditPercentages(snapshot)
-	snapshot.EarliestExpiring = earliestExpiring(packages)
+	snapshot.EarliestExpiring = earliestExpiring(packages, now)
 	return snapshot
 }
 
@@ -1427,15 +1427,18 @@ func cloneCheckin(checkin *CheckinStatus) *CheckinStatus {
 	return &copied
 }
 
-func earliestExpiring(packages []CreditPackage) *EarliestExpiring {
+func earliestExpiring(packages []CreditPackage, now time.Time) *EarliestExpiring {
 	var best *CreditPackage
+	bestDays := 0.0
 	for i := range packages {
 		pkg := &packages[i]
-		if pkg.Remain <= 0 || pkg.IsExpired || pkg.DaysLeft == nil {
+		days, ok := creditPackageDaysLeft(*pkg, now)
+		if !ok {
 			continue
 		}
-		if best == nil || *pkg.DaysLeft < *best.DaysLeft {
+		if best == nil || days < bestDays {
 			best = pkg
+			bestDays = days
 		}
 	}
 	if best == nil {
@@ -1446,7 +1449,7 @@ func earliestExpiring(packages []CreditPackage) *EarliestExpiring {
 		PackageCode:  best.PackageCode,
 		Remain:       best.Remain,
 		CycleEndTime: best.CycleEndTime,
-		DaysLeft:     *best.DaysLeft,
+		DaysLeft:     bestDays,
 	}
 }
 

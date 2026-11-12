@@ -45,11 +45,11 @@ const account = {
   expiring: {credits: 4628.42, packages: 71, within_window: 968.42, within_packages: 21, window_days: 7},
 };
 const row = page.accountRow(account);
-check('账号行显示全部到期积分', row.includes('到期 4,628'), row);
+check('账号行显示全部到期积分', row.includes('到期积分 4,628'), row);
 check('账号行 tooltip 说明全部有到期日', row.includes('全部有到期日：4,628.42 分'), row);
 check('账号行 tooltip 说明 7 天内金额', row.includes('其中 7 天内：968.42 分 / 21 个包'), row);
 check('账号行 tooltip 保留最近包', row.includes('最近包：36.42 分 / 2.5 天'), row);
-check('最近包 3 天内用红色临期样式', row.includes('badge mini bad'), row);
+check('窗口内占比不高时用警告色，而不是把全部余额标红', row.includes('badge mini warn'), row);
 
 /* ---- 3. 积分明细：主数字是全部到期总额，副行是窗口内 + 最近包 -------- */
 const credits = {

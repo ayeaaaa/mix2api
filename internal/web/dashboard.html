@@ -12167,13 +12167,14 @@ function accountRow(a){
     const earliest = cred && cred.earliest_expiring ? cred.earliest_expiring : null;
     const earliestDays = earliest && earliest.days_left != null ? Number(earliest.days_left) : null;
     let tone = 'mini';
-    if(earliestDays != null && earliestDays <= 3) tone = 'mini bad';
-    else if(windowDays > 0 && earliestDays != null && earliestDays <= windowDays) tone = 'mini warn';
+    if(windowDays > 0 && withinWindow > 0){
+      tone = expCredits > 0 && withinWindow >= expCredits * 0.8 ? 'mini bad' : 'mini warn';
+    }
     const parts = ['全部有到期日：' + fmt(expCredits) + ' 分', expPackages + ' 个包'];
     if(windowDays > 0) parts.push('其中 ' + windowDays + ' 天内：' + fmt(withinWindow) + ' 分 / ' + withinPackages + ' 个包');
     if(earliest && earliestDays != null) parts.push('最近包：' + fmt(earliest.remain) + ' 分 / ' + earliestDays.toFixed(1) + ' 天');
     const amount = expCredits >= 100 ? fmt(Math.round(expCredits)) : fmt(expCredits);
-    expBadge = '<span class="badge ' + tone + '" style="font-size:10px;padding:1px 5px" title="' + esc(parts.join('；')) + '">到期 ' + amount + '</span>';
+    expBadge = '<span class="badge ' + tone + '" style="font-size:10px;padding:1px 5px" title="' + esc(parts.join('；')) + '">到期积分 ' + amount + '</span>';
   } else if(cred && cred.earliest_expiring && cred.earliest_expiring.days_left !== undefined && cred.earliest_expiring.days_left !== null){
     const d = Number(cred.earliest_expiring.days_left);
     if(d <= 3 && d >= 0){
@@ -13637,13 +13638,13 @@ async function reloadCreditsDetail(btn){
       const acct = (window.ACCOUNTS || []).find(a => a.uid === CURRENT_CREDIT_DETAIL_UID);
       if(acct){
         acct.credits = res.credits;
-        if(res.expiring) acct.expiring = res.expiring;
+        acct.expiring = res.expiring || null;
         acct.tokenExpired = false;
         renderAccounts();
       }
       if(errorEl) errorEl.style.display = "none";
       if(contentEl) contentEl.style.display = "block";
-      renderCreditsDetail(res.credits, acct, res.expiring || (acct && acct.expiring));
+      renderCreditsDetail(res.credits, acct, res.expiring || null);
     } else {
       const errMsg = (res && res.error) || "请确认后端代理服务已重启以加载新代码";
       const isAuthErr = errMsg.includes("401") || errMsg.includes("登录") || errMsg.includes("过期")
