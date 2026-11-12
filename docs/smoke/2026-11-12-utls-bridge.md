@@ -6,6 +6,7 @@ Commits:
 
 - `2b03cd0` — `feat(workbuddy): add optional uTLS fingerprint bridge`
 - `2e58634` — `build: require Go 1.26 and uTLS 1.8.2`
+- `e7c26cf` — `fix(utlsbridge): address review findings`
 
 ## Automated tests
 
