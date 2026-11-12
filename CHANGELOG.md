@@ -3,9 +3,24 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.3.0] - 2026-11-12
 
 ### 中文
+
+#### 新增
+
+- CodeArts（华为云）接入内置每日自动签到：复用 WorkBuddy 国内版的
+  `schedule.checkin` 时段（默认 09:00 / 21:00），每个时段每天最多执行一次；
+  进程启动后若已错过最近时段会补跑一次。受设置页「每天自动签到」开关
+  （`credits_auto_claim`）和 CodeArts 出口启用状态控制，只处理已启用账号；
+  单账号失败会脱敏后汇总上报，不会中断其他账号。
+- WorkBuddy 账号视图新增「到期积分」统计：汇总所有未过期、有明确到期日的
+  套餐包余额，并单独显示当前临期窗口内的金额和包数；账号行、提供商卡片和
+  积分明细都能看到该口径，后端同时通过 `AccountView.expiring` 和
+  `credits/detail` 的 `expiring` 字段返回。
+- 用量页新增「当前区域 / 全部区域」口径切换：默认跟随当前版本，KPI、Token
+  时序、热力图、模型性能、最近请求和用量明细使用同一区域；所有请求显式携带
+  `realm`，不再依赖服务端默认值。
 
 #### 界面
 
@@ -27,7 +42,43 @@ Keep a Changelog and the project uses semantic versioning.
 - 修复左上角菜单图标被按钮默认 padding 压缩成小点的问题：图标按钮改为无
   padding，并使用更清晰的列表/菜单图标。
 
+#### 修复
+
+- 到期积分按查看时间重新计算，而不是沿用上一次积分快照里的 `days_left`；
+  已过期、无到期日、企业包、零余额包和无效日期不再计入，统计口径与调度器
+  选择临期包的口径一致。
+- 积分明细刷新返回空统计时会清掉旧的到期积分，不再残留上一个账号或上一次
+  刷新的数字；账号行的颜色改为按窗口内余额占比判断，不再因为最近一个包而
+  把全部余额标红。
+- 切换区域或区间时，静态区、热力图和最近请求各自带代次保护，慢到的旧响应
+  不会覆盖新区域的数据；轮询去重键包含区域，避免国内版和国际版互相挡住请求；
+  模型性能折叠区跟随当前区间，不再沿用旧的范围状态。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；仪表盘 JS 套件 9/9 通过，包含新增的
+  区域口径和到期积分回归测试。
+
 ### English
+
+#### Added
+
+- CodeArts now uses the built-in daily check-in scheduler. It reuses the shared
+  `schedule.checkin` slots (09:00 / 21:00 by default), runs at most once per
+  slot per day, and catches up once after startup if the latest slot was
+  missed. It is gated by the existing daily auto-check-in setting
+  (`credits_auto_claim`) and the CodeArts exit, only processes enabled
+  accounts, and reports sanitized per-account failures without stopping other
+  accounts.
+- WorkBuddy account views now report expiring credit totals: all unexpired
+  packages with a finite expiry date, plus the amount and package count inside
+  the current expiring window. The account row, provider cards, and credits
+  detail panel show the same figures; the backend exposes them through
+  `AccountView.expiring` and the `expiring` field of `credits/detail`.
+- The Usage page now has a Current realm / All realms switch. KPIs, the token
+  timeline, heatmap, model performance, recent requests, and usage detail use
+  the same scope, and every request sends `realm` explicitly instead of
+  relying on the server default.
 
 #### Interface
 
@@ -55,6 +106,27 @@ Keep a Changelog and the project uses semantic versioning.
   rule; tapping outside the open menu now closes it.
 - Fixed the top-left menu icon being squeezed into a dot by the button's default
   padding; icon buttons now use zero padding and a clearer list/menu glyph.
+
+#### Fixed
+
+- Expiring credits are recomputed at view time instead of reusing the
+  `days_left` value from the last credits snapshot. Expired, no-expiry,
+  enterprise, zero-balance, and invalid-date packages are excluded, matching
+  the scheduler's expiring-package eligibility.
+- A credits-detail refresh that returns no summary now clears the previous
+  expiring value instead of leaving the old account's figures on screen. The
+  account-row color now reflects the share of credits inside the window rather
+  than turning the whole balance red because of the nearest package.
+- Static panels, the heatmap, and recent requests use generation guards when
+  the realm or range changes, so a slower old response cannot overwrite newer
+  data. Poll deduplication keys include the realm, the performance panel
+  follows the current range, and switching realms refreshes the static area
+  and heatmap.
+
+#### Verification
+
+- `make check` and `make race` pass; the dashboard JS harness passes 9/9 suites,
+  including the new realm-scope and expiring-credit regression tests.
 
 ## [2.2.0] - 2026-11-12
 
