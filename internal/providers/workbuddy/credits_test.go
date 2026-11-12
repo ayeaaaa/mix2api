@@ -1,6 +1,7 @@
 package workbuddy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,6 +73,10 @@ func (s *creditsTestServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionID:      r.Header.Get("X-Session-ID"),
 		RequestID:      r.Header.Get("X-Request-ID"),
 	}
+
+	// The fixture records the body for assertions; restore it so a handler can
+	// branch on request fields such as PageNumber.
+	r.Body = io.NopCloser(bytes.NewReader(raw))
 
 	s.mu.Lock()
 	s.calls = append(s.calls, call)
@@ -1923,5 +1928,145 @@ func TestCreditsRefreshPacesMultipleAccounts(t *testing.T) {
 		if delay != 10*time.Millisecond {
 			t.Fatalf("pacing delay = %v", delay)
 		}
+	}
+}
+
+func TestCreditsCNPaginatesPackageHistory(t *testing.T) {
+	now := creditTestNow()
+	summaryBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"Packages": []any{map[string]any{"PackageCode": "pkg_free"}},
+		},
+	})
+	makeFree := func(index int) map[string]any {
+		return map[string]any{
+			"AccountId":                fmt.Sprintf("free-%03d", index),
+			"PackageName":              "Daily credit",
+			"PackageCode":              "pkg_free",
+			"CycleCapacitySizePrecise": "1",
+			"CycleCapacityRemain":      "1",
+			"Status":                   0,
+		}
+	}
+	pageOne := make([]any, 0, 200)
+	for i := 0; i < 200; i++ {
+		pageOne = append(pageOne, makeFree(i))
+	}
+	pageTwo := []any{makeFree(200)}
+	freePage := func(page int) string {
+		accounts := pageOne
+		if page == 2 {
+			accounts = pageTwo
+		}
+		return creditTestJSON(t, map[string]any{
+			"code": 0,
+			"data": map[string]any{"Accounts": accounts},
+		})
+	}
+	empty := creditTestJSON(t, map[string]any{"code": 0, "data": map[string]any{"Accounts": []any{}}})
+	server, fixture := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		switch r.URL.Path {
+		case creditsSummaryPath:
+			return http.StatusOK, summaryBody
+		case creditsFreePackagesPath:
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			_ = json.Unmarshal(raw, &body)
+			page := int(creditNumber(body["PageNumber"]))
+			return http.StatusOK, freePage(page)
+		case creditsPaidPackagesPath:
+			return http.StatusOK, empty
+		case creditsCheckinPath:
+			return http.StatusOK, `{"code":0,"data":{}}`
+		default:
+			return http.StatusNotFound, `{"code":404}`
+		}
+	})
+	provider, _, _ := newCreditsPool(t, realmCN, map[string]map[string]any{"cn-a": nil})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsCheckinBaseURL = server.URL
+	provider.creditsNow = func() time.Time { return now }
+
+	result, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	snapshot := result.Results[0].Credits
+	if snapshot == nil {
+		t.Fatal("missing snapshot")
+	}
+	if len(snapshot.Packages) != 201 {
+		t.Fatalf("packages = %d, want 201", len(snapshot.Packages))
+	}
+	calls := creditCallsWithPath(fixture.snapshot(), creditsFreePackagesPath)
+	if len(calls) != 2 {
+		t.Fatalf("free package calls = %d, want 2: %+v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0].Body, `"Status":[0,1,2,3]`) {
+		t.Fatalf("first page status filter = %s", calls[0].Body)
+	}
+	if !strings.Contains(calls[1].Body, `"PageNumber":2`) {
+		t.Fatalf("second page request = %s", calls[1].Body)
+	}
+}
+
+func TestCreditsCNUsesOfficialSummaryTotalsWhenRowsExist(t *testing.T) {
+	now := creditTestNow()
+	summaryBody := creditTestJSON(t, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"Packages": []any{map[string]any{
+				"PackageCode":         "pkg_free",
+				"CycleTotalCapacity":  1000,
+				"CycleRemainCapacity": 800,
+				"CycleUsedCapacity":   200,
+			}},
+		},
+	})
+	freeRaw := map[string]any{
+		"AccountId":                "f1",
+		"PackageName":              "Free Plan Subscription",
+		"PackageCode":              "pkg_free",
+		"CycleCapacitySizePrecise": "100",
+		"CycleCapacityRemain":      "100",
+		"Status":                   0,
+	}
+	freeBody := creditTestJSON(t, map[string]any{
+		"code": 0, "data": map[string]any{"Accounts": []any{freeRaw}},
+	})
+	empty := creditTestJSON(t, map[string]any{"code": 0, "data": map[string]any{"Accounts": []any{}}})
+	server, _ := newCreditsTestServer(t, func(r *http.Request) (int, string) {
+		switch r.URL.Path {
+		case creditsSummaryPath:
+			return http.StatusOK, summaryBody
+		case creditsFreePackagesPath:
+			return http.StatusOK, freeBody
+		case creditsPaidPackagesPath:
+			return http.StatusOK, empty
+		case creditsCheckinPath:
+			return http.StatusOK, `{"code":0,"data":{}}`
+		default:
+			return http.StatusNotFound, `{"code":404}`
+		}
+	})
+	provider, _, _ := newCreditsPool(t, realmCN, map[string]map[string]any{"cn-a": nil})
+	provider.creditsBillingBaseURL = server.URL
+	provider.creditsCheckinBaseURL = server.URL
+	provider.creditsNow = func() time.Time { return now }
+
+	result, err := provider.RefreshCredits(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	snapshot := result.Results[0].Credits
+	if snapshot == nil {
+		t.Fatal("missing snapshot")
+	}
+	if snapshot.Size != 1000 || snapshot.Remain != 800 || snapshot.Used != 200 {
+		t.Fatalf("summary totals = %v/%v/%v, want 1000/800/200", snapshot.Size, snapshot.Remain, snapshot.Used)
+	}
+	if snapshot.UsedPercent != "20.0%" || snapshot.RemainPercent != "80.0%" {
+		t.Fatalf("summary percentages = %q/%q", snapshot.UsedPercent, snapshot.RemainPercent)
 	}
 }
