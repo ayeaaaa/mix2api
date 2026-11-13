@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 修复
+
+- Key 列表和分析表正确显示“固定 CodeArts 出口”，不再把 `realm=codearts`
+  的 Key 误显示为“跟随面板切换”。
+
+### English
+
+#### Fixed
+
+- The key list and analytics table now display “CodeArts” for keys with
+  `realm=codearts` instead of falling back to “Follow panel”.
+
 ## [2.6.2] - 2026-11-13
 
 ### 中文

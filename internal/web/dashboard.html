@@ -19252,6 +19252,8 @@ function renderKeyRows(){
       ? '<span class="realm-badge-intl" style="font-size:11px">固定国际版出口</span>'
       : (row.realm === 'cn')
       ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
+      : (row.realm === 'codearts')
+      ? '<span class="realm-badge-codearts" style="font-size:11px">固定 CodeArts 出口</span>'
       : (row.realm === 'raccoon')
       ? '<span class="realm-badge-raccoon" style="font-size:11px">固定小浣熊出口</span>'
       : (row.realm === 'doubao')
@@ -22060,6 +22062,7 @@ async function onKeyBeforeToggle(box){
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'gateway') return '<span class="badge ok" style="font-size:10px">全部提供商</span>';
+  if(k.realm === 'codearts') return '<span class="realm-badge-codearts" style="font-size:10px">CodeArts</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
   if(k.realm === 'raccoon') return '<span class="realm-tag realm-raccoon" style="font-size:10px">小浣熊</span>';
