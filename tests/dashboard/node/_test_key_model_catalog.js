@@ -57,6 +57,8 @@ const SETTINGS = {
      masked: 'wb-aaaa****1111', created_at: '2026-09-01'},
     {id: 'k2', name: '跟随面板切换', realm: '', models: [], enabled: true,
      masked: 'wb-bbbb****2222', created_at: '2026-09-02'},
+    {id: 'k3', name: '固定 CodeArts', realm: 'codearts', models: ['codearts/m1'], enabled: true,
+     masked: 'wb-cccc****3333', created_at: '2026-09-03'},
   ],
   deleted_api_keys: [],
   limits: {},
@@ -123,6 +125,9 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   check('Key 列表显示全部提供商',
     page.keyRealmCell({realm: 'gateway', source: 'panel'}).includes('全部提供商'),
     page.keyRealmCell({realm: 'gateway', source: 'panel'}));
+  check('分析表显示 CodeArts 出口',
+    page.keyRealmCell({realm: 'codearts', source: 'panel'}).includes('CodeArts'),
+    page.keyRealmCell({realm: 'codearts', source: 'panel'}));
 
   /* ---- 2. 网关目录优先 ---------------------------------------------- */
   CALLS = [];
@@ -301,6 +306,10 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   /* ---- 8. 保存：提交草稿里的新出口并清掉旧 canonical 选择 ----------- */
   await page.loadSettings(true);
   await settle();
+  const keyListHtml = document.getElementById('keyList').innerHTML;
+  check('Key 卡片显示固定 CodeArts 出口',
+    keyListHtml.includes('固定 CodeArts 出口'),
+    keyListHtml.slice(0, 300));
   page.openEditKey(0);
   document.getElementById('editKeyRealm_0').value = 'intl';
   await page.changeKeyRealm(0, 'intl');
