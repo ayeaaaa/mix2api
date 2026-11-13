@@ -9873,7 +9873,14 @@ function doubaoShowTasks(uid){
         + '<div style="font-weight:600;font-size:12px">' + escapeHtml(task.title || task.campaign_code || '未命名任务') + '</div>'
         + '<div style="font-size:11px;color:var(--dim);margin-top:3px">' + escapeHtml(task.subtitle || task.description || '') + '</div>'
         + '<div style="font-size:11px;margin-top:5px">' + escapeHtml(doubaoTaskStatus(task))
-        + (reward ? ' · ' + escapeHtml(reward) : '') + '</div></div>';
+        + (reward ? ' · ' + escapeHtml(reward) : '') + '</div>'
+        + (Number(task.task_status) === 2
+          ? '<button class="sec mini" style="margin-top:6px" onclick="doubaoClaimTask(\''
+            + esc(String(uid).replace(/[^\w.@-]/g, '')) + '\',\''
+            + esc(String(task.campaign_code || '').replace(/[^\w.@-]/g, ''))
+            + '\',this)">领取</button>'
+          : '')
+        + '</div>';
     });
     html += '</div>';
     if(milestones.length){
@@ -9903,6 +9910,20 @@ async function doubaoRefreshTasks(uid, btn){
     doubaoShowTasks(uid);
   }catch(e){
     toast('刷新任务失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoClaimTask(uid, campaignCode, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/doubao/tasks/claim', {uid: uid, campaign_code: campaignCode});
+    toast('任务奖励已领取', 'ok');
+    await loadDoubaoOverview(true);
+    doubaoShowTasks(uid);
+  }catch(e){
+    toast('领取任务奖励失败: ' + e.message, 'bad');
   }finally{
     if(btn) btn.disabled = false;
   }

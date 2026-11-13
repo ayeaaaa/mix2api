@@ -84,6 +84,92 @@ func TestCheckinProbeOverridesQueryAndUA(t *testing.T) {
 	}
 }
 
+func TestClaimCampaignTask(t *testing.T) {
+	var detailCalls, claimCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case campaignDetailPath:
+			detailCalls++
+			_, _ = w.Write([]byte(`{"code":0,"data":{"progress":{"total_amount":400},"tasks":[{"campaign_code":"select_work_fields","campaign_group_code":"pc_incentive_task_mvp_v3","task_status":2,"title":"选择工作领域领取奖励"}],"milestones":[]}}`))
+		case campaignClaimPath:
+			claimCalls++
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["campaign_item_code"] != "select_work_fields" || body["campaign_group_code"] != "pc_incentive_task_mvp_v3" || body["task_id"] != "" {
+				t.Fatalf("claim body = %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"task_status":3,"reward_amount":100}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	provider, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-claim", "tester", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.cfgMu.Lock()
+	provider.cfg.BaseURL = server.URL
+	provider.cfgMu.Unlock()
+
+	result, err := provider.ClaimTask(context.Background(), account.UID, "select_work_fields")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "success" || result.Reward != 100 || detailCalls != 1 || claimCalls != 1 {
+		t.Fatalf("result=%#v detailCalls=%d claimCalls=%d", result, detailCalls, claimCalls)
+	}
+	account.mu.Lock()
+	task, _ := campaignTaskByCode(account.Tasks, "select_work_fields")
+	account.mu.Unlock()
+	if task == nil || intValue(task["task_status"]) != 3 {
+		t.Fatalf("cached task = %#v", task)
+	}
+}
+
+func TestClaimCampaignTaskBusinessError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != campaignClaimPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"biz_error":{"code":2,"message":"当前暂不符合领取条件"},"task_status":0}}`))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	provider, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-claim-error", "tester", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account.Tasks = map[string]any{"tasks": []any{map[string]any{
+		"campaign_code": "select_work_fields", "campaign_group_code": campaignScene,
+		"task_status": float64(2), "title": "选择工作领域领取奖励",
+	}}}
+	provider.cfgMu.Lock()
+	provider.cfg.BaseURL = server.URL
+	provider.cfgMu.Unlock()
+
+	_, err = provider.ClaimTask(context.Background(), account.UID, "select_work_fields")
+	if err == nil || !strings.Contains(err.Error(), "当前暂不符合领取条件") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCampaignCheckinAndCredits(t *testing.T) {
 	var detailCalls, checkinCalls, creditCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

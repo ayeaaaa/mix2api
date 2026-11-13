@@ -19,6 +19,7 @@ const (
 	campaignPCVersion   = "2.33.5"
 	campaignDetailPath  = "/alice/ug/campaign/v3/detail/"
 	campaignCheckinPath = "/alice/ug/campaign/landing/checkin"
+	campaignClaimPath   = "/alice/ug/campaign/item/reward/claim/"
 	campaignReferer     = "https://www.doubao.com/pc/agent-explore"
 	campaignUA          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 SamanthaDoubao/2.33.5"
 )
@@ -45,6 +46,16 @@ type CheckinResult struct {
 	ContinuousDays  int    `json:"continuous_days"`
 	TotalAmount     int    `json:"total_amount"`
 	LastCheckinDate string `json:"last_checkin_date"`
+}
+
+// TaskClaimResult is the outcome of claiming one completed campaign task.
+type TaskClaimResult struct {
+	UID          string `json:"uid"`
+	CampaignCode string `json:"campaign_code"`
+	Title        string `json:"title,omitempty"`
+	Status       string `json:"status"` // success | fail
+	Message      string `json:"message"`
+	Reward       int    `json:"reward"`
 }
 
 func (p *Provider) campaignQuery() string {
@@ -201,6 +212,11 @@ func sanitizeCampaignTasks(data map[string]any) map[string]any {
 				"reward_mode":         task["reward_mode"],
 				"reward_summaries":    task["reward_summaries"],
 			}
+			for _, key := range []string{"task_id", "instance_task_id", "recommend_prompts", "campaign_task_data"} {
+				if value, ok := task[key]; ok {
+					entry[key] = value
+				}
+			}
 			if daily, ok := task["daily_checkin"]; ok {
 				entry["daily_checkin"] = daily
 			}
@@ -306,6 +322,105 @@ func (p *Provider) CheckinStatus(ctx context.Context, uid string) (CheckinStatus
 	status, data := parseCheckinDetail(payload)
 	p.updateCampaignCache(account, status, data)
 	return status, nil
+}
+
+func campaignTaskByCode(tasks map[string]any, campaignCode string) (map[string]any, string) {
+	campaignCode = strings.TrimSpace(campaignCode)
+	if campaignCode == "" || tasks == nil {
+		return nil, ""
+	}
+	list, _ := tasks["tasks"].([]any)
+	for _, item := range list {
+		task, _ := item.(map[string]any)
+		if task == nil || strings.TrimSpace(stringValue(task["campaign_code"])) != campaignCode {
+			continue
+		}
+		group := strings.TrimSpace(stringValue(task["campaign_group_code"]))
+		if group == "" {
+			group = campaignScene
+		}
+		return task, group
+	}
+	return nil, ""
+}
+
+func markCampaignTaskClaimed(tasks map[string]any, campaignCode string) {
+	if tasks == nil || strings.TrimSpace(campaignCode) == "" {
+		return
+	}
+	list, _ := tasks["tasks"].([]any)
+	for _, item := range list {
+		task, _ := item.(map[string]any)
+		if task == nil || strings.TrimSpace(stringValue(task["campaign_code"])) != campaignCode {
+			continue
+		}
+		task["task_status"] = 3
+		if daily, ok := task["daily_checkin"].(map[string]any); ok {
+			daily["reward_status"] = 3
+		}
+		return
+	}
+}
+
+// ClaimTask claims a completed campaign task. The desktop client exposes the
+// same endpoint; direct calls can legitimately be rejected by campaign
+// eligibility rules, so upstream business errors are returned verbatim instead
+// of being converted into a fake success.
+func (p *Provider) ClaimTask(ctx context.Context, uid, campaignCode string) (TaskClaimResult, error) {
+	account := p.pool.account(uid)
+	if account == nil {
+		return TaskClaimResult{}, ErrNoAccount
+	}
+	campaignCode = strings.TrimSpace(campaignCode)
+	if campaignCode == "" {
+		return TaskClaimResult{}, &APIError{Kind: KindBadRequest, Message: "campaign_code is required"}
+	}
+	account.mu.Lock()
+	tasks := account.Tasks
+	task, group := campaignTaskByCode(tasks, campaignCode)
+	account.mu.Unlock()
+	if task == nil {
+		if _, err := p.CheckinStatus(ctx, uid); err != nil {
+			return TaskClaimResult{}, err
+		}
+		account.mu.Lock()
+		tasks = account.Tasks
+		task, group = campaignTaskByCode(tasks, campaignCode)
+		account.mu.Unlock()
+	}
+	if task == nil {
+		return TaskClaimResult{}, &APIError{Kind: KindBadRequest, Message: "豆包任务不存在或已过期"}
+	}
+	taskID := strings.TrimSpace(stringValue(task["task_id"]))
+	if taskID == "" {
+		taskID = strings.TrimSpace(stringValue(task["instance_task_id"]))
+	}
+	result := TaskClaimResult{
+		UID: account.UID, CampaignCode: campaignCode,
+		Title: stringValue(task["title"]),
+	}
+	body := map[string]any{
+		"task_id":             taskID,
+		"campaign_group_code": group,
+		"campaign_item_code":  campaignCode,
+	}
+	payload, err := p.postCampaignJSON(ctx, account, campaignClaimPath, body)
+	if err != nil {
+		return result, err
+	}
+	data, _ := payload["data"].(map[string]any)
+	if biz, ok := data["biz_error"].(map[string]any); ok && len(biz) > 0 {
+		message := firstNonEmpty(stringValue(biz["message"]), stringValue(biz["toast"]), "当前暂不符合领取条件")
+		return result, &APIError{Kind: KindBadRequest, Message: message, Code: intValue(biz["code"])}
+	}
+	result.Status = "success"
+	result.Message = "领取成功"
+	result.Reward = intValue(data["reward_amount"])
+	account.mu.Lock()
+	markCampaignTaskClaimed(account.Tasks, campaignCode)
+	account.mu.Unlock()
+	_ = account.save()
+	return result, nil
 }
 
 // Checkin performs one daily check-in. It reads detail first so an already

@@ -29,6 +29,7 @@ func (p *Provider) routes() []providers.Route {
 		{Method: http.MethodPost, Path: "/doubao/checkin", Auth: panel, Handler: p.handleCheckinAll},
 		{Method: http.MethodPost, Path: "/doubao/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
 		{Method: http.MethodPost, Path: "/doubao/tasks/refresh", Auth: panel, Handler: p.handleTasksRefresh},
+		{Method: http.MethodPost, Path: "/doubao/tasks/claim", Auth: panel, Handler: p.handleTaskClaim},
 		{Method: http.MethodPost, Path: "/doubao/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
 		{Method: http.MethodPost, Path: "/doubao/test", Auth: panel, Handler: p.handleConnectionTest},
 	}
@@ -190,6 +191,20 @@ func (p *Provider) handleTasksRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "status": status, "tasks": account.Tasks, "credits": account.Credits,
 	})
+}
+
+func (p *Provider) handleTaskClaim(w http.ResponseWriter, r *http.Request) {
+	payload, err := readPayload(w, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	result, err := p.ClaimTask(r.Context(), textValue(payload["uid"]), textValue(payload["campaign_code"]))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 }
 
 func (p *Provider) handleModelsRefresh(w http.ResponseWriter, r *http.Request) {

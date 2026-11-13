@@ -118,6 +118,7 @@ func dashboardRoutes() []dashboardRoute {
 		post("/doubao/checkin"),
 		post("/doubao/credits/refresh"),
 		post("/doubao/tasks/refresh"),
+		post("/doubao/tasks/claim"),
 		post("/doubao/models/refresh"),
 		post("/doubao/test"),
 
