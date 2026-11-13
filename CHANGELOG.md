@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.6.0] - 2026-11-13
+
+### 中文
+
+#### 新增
+
+- 豆包 Work 新增活动任务奖励领取：`POST /doubao/tasks/claim`，看板对
+  `task_status=2` 的已完成任务显示「领取」按钮。
+- 任务缓存保留 `task_id` / `instance_task_id` / `recommend_prompts` /
+  `campaign_task_data`，领取时按 `campaign_code` 找到对应任务并提交真实
+  `campaign/item/reward/claim` 请求。
+- 上游 `biz_error` 原样透传，不把不符合领取条件的情况伪装成成功；成功后
+  更新本地任务状态并刷新豆包概览。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 13/13 通过。
+- 新增豆包任务领取与缓存字段回归测试。
+
+### English
+
+#### Added
+
+- Doubao Work can now claim completed campaign rewards through
+  `POST /doubao/tasks/claim`; the dashboard shows a Claim button for tasks with
+  `task_status=2`.
+- Cached tasks retain `task_id`, `instance_task_id`, `recommend_prompts`, and
+  `campaign_task_data`, so claiming can locate the task by `campaign_code` and
+  call the real `campaign/item/reward/claim` endpoint.
+- Upstream `biz_error` responses are passed through instead of being reported
+  as success; a successful claim updates the local task state and refreshes the
+  Doubao overview.
+
+#### Verification
+
+- `make check` and `make race` pass; the dashboard JS harness passes 13/13
+  suites.
+- Added regression coverage for Doubao task claiming and cached task fields.
+
 ## [2.5.0] - 2026-11-13
 
 ### 中文

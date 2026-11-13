@@ -7,7 +7,7 @@ OpenAI Chat Completions、Responses、Anthropic Messages、SSE 和内嵌看板�
 WorkBuddy 国际版 / 国内版、华为云 CodeArts（遥遥领先）、Raccoon（商汤小浣熊）、
 豆包 Work 收进同一套 API Key 和账号池。
 
-当前版本：**2.5.0**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
+当前版本：**2.6.0**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
 
 ## 由来
 
@@ -100,7 +100,7 @@ curl -fsS http://127.0.0.1:58675/v1/models?realm=gateway
 镜像已发布到 GHCR，支持 `linux/amd64` 和 `linux/arm64`：
 
 ```sh
-docker pull ghcr.io/ayeaaaa/mix2api:v2.5.0
+docker pull ghcr.io/ayeaaaa/mix2api:v2.6.0
 ```
 
 先在当前 shell 生成两个独立凭据，不要把真实值写进仓库或提交到 Git：
@@ -131,7 +131,7 @@ docker run -d --name mix2api \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   -v "$PWD/data/media:/app/media" \
-  ghcr.io/ayeaaaa/mix2api:v2.5.0
+  ghcr.io/ayeaaaa/mix2api:v2.6.0
 ```
 
 这里只把端口发布到 `127.0.0.1`，适合前置反向代理或用 SSH 隧道访问。需要让
@@ -179,8 +179,8 @@ compose 默认发布 `58675` 到所有网卡。公网部署前请加反向代理
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf mix2api-2.5.0-linux-amd64.tar.gz
-cd mix2api-2.5.0-linux-amd64
+tar -xzf mix2api-2.6.0-linux-amd64.tar.gz
+cd mix2api-2.6.0-linux-amd64
 ```
 
 启动。`HOST` 默认是 `127.0.0.1`；数据目录默认是当前目录下的
