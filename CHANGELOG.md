@@ -12,9 +12,20 @@ Keep a Changelog and the project uses semantic versioning.
 - 豆包 Work 的 README 与设置页说明补充：当前模型上下文为 256K；该出口后续
   仅做维护，不再继续扩展。
 
+#### 修复
+
+- CodeArts 面板 OAuth 回调在携带已认证的 `session_id` 时不再强制校验华为
+  改写的 `state`，修复添加账号时一直提示“授权状态不匹配”的问题。浏览器
+  直接回调（无 `session_id`）仍按 `state`/`ticket_id` 精确匹配。
+
+#### 变更
+
+- 添加 CodeArts 账号时只生成并展示授权链接，不再自动打开浏览器窗口；新增
+  「复制授权链接」，中转后的下一步链接也交给用户自己打开。
+
 #### 验证
 
-- `make check`、dashboard 静态/JS 契约测试通过。
+- `make check`、dashboard 静态/JS 契约测试通过（14/14 套件）。
 
 ### English
 
@@ -24,9 +35,23 @@ Keep a Changelog and the project uses semantic versioning.
   has a 256K context window and is maintenance-only; no further expansion is
   planned.
 
+#### Fixed
+
+- CodeArts panel OAuth callbacks with an authenticated `session_id` no longer
+  enforce Huawei's rewritten `state`, fixing the persistent “authorization
+  state mismatch” error. Direct browser callbacks without `session_id` still
+  require an exact `state`/`ticket_id` match.
+
+#### Changed
+
+- Adding a CodeArts account now only generates and displays the authorization
+  link instead of opening a browser window automatically. A Copy link action
+  was added, and the follow-up link after a relayed callback is also left for
+  the user to open.
+
 #### Verification
 
-- `make check` and the dashboard static/JS contract tests pass.
+- `make check` and the dashboard static/JS contract tests pass (14/14 suites).
 
 ## [2.6.0] - 2026-11-13
 

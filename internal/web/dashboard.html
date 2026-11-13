@@ -7962,13 +7962,14 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
     </div>
     <div class="modal-bd">
       <div style="font-size:12px;color:var(--dim);margin-bottom:10px">
-        用华为云账号完成授权。浏览器和本网关不在同一台机器时，回调地址会打不开；
-        把地址栏里的完整地址粘贴到下面，点「中转回调」。
+        用华为云账号完成授权。授权链接不会自动打开；请复制到本机浏览器打开。
+        浏览器和本网关不在同一台机器时，回调地址会打不开；把地址栏里的完整地址粘贴到下面，点「中转回调」。
       </div>
       <div style="font-size:12px;color:var(--dim);margin-bottom:4px">授权链接</div>
       <div id="codeartsOauthUrl" class="mono" style="word-break:break-all;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:38px"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         <button class="sec" onclick="openCodeartsAuthUrl()">打开授权页</button>
+        <button class="sec" onclick="copyCodeartsAuthUrl(this)">复制授权链接</button>
         <button class="sec" onclick="pollCodeartsOAuth(false)">我已授权</button>
       </div>
       <div style="font-size:12px;color:var(--dim);margin:14px 0 4px">远端回调（可选）</div>
@@ -10381,7 +10382,6 @@ async function startCodeartsOAuth(){
     const url = document.getElementById("codeartsOauthUrl");
     if(url) url.textContent = r.auth_url || "";
     setCodeartsOauthStatus("已生成链接，正在等待授权…", null);
-    if(r.auth_url) window.open(r.auth_url, "_blank", "noopener,noreferrer");
     if(CODEARTS_OAUTH_TIMER) clearInterval(CODEARTS_OAUTH_TIMER);
     CODEARTS_OAUTH_TIMER = setInterval(function(){ pollCodeartsOAuth(true); }, 2500);
   }catch(e){
@@ -10427,11 +10427,12 @@ async function importCodeartsCallback(btn){
       callback_url: callbackUrl,
     });
     if(input) input.value = "";
-    setCodeartsOauthStatus(r.message || "回调已接收，继续等待授权…", null);
     if(r.next_url){
       const url = document.getElementById("codeartsOauthUrl");
       if(url) url.textContent = r.next_url;
-      window.open(r.next_url, "_blank", "noopener,noreferrer");
+      setCodeartsOauthStatus("回调已接收，请打开新的授权链接继续授权…", null);
+    }else{
+      setCodeartsOauthStatus(r.message || "回调已接收，继续等待授权…", null);
     }
     setTimeout(function(){ pollCodeartsOAuth(true); }, 500);
   }catch(e){
@@ -10445,6 +10446,21 @@ function openCodeartsAuthUrl(){
   const el = document.getElementById("codeartsOauthUrl");
   const url = el ? el.textContent.trim() : "";
   if(url) window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function copyCodeartsAuthUrl(){
+  const el = document.getElementById("codeartsOauthUrl");
+  const url = el ? el.textContent.trim() : "";
+  if(!url){
+    setCodeartsOauthStatus("还没有授权链接，请稍候或重新发起", false);
+    return;
+  }
+  try{
+    await writeClipboard(url);
+    toast("授权链接已复制", "ok");
+  }catch(e){
+    setCodeartsOauthStatus("复制失败: " + e.message, false);
+  }
 }
 
 function renderCodeartsSettings(cfg){
