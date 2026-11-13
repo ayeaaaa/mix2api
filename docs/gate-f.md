@@ -196,6 +196,13 @@ analytics view cache is invalid; missing/corrupt data falls back to the scan.
 On a local 19.5k-row ledger the first build takes about 0.64s and later reads
 take about 3ms. `make check` and `make race` pass.
 
+**v2.8.1 addendum:** Raccoon daily activity now triggers `daily_grant` by
+refreshing the login session instead of sending a chat, so it no longer spends
+points; failed refreshes persist `refreshed=false` and the dashboard stays
+consistent with the bill. `make check`, `make race`, and the 15/15 dashboard JS
+harness pass. Published as `v2.8.1` at `4d6a24a`; evidence:
+`docs/smoke/2026-11-13-release-2.8.1.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
