@@ -234,7 +234,7 @@ compose 文件、日志或 Git。
 2. 在「设置」中启用需要的出口，再到对应视图导入账号：
    - WorkBuddy：按看板提示完成 OAuth；
    - CodeArts（遥遥领先）：华为云 OAuth；
-   - Raccoon（商汤小浣熊）：导入桌面客户端 `auth.json` 或走本机回环授权；
+   - Raccoon（商汤小浣熊）：导入桌面客户端 `auth.json` 或走本机回环授权；每日活跃通过刷新登录会话触发上游 `daily_grant`，不发对话、不消耗积分，到账以账单为准；
    - 豆包 Work：在豆包 Work 视图导入 cookies/device JSON（至少包含 `sessionid`、`ttwid`）。
      签到/积分/任务在豆包账号表中查看；签到发奖需要电脑端活动资格。若已抓到电脑端
      `landing/checkin` 的 query/UA，可用 `POST /doubao/accounts/probe` 保存到账号后重放。
