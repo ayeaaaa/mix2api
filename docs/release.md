@@ -2,9 +2,9 @@
 
 ## Current status
 
-This tree is **`2.8.1`** final. The v2 source is published on branch `v2` of
-`ayeaaaa/mix2api` and merged into `main`; the Python v1 tree is no longer on
-`main` and remains only at tag `v1.6.6`. The release is
+This tree is **`2.8.1`** final. The source is published on `main` of
+`ayeaaaa/mix2api`; the Python v1 tree is archived at tag/release `v1.6.6` and
+no longer on `main`. The release is
 <https://github.com/ayeaaaa/mix2api/releases/tag/v2.8.1> and the GHCR image is
 `ghcr.io/ayeaaaa/mix2api:v2.8.1`. Gate F evidence is in `docs/gate-f.md`; the
 publication evidence is `docs/smoke/2026-11-13-release-2.8.1.md`. Real Windows
@@ -88,7 +88,7 @@ The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
 
 ## Publish
 
-The v2 source lives on branch `v2` and is merged into `main`. The release workflow (`.github/workflows/release.yml`) is manual and
+The source lives on `main`. The release workflow (`.github/workflows/release.yml`) is manual and
 refuses to publish unless `publish=true` and `gate_f_signed=yes`. The `version`
 input must be a strict semantic version **without** a leading `v` (`2.0.0`, not
 `v2.0.0`); a dedicated validation step rejects `v`/`V` prefixes, leading
@@ -123,8 +123,8 @@ gh release create v2.8.1 dist/* \
   --notes-file CHANGELOG.md
 ```
 
-The tag points at the v2 commit, not at `main`. Do not overwrite the v1.6.6
-tag; `main` may be fast-forwarded from `v2`.
+The tag points at the release commit. Do not overwrite the archived `v1.6.6`
+tag; `main` is the only branch.
 
 ## Rollback a release
 

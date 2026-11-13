@@ -8,8 +8,8 @@ SSE, and an embedded dashboard, bringing WorkBuddy International / China,
 Huawei Cloud CodeArts（遥遥领先）, Raccoon（商汤小浣熊）, and Doubao Work into
 one API-key and account-pool surface.
 
-Current version: **2.8.1**. The default branch is `v2`; `main` now tracks v2,
-and v1.6.6 remains only as a tag/history.
+Current version: **2.8.1**. The default branch is `main`; v2 is merged into
+`main`, and v1.6.6 is archived as a tag/release.
 
 ## Origin
 
@@ -312,8 +312,8 @@ curl -fsS http://127.0.0.1:58675/v1/models \
 
 ## Maintenance and releases
 
-- `v2` is the default development branch; `main` now tracks v2, and v1.6.6
-  remains only as a tag/history with no Python code.
+- `main` is the only development branch; v1.6.6 is archived as a tag/release
+  and no longer contains the Python code.
 - Version identity, build metadata, and release assets are managed by
   `internal/core/version`, `make dist`, and
   [`.github/workflows/release.yml`](.github/workflows/release.yml). The image is

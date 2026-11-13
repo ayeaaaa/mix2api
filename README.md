@@ -7,7 +7,7 @@ OpenAI Chat Completions、Responses、Anthropic Messages、SSE 和内嵌看板�
 WorkBuddy 国际版 / 国内版、华为云 CodeArts（遥遥领先）、Raccoon（商汤小浣熊）、
 豆包 Work 收进同一套 API Key 和账号池。
 
-当前版本：**2.8.1**。默认分支 `v2`；`main` 已合并 v2，v1.6.6 仅保留为 tag/历史。
+当前版本：**2.8.1**。默认分支 `main`；v2 代码已合入 `main`，v1.6.6 已归档为 tag/release。
 
 ## 由来
 
@@ -274,7 +274,7 @@ curl -fsS http://127.0.0.1:58675/v1/models \
 
 ## 维护与发布
 
-- `v2` 是默认开发分支；`main` 已合并 v2，v1.6.6 仅保留为 tag/历史，不再包含 Python 代码。
+- `main` 是唯一开发分支；v1.6.6 已归档为 tag/release，不再包含 Python 代码。
 - 版本号、构建身份和发布资产由 `internal/core/version`、`make dist` 和
   [`.github/workflows/release.yml`](.github/workflows/release.yml) 管理；镜像由
   根目录 `Dockerfile` 构建。

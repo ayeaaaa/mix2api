@@ -51,9 +51,8 @@ a temporary systemd service, and with the Windows binary + `.cmd` hooks under
 Wine. CI verify, multi-arch arm64 runtime, and a local registry push/pull
 passed. Dependency scanning found no reachable vulnerabilities. The owner
 explicitly approved the final `2.0.0` release while accepting that real Windows
-SCM/service execution remains unverified. The v2 source is published on branch
-`v2` of `ayeaaaa/mix2api` and merged into `main`; v1.6.6 remains only as a tag
-and history.
+SCM/service execution remains unverified. The source is published on `main` of
+`ayeaaaa/mix2api`; v1.6.6 is archived as a tag/release and history.
 
 **v2.0.2 addendum:** the patch release publishes the dashboard total-quota
 column and the Raccoon daily-activity check-in ported from PR #3. The new
