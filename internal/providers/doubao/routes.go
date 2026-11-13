@@ -23,6 +23,7 @@ func (p *Provider) routes() []providers.Route {
 		{Method: http.MethodPost, Path: "/doubao/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
 		{Method: http.MethodPost, Path: "/doubao/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
 		{Method: http.MethodPost, Path: "/doubao/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
+		{Method: http.MethodPost, Path: "/doubao/accounts/probe", Auth: panel, Handler: p.handleCheckinProbe},
 		{Method: http.MethodPost, Path: "/doubao/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
 		{Method: http.MethodPost, Path: "/doubao/accounts/checkin", Auth: panel, Handler: p.handleAccountCheckin},
 		{Method: http.MethodPost, Path: "/doubao/checkin", Auth: panel, Handler: p.handleCheckinAll},
@@ -117,6 +118,22 @@ func (p *Provider) handleAccountAction(action string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
+}
+
+func (p *Provider) handleCheckinProbe(w http.ResponseWriter, r *http.Request) {
+	payload, err := readPayload(w, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	uid := textValue(payload["uid"])
+	query := textValue(payload["query"])
+	ua := textValue(payload["ua"])
+	if err := p.pool.SetCheckinProbe(uid, query, ua); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "checkin_probe": true})
 }
 
 func (p *Provider) handleAccountCheckin(w http.ResponseWriter, r *http.Request) {
