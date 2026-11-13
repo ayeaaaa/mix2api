@@ -81,6 +81,14 @@ struct, avoiding a per-line `json.Decoder` and most interface boxing while
 keeping `Row` as the compatibility boundary. The same local full `/usage` scan
 drops from about 0.82s to about 0.60s; `make check` and `make race` pass.
 
+**v2.8.0 addendum:** adds server-side recent-request filters/failure details,
+one-shot Messages affinity, bounded Key/CodeArts concurrency waits, opt-in loose
+billing cleanup, and operational campaign automation (portal tasks, Starbucks /
+Reporter's Day, real skill-share channels, real template scenes). `make check`,
+`make race`, and dashboard JS suites pass. Published as `v2.8.0` at `58fcbcc`;
+evidence: `docs/smoke/2026-11-13-release-2.8.0.md`. No media or Windows SCM gate
+changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
