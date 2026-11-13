@@ -1078,6 +1078,12 @@ func (s *OAuthSessions) CallbackURL(store *config.Store, sessionID, rawURL strin
 			s.mu.Unlock()
 			return OAuthResult{}, ErrOAuthSession
 		}
+		// The panel already selected the session by its authenticated
+		// session_id. Huawei rewrites ticket_id into an opaque state (for
+		// example "<ticket>.pkg"); v1 deliberately does not require that state
+		// on this path. Browser GET callbacks (sessionID == "") still use the
+		// exact secret/ticket/state matching below.
+		state = ""
 	} else if values.Secret != "" {
 		// v1's _find_session treats a supplied secret as authoritative: an
 		// unknown secret is rejected instead of falling back to a ticket or

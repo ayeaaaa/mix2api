@@ -1533,11 +1533,6 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 		}
 	}
 
-	if _, err := sessions.CallbackURL(store, start.SessionID,
-		"http://127.0.0.1:8788/oauth/callback?code=x&state=wrong"); !errors.Is(err, ErrOAuthState) {
-		t.Fatalf("wrong callback state = %v, want ErrOAuthState", err)
-	}
-
 	valid := "http://127.0.0.1:8788/oauth/callback?code=CALLBACK-URL&ticket_id=" + session.TicketID
 	result, err := sessions.CallbackURL(store, "", valid)
 	if err != nil {
@@ -1661,6 +1656,37 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 	}
 	if session5.TicketFallback {
 		t.Fatalf("foreign callback redirect armed the fallback")
+	}
+}
+
+func TestOAuthCallbackURLPanelSessionIgnoresState(t *testing.T) {
+	_, _ = newOAuthFake(t)
+	store, _ := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+	start, _ := mustBegin(t, sessions, store, 8788)
+
+	// The panel selects the session by its authenticated session_id. Huawei
+	// rewrites the ticket into an opaque state value; v1 intentionally does not
+	// require that state here, so a valid panel callback must not fail with
+	// "授权状态不匹配".
+	raw := "http://127.0.0.1:8788/oauth/callback?code=CALLBACK-PANEL&state=foreign-state"
+	result, err := sessions.CallbackURL(store, start.SessionID, raw)
+	if err != nil {
+		t.Fatalf("panel callback with foreign state = %v", err)
+	}
+	if result.Status != "done" || result.UID != "u1" {
+		t.Fatalf("panel callback result = %+v", result)
+	}
+}
+
+func TestOAuthCallbackDirectStillRequiresState(t *testing.T) {
+	_, _ = newOAuthFake(t)
+	store, _ := newOAuthTestStore(t)
+	sessions := NewOAuthSessions()
+	start, _ := mustBegin(t, sessions, store, 8788)
+
+	if _, err := sessions.Callback(store, start.SessionID, "CODE", "foreign-state"); !errors.Is(err, ErrOAuthState) {
+		t.Fatalf("direct callback state = %v, want ErrOAuthState", err)
 	}
 }
 
