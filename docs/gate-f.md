@@ -156,6 +156,18 @@ are surfaced instead of faked as success. `make check`, `make race`, and the
 13/13 dashboard JS harness pass. Published as `v2.6.0` at `20bdbd4`; evidence:
 `docs/smoke/2026-11-13-release-2.6.0.md`. No media or Windows SCM gate changed.
 
+**v2.6.1 addendum:** documentation-only release marking Doubao Work as a 256K
+context, maintenance-only exit. Published as `v2.6.1` at `5f24268`; evidence:
+`docs/smoke/2026-11-13-release-2.6.1.md`. No runtime gate changed.
+
+**v2.6.2 addendum:** CodeArts panel OAuth callbacks with an authenticated
+`session_id` no longer require Huawei's rewritten `state`; direct browser
+callbacks still validate `state`/`ticket_id`. The add-account UI now displays and
+copies the authorization link instead of auto-opening it. `make check`,
+`make race`, and the 14/14 dashboard JS harness pass. Published as `v2.6.2` at
+`c75bfe1`; evidence: `docs/smoke/2026-11-13-release-2.6.2.md`. No media or
+Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
