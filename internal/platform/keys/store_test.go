@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -212,4 +213,38 @@ func TestKeyStoreDailyTokenLimit(t *testing.T) {
 	if len(entries) != 1 || entries[0].DailyTokenLimit != 5 {
 		t.Fatalf("saved daily limit = %#v", entries)
 	}
+}
+
+func TestLimiterAcquireWait(t *testing.T) {
+	l := NewLimiter()
+	release, ok := l.Acquire("k", 1)
+	if !ok {
+		t.Fatal("first acquire failed")
+	}
+	done := make(chan bool, 1)
+	go func() {
+		next, ok := l.AcquireWait(context.Background(), "k", 1, time.Second)
+		if ok {
+			next()
+		}
+		done <- ok
+	}()
+	time.Sleep(20 * time.Millisecond)
+	release()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("waiter did not acquire after release")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter blocked after release")
+	}
+	hold, ok := l.Acquire("k", 1)
+	if !ok {
+		t.Fatal("reacquire failed")
+	}
+	if _, ok := l.AcquireWait(context.Background(), "k", 1, 10*time.Millisecond); ok {
+		t.Fatal("acquired while slot was held")
+	}
+	hold()
 }
