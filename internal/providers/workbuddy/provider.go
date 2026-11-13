@@ -169,19 +169,21 @@ type Provider struct {
 	// billing clients; tests point them at one httptest server. tasksGap,
 	// tasksBackoff, tasksBackoffMax, tasksBudget, tasksTurnWait, and
 	// tasksPollInterval default to v1's anti-risk pacing and web retry budgets.
-	tasksDoer           ContextHTTPDoer
-	tasksChatBaseURL    string
-	tasksBillingBaseURL string
-	tasksWebBaseURL     string
-	tasksTimeout        time.Duration
-	tasksNow            func() time.Time
-	tasksSleep          func(time.Duration)
-	tasksGap            time.Duration
-	tasksBackoff        time.Duration
-	tasksBackoffMax     time.Duration
-	tasksBudget         time.Duration
-	tasksTurnWait       time.Duration
-	tasksPollInterval   time.Duration
+	tasksDoer            ContextHTTPDoer
+	tasksChatBaseURL     string
+	tasksBillingBaseURL  string
+	tasksWebBaseURL      string
+	tasksCampaignBaseURL string
+	tasksOpenBaseURL     string
+	tasksTimeout         time.Duration
+	tasksNow             func() time.Time
+	tasksSleep           func(time.Duration)
+	tasksGap             time.Duration
+	tasksBackoff         time.Duration
+	tasksBackoffMax      time.Duration
+	tasksBudget          time.Duration
+	tasksTurnWait        time.Duration
+	tasksPollInterval    time.Duration
 
 	// Admin surface state. healthCache is a five-second /health cache; every
 	// mutating route invalidates it. desktopDirs is a test seam for desktop
