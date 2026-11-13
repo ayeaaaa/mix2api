@@ -140,6 +140,15 @@ official cumulative totals. `make check`, `make race`, and the 12/12 dashboard
 JS harness pass. Published as `v2.4.0` at `13260d1`; evidence:
 `docs/smoke/2026-11-12-release-2.4.0.md`. No media or Windows SCM gate changed.
 
+**v2.5.0 addendum:** adds Doubao Work as the fifth native provider (cookies/device
+import, account pool, affinity, concurrency/cooling, proxy slots, streaming and
+non-streaming chat, multi-turn, credits/tasks, opt-in check-in scheduling, and a
+desktop check-in probe), plus all-provider `gateway` key binding. Doubao reward
+submission still requires desktop eligibility; web-only cookies receive a clear
+400 rather than a fabricated success. `make check`, `make race`, and the 13/13
+dashboard JS harness pass. Published as `v2.5.0` at `b04750f`; evidence:
+`docs/smoke/2026-11-13-release-2.5.0.md`. No media or Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.

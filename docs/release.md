@@ -6,7 +6,7 @@ This tree is **`2.5.0`** final. The v2 source is published on branch `v2` of
 `ayeaaaa/mix2api`; the repository's `main` branch remains v1.6.6. The release is
 <https://github.com/ayeaaaa/mix2api/releases/tag/v2.5.0> and the GHCR image is
 `ghcr.io/ayeaaaa/mix2api:v2.5.0`. Gate F evidence is in `docs/gate-f.md`; the
-publication evidence is `docs/smoke/2026-11-12-release-2.5.0.md`. Real Windows
+publication evidence is `docs/smoke/2026-11-13-release-2.5.0.md`. Real Windows
 SCM update execution remains the only unverified runtime item.
 
 Note: v1 is frozen at `v1.6.6`; its update checks point at the same repository
