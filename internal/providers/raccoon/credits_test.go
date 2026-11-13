@@ -458,6 +458,9 @@ func (f *pointsFake) serveRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := strings.TrimPrefix(refreshToken, "refresh-")
+	if uid == refreshToken {
+		uid = strings.TrimPrefix(refreshToken, "rotated-")
+	}
 	if uid == "" || uid == refreshToken {
 		writeCatalogJSON(w, http.StatusUnauthorized, map[string]any{"message": "invalid refresh token"})
 		return

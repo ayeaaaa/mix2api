@@ -164,11 +164,9 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 	// A refresh with the existing refresh token is a real login-session
 	// refresh. It does not send a chat or spend points, and the upstream books
 	// daily_grant asynchronously after the refresh succeeds.
-	result.Refreshed = true
 	attempts++
 	state["attempts"] = attempts
 	state["last_attempt"] = now.Format(time.RFC3339)
-	state["refreshed"] = true
 
 	refreshErr := p.dailyActiveRefresh(ctx, account)
 	if refreshErr != nil {
@@ -176,6 +174,7 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 		result.Message = "刷新登录失败：" + redactedPointsError(refreshErr, account, maxPointsErrorRunes)
 		state["ok"] = false
 		state["granted"] = false
+		state["refreshed"] = false
 		state["points"] = 0
 		state["checked_at"] = p.timeNow().Format(time.RFC3339)
 		state["message"] = result.Message
@@ -183,6 +182,8 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 		return result
 	}
 
+	result.Refreshed = true
+	state["refreshed"] = true
 	granted, verifyErr := p.pollDailyGrant(ctx, account)
 	result.OK = true
 	if verifyErr != nil {

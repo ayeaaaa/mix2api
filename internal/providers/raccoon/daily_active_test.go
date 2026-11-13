@@ -2,6 +2,8 @@ package raccoon
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +142,47 @@ func TestDailyActiveRefreshWithoutGrant(t *testing.T) {
 	state := dailyActiveFromState(states[fixture.uid])
 	if state["ok"] != true || state["granted"] != false ||
 		testInt(state["points"]) != 0 || state["refreshed"] != true {
+		t.Fatalf("persisted daily_active = %+v", state)
+	}
+}
+
+func TestDailyActiveRefreshFailure(t *testing.T) {
+	oldDelay := dailyActivePollDelay
+	dailyActivePollDelay = time.Millisecond
+	t.Cleanup(func() { dailyActivePollDelay = oldDelay })
+
+	fixture := newPointsFixture(t)
+	clearDailyGrantBills(fixture.fake)
+	fixture.fake.update(func(f *pointsFake) { f.refreshStatus = http.StatusInternalServerError })
+
+	summary, err := fixture.p.DailyActive(context.Background(), fixture.uid, true)
+	if err != nil {
+		t.Fatalf("DailyActive: %v", err)
+	}
+	if summary.OK || summary.Granted != 0 || summary.Points != 0 {
+		t.Fatalf("summary = %+v, want refresh failure", summary)
+	}
+	if len(summary.Results) != 1 {
+		t.Fatalf("results = %+v", summary.Results)
+	}
+	result := summary.Results[0]
+	if result.OK || result.Granted || result.Refreshed || result.Chat {
+		t.Fatalf("result = %+v, want failed refresh without chat", result)
+	}
+	if !strings.Contains(result.Message, "刷新登录失败") {
+		t.Fatalf("message = %q, want refresh failure", result.Message)
+	}
+	if fixture.fake.chatCalls != 0 || fixture.fake.refreshCalls != 1 {
+		t.Fatalf("chat/refresh calls = %d/%d, want 0/1", fixture.fake.chatCalls, fixture.fake.refreshCalls)
+	}
+
+	states, err := accountstate.LoadStore(fixture.p.statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	state := dailyActiveFromState(states[fixture.uid])
+	if state["ok"] != false || state["granted"] != false ||
+		state["refreshed"] != false || testInt(state["attempts"]) != 1 {
 		t.Fatalf("persisted daily_active = %+v", state)
 	}
 }
