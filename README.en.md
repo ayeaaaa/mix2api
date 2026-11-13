@@ -8,7 +8,7 @@ SSE, and an embedded dashboard, bringing WorkBuddy International / China,
 Huawei Cloud CodeArts（遥遥领先）, Raccoon（商汤小浣熊）, and Doubao Work into
 one API-key and account-pool surface.
 
-Current version: **2.6.0**. The default branch is `v2`; `main` keeps the frozen
+Current version: **2.6.1**. The default branch is `v2`; `main` keeps the frozen
 v1.6.6 history.
 
 ## Origin
@@ -61,7 +61,9 @@ mix2api v2 (single binary)
   same process. Doubao Work additionally exposes daily check-in state,
   cumulative credits, task/milestone data, and a CST-scheduled check-in job;
   reward submission uses the desktop activity endpoint and reports clearly
-  when a web session is rejected by upstream risk control.
+  when a web session is rejected by upstream risk control. Doubao Work
+  currently provides a 256K context window; this exit is maintenance-only and
+  will not be expanded further.
 - The dashboard includes account management, tasks, settings, usage, logs, and
   update/rollback entry points.
 
@@ -119,7 +121,7 @@ the [development guide](docs/development.md).
 Images are published to GHCR for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/ayeaaaa/mix2api:v2.6.0
+docker pull ghcr.io/ayeaaaa/mix2api:v2.6.1
 ```
 
 Generate two independent credentials in the current shell. Do not write real
@@ -151,7 +153,7 @@ docker run -d --name mix2api \
   -v "$PWD/data/accounts:/app/accounts" \
   -v "$PWD/data/usage:/app/usage" \
   -v "$PWD/data/media:/app/media" \
-  ghcr.io/ayeaaaa/mix2api:v2.6.0
+  ghcr.io/ayeaaaa/mix2api:v2.6.1
 ```
 
 This publishes the port only on `127.0.0.1`, suitable for a reverse proxy or an
@@ -203,8 +205,8 @@ extract it:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf mix2api-2.6.0-linux-amd64.tar.gz
-cd mix2api-2.6.0-linux-amd64
+tar -xzf mix2api-2.6.1-linux-amd64.tar.gz
+cd mix2api-2.6.1-linux-amd64
 ```
 
 Start it. `HOST` defaults to `127.0.0.1`; the data directories default to

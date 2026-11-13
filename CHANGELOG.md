@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.6.1] - 2026-11-13
+
+### 中文
+
+#### 说明
+
+- 豆包 Work 的 README 与设置页说明补充：当前模型上下文为 256K；该出口后续
+  仅做维护，不再继续扩展。
+
+#### 验证
+
+- `make check`、dashboard 静态/JS 契约测试通过。
+
+### English
+
+#### Documentation
+
+- Documented in the README and Doubao Work settings that the provider currently
+  has a 256K context window and is maintenance-only; no further expansion is
+  planned.
+
+#### Verification
+
+- `make check` and the dashboard static/JS contract tests pass.
+
 ## [2.6.0] - 2026-11-13
 
 ### 中文
