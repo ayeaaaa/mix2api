@@ -102,8 +102,9 @@ type pointsFake struct {
 	lastDesktopHeaders http.Header
 	lastMobileHeaders  http.Header
 
-	chatCalls        int
-	dailyGrantOnChat bool
+	chatCalls           int
+	dailyGrantOnChat    bool
+	dailyGrantOnRefresh bool
 }
 
 func newPointsFake(now time.Time) *pointsFake {
@@ -464,6 +465,9 @@ func (f *pointsFake) serveRefresh(w http.ResponseWriter, r *http.Request) {
 	token := fakePointsJWT(uid, expiry)
 	f.mu.Lock()
 	f.allowed[token] = true
+	if f.dailyGrantOnRefresh {
+		f.addDailyGrantBillLocked()
+	}
 	f.mu.Unlock()
 	writeCatalogJSON(w, http.StatusOK, map[string]any{
 		"code": 0,

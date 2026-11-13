@@ -263,7 +263,9 @@ behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
    - WorkBuddy: follow the dashboard OAuth flow;
    - CodeArts（遥遥领先）: Huawei Cloud OAuth;
    - Raccoon（商汤小浣熊）: import the desktop client's `auth.json` or use the
-     loopback OAuth flow;
+     loopback OAuth flow; daily activity triggers upstream `daily_grant` by
+     refreshing the login session, without sending a chat or spending points;
+     the bill is authoritative;
    - Doubao Work: import cookies/device JSON in the Doubao Work view (at least
      `sessionid` and `ttwid`). Check-in/credits/tasks are shown in the Doubao
      account table; reward submission requires desktop-client eligibility. If

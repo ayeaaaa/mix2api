@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 修复
+
+- Raccoon 每日活跃改为刷新登录会话触发上游 `daily_grant`，不再发送 `hi`
+  对话、不消耗积分；刷新后异步轮询账单，到账后记录当日结果。
+
+### English
+
+#### Fixed
+
+- Raccoon daily activity now triggers the upstream `daily_grant` by refreshing
+  the login session instead of sending a `hi` chat, so it no longer spends
+  points. It polls the bill asynchronously after the refresh.
+
 ## [2.8.0] - 2026-11-13
 
 ### 中文

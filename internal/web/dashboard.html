@@ -2511,8 +2511,12 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '打卡': 'Check in',
     '每日活跃已处理': 'Daily activity handled',
     '每日活跃打卡失败: ': 'Daily activity check-in failed: ',
-    '发一次最小对话触发当日活跃，并核对 300 积分是否到账': 'Sends one minimal chat to mark the day active, then checks whether the 300-point reward landed',
-    '每天 09:00 / 21:00 各试一次：发一次最小对话触发当日活跃，并核对 300 积分是否到账；已到账的账号不重复打卡': 'Tries once at 09:00 and 21:00: sends one minimal chat to mark the day active, then checks whether the 300-point reward landed; accounts that already received it are not pinged again.',
+    '每日活跃（刷新登录）': 'Daily activity (refresh login)',
+    '每天 09:00 / 21:00 刷新一次登录会话触发 daily_grant，并核对 300 积分是否到账；已到账不重复刷新，不发对话、不消耗积分': 'Refreshes the login session at 09:00 and 21:00 to trigger daily_grant, then checks whether the 300-point reward landed; already-received accounts are not refreshed again, and no chat is sent or points spent.',
+    '刷新登录': 'Refresh login',
+    '今日未刷新': 'Not refreshed today',
+    '已刷新 · 未到账': 'Refreshed, not received',
+    '刷新登录失败: ': 'Login refresh failed: ',
     '粘贴桌面客户端 auth.json 的完整 JSON，或 auth 响应里的 {"data": {...}}。': 'Paste the full auth.json from the desktop client, or the {"data": {...}} object from an auth response.',
     '点击「开始浏览器授权」生成链接；授权完成后本页会自动轮询结果。': 'Click Start browser authorization to create a link; this page polls for the result automatically once authorization finishes.',
     '登录成功': 'Signed in',
@@ -6739,7 +6743,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         </label>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
           <input id="raccoonDailyActive" type="checkbox" style="width:16px;height:16px">
-          <span>每日活跃打卡<br><span style="font-size:11px;color:var(--dim)">每天 09:00 / 21:00 各试一次：发一次最小对话触发当日活跃，并核对 300 积分是否到账；已到账的账号不重复打卡</span></span>
+          <span>每日活跃（刷新登录）<br><span style="font-size:11px;color:var(--dim)">每天 09:00 / 21:00 刷新一次登录会话触发 daily_grant，并核对 300 积分是否到账；已到账不重复刷新，不发对话、不消耗积分</span></span>
         </label>
         <div>
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
@@ -9341,8 +9345,9 @@ async function raccoonGrantMobile(uid, btn){
   }
 }
 
-/* 手动每日活跃打卡：发一次最小对话，然后核对今天的 daily_grant 是否到账。
- * force=true 只绕过「今天已试过几次」的节流，已到账的账号仍然直接跳过。 */
+/* 手动刷新登录会话：调用上游 refresh 触发一次真实登录记账，然后核对今天的
+ * daily_grant；已到账的账号直接跳过。不发对话、不消耗积分。
+ * force=true 只绕过「今天已试过几次」的节流。 */
 async function raccoonDailyActive(uid, btn){
   if(btn) btn.disabled = true;
   try{
@@ -9350,10 +9355,10 @@ async function raccoonDailyActive(uid, btn){
                              {uid: uid, force: true});
     const one = (r && r.results && r.results[0]) || {};
     const msg = one.message || (r && r.message) || '每日活跃已处理';
-    toast(msg, one.ok ? 'ok' : 'warn');
+    toast(msg, one.granted ? 'ok' : (one.ok ? 'warn' : 'bad'));
     await loadRaccoonOverview(true);
   }catch(e){
-    toast('每日活跃打卡失败: ' + e.message, 'bad');
+    toast('刷新登录失败: ' + e.message, 'bad');
   }finally{
     if(btn) btn.disabled = false;
   }
@@ -9411,8 +9416,8 @@ function raccoonTaskCell(states, key){
     + (RACCOON_TASK_POINTS[key] || 0) + ' 分</span>';
 }
 
-/* 每日活跃：上游按天给「当天活跃」的账号自动记一笔 daily_grant（300 分），
- * 没有领取接口。这里只展示服务端记下的结果：已到账 / 未到账 / 今日未打卡。
+/* 每日活跃：上游在登录会话刷新后异步记一笔 daily_grant（300 分）。
+ * 这里展示服务端核对结果：已到账 / 已刷新未到账 / 今日未刷新。
  * 日期比较用本地日期，和服务端 state 里的 date 同一口径。 */
 function raccoonDailyCell(a){
   const d = (a && a.daily_active) || {};
@@ -9421,15 +9426,18 @@ function raccoonDailyCell(a){
     + String(now.getMonth() + 1).padStart(2, '0') + '-'
     + String(now.getDate()).padStart(2, '0');
   if(!d.date || d.date !== today){
-    return '<span style="color:var(--dim)">今日未打卡</span>';
+    return '<span style="color:var(--dim)">今日未刷新</span>';
   }
   const points = Number(d.points) || 0;
-  if(d.ok && points > 0){
+  if(d.granted === true || (d.ok && points > 0)){
     return '<span class="badge ok mini">已到账 ' + escapeHtml(String(points)) + '</span>';
   }
-  return '<span class="badge warn mini">未到账</span>'
-    + '<div style="font-size:11px;color:var(--dim)">已打卡 '
-    + escapeHtml(String(d.attempts || 0)) + ' 次</div>';
+  if(d.refreshed){
+    return '<span class="badge warn mini">已刷新 · 未到账</span>'
+      + '<div style="font-size:11px;color:var(--dim)">已刷新 '
+      + escapeHtml(String(d.attempts || 0)) + ' 次</div>';
+  }
+  return '<span class="badge warn mini">未到账</span>';
 }
 
 function renderRaccoonTasks(r){
@@ -9526,8 +9534,8 @@ function renderRaccoonTasks(r){
       + '<td style="font-size:12px">' + raccoonDailyCell(a)
       + (a.disabled ? '' : '<div style="margin-top:4px">'
         + '<button class="sec mini"'
-        + ' title="发一次最小对话触发当日活跃，并核对 300 积分是否到账"'
-        + ' onclick="raccoonDailyActive(\'' + uidSafe + '\',this)">打卡</button></div>')
+        + ' title="刷新登录会话触发每日活跃，不发对话、不消耗积分"'
+        + ' onclick="raccoonDailyActive(\'' + uidSafe + '\',this)">刷新登录</button></div>')
       + '</td>'
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
   });

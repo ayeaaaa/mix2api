@@ -1,12 +1,10 @@
 package raccoon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 )
@@ -16,23 +14,27 @@ var dailyActivePollDelay = 2 * time.Second
 const (
 	dailyActiveMaxAttempts = 2
 	dailyActiveRetryAfter  = time.Hour
-	dailyActivePollTries   = 3
-
-	dailyActivePrompt    = "hi"
-	dailyActiveMaxTokens = 16
+	// The grant is booked asynchronously by the login service. In production
+	// it landed about 14 seconds after the refresh; poll through that window.
+	dailyActivePollTries = 10
 )
 
 // DailyActiveResult is one account's daily-activity outcome. It is returned by
 // the manual endpoint and stored as a compact map in accountstate.State.Extra.
+//
+// A daily-activity refresh is a real login-session refresh: it rotates the
+// account's tokens but never sends a chat completion or spends points. Chat
+// and Model are retained only for wire compatibility with older panels.
 type DailyActiveResult struct {
-	UID     string `json:"uid"`
-	OK      bool   `json:"ok"`
-	Skipped bool   `json:"skipped,omitempty"`
-	Granted bool   `json:"granted,omitempty"`
-	Points  int    `json:"points"`
-	Chat    bool   `json:"chat"`
-	Model   string `json:"model,omitempty"`
-	Message string `json:"message,omitempty"`
+	UID       string `json:"uid"`
+	OK        bool   `json:"ok"`
+	Skipped   bool   `json:"skipped,omitempty"`
+	Granted   bool   `json:"granted,omitempty"`
+	Points    int    `json:"points"`
+	Chat      bool   `json:"chat"`
+	Model     string `json:"model,omitempty"`
+	Refreshed bool   `json:"refreshed,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // DailyActiveSummary mirrors v1's aggregate response.
@@ -46,19 +48,10 @@ type DailyActiveSummary struct {
 	Message  string              `json:"message"`
 }
 
-func (p *Pool) dailyActiveConfig() Config {
-	if p == nil {
-		return Config{}
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.cfg
-}
-
 // DailyActive checks one account, or every enabled account when uid is empty.
-// It first reads today's bills so an already-landed reward is never re-pinged.
-// A failed bill read still allows the conversation attempt; verification is
-// best effort after the ping, matching v1.
+// It first reads today's bills so an already-landed reward is never refreshed
+// again. When today's grant is missing it force-refreshes the login session,
+// then polls the bill until the upstream's asynchronous daily_grant appears.
 func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyActiveSummary, error) {
 	if p == nil {
 		return DailyActiveSummary{}, errors.New("raccoon: pool is nil")
@@ -79,7 +72,6 @@ func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyAc
 		targets = p.Accounts()
 	}
 
-	cfg := p.dailyActiveConfig()
 	summary := DailyActiveSummary{
 		OK:       true,
 		Accounts: len(targets),
@@ -89,13 +81,14 @@ func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyAc
 		if err := ctx.Err(); err != nil {
 			return summary, err
 		}
-		result := p.dailyActiveAccount(ctx, account, cfg, force)
+		result := p.dailyActiveAccount(ctx, account, force)
 		if !result.Skipped {
 			summary.Checked++
 			summary.Points += result.Points
-			if result.OK {
+			if result.Granted {
 				summary.Granted++
-			} else {
+			}
+			if !result.OK {
 				summary.OK = false
 			}
 		}
@@ -105,7 +98,7 @@ func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyAc
 	return summary, nil
 }
 
-func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Config, force bool) DailyActiveResult {
+func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force bool) DailyActiveResult {
 	if account == nil {
 		return DailyActiveResult{Message: "账号不存在"}
 	}
@@ -129,7 +122,7 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Con
 	state := p.dailyActiveState(account)
 	stateDate, _ := state["date"].(string)
 	if stateDate != today {
-		state = map[string]any{"date": today, "attempts": 0, "ok": false, "points": 0}
+		state = map[string]any{"date": today, "attempts": 0, "ok": false, "granted": false, "points": 0}
 	}
 	attempts := intValue(state["attempts"])
 	if attempts < 0 {
@@ -143,8 +136,10 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Con
 		result.Points = landed
 		result.Message = "今日每日活跃奖励已到账 " + fmt.Sprintf("%d", landed) + " 积分"
 		state["ok"] = true
+		state["granted"] = true
 		state["points"] = landed
 		state["attempts"] = attempts
+		state["refreshed"] = false
 		state["checked_at"] = now.Format(time.RFC3339)
 		state["message"] = result.Message
 		if err := p.saveDailyActive(account, state); err != nil {
@@ -156,32 +151,31 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Con
 	if !force {
 		if attempts >= dailyActiveMaxAttempts {
 			result.Skipped = true
-			result.Message = fmt.Sprintf("今日已打卡 %d 次，奖励未到账，明天再试", attempts)
+			result.Message = fmt.Sprintf("今日已刷新登录 %d 次，奖励未到账，明天再试", attempts)
 			return result
 		}
 		if last, ok := dailyActiveLastAttempt(state["last_attempt"]); ok && now.Sub(last) < dailyActiveRetryAfter {
 			result.Skipped = true
-			result.Message = "距上次打卡不足 60 分钟，稍后再试"
+			result.Message = "距上次刷新登录不足 60 分钟，稍后再试"
 			return result
 		}
 	}
 
-	model := p.dailyActiveModel(account, cfg)
-	if model == "" {
-		result.Message = "没有可用于每日活跃打卡的模型"
-		return result
-	}
-	result.Model = model
-	result.Chat = true
+	// A refresh with the existing refresh token is a real login-session
+	// refresh. It does not send a chat or spend points, and the upstream books
+	// daily_grant asynchronously after the refresh succeeds.
+	result.Refreshed = true
 	attempts++
 	state["attempts"] = attempts
 	state["last_attempt"] = now.Format(time.RFC3339)
-	state["model"] = model
+	state["refreshed"] = true
 
-	pingErr := p.dailyActivePing(ctx, account, model)
-	if pingErr != nil {
-		result.Message = "打卡失败：" + pingErr.Error()
+	refreshErr := p.dailyActiveRefresh(ctx, account)
+	if refreshErr != nil {
+		result.OK = false
+		result.Message = "刷新登录失败：" + redactedPointsError(refreshErr, account, maxPointsErrorRunes)
 		state["ok"] = false
+		state["granted"] = false
 		state["points"] = 0
 		state["checked_at"] = p.timeNow().Format(time.RFC3339)
 		state["message"] = result.Message
@@ -190,20 +184,23 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Con
 	}
 
 	granted, verifyErr := p.pollDailyGrant(ctx, account)
+	result.OK = true
 	if verifyErr != nil {
-		result.Message = "对话已发送，但核对每日活跃奖励失败: " + verifyErr.Error()
-		state["ok"] = false
+		result.Message = "登录会话已刷新，但核对每日活跃奖励失败: " + verifyErr.Error()
+		state["ok"] = true
+		state["granted"] = false
 		state["points"] = 0
 	} else if granted <= 0 {
-		result.Message = "已打卡，但今日每日活跃奖励尚未到账，稍后自动重试"
-		state["ok"] = false
+		result.Message = "登录会话已刷新，但今日每日活跃奖励尚未到账，稍后自动重试"
+		state["ok"] = true
+		state["granted"] = false
 		state["points"] = 0
 	} else {
-		result.OK = true
 		result.Granted = true
 		result.Points = granted
-		result.Message = fmt.Sprintf("已打卡，今日每日活跃奖励 %d 积分已到账", granted)
+		result.Message = fmt.Sprintf("登录会话已刷新，今日每日活跃奖励 %d 积分已到账", granted)
 		state["ok"] = true
+		state["granted"] = true
 		state["points"] = granted
 	}
 	state["checked_at"] = p.timeNow().Format(time.RFC3339)
@@ -214,30 +211,12 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, cfg Con
 	return result
 }
 
-func (p *Pool) dailyActiveModel(account *Account, cfg Config) string {
-	if model := strings.TrimSpace(cfg.DailyActiveModel); model != "" {
-		return model
+func (p *Pool) dailyActiveRefresh(ctx context.Context, account *Account) error {
+	tokens := p.TokenManager()
+	if tokens == nil {
+		return errors.New("登录 token 管理器未配置")
 	}
-	account.mu.Lock()
-	models := cloneModels(account.Models)
-	account.mu.Unlock()
-	for _, item := range models {
-		if model := strings.TrimSpace(pointsText(item["id"])); model != "" {
-			return model
-		}
-	}
-	p.catalogMu.Lock()
-	shared := cloneModels(p.catalog.models)
-	p.catalogMu.Unlock()
-	for _, item := range shared {
-		if model := strings.TrimSpace(pointsText(item["id"])); model != "" {
-			return model
-		}
-	}
-	if len(seedModelDefinitions) > 0 {
-		return seedModelDefinitions[0].id
-	}
-	return ""
+	return tokens.Refresh(ctx, account)
 }
 
 func (p *Pool) dailyActiveState(account *Account) map[string]any {
@@ -251,61 +230,6 @@ func (p *Pool) saveDailyActive(account *Account, state map[string]any) error {
 	account.DailyActive = cloneAnyMap(state)
 	account.mu.Unlock()
 	return p.SaveState()
-}
-
-func (p *Pool) dailyActivePing(ctx context.Context, account *Account, model string) error {
-	if !p.Acquire(account) {
-		return errors.New("账号并发已满")
-	}
-
-	modelRaw, err := json.Marshal(model)
-	if err != nil {
-		return err
-	}
-	messages, err := json.Marshal([]map[string]any{{
-		"role":    "user",
-		"content": dailyActivePrompt,
-	}})
-	if err != nil {
-		return err
-	}
-	body := map[string]json.RawMessage{
-		"model":                 modelRaw,
-		"messages":              messages,
-		"max_completion_tokens": json.RawMessage(fmt.Sprintf("%d", dailyActiveMaxTokens)),
-		"stream":                json.RawMessage("true"),
-	}
-
-	client := p.HTTPClient()
-	tokens := p.TokenManager()
-	if client == nil {
-		return errors.New("chat http client is not configured")
-	}
-	stream, err := p.openChatAccount(ctx, account, body, model, client, tokens, p.dailyActiveConfig())
-	if err != nil {
-		p.Release(account)
-		return err
-	}
-	if stream == nil {
-		p.Release(account)
-		return errors.New("chat returned an empty stream")
-	}
-	// The returned stream owns the slot and releases it on Close.
-	defer stream.Close()
-	read := 0
-	for {
-		chunk, nextErr := stream.Next()
-		if errors.Is(nextErr, io.EOF) {
-			return nil
-		}
-		if nextErr != nil {
-			return nextErr
-		}
-		read += len(chunk)
-		if bytes.Contains(chunk, []byte("[DONE]")) || read > 1<<20 {
-			return nil
-		}
-	}
 }
 
 func (p *Pool) pollDailyGrant(ctx context.Context, account *Account) (int, error) {

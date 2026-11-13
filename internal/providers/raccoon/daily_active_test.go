@@ -57,6 +57,9 @@ func TestDailyActiveSkipsAlreadyGranted(t *testing.T) {
 	if fixture.fake.chatCalls != 0 {
 		t.Fatalf("chat calls = %d, want 0", fixture.fake.chatCalls)
 	}
+	if fixture.fake.refreshCalls != 0 {
+		t.Fatalf("refresh calls = %d, want 0 when already granted", fixture.fake.refreshCalls)
+	}
 	state := fixture.p.Get(fixture.uid).View().DailyActive
 	m, _ := state.(map[string]any)
 	if m == nil || m["ok"] != true || testInt(m["points"]) != 300 {
@@ -64,13 +67,15 @@ func TestDailyActiveSkipsAlreadyGranted(t *testing.T) {
 	}
 }
 
-func TestDailyActivePingsAndPersists(t *testing.T) {
+func TestDailyActiveRefreshesAndPersists(t *testing.T) {
 	oldDelay := dailyActivePollDelay
 	dailyActivePollDelay = time.Millisecond
 	t.Cleanup(func() { dailyActivePollDelay = oldDelay })
 
 	fixture := newPointsFixture(t)
 	clearDailyGrantBills(fixture.fake)
+	fixture.fake.update(func(f *pointsFake) { f.dailyGrantOnRefresh = true })
+
 	summary, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
 	if err != nil {
 		t.Fatalf("DailyActive: %v", err)
@@ -78,14 +83,18 @@ func TestDailyActivePingsAndPersists(t *testing.T) {
 	if !summary.OK || summary.Granted != 1 || summary.Points != 300 {
 		t.Fatalf("summary = %+v, want ok/granted/300", summary)
 	}
-	if len(summary.Results) != 1 || !summary.Results[0].Chat {
-		t.Fatalf("result = %+v, want chat", summary.Results)
+	if len(summary.Results) != 1 {
+		t.Fatalf("results = %+v", summary.Results)
 	}
-	if fixture.fake.chatCalls != 1 {
-		t.Fatalf("chat calls = %d, want 1", fixture.fake.chatCalls)
+	result := summary.Results[0]
+	if result.Chat || !result.Refreshed || result.Model != "" {
+		t.Fatalf("result = %+v, want refresh without chat/model", result)
 	}
-	if summary.Results[0].Model == "" {
-		t.Fatal("model was not recorded")
+	if fixture.fake.chatCalls != 0 {
+		t.Fatalf("chat calls = %d, want 0", fixture.fake.chatCalls)
+	}
+	if fixture.fake.refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", fixture.fake.refreshCalls)
 	}
 
 	states, err := accountstate.LoadStore(fixture.p.statePath)
@@ -93,7 +102,44 @@ func TestDailyActivePingsAndPersists(t *testing.T) {
 		t.Fatalf("load state: %v", err)
 	}
 	state := dailyActiveFromState(states[fixture.uid])
-	if state["ok"] != true || testInt(state["points"]) != 300 || testInt(state["attempts"]) != 1 {
+	if state["ok"] != true || state["granted"] != true ||
+		testInt(state["points"]) != 300 || testInt(state["attempts"]) != 1 ||
+		state["refreshed"] != true {
+		t.Fatalf("persisted daily_active = %+v", state)
+	}
+}
+
+func TestDailyActiveRefreshWithoutGrant(t *testing.T) {
+	oldDelay := dailyActivePollDelay
+	dailyActivePollDelay = time.Millisecond
+	t.Cleanup(func() { dailyActivePollDelay = oldDelay })
+
+	fixture := newPointsFixture(t)
+	clearDailyGrantBills(fixture.fake)
+	fixture.fake.update(func(f *pointsFake) { f.dailyGrantOnRefresh = false })
+
+	summary, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
+	if err != nil {
+		t.Fatalf("DailyActive: %v", err)
+	}
+	if !summary.OK || summary.Granted != 0 || summary.Points != 0 {
+		t.Fatalf("summary = %+v, want refreshed but no grant", summary)
+	}
+	result := summary.Results[0]
+	if !result.OK || result.Granted || !result.Refreshed || result.Chat {
+		t.Fatalf("result = %+v, want refresh without grant", result)
+	}
+	if fixture.fake.chatCalls != 0 || fixture.fake.refreshCalls != 1 {
+		t.Fatalf("chat/refresh calls = %d/%d, want 0/1", fixture.fake.chatCalls, fixture.fake.refreshCalls)
+	}
+
+	states, err := accountstate.LoadStore(fixture.p.statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	state := dailyActiveFromState(states[fixture.uid])
+	if state["ok"] != true || state["granted"] != false ||
+		testInt(state["points"]) != 0 || state["refreshed"] != true {
 		t.Fatalf("persisted daily_active = %+v", state)
 	}
 }
@@ -105,14 +151,14 @@ func TestDailyActiveThrottleAndForce(t *testing.T) {
 
 	fixture := newPointsFixture(t)
 	clearDailyGrantBills(fixture.fake)
-	fixture.fake.update(func(f *pointsFake) { f.dailyGrantOnChat = false })
+	fixture.fake.update(func(f *pointsFake) { f.dailyGrantOnRefresh = false })
 
 	first, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
 	if err != nil {
 		t.Fatalf("first DailyActive: %v", err)
 	}
-	if first.OK || first.Results[0].Skipped || !first.Results[0].Chat {
-		t.Fatalf("first = %+v, want a failed chat attempt", first)
+	if !first.OK || first.Results[0].Skipped || !first.Results[0].Refreshed {
+		t.Fatalf("first = %+v, want a refresh attempt", first)
 	}
 	second, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
 	if err != nil {
@@ -121,18 +167,21 @@ func TestDailyActiveThrottleAndForce(t *testing.T) {
 	if !second.Results[0].Skipped {
 		t.Fatalf("second = %+v, want throttle skip", second)
 	}
-	if fixture.fake.chatCalls != 1 {
-		t.Fatalf("chat calls after throttle = %d, want 1", fixture.fake.chatCalls)
+	if fixture.fake.refreshCalls != 1 {
+		t.Fatalf("refresh calls after throttle = %d, want 1", fixture.fake.refreshCalls)
 	}
 	forced, err := fixture.p.DailyActive(context.Background(), fixture.uid, true)
 	if err != nil {
 		t.Fatalf("forced DailyActive: %v", err)
 	}
-	if forced.Results[0].Skipped || !forced.Results[0].Chat {
-		t.Fatalf("forced = %+v, want forced chat", forced)
+	if forced.Results[0].Skipped || !forced.Results[0].Refreshed {
+		t.Fatalf("forced = %+v, want forced refresh", forced)
 	}
-	if fixture.fake.chatCalls != 2 {
-		t.Fatalf("chat calls after force = %d, want 2", fixture.fake.chatCalls)
+	if fixture.fake.refreshCalls != 2 {
+		t.Fatalf("refresh calls after force = %d, want 2", fixture.fake.refreshCalls)
+	}
+	if fixture.fake.chatCalls != 0 {
+		t.Fatalf("chat calls = %d, want 0", fixture.fake.chatCalls)
 	}
 }
 
