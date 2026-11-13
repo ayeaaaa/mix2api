@@ -1821,6 +1821,11 @@ func normalizeChatTools(body map[string]any) {
 }
 
 func normalizeChatToolParameters(function map[string]any) {
+	if value, ok := function["description"]; ok && value != nil {
+		if _, ok := value.(string); !ok {
+			function["description"] = fmt.Sprint(value)
+		}
+	}
 	parameters, ok := function["parameters"].(map[string]any)
 	if !ok || parameters == nil {
 		function["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -1971,6 +1976,7 @@ func normalizeChatSchema(schema map[string]any) {
 			}
 		}
 	}
+	providers.HardenSchemaKeywords(schema)
 }
 
 func chatIsThinkingOff(value string) bool {

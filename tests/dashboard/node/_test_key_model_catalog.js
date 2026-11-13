@@ -110,6 +110,8 @@ const settle = () => new Promise(resolve => PLATFORM_SET_TIMEOUT(resolve, 0));
   /* ---- 1. 结构：renderKeyPickers 按编辑行的 realm 过滤 --------------- */
   check('renderKeyPickers 应调用 filterKeyModelsForRealm(models, keyEditRealm(row))',
     /filterKeyModelsForRealm\(models, keyEditRealm\(row\)\)/.test(html));
+  check('Key 编辑器包含日 token 限量字段',
+    /id="editKeyDaily_/.test(html) && html.includes('日 token 限量'));
 
   /* ---- 1b. 全部提供商 Key ------------------------------------------ */
   check('Key 出口选项应包含全部提供商',

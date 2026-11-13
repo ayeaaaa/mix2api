@@ -13,6 +13,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/keys"
 	"github.com/ayeaaaa/mix2api-v2/internal/platform/settings"
+	"github.com/ayeaaaa/mix2api-v2/internal/platform/usage"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -352,5 +353,39 @@ func TestKeyConcurrency(t *testing.T) {
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("post-release status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestKeyDailyTokenLimitRejectsBeforeProvider(t *testing.T) {
+	_, keyStore, _, _, dir := platformFixture(t)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "daily", Name: "daily", Key: "key-daily", DailyTokenLimit: 1, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	usageStore := usage.New(usage.Paths{Dir: dir, Log: filepath.Join(dir, "usage.jsonl")})
+	if err := usageStore.Append(map[string]any{
+		"at": float64(now.Unix()), "key": "daily", "total_tokens": 1_000_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usageService := usage.NewService(usageStore, nil, nil)
+	usageService.Now = func() time.Time { return now }
+
+	provider := &stubProvider{id: "workbuddy", realm: "cn",
+		models: []providers.Model{{"id": "m1"}}, openStream: chatSuccessStream()}
+	server := New(ServerOptions{
+		Providers: []providers.Provider{provider}, KeyStore: keyStore, Usage: usageService,
+	})
+	rec := doRequest(server, http.MethodPost, "/v1/chat/completions",
+		`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"Authorization": "Bearer key-daily"})
+	failure := requireErrorEnvelope(t, rec, http.StatusForbidden, "permission_error")
+	if message, _ := failure["message"].(string); !strings.Contains(message, "daily token limit") {
+		t.Fatalf("message = %q", message)
+	}
+	if len(provider.opened()) != 0 {
+		t.Fatal("over-limit request reached the provider")
 	}
 }

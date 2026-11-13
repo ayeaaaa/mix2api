@@ -152,6 +152,14 @@ type Account struct {
 	// be held across network I/O and is never acquired while mu is held.
 	infoMu sync.Mutex
 
+	// creditMu guards the account-wide high-water mark used to settle the
+	// cumulative used-credit delta reported by CodeArts. It is separate from
+	// mu so sampling and settlement never block dispatch or stream reads.
+	creditMu              sync.Mutex
+	creditSettledUsed     float64
+	creditSettledKnown    bool
+	creditExplicitPending float64
+
 	// checkinMu is held across one check-in run. It is intentionally a
 	// non-blocking per-account lock (TryLock) so a concurrent panel/manual
 	// check-in reports the v1 "already running" result instead of claiming a

@@ -40,6 +40,7 @@ func (s *CodeArtsStream) UsageSnapshot() providers.UsageSnapshot {
 		snapshot.Credit = credit
 		snapshot.CreditKnown = true
 	}
+	s.settleCredit(&snapshot)
 	return snapshot
 }
 
