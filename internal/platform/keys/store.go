@@ -28,6 +28,7 @@ type Entry struct {
 	Models           []string `json:"models"`
 	Accounts         []string `json:"accounts"`
 	ConcurrencyLimit int      `json:"concurrency_limit"`
+	DailyTokenLimit  int64    `json:"daily_token_limit"`
 	Enabled          bool     `json:"enabled"`
 	// EnabledSet marks an explicit enabled/disabled choice. An Entry built
 	// without it defaults to enabled, matching v1's missing-key behavior.
@@ -182,6 +183,7 @@ func cleanEntry(raw map[string]any, now time.Time) (Entry, bool) {
 		Models:           normalizeModelPatterns(raw["models"]),
 		Accounts:         normalizeAccountRefs(raw["accounts"]),
 		ConcurrencyLimit: concurrencyLimit(raw),
+		DailyTokenLimit:  dailyTokenLimit(raw),
 		Enabled:          enabled,
 		CreatedAt:        createdAt,
 		DeletedAt:        deletedAt,
@@ -197,6 +199,14 @@ func concurrencyLimit(raw map[string]any) int {
 		return 0
 	}
 	return value
+}
+
+func dailyTokenLimit(raw map[string]any) int64 {
+	value, ok := integerValue(raw["daily_token_limit"])
+	if !ok || value < 0 {
+		return 0
+	}
+	return int64(value)
 }
 
 func integerValue(value any) (int, bool) {
@@ -374,6 +384,7 @@ func entryMap(entry Entry) map[string]any {
 		"models":            models,
 		"accounts":          accounts,
 		"concurrency_limit": entry.ConcurrencyLimit,
+		"daily_token_limit": entry.DailyTokenLimit,
 		"enabled":           entry.Enabled,
 		"created_at":        entry.CreatedAt,
 	}

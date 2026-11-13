@@ -230,6 +230,7 @@ type Server struct {
 	settings   *settings.Service
 	realm      *settings.RealmService
 	proxySlots *proxy.Slots
+	usage      *usage.Service
 
 	defaultTokens func(string) int
 }
@@ -248,6 +249,10 @@ func New(opts ServerOptions) *Server {
 		mux:       http.NewServeMux(),
 	}
 	s.mergePlatform(opts.Platform)
+	s.usage = s.opts.Usage
+	if s.usage == nil {
+		s.usage = s.opts.UsageSvc
+	}
 	s.keyStore = firstKeyStore(s.keyStore, s.opts.KeyStore, s.opts.Keys)
 	if s.settings == nil {
 		s.settings = s.opts.Settings

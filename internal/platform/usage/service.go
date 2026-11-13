@@ -134,6 +134,11 @@ type Service struct {
 	remainingData map[string]any
 	remainingAt   time.Time
 	remainingDay  string
+
+	keyTokensMu  sync.Mutex
+	keyTokensDay string
+	keyTokensAt  time.Time
+	keyTokens    map[string]int64
 }
 
 type cachedResult struct {

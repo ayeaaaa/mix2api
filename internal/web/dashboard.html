@@ -17278,6 +17278,7 @@ async function loadSettings(showToast){
       models: Array.isArray(k.models) ? k.models.slice() : [],
       accounts: Array.isArray(k.accounts) ? k.accounts.slice() : [],
       concurrency_limit: parseInt(k.concurrency_limit || 0, 10) || 0,
+      daily_token_limit: parseInt(k.daily_token_limit || 0, 10) || 0,
       enabled: k.enabled !== false,
       created_at: k.created_at || '',
       _editing: false,
@@ -19196,6 +19197,11 @@ function renderKeyRows(){
         +     '<input type="number" min="0" max="1000" id="editKeyConc_' + i + '" value="' + (row.concurrency_limit || '') + '" placeholder="0 代表不限制" '
         +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
         +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">日 token 限量 <span style="color:var(--dim-light)">(M，0 = 不限)</span></div>'
+        +     '<input type="number" min="0" id="editKeyDaily_' + i + '" value="' + (row.daily_token_limit || '') + '" placeholder="如 2 代表 2,000,000" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
         +   '<div style="grid-column:1 / -1">'
         +     '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">'
         +       '<div style="font-size:12px;color:var(--dim);font-weight:500">模型准入 <span id="editKeyModelsSummary_' + i + '" style="color:var(--dim-light)"></span></div>'
@@ -19263,6 +19269,9 @@ function renderKeyRows(){
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
       ? '<span class="badge s mini" style="font-size:11px">并发上限 ' + row.concurrency_limit + '</span>'
       : '';
+    const dailyBadge = (row.daily_token_limit && row.daily_token_limit > 0)
+      ? '<span class="badge warn mini" style="font-size:11px">日限 ' + row.daily_token_limit + 'M</span>'
+      : '';
     const modelBadge = (Array.isArray(row.models) && row.models.length)
       ? '<span class="badge s" style="font-size:11px">限 ' + esc(modelPatternsText(row.models)) + '</span>'
       : '';
@@ -19283,6 +19292,7 @@ function renderKeyRows(){
       +       modelBadge
         +       accountBadge
         +       concBadge
+        +       dailyBadge
       +     '</div>'
       +     '<div style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
       +       '<span>Key: <span class="mono" style="color:var(--fg);font-weight:500">' + esc(displayKey) + '</span></span>'
@@ -19681,6 +19691,7 @@ async function saveSingleKey(index, btn){
   const realmSelect = document.getElementById('editKeyRealm_' + index);
   const keyInput = document.getElementById('editKeyValue_' + index);
     const concInput = document.getElementById('editKeyConc_' + index);
+  const dailyInput = document.getElementById('editKeyDaily_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
   const realm = realmSelect ? realmSelect.value : keyEditRealm(row);
@@ -19710,6 +19721,7 @@ async function saveSingleKey(index, btn){
   clearKeyEdit(row);
   row.accounts = Array.isArray(row.accounts) ? row.accounts.slice() : [];
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
+  row.daily_token_limit = Math.max(0, parseInt((dailyInput ? dailyInput.value : row.daily_token_limit) || 0, 10) || 0);
   if(keyVal) row.key = keyVal;
   row._editing = false;
 
@@ -19769,6 +19781,7 @@ function addApiKeyRow(){
     realm: '',
     models: [],
       concurrency_limit: 0,
+    daily_token_limit: 0,
     enabled: true,
     masked: '',
     _editing: true
@@ -19878,6 +19891,7 @@ async function saveApiKeys(btn){
       models: row.models || [],
       accounts: row.accounts || [],
         concurrency_limit: parseInt(row.concurrency_limit || 0, 10) || 0,
+      daily_token_limit: parseInt(row.daily_token_limit || 0, 10) || 0,
       enabled: row.enabled !== false,
       // Blank means "keep the stored key", which the server honours per row.
       key: (row.key || '').trim(),

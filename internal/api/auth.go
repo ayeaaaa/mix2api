@@ -81,6 +81,10 @@ func (s *Server) requireKeyAuth(next http.Handler) http.Handler {
 			writeV1Error(w, http.StatusUnauthorized, "invalid_request_error", "invalid api key")
 			return
 		}
+		if failure := s.keyDailyTokenFailure(r, entry); failure != nil {
+			writeKeyDailyLimitFailure(w, r, failure)
+			return
+		}
 		release, acquired := s.keyLimiter.Acquire(entry.ID, entry.ConcurrencyLimit)
 		if !acquired {
 			name := strings.TrimSpace(entry.Name)
@@ -97,6 +101,44 @@ func (s *Server) requireKeyAuth(next http.Handler) http.Handler {
 		defer release()
 		next.ServeHTTP(w, r.WithContext(withKeyEntry(r.Context(), entry)))
 	})
+}
+
+// keyDailyTokenFailure enforces a key's local-day token budget before it
+// occupies a concurrency slot. A failed usage read fails open: the limit is a
+// guardrail, not an authentication check.
+func (s *Server) keyDailyTokenFailure(r *http.Request, entry *keys.Entry) *apiFailure {
+	if s == nil || s.usage == nil || entry == nil || entry.DailyTokenLimit <= 0 {
+		return nil
+	}
+	used, err := s.usage.KeyTokensToday(r.Context(), entry.ID)
+	if err != nil {
+		return nil
+	}
+	limit := entry.DailyTokenLimit * 1_000_000
+	if used < limit {
+		return nil
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = entry.ID
+	}
+	message := "API key '" + name + "' reached its daily token limit (" +
+		strconv.FormatInt(entry.DailyTokenLimit, 10) + "M); it resets at local midnight"
+	return &apiFailure{Status: http.StatusForbidden, Type: "permission_error", Message: message}
+}
+
+func writeKeyDailyLimitFailure(w http.ResponseWriter, r *http.Request, failure *apiFailure) {
+	reset := nextLocalMidnight()
+	if r != nil && r.URL.Path == "/v1/messages" {
+		writeAnthropicError(w, failure.Status, failure.Message, "permission_error", reset)
+		return
+	}
+	writeV1ErrorWithRetry(w, failure.Status, failure.Type, failure.Message, time.Until(reset), reset)
+}
+
+func nextLocalMidnight() time.Time {
+	now := time.Now()
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 }
 
 func panelSessionToken(r *http.Request) string {

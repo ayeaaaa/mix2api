@@ -184,3 +184,32 @@ func findEntry(entries []Entry, id string) *Entry {
 	}
 	return nil
 }
+
+func TestKeyStoreDailyTokenLimit(t *testing.T) {
+	store, raw := testStore(t)
+	if _, err := raw.Merge(map[string]any{"api_keys": []any{
+		map[string]any{"id": "k1", "name": "daily", "key": "key-daily", "daily_token_limit": 2},
+		map[string]any{"id": "k2", "name": "invalid", "key": "key-invalid", "daily_token_limit": -1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].DailyTokenLimit != 2 || entries[1].DailyTokenLimit != 0 {
+		t.Fatalf("daily limits = %#v", entries)
+	}
+	if _, err := store.Save([]Entry{{
+		ID: "k3", Name: "saved", Key: "key-saved", DailyTokenLimit: 5, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = store.List(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].DailyTokenLimit != 5 {
+		t.Fatalf("saved daily limit = %#v", entries)
+	}
+}
