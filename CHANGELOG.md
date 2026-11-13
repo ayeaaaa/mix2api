@@ -3,14 +3,73 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.5.0] - 2026-11-13
 
-### Added
+### 中文
 
-- API Key 出口绑定新增“全部提供商（`gateway`）”：该 Key 的 `/v1/models`
-  不带 realm 时返回全出口目录，Chat/Responses/Messages 可使用任意出口；
-  裸模型按全出口唯一匹配。
-- 绑定具体出口的 Key 行为不变；`realm=all` 仍只代表 WorkBuddy intl/cn。
+#### 新增
+
+- 新增第五个出口「豆包 Work」原生 Go provider：12 个模型，支持
+  `realm=doubao` 和规范 ID `doubao/<model>`；包含 cookies/device 导入、账号池、
+  会话亲和、并发/冷却、代理槽、SSE 与非流式 Chat、多轮会话和上游错误映射。
+- 豆包 Work 接入看板：独立账号表、导入表单、设置分组、健康/概览/目录路由，
+  以及 API Key 的 `doubao` 出口绑定。
+- 豆包 Work 支持活动详情、积分/任务读取、手动/全部账号签到和可选东八区每日
+  签到调度；新增 `POST /doubao/accounts/probe` 保存电脑端 `landing/checkin`
+  的 query/UA 并在签到时重放。
+- API Key 新增「全部提供商（`gateway`）」绑定：`/v1/models` 不带 realm 时
+  默认返回全出口目录，Chat/Responses/Messages 可使用任意出口；裸模型按全出口
+  唯一匹配，同名模型返回 400。
+- 绑定具体出口的 Key 行为不变；`realm=all` 仍只代表 WorkBuddy `intl/cn`。
+
+#### 说明
+
+- 豆包签到发奖依赖电脑端活动接口。仅有 Web cookie 时，上游会返回
+  `710010702`；provider 会明确返回 400 并提示先在豆包电脑版手动签到，不会
+  伪造成功或积分。状态、积分和任务读取不受影响。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 13/13 通过。
+- 豆包 provider 测试覆盖导入、账号池、并发、流式/非流式、多轮、代理槽、
+  签到 probe、积分/任务读取和调度。
+
+### English
+
+#### Added
+
+- Added a fifth exit, Doubao Work, as a native Go provider: 12 models,
+  `realm=doubao` and canonical `doubao/<model>` IDs; cookie/device import,
+  account pool, session affinity, concurrency/cooling, proxy slots, SSE and
+  non-streaming Chat, multi-turn conversations, and upstream error mapping.
+- Doubao Work is wired into the dashboard: a dedicated account table, import
+  form, settings group, health/overview/catalog routes, and `doubao` API-key
+  exit binding.
+- Doubao Work supports campaign detail, credits/tasks reads, manual/all-account
+  check-in, and an opt-in CST daily check-in job. The new
+  `POST /doubao/accounts/probe` stores the desktop `landing/checkin` query/UA
+  and replays it for check-in.
+- API keys can now be bound to “All providers” (`gateway`): `/v1/models`
+  without a realm defaults to the all-exit catalog, and Chat/Responses/Messages
+  may use any exit. Bare models must match exactly one exit; a same-named model
+  on multiple exits returns 400.
+- Keys bound to a concrete exit are unchanged; `realm=all` still means
+  WorkBuddy `intl/cn` only.
+
+#### Notes
+
+- Doubao check-in rewards require the desktop activity endpoint. With only a
+  web cookie, upstream returns `710010702`; the provider returns a clear 400
+  asking the operator to check in from the Doubao desktop client. It does not
+  fake success or credits. Status, credits, and task reads still work.
+
+#### Verification
+
+- `make check` and `make race` pass; the dashboard JS harness passes 13/13
+  suites.
+- Doubao provider tests cover import, pool, concurrency, streaming and
+  non-streaming chat, multi-turn conversations, proxy slots, the check-in
+  probe, credits/tasks reads, and scheduling.
 
 ## [2.4.0] - 2026-11-12
 
