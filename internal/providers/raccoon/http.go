@@ -1,0 +1,426 @@
+package raccoon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+)
+
+const (
+	// DefaultBaseURL is the production Raccoon API host used by v1.
+	DefaultBaseURL = "https://xiaohuanxiong.com"
+
+	// RefreshPath is the v1 token refresh endpoint.
+	RefreshPath = "/api/web/auth/v1/refresh"
+
+	// DefaultHTTPTimeout matches v1's 30-second token-refresh timeout.
+	DefaultHTTPTimeout = 30 * time.Second
+
+	// maxHTTPBodyBytes bounds response bodies so a broken upstream cannot
+	// grow memory without limit.
+	maxHTTPBodyBytes = 256 * 1024
+
+	// maxErrorMessageBytes caps upstream-derived reasons, matching v1.
+	maxErrorMessageBytes = 500
+)
+
+// ErrorKind classifies an upstream Raccoon failure.
+type ErrorKind int
+
+const (
+	// KindTransient transient failures may be retried or failed over: network
+	// errors, timeouts, malformed responses, and 5xx.
+	KindTransient ErrorKind = iota
+	// KindAuth means the account credentials were rejected and need re-login.
+	KindAuth
+	// KindBadRequest means the request itself was rejected.
+	KindBadRequest
+	// KindNotFound means the requested resource does not exist.
+	KindNotFound
+	// KindRateLimited means the upstream returned HTTP 429.
+	KindRateLimited
+	// KindUpstream means the upstream returned a 5xx response.
+	KindUpstream
+)
+
+// APIError is a classified Raccoon HTTP failure. Message is always redacted:
+// callers may surface it in logs or state reason strings.
+type APIError struct {
+	Kind    ErrorKind
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return "raccoon: upstream error"
+	}
+	switch {
+	case e.Status > 0 && e.Message != "":
+		return fmt.Sprintf("raccoon: HTTP %d: %s", e.Status, e.Message)
+	case e.Status > 0:
+		return fmt.Sprintf("raccoon: HTTP %d", e.Status)
+	case e.Message != "":
+		return "raccoon: " + e.Message
+	default:
+		return "raccoon: upstream error"
+	}
+}
+
+// HTTPStatus maps the classified failure to the v1 chat error status. A
+// transport/network failure has no upstream HTTP status and is a 503; every
+// other upstream failure is a 502. Authentication failures are 502 because the
+// client's API key is not the rejected credential.
+func (e *APIError) HTTPStatus() int {
+	if e == nil {
+		return http.StatusBadGateway
+	}
+	switch e.Kind {
+	case KindBadRequest:
+		return http.StatusBadRequest
+	case KindAuth:
+		return http.StatusBadGateway
+	case KindRateLimited:
+		return http.StatusTooManyRequests
+	case KindUnavailable:
+		return http.StatusServiceUnavailable
+	case KindTransient:
+		if e.Status == 0 {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusBadGateway
+	case KindNotFound:
+		// A provider-side missing resource is a conflict in the generic chat
+		// contract, matching the v1 Raccoon admin mapping.
+		return http.StatusConflict
+	case KindUpstream:
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// SafeMessage returns the provider message without the internal prefix and
+// HTTP status label. This is the exact v1 wire message.
+func (e *APIError) SafeMessage() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
+// ErrorType returns the OpenAI error type for the classified failure.
+func (e *APIError) ErrorType() string {
+	if e != nil && e.Kind == KindRateLimited {
+		return "rate_limit_error"
+	}
+	return "invalid_request_error"
+}
+
+// GatewayHint returns v1's optional explanation for a classified upstream
+// failure. Only the credit-exhausted shape is needed by the selected oracle:
+// v1 adds the daily-check-in hint when the upstream says credits are
+// insufficient (HTTP 400/402), and leaves every other failure without a hint.
+func (e *APIError) GatewayHint() string {
+	if e == nil {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(e.Message))
+	if e.Status == http.StatusPaymentRequired ||
+		(strings.Contains(message, "insufficient") && strings.Contains(message, "credit")) {
+		return "account credits exhausted at upstream; waiting for daily check-in to restore"
+	}
+	return ""
+}
+
+// IsAuthError reports whether err is an authentication failure. A non-API
+// error, such as a network or filesystem error, is never an auth failure.
+func IsAuthError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Kind == KindAuth
+}
+
+// IsTransientError reports whether err is a retryable upstream failure.
+func IsTransientError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.Kind {
+	case KindTransient, KindRateLimited, KindUpstream:
+		return true
+	default:
+		return false
+	}
+}
+
+// HTTPClientOptions configures a Raccoon HTTP client. A zero timeout uses
+// DefaultHTTPTimeout; an empty BaseURL uses WB_RACCOON_BASE_URL when set and
+// DefaultBaseURL otherwise.
+type HTTPClientOptions struct {
+	BaseURL string
+	Timeout time.Duration
+}
+
+// HTTPClient sends Raccoon JSON requests through the shared core transport.
+// Each request selects its proxy slot explicitly; it never falls back to a
+// second transport or the process proxy environment.
+type HTTPClient struct {
+	client  *transport.Client
+	baseURL string
+	timeout time.Duration
+}
+
+// NewHTTPClient returns a Raccoon API client. A nil transport client is
+// replaced with a default core transport so tests can inject one and
+// production code cannot accidentally create a different HTTP stack.
+func NewHTTPClient(client *transport.Client, opts HTTPClientOptions) *HTTPClient {
+	if client == nil {
+		client = transport.NewClient(transport.ClientOptions{})
+	}
+	baseURL := strings.TrimSpace(opts.BaseURL)
+	if baseURL == "" {
+		baseURL = defaultBaseURL()
+	}
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = DefaultHTTPTimeout
+	}
+	return &HTTPClient{
+		client:  client,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		timeout: timeout,
+	}
+}
+
+func defaultBaseURL() string {
+	if value := strings.TrimSpace(os.Getenv("WB_RACCOON_BASE_URL")); value != "" {
+		return value
+	}
+	return DefaultBaseURL
+}
+
+// DoJSON sends one JSON request and returns the decoded object. RedactValues
+// are the account's secrets; they and any encoded bearer/named token fields
+// are removed from every returned error. Response bodies are bounded.
+func (c *HTTPClient) DoJSON(
+	ctx context.Context,
+	method, path string,
+	headers http.Header,
+	body []byte,
+	proxyURL string,
+	redactValues ...string,
+) (map[string]any, error) {
+	if c == nil {
+		return nil, errors.New("raccoon: http client is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("raccoon: nil context")
+	}
+	if c.client == nil {
+		return nil, errors.New("raccoon: http transport is nil")
+	}
+
+	requestCtx := ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+
+	request, err := http.NewRequestWithContext(requestCtx, method, c.resolve(path), bytes.NewReader(body))
+	if err != nil {
+		return nil, &APIError{Kind: KindTransient, Message: "raccoon: build request failed"}
+	}
+	if headers != nil {
+		request.Header = headers.Clone()
+	}
+	if request.Header.Get("Accept") == "" {
+		request.Header.Set("Accept", "application/json")
+	}
+	if len(body) > 0 && request.Header.Get("Content-Type") == "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+
+	response, err := c.client.Do(requestCtx, request, proxyURL)
+	if err != nil {
+		// Only caller cancellation is propagated; deadlines and transport
+		// failures are transient upstream conditions, matching v1.
+		if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+			return nil, ctxErr
+		}
+		return nil, &APIError{
+			Kind:    KindTransient,
+			Message: redactText("raccoon: cannot reach upstream: "+err.Error(), redactValues...),
+		}
+	}
+	defer response.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxHTTPBodyBytes))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr == context.Canceled {
+			return nil, ctxErr
+		}
+		return nil, &APIError{
+			Kind:    KindTransient,
+			Status:  response.StatusCode,
+			Message: redactText("raccoon: read response failed: "+err.Error(), redactValues...),
+		}
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, newAPIError(response.StatusCode, raw, redactValues...)
+	}
+
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return nil, &APIError{
+			Kind:    KindTransient,
+			Status:  response.StatusCode,
+			Message: fmt.Sprintf("raccoon: non-JSON response (HTTP %d)", response.StatusCode),
+		}
+	}
+	return payload, nil
+}
+
+func (c *HTTPClient) resolve(path string) string {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	return c.baseURL + "/" + strings.TrimLeft(path, "/")
+}
+
+func newAPIError(status int, body []byte, redactValues ...string) *APIError {
+	kind := KindTransient
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		kind = KindAuth
+	case status == http.StatusBadRequest:
+		kind = KindBadRequest
+	case status == http.StatusNotFound:
+		kind = KindNotFound
+	case status == http.StatusTooManyRequests:
+		kind = KindRateLimited
+	case status >= 500:
+		kind = KindUpstream
+	}
+	return &APIError{
+		Kind:    kind,
+		Status:  status,
+		Message: errorMessage(body, redactValues...),
+	}
+}
+
+// errorMessage extracts the most useful upstream message and redacts it. It
+// never returns the raw body unless no structured message exists, and even
+// then the body is bounded and redacted.
+func errorMessage(body []byte, redactValues ...string) string {
+	var payload any
+	_ = json.Unmarshal(body, &payload)
+
+	message := ""
+	if object, ok := payload.(map[string]any); ok {
+		for _, key := range []string{"message", "error_msg", "error_description", "error"} {
+			switch value := object[key].(type) {
+			case string:
+				message = strings.TrimSpace(value)
+			case map[string]any:
+				for _, nestedKey := range []string{"message", "error_msg"} {
+					if nested, ok := value[nestedKey].(string); ok {
+						message = strings.TrimSpace(nested)
+						if message != "" {
+							break
+						}
+					}
+				}
+			}
+			if message != "" {
+				break
+			}
+		}
+		if message == "" {
+			if data, ok := object["data"].(map[string]any); ok {
+				if nested, ok := data["message"].(string); ok {
+					message = strings.TrimSpace(nested)
+				}
+			}
+		}
+		if message == "" {
+			for _, key := range []string{"code", "error_code"} {
+				if code, ok := object[key]; ok && !zeroErrorCode(code) {
+					message = fmt.Sprintf("%s=%v", key, code)
+					break
+				}
+			}
+		}
+	}
+
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
+	// Redact before capping so a truncated token prefix cannot survive.
+	message = redactText(message, redactValues...)
+	return truncateUTF8(message, maxErrorMessageBytes)
+}
+
+func zeroErrorCode(code any) bool {
+	switch value := code.(type) {
+	case nil:
+		return true
+	case string:
+		value = strings.TrimSpace(value)
+		return value == "" || value == "0"
+	case json.Number:
+		return value.String() == "0"
+	case float64:
+		return value == 0
+	case int:
+		return value == 0
+	case int64:
+		return value == 0
+	default:
+		return false
+	}
+}
+
+func truncateUTF8(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	text = text[:limit]
+	for len(text) > 0 && !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+	return text
+}
+
+var (
+	bearerSecretPattern = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;"']+`)
+	namedSecretPattern  = regexp.MustCompile(`(?i)(["']?(?:authorization_code|error_code|access_token|refresh_token|authorization|code)["']?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^\s,;"'&}]+)`)
+	jwtSecretPattern    = regexp.MustCompile(`[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*`)
+)
+
+// redactText removes known secret values plus common token-shaped fields and
+// bearer/JWT forms. It is deliberately conservative: over-redacting an error
+// is preferable to leaking a credential into a log or state reason.
+func redactText(text string, values ...string) string {
+	text = secrets.Redact(text, values...)
+	text = bearerSecretPattern.ReplaceAllString(text, "Bearer <redacted>")
+	text = namedSecretPattern.ReplaceAllString(text, "$1<redacted>")
+	text = jwtSecretPattern.ReplaceAllString(text, "<redacted-jwt>")
+	return text
+}

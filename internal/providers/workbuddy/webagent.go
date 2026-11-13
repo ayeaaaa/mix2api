@@ -1,0 +1,470 @@
+package workbuddy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	acpProtocolVersion = 1
+	acpRequestTimeout  = 30 * time.Second
+	acpMaxBodyBytes    = 1 << 20
+)
+
+// acpAllowedHostSuffixes are the WorkBuddy/CodeBuddy sandbox origins. A link
+// under one of these suffixes is trusted without a DNS lookup; any other host
+// must resolve only to public addresses.
+var acpAllowedHostSuffixes = []string{
+	".workbuddy.ai", ".workbuddy.cn",
+	".codebuddy.ai", ".codebuddy.cn",
+	".tencent.com", ".tencentcloud.com", ".qcloud.com",
+}
+
+// validateACPLink prevents the upstream session descriptor from turning the
+// gateway into an SSRF proxy and keeps the sandbox bearer token off plaintext
+// or private endpoints. It runs before any request object or Authorization
+// header is built.
+func validateACPLink(link string) error {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || parsed == nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("ACP sandbox link must use https")
+	}
+	if parsed.User != nil {
+		return errors.New("ACP sandbox link must not contain userinfo")
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		return errors.New("ACP sandbox link has no host")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") ||
+		strings.HasSuffix(host, ".home.arpa") {
+		return errors.New("ACP sandbox host is not public")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !acpPublicIP(ip) {
+			return errors.New("ACP sandbox host is not public")
+		}
+		return nil
+	}
+	for _, suffix := range acpAllowedHostSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addresses) == 0 {
+		return errors.New("ACP sandbox host does not resolve to a public address")
+	}
+	for _, address := range addresses {
+		if !acpPublicIP(address.IP) {
+			return errors.New("ACP sandbox host is not public")
+		}
+	}
+	return nil
+}
+
+func acpPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsUnspecified() &&
+		!ip.IsMulticast()
+}
+
+// acpTurnResult is the minimal v1 wb_webagent.run_turn result.
+type acpTurnResult struct {
+	OK        bool
+	Status    string
+	Events    int
+	Chunks    int
+	ElapsedMS int64
+	Error     string
+	Terminal  bool
+}
+
+// acpTurnChannel is the streamable-HTTP transport: one SSE GET carries events
+// and JSON-RPC POSTs drive the turn. It intentionally supports only the
+// initialize / session-load / session-prompt subset the daily activity needs.
+type acpTurnChannel struct {
+	client  ContextHTTPDoer
+	link    string
+	token   string
+	ua      string
+	proxy   string
+	connID  string
+	err     error
+	body    io.ReadCloser
+	cancel  context.CancelFunc
+	done    chan struct{}
+	mu      sync.Mutex
+	updates int
+	chunks  int
+}
+
+func newACPTurnChannel(client ContextHTTPDoer, link, token, ua, proxy string) *acpTurnChannel {
+	return &acpTurnChannel{
+		client: client, link: link, token: token, ua: ua, proxy: proxy,
+		done: make(chan struct{}),
+	}
+}
+
+func (c *acpTurnChannel) open(ctx context.Context) error {
+	parsed, err := url.Parse(strings.TrimSpace(c.link))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("ACP sandbox address is invalid")
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	request, err := http.NewRequestWithContext(streamCtx, http.MethodGet, c.link, nil)
+	if err != nil {
+		cancel()
+		return errors.New("ACP SSE request is invalid")
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("User-Agent", c.ua)
+	response, err := c.client.Do(streamCtx, request, c.proxy)
+	if err != nil {
+		cancel()
+		return errors.New("ACP SSE connection failed")
+	}
+	if response.StatusCode != http.StatusOK {
+		_ = response.Body.Close()
+		cancel()
+		return fmt.Errorf("ACP SSE returned HTTP %d", response.StatusCode)
+	}
+	connectionID := strings.TrimSpace(response.Header.Get("Acp-Connection-Id"))
+	if connectionID == "" {
+		_ = response.Body.Close()
+		cancel()
+		return errors.New("ACP SSE returned no Acp-Connection-Id")
+	}
+	c.cancel = cancel
+	c.body = response.Body
+	c.connID = connectionID
+	go c.readSSE(response.Body)
+	return nil
+}
+
+func (c *acpTurnChannel) readSSE(body io.ReadCloser) {
+	defer close(c.done)
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var message map[string]any
+		if err := json.Unmarshal([]byte(payload), &message); err != nil {
+			continue
+		}
+		if creditText(message["method"]) != "session/update" {
+			continue
+		}
+		c.mu.Lock()
+		c.updates++
+		if update := creditObject(creditObject(message["params"])["update"]); update != nil &&
+			creditText(update["sessionUpdate"]) == "agent_message_chunk" {
+			c.chunks++
+		}
+		c.mu.Unlock()
+	}
+	if err := scanner.Err(); err != nil {
+		c.mu.Lock()
+		if c.err == nil {
+			c.err = err
+		}
+		c.mu.Unlock()
+	}
+}
+
+func (c *acpTurnChannel) request(ctx context.Context, method string, params any, id int) error {
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": method, "params": params,
+	})
+	if err != nil {
+		return err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, acpRequestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.link, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("ACP request is invalid")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Acp-Connection-Id", c.connID)
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("User-Agent", c.ua)
+	response, err := c.client.Do(requestCtx, request, c.proxy)
+	if err != nil {
+		return errors.New("ACP request failed")
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, acpMaxBodyBytes))
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("%s returned HTTP %d", method, response.StatusCode)
+	}
+	return nil
+}
+
+func (c *acpTurnChannel) close() {
+	if c == nil {
+		return
+	}
+	if c.cancel != nil {
+		c.cancel()
+	}
+	if c.body != nil {
+		_ = c.body.Close()
+	}
+	select {
+	case <-c.done:
+	case <-time.After(time.Second):
+	}
+}
+
+func (c *acpTurnChannel) counts() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.updates, c.chunks
+}
+
+func acpPromptMeta(conversationID, prompt, model string) map[string]any {
+	traceID := randomHex(16)
+	spanID := randomHex(8)
+	now := time.Now().UTC()
+	var modelValue any
+	if strings.TrimSpace(model) != "" {
+		modelValue = model
+	}
+	return map[string]any{
+		"codebuddy.ai": map[string]any{
+			"extra": map[string]any{"sourceContentBlocks": []any{
+				map[string]any{"type": "text", "text": prompt},
+			}},
+			"skillRecommend": map[string]any{
+				"inputAttemptId": uuid7(), "recommendId": "", "skillId": "",
+				"expertId": "", "skillCount": 0, "totalCount": 0,
+			},
+			"traceparent":     "00-" + traceID + "-" + spanID + "-01",
+			"colorScheme":     "light",
+			"traceId":         traceID,
+			"requestId":       uuid7(),
+			"promptRequestId": uuid7(),
+			"clientSendTime":  now.UnixMilli(),
+			"conversationId":  conversationID,
+			"model":           modelValue,
+			"mode":            "craft",
+			"expertId":        "",
+		},
+		"codebuddy.ai/conversationRequestId": uuid7(),
+		"timestamp":                          now.Format("2006-01-02T15:04:05.000Z"),
+		"baggage":                            "buddyId=,buddyName=",
+	}
+}
+
+func webHumanDelay() time.Duration {
+	minimum := envSeconds("WB_WEB_HUMAN_DELAY_MIN", 2)
+	maximum := envSeconds("WB_WEB_HUMAN_DELAY_MAX", 8)
+	if maximum < minimum {
+		maximum = minimum
+	}
+	if maximum <= 0 {
+		return 0
+	}
+	return time.Duration((minimum + rand.Float64()*(maximum-minimum)) * float64(time.Second))
+}
+
+func envSeconds(name string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed < 0 {
+		return 0
+	}
+	return parsed
+}
+
+// runACPTurn drives one web conversation turn exactly like v1's minimal
+// wb_webagent: open the sandbox SSE stream, initialize, load the session, pin
+// the model when supplied, send the prompt, then poll the console status until
+// completed/failed or the wait budget expires.
+func runACPTurn(
+	ctx context.Context,
+	client ContextHTTPDoer,
+	link, token, sessionID, cwd, prompt, ua, model, proxy string,
+	wait, pollInterval time.Duration,
+	pollStatus func() string,
+	validators ...func(string) error,
+) acpTurnResult {
+	started := time.Now()
+	result := acpTurnResult{}
+	validate := validateACPLink
+	if len(validators) > 0 && validators[0] != nil {
+		validate = validators[0]
+	}
+	if err := validate(link); err != nil {
+		// A rejected descriptor is terminal: retrying the same link would only
+		// resend the sandbox token to the same endpoint.
+		result.Error = err.Error()
+		result.Terminal = true
+		return result
+	}
+	if client == nil {
+		result.Error = "ACP transport is unavailable"
+		return result
+	}
+	channel := newACPTurnChannel(client, link, token, ua, proxy)
+	defer channel.close()
+	if err := channel.open(ctx); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	capabilities := map[string]any{
+		"fs": map[string]any{"readTextFile": false, "writeTextFile": false},
+		"_meta": map[string]any{
+			"codebuddy.ai": map[string]any{
+				"question":            true,
+				"terminalOutput":      true,
+				"terminalOutputChunk": true,
+			},
+			"workbuddy.desktop": map[string]any{"detailedCheckpoint": true},
+		},
+		"elicitation": map[string]any{"form": map[string]any{}},
+	}
+	if err := channel.request(ctx, "initialize", map[string]any{
+		"protocolVersion": acpProtocolVersion, "clientCapabilities": capabilities,
+	}, 1); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	sessionCWD := firstNonEmpty(cwd, "/workspace")
+	if err := channel.request(ctx, "session/load", map[string]any{
+		"sessionId": sessionID, "cwd": sessionCWD, "mcpServers": []any{},
+	}, 2); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if strings.TrimSpace(model) != "" {
+		// Model pinning is best-effort in v1: the turn still runs on the
+		// conversation's default model when this extension is rejected.
+		_ = channel.request(ctx, "session/set_model", map[string]any{
+			"sessionId": sessionID, "modelId": model,
+		}, 3)
+	}
+	// The official web client creates a fresh session, sets the default mode,
+	// and pins the UI language after loading the conversation.
+	if err := channel.request(ctx, "session/new", map[string]any{
+		"cwd": sessionCWD, "mcpServers": []any{},
+	}, 4); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := channel.request(ctx, "session/set_mode", map[string]any{
+		"sessionId": sessionID, "modeId": "default",
+	}, 5); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if err := channel.request(ctx, "session/set_config_option", map[string]any{
+		"sessionId": sessionID, "configId": "language", "value": "English",
+	}, 6); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if delay := webHumanDelay(); delay > 0 {
+		select {
+		case <-ctx.Done():
+			result.Error = ctx.Err().Error()
+			return result
+		case <-time.After(delay):
+		}
+	}
+	if err := channel.request(ctx, "session/prompt", map[string]any{
+		"sessionId": sessionID,
+		"prompt": []any{map[string]any{
+			"type": "text", "text": prompt,
+			"_meta": map[string]any{"codebuddy.ai": map[string]any{"mode": "craft"}},
+		}},
+		"_meta": acpPromptMeta(sessionID, prompt, model),
+	}, 7); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	finished := false
+	status := ""
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			result.Error = err.Error()
+			break
+		}
+		if pollStatus != nil {
+			status = strings.TrimSpace(pollStatus())
+			switch strings.ToLower(status) {
+			case "completed":
+				finished = true
+			case "failed", "error":
+				// v1 keeps failed/error turns retryable.
+				result.Error = "会话状态=" + status
+			case "cancelled", "canceled", "deleted":
+				result.Error = "会话状态=" + status
+				result.Terminal = true
+			}
+			if finished || result.Error != "" {
+				break
+			}
+		}
+		if pollInterval > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(pollInterval):
+			}
+		}
+	}
+	if !finished && result.Error == "" {
+		result.Error = fmt.Sprintf("会话在 %ds 内没有跑完（状态=%s）",
+			int(wait/time.Second), firstNonEmpty(status, "未知"))
+	}
+	if pollStatus != nil && status == "" {
+		status = strings.TrimSpace(pollStatus())
+	}
+	result.OK = finished && result.Error == ""
+	result.Status = status
+	result.Events, result.Chunks = channel.counts()
+	result.ElapsedMS = time.Since(started).Milliseconds()
+	return result
+}

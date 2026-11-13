@@ -1,0 +1,12 @@
+{
+  "backups": [
+    {
+      "version": "1.6.4",
+      "created_at": "2023-11-14T22:13:20",
+      "files": 12,
+      "complete": true,
+      "size_mb": 5
+    }
+  ],
+  "unknown_v1_backups_key": "kept"
+}

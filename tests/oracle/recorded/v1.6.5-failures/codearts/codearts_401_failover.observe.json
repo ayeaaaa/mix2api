@@ -1,0 +1,1 @@
+{"provider": "codearts", "chat_calls": 1, "token_calls": 0, "requests": [{"method": "POST", "path": "/api/v2/chat/completions"}]}

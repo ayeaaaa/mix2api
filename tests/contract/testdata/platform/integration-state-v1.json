@@ -1,0 +1,11 @@
+{
+  "claude-code": {
+    "applied_at": "2023-11-14 22:13",
+    "base_url": "http://127.0.0.1:58675",
+    "model": "hy4-preview",
+    "files": [
+      {"path": "/tmp/home/.claude/settings.json", "existed": true, "sha256": "abc", "bytes": 12}
+    ]
+  },
+  "unknown_v1_top_level": {"kept": true}
+}

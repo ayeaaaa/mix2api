@@ -1,0 +1,158 @@
+{
+  "format": "mix2api-load-baseline/1",
+  "target": {
+    "name": "mix2api",
+    "version": "1.6.5",
+    "commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "runtime": "python"
+  },
+  "environment": {
+    "date": "2026-11-11",
+    "platform": "linux/amd64",
+    "logical_cpus": 32,
+    "go": "go1.22.2",
+    "python": "Python 3.12.3",
+    "network": "private network namespace (unshare -n), loopback only",
+    "upstream": "tests/oracle/fakes/fake_upstream.py",
+    "notes": [
+      "v1 ran from the ignored tests/oracle/v1.6.5 copy at e40c4e8; original tree untouched",
+      "both targets used the same synthetic accounts and the same loopback fake upstream",
+      "v1 WB_MAX_CONCURRENT_CHAT=232 matches v2 max_concurrent=232",
+      "fake_upstream.py raises the stdlib listen backlog to 256 so 200 simultaneous connects are not SYN-retransmit bound"
+    ]
+  },
+  "workload": {
+    "method": "POST /v1/chat/completions",
+    "model": "hy4-preview",
+    "stream": true,
+    "concurrency": 200,
+    "accounts": 8,
+    "account_type": "synthetic WorkBuddy intl OAuth documents",
+    "completion": "one role frame, two content frames, stop frame, usage frame, [DONE]",
+    "warmup": "none; all requests released together"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "recorded_at": "2026-11-11T04:28:08Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 1588,
+      "p50_first_byte_ms": 889,
+      "p95_first_byte_ms": 1520,
+      "p99_first_byte_ms": 1567,
+      "rss_before_kb": 80036,
+      "rss_peak_kb": 86608,
+      "rss_after_kb": 85920,
+      "cpu_seconds": 2.07,
+      "usage_rows": 200
+    },
+    {
+      "round": 2,
+      "recorded_at": "2026-11-11T04:29:19Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 1643,
+      "p50_first_byte_ms": 999,
+      "p95_first_byte_ms": 1571,
+      "p99_first_byte_ms": 1622,
+      "rss_before_kb": 80376,
+      "rss_peak_kb": 89072,
+      "rss_after_kb": 87760,
+      "cpu_seconds": 2.11,
+      "usage_rows": 200
+    },
+    {
+      "round": 3,
+      "recorded_at": "2026-11-11T04:29:28Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 1619,
+      "p50_first_byte_ms": 953,
+      "p95_first_byte_ms": 1546,
+      "p99_first_byte_ms": 1582,
+      "rss_before_kb": 79976,
+      "rss_peak_kb": 88064,
+      "rss_after_kb": 87128,
+      "cpu_seconds": 2.11,
+      "usage_rows": 200
+    }
+  ],
+  "summary": {
+    "elapsed_ms": {
+      "mean": 1616.667,
+      "min": 1588,
+      "max": 1643,
+      "range": 55,
+      "stddev": 22.514
+    },
+    "p50_first_byte_ms": {
+      "mean": 947.0,
+      "min": 889,
+      "max": 999,
+      "range": 110,
+      "stddev": 45.107
+    },
+    "p95_first_byte_ms": {
+      "mean": 1545.667,
+      "min": 1520,
+      "max": 1571,
+      "range": 51,
+      "stddev": 20.822
+    },
+    "p99_first_byte_ms": {
+      "mean": 1590.333,
+      "min": 1567,
+      "max": 1622,
+      "range": 55,
+      "stddev": 23.214
+    },
+    "rss_before_kb": {
+      "mean": 80129.333,
+      "min": 79976,
+      "max": 80376,
+      "range": 400,
+      "stddev": 176.131
+    },
+    "rss_peak_kb": {
+      "mean": 87914.667,
+      "min": 86608,
+      "max": 89072,
+      "range": 2464,
+      "stddev": 1011.451
+    },
+    "rss_after_kb": {
+      "mean": 86936.0,
+      "min": 85920,
+      "max": 87760,
+      "range": 1840,
+      "stddev": 763.347
+    },
+    "cpu_seconds": {
+      "mean": 2.097,
+      "min": 2.07,
+      "max": 2.11,
+      "range": 0.04,
+      "stddev": 0.019
+    },
+    "usage_rows": {
+      "mean": 200.0,
+      "min": 200,
+      "max": 200,
+      "range": 0,
+      "stddev": 0.0
+    },
+    "rounds": 3,
+    "requests_total": 600,
+    "failures_total": 0,
+    "done_total": 600,
+    "done_failures_total": 0,
+    "usage_rows_total": 600
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "format": "mix2api-load-baseline/1",
+  "target": {
+    "name": "mix2api",
+    "version": "2.0.0-rc.1",
+    "commit": "49fa5b4c3d2c21bb270743e065cd3e32060f2295",
+    "runtime": "go"
+  },
+  "environment": {
+    "date": "2026-11-11",
+    "platform": "linux/amd64",
+    "logical_cpus": 32,
+    "go": "go1.22.2",
+    "python": "Python 3.12.3",
+    "network": "private network namespace (unshare -n), loopback only",
+    "upstream": "tests/oracle/fakes/fake_upstream.py",
+    "notes": [
+      "v1 ran from the ignored tests/oracle/v1.6.5 copy at e40c4e8; original tree untouched",
+      "both targets used the same synthetic accounts and the same loopback fake upstream",
+      "v1 WB_MAX_CONCURRENT_CHAT=232 matches v2 max_concurrent=232",
+      "fake_upstream.py raises the stdlib listen backlog to 256 so 200 simultaneous connects are not SYN-retransmit bound"
+    ]
+  },
+  "workload": {
+    "method": "POST /v1/chat/completions",
+    "model": "hy4-preview",
+    "stream": true,
+    "concurrency": 200,
+    "accounts": 8,
+    "account_type": "synthetic WorkBuddy intl OAuth documents",
+    "completion": "one role frame, two content frames, stop frame, usage frame, [DONE]",
+    "warmup": "none; all requests released together"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "recorded_at": "2026-11-11T04:30:13Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 337,
+      "p50_first_byte_ms": 206,
+      "p95_first_byte_ms": 322,
+      "p99_first_byte_ms": 333,
+      "rss_before_kb": 18628,
+      "rss_peak_kb": 66660,
+      "rss_after_kb": 53492,
+      "cpu_seconds": 1.69,
+      "usage_rows": 200,
+      "sqlite_rows": 400,
+      "sqlite_append_ms": 39
+    },
+    {
+      "round": 2,
+      "recorded_at": "2026-11-11T04:30:15Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 343,
+      "p50_first_byte_ms": 215,
+      "p95_first_byte_ms": 328,
+      "p99_first_byte_ms": 338,
+      "rss_before_kb": 18596,
+      "rss_peak_kb": 65364,
+      "rss_after_kb": 50580,
+      "cpu_seconds": 1.61,
+      "usage_rows": 200,
+      "sqlite_rows": 400,
+      "sqlite_append_ms": 30
+    },
+    {
+      "round": 3,
+      "recorded_at": "2026-11-11T04:30:16Z",
+      "requests": 200,
+      "failures": 0,
+      "done": 200,
+      "done_failures": 0,
+      "elapsed_ms": 328,
+      "p50_first_byte_ms": 196,
+      "p95_first_byte_ms": 313,
+      "p99_first_byte_ms": 324,
+      "rss_before_kb": 18668,
+      "rss_peak_kb": 69532,
+      "rss_after_kb": 55032,
+      "cpu_seconds": 1.8,
+      "usage_rows": 200,
+      "sqlite_rows": 400,
+      "sqlite_append_ms": 38
+    }
+  ],
+  "summary": {
+    "elapsed_ms": {
+      "mean": 336.0,
+      "min": 328,
+      "max": 343,
+      "range": 15,
+      "stddev": 6.164
+    },
+    "p50_first_byte_ms": {
+      "mean": 205.667,
+      "min": 196,
+      "max": 215,
+      "range": 19,
+      "stddev": 7.76
+    },
+    "p95_first_byte_ms": {
+      "mean": 321.0,
+      "min": 313,
+      "max": 328,
+      "range": 15,
+      "stddev": 6.164
+    },
+    "p99_first_byte_ms": {
+      "mean": 331.667,
+      "min": 324,
+      "max": 338,
+      "range": 14,
+      "stddev": 5.793
+    },
+    "rss_before_kb": {
+      "mean": 18630.667,
+      "min": 18596,
+      "max": 18668,
+      "range": 72,
+      "stddev": 29.454
+    },
+    "rss_peak_kb": {
+      "mean": 67185.333,
+      "min": 65364,
+      "max": 69532,
+      "range": 4168,
+      "stddev": 1741.654
+    },
+    "rss_after_kb": {
+      "mean": 53034.667,
+      "min": 50580,
+      "max": 55032,
+      "range": 4452,
+      "stddev": 1846.066
+    },
+    "cpu_seconds": {
+      "mean": 1.7,
+      "min": 1.61,
+      "max": 1.8,
+      "range": 0.19,
+      "stddev": 0.078
+    },
+    "usage_rows": {
+      "mean": 200.0,
+      "min": 200,
+      "max": 200,
+      "range": 0,
+      "stddev": 0.0
+    },
+    "sqlite_rows": {
+      "mean": 400.0,
+      "min": 400,
+      "max": 400,
+      "range": 0,
+      "stddev": 0.0
+    },
+    "sqlite_append_ms": {
+      "mean": 35.667,
+      "min": 30,
+      "max": 39,
+      "range": 9,
+      "stddev": 4.028
+    },
+    "rounds": 3,
+    "requests_total": 600,
+    "failures_total": 0,
+    "done_total": 600,
+    "done_failures_total": 0,
+    "usage_rows_total": 600
+  },
+  "comparison": {
+    "v1_p95_mean_ms": 1545.667,
+    "v2_p95_mean_ms": 321.0,
+    "p95_ratio_v2_to_v1": 0.2077,
+    "target_ratio": 1.2,
+    "target_met": true,
+    "absolute_p95_target_ms": 2000,
+    "absolute_p95_target_met": true
+  }
+}

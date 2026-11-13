@@ -1,0 +1,1 @@
+{"id": "chatcmpl-raccoon-fake", "object": "chat.completion", "created": 1794360819, "model": "raccoon-090dd3", "choices": [{"index": 0, "message": {"role": "assistant", "content": "你好"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}, "elapsed_ms": 3012, "first_chunk_at": 1794360816.7088554}

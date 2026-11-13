@@ -1,0 +1,319 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T01:33:36Z",
+    "base_url": "http://127.0.0.1:18765",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "note": "selected v1.6.5 fake-upstream responses; loopback only"
+  },
+  "cases": [
+    {
+      "name": "models",
+      "method": "GET",
+      "path": "/v1/models?realm=raccoon",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "models.json",
+      "sha256": "018918ebe182b6664870e5302efb03d707fadea03cb1261d9fd29f64f7472188"
+    },
+    {
+      "name": "codearts_models",
+      "method": "GET",
+      "path": "/v1/models?realm=codearts",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_models.json",
+      "sha256": "3e3e2173c353d6947a1b7eeb9bc2e18a3c817619509894dc0d48466fc4694f8e"
+    },
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/health?force=1",
+      "auth": "none",
+      "kind": "json",
+      "status": 200,
+      "file": "health.json",
+      "sha256": "0368a3a905cda051c31e6f4a2544eaa9b1b4c42534ae8562b9f04564005e46ae"
+    },
+    {
+      "name": "chat",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "chat.json",
+      "sha256": "b2f06feee4812adc0ab9969a30ccfb6ca532905a793ebecdf2e7dadd5d7e4c8c"
+    },
+    {
+      "name": "chat_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "chat_stream.sse",
+      "sha256": "8eb4b67a1c6957c2aa19a96e7fc3f59f36c963c37ba79f94f8bca82adeca0654"
+    },
+    {
+      "name": "responses",
+      "method": "POST",
+      "path": "/v1/responses?realm=raccoon",
+      "body": {
+        "model": "raccoon-090dd3",
+        "input": "hello",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "responses.json",
+      "sha256": "cae5a563ba9586b92e9bd33163f579bb605964fecbd25fd3f23e1eae7934fc53"
+    },
+    {
+      "name": "responses_stream",
+      "method": "POST",
+      "path": "/v1/responses?realm=raccoon",
+      "body": {
+        "model": "raccoon-090dd3",
+        "input": "hello",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "responses_stream.sse",
+      "sha256": "31994d96ad740cac3785bb0a27583c5f09e915feb26f3dfa4e13a2f3db41d687"
+    },
+    {
+      "name": "messages",
+      "method": "POST",
+      "path": "/v1/messages?realm=raccoon",
+      "body": {
+        "model": "raccoon-090dd3",
+        "max_tokens": 64,
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ]
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "messages.json",
+      "sha256": "47b275ebe3b88cd961098939e046db7b335af5f27efe25fc124390ffaf2b7fc5"
+    },
+    {
+      "name": "codearts_chat",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_chat.json",
+      "sha256": "6954e67cf9d54a7ed551350c8727ffbc29ccbf5bc410b2d09a76b3404410b0b7"
+    },
+    {
+      "name": "codearts_chat_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=codearts",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "GLM-5.2",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "codearts_chat_stream.sse",
+      "sha256": "1e8f0f972ef5db4a0a6ee34463ba22a26d36bf5188e9a698dc5d55684a26168b"
+    },
+    {
+      "name": "admin_accounts",
+      "method": "GET",
+      "path": "/raccoon/accounts",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "admin_accounts.json",
+      "sha256": "fc6ce644e2869e2580b2475751d005b17007356b47d55da6e55f3261c3dc3215"
+    },
+    {
+      "name": "codearts_accounts",
+      "method": "GET",
+      "path": "/codearts/accounts",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_accounts.json",
+      "sha256": "6a1c13928bba7a1a7ac3aef6db4d78601f2f493bb1e90bc307ec150e06347984"
+    },
+    {
+      "name": "media_models",
+      "method": "GET",
+      "path": "/v1/media/models",
+      "auth": "api",
+      "kind": "json",
+      "status": 404,
+      "file": "media_models.json",
+      "sha256": "239a770a5c029b693d0e898f222b10e91b5725a10ecfd02c000323575060d24e"
+    },
+    {
+      "name": "agents",
+      "method": "GET",
+      "path": "/agents",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "agents.json",
+      "sha256": "cfd8a18c8cd37e6ea68666f4c0ec4261c5ac556a4b26f5814959d96adf588316"
+    },
+    {
+      "name": "updates",
+      "method": "GET",
+      "path": "/updates",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "updates.json",
+      "sha256": "411dea375537b6992505e46b8e5bede87a3729d2ef96c68457d563b8d9e34ac2"
+    },
+    {
+      "name": "updates_backups",
+      "method": "GET",
+      "path": "/updates/backups",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "updates_backups.json",
+      "sha256": "ec307d8546c9532be2b7bbb9dc50d3743fe497fe143dafe0dfac5293365e74e8"
+    },
+    {
+      "name": "codearts_overview",
+      "method": "GET",
+      "path": "/codearts/overview?force=1",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_overview.json",
+      "sha256": "97959b75e4d3304ae7450eb97022ebdeefdab1a6f59613bd6e0b0a6d7a79eea0"
+    },
+    {
+      "name": "codearts_checkin",
+      "method": "POST",
+      "path": "/codearts/accounts/checkin",
+      "body": {
+        "uid": "u1"
+      },
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_checkin.json",
+      "sha256": "c61dcef4ec739751a40f265db315cee8e591a749c0157144629ce669d1257de3"
+    },
+    {
+      "name": "codearts_credits_refresh",
+      "method": "POST",
+      "path": "/codearts/credits/refresh",
+      "body": {},
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_credits_refresh.json",
+      "sha256": "26788a084fa22d509464d25816a75f309071ea3074efa0ac1e4241e396c92e06"
+    },
+    {
+      "name": "usage",
+      "method": "GET",
+      "path": "/usage",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "usage.json",
+      "sha256": "62c4d4e38fb516fa78b4f119b453ce8f404c823e7b3324395f9aa75228f58365"
+    },
+    {
+      "name": "usage_raccoon",
+      "method": "GET",
+      "path": "/usage?realm=raccoon",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "usage_raccoon.json",
+      "sha256": "62c4d4e38fb516fa78b4f119b453ce8f404c823e7b3324395f9aa75228f58365"
+    },
+    {
+      "name": "usage_codearts",
+      "method": "GET",
+      "path": "/usage?realm=codearts",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "usage_codearts.json",
+      "sha256": "515112a14d38b932bd372d2b414f130ebaeaf899ca96002901949496a97308e6"
+    },
+    {
+      "name": "logs",
+      "method": "GET",
+      "path": "/logs",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "logs.json",
+      "sha256": "5d9c7afdd6bda3f5d12a8171c6cdebad6ba8bc5206f04a5bb3eb8db509cccfec"
+    },
+    {
+      "name": "codearts_models_refresh",
+      "method": "POST",
+      "path": "/codearts/models/refresh",
+      "body": {},
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "codearts_models_refresh.json",
+      "sha256": "276183a60e1da3cc4ecb1068d96912a9ee61c204577fb105a431e309427c7912"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# The dashboard is copied from v1.6.5 with the two documented repository-link
+# replacements. Disable text/eol normalization so a Windows checkout still
+# matches web.DashboardSHA256.
+internal/web/dashboard.html -text

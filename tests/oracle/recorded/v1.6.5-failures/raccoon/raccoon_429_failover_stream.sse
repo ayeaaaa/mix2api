@@ -1,0 +1,14 @@
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365544, "model": "raccoon-090dd3", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365544, "model": "raccoon-090dd3", "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365544, "model": "raccoon-090dd3", "choices": [{"index": 0, "delta": {"content": "好"}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365544, "model": "raccoon-090dd3", "choices": []}
+
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365547, "model": "raccoon-090dd3", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+
+data: {"id": "chatcmpl-wb-d0821a4a59e64fac", "object": "chat.completion.chunk", "created": 1794365547, "model": "raccoon-090dd3", "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}
+
+data: [DONE]
+

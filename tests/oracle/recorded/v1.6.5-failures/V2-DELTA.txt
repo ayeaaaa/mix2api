@@ -1,0 +1,28 @@
+# v2 2.0.0-rc.1 parity-fix candidate against the v1.6.5 failure oracle
+#
+# Commands (fresh target and fake state per suite):
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18769 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/raccoon \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18771 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/codearts \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#   tests/oracle/run.sh compare --all --base http://127.0.0.1:18773 \
+#     --oracle tests/oracle/recorded/v1.6.5-failures/workbuddy \
+#     --fake-control "$CONTROL" --api-key "$API_KEY"
+#
+# Result:
+#   Raccoon:  5 of 5 exact.
+#   CodeArts: 5 of 5 exact.
+#   WorkBuddy: 5 of 5 exact.
+#
+# No normalization rule was added to erase a stable field. The observations
+# (chat/refresh/token call counts and method/path/status tuples) matched for
+# every case, including the retry/failover paths.
+#
+# Resolved by this candidate:
+# - Raccoon credit-exhausted 400: the provider error exposes v1's optional
+#   gateway_hint through a generic interface, and the API envelope writes
+#   `error.gateway_hint` exactly when the provider supplies it:
+#   "account credits exhausted at upstream; waiting for daily check-in to restore".
+#   Other failures still omit the key.

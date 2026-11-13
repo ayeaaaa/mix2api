@@ -1,0 +1,6 @@
+# Local v1.6.5 oracle copies are for recording goldens only and must never be
+# committed. See README.md for the copy/patch/record procedure. The leading
+# slash keeps the committed tests/oracle/recorded/v1.6.5 fixture visible.
+/v1.6.5/
+__pycache__/
+*.pyc

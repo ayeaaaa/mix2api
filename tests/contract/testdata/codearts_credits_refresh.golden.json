@@ -1,0 +1,36 @@
+{
+  "accounts": [
+    {
+      "credits": {
+        "amount": 1000,
+        "end_date": "\u003ctimestamp\u003e",
+        "expiring": 5,
+        "package": "体验版",
+        "remain": 900,
+        "unit": "credit",
+        "used": 100
+      },
+      "message": "",
+      "ok": true,
+      "uid": "codearts-contract-1"
+    },
+    {
+      "credits": {
+        "amount": 1000,
+        "end_date": "\u003ctimestamp\u003e",
+        "expiring": 5,
+        "package": "体验版",
+        "remain": 900,
+        "unit": "credit",
+        "used": 100
+      },
+      "message": "",
+      "ok": true,
+      "uid": "codearts-contract-2"
+    }
+  ],
+  "errors": [],
+  "message": "已刷新 2 个账号的积分",
+  "ok": true,
+  "refreshed": 2
+}

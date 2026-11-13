@@ -1,0 +1,175 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T02:52:21Z",
+    "base_url": "http://127.0.0.1:18768",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "fake_control_url": "http://127.0.0.1:40381",
+    "note": "Raccoon failure matrix on loopback v1 fake upstream; loopback only"
+  },
+  "cases": [
+    {
+      "name": "raccoon_429_failover",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "raccoon_429_failover.json",
+      "sha256": "747d2d228069865e00888528bd81dcacd553248535ebdd54adfce351a7d76183",
+      "group": "raccoon_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "raccoon",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=raccoon",
+      "observe_file": "raccoon_429_failover.observe.json",
+      "observe_sha256": "bade83dcd4a441ec632b12c90bc579b0dc3ef47ca0c37a1eeb20ccd17ef1f55a"
+    },
+    {
+      "name": "raccoon_429_failover_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "raccoon_429_failover_stream.sse",
+      "sha256": "cf27b78280e9c13a9b14191f2b99cbb947e508fbdb0de83ec8f8bb91f9b45158",
+      "group": "raccoon_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "raccoon",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=raccoon",
+      "observe_file": "raccoon_429_failover_stream.observe.json",
+      "observe_sha256": "bade83dcd4a441ec632b12c90bc579b0dc3ef47ca0c37a1eeb20ccd17ef1f55a"
+    },
+    {
+      "name": "raccoon_credit_400",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 400,
+      "file": "raccoon_credit_400.json",
+      "sha256": "b4b854cf0169e2180d931b46998358fc343d5bbbd7b73013e120f8a8a413890f",
+      "group": "raccoon_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "raccoon",
+          "scenario": "credit_400"
+        }
+      },
+      "observe": "/__observe?provider=raccoon",
+      "observe_file": "raccoon_credit_400.observe.json",
+      "observe_sha256": "ef800f37e06ceae162828c5d176e66ab3d962f0abda8096222a2325cf14159af"
+    },
+    {
+      "name": "raccoon_concurrency_400",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 400,
+      "file": "raccoon_concurrency_400.json",
+      "sha256": "f8d9e72642623abe88e6887adbb6cee53a7b35045b51cc1cc5f8e0bc36586923",
+      "group": "raccoon_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "raccoon",
+          "scenario": "concurrency_400"
+        }
+      },
+      "observe": "/__observe?provider=raccoon",
+      "observe_file": "raccoon_concurrency_400.observe.json",
+      "observe_sha256": "ef800f37e06ceae162828c5d176e66ab3d962f0abda8096222a2325cf14159af"
+    },
+    {
+      "name": "raccoon_401_refresh",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=raccoon",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "raccoon-090dd3",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "raccoon_401_refresh.json",
+      "sha256": "68316bbbe54825e25839c545f4f2584bf1d8e49bbea10d034d3ea89e1a8e0292",
+      "group": "raccoon_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "raccoon",
+          "scenario": "401"
+        }
+      },
+      "observe": "/__observe?provider=raccoon",
+      "observe_file": "raccoon_401_refresh.observe.json",
+      "observe_sha256": "c90760d175ba818dc6cd13c9a6270d4563239f896c3a4a6b070bd202d7dd800f"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"id": "vid_6dd0efe4607518f2", "object": "video", "status": "queued", "model": "kling-video-v3", "created_at": 1794369118, "seconds": "5", "resolution": "720P", "queue_position": 1, "hint": "已进入队列，未提交上游、未扣积分；轮询 GET /v1/videos/vid_6dd0efe4607518f2 查看进度"}

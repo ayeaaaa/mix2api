@@ -1,0 +1,283 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T03:51:57Z",
+    "base_url": "http://127.0.0.1:18780",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "fake_control_url": "http://127.0.0.1:40391",
+    "note": "WorkBuddy media success paths via test-only patched v1 copy and loopback fake upstream; loopback only"
+  },
+  "cases": [
+    {
+      "name": "media_models",
+      "method": "GET",
+      "path": "/v1/media/models",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_models.json",
+      "sha256": "4a84cbf0892203a26eb20de4fe54547ff3c2eb2480188fdbe97132bd33da1ef2",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_image_generation",
+      "method": "POST",
+      "path": "/v1/images/generations",
+      "body": {
+        "model": "hunyuan-image-alpha",
+        "prompt": "oracle image",
+        "size": "1024x1024"
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_image_generation.json",
+      "sha256": "c3fdb4d40989cc9176fdecc6a9b857d2491bf54407721bbddf38e675c6ff7f44",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_image_edit",
+      "method": "POST",
+      "path": "/v1/images/edits",
+      "body": {
+        "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0xQAAAAASUVORK5CYII=",
+        "model": "hunyuan-image-alpha-edit",
+        "prompt": "oracle edit",
+        "size": "1024x1024"
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_image_edit.json",
+      "sha256": "28d5112c473b4b60ec5ef86f1058ef69224c0b88be4d3f073bb1e8aa8e856315",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_image_b64",
+      "method": "POST",
+      "path": "/v1/images/generations",
+      "body": {
+        "model": "gemini-image-oracle",
+        "prompt": "oracle image",
+        "size": "1024x1024"
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_image_b64.json",
+      "sha256": "28a74455fae169181345d281f032c0e56cf0f6f4f8ea8a8e335334cc6da3b990",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_video_wait",
+      "method": "POST",
+      "path": "/v1/videos?wait=1",
+      "body": {
+        "model": "kling-video-v3",
+        "prompt": "oracle video",
+        "resolution": "720P",
+        "seconds": 5
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 202,
+      "file": "media_video_wait.json",
+      "sha256": "1f99b289845d8745fd181505063b36bda752f4bff4e5cfc3d4e0762bdaaf8050",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      },
+      "capture": {
+        "video_task_id": "id",
+        "video_url": "url"
+      }
+    },
+    {
+      "name": "media_video_status",
+      "method": "GET",
+      "path": "/v1/videos/{{video_task_id}}",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_video_status.json",
+      "sha256": "1f99b289845d8745fd181505063b36bda752f4bff4e5cfc3d4e0762bdaaf8050",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_video_content",
+      "method": "GET",
+      "path": "{{video_url}}",
+      "auth": "none",
+      "kind": "raw",
+      "status": 200,
+      "file": "media_video_content.raw",
+      "sha256": "df7e35f81003ae3bd348c6f92f89a626517e9d664b7c30dbb1b2aa21edc3e26a",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media"
+        }
+      }
+    },
+    {
+      "name": "media_video_running",
+      "method": "POST",
+      "path": "/v1/videos",
+      "body": {
+        "model": "kling-video-v3",
+        "prompt": "oracle video",
+        "resolution": "720P",
+        "seconds": 5
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 202,
+      "file": "media_video_running.json",
+      "sha256": "4647028b6a2446433f884f1cc1b8ec3b90b4ce23310fe06756527c0a50d710e3",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media_running"
+        }
+      },
+      "capture": {
+        "video_running_id": "id"
+      }
+    },
+    {
+      "name": "media_video_queued",
+      "method": "POST",
+      "path": "/v1/videos",
+      "body": {
+        "model": "kling-video-v3",
+        "prompt": "oracle video",
+        "resolution": "720P",
+        "seconds": 5
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 202,
+      "file": "media_video_queued.json",
+      "sha256": "6c6654e6e6d839a01ff4aba39c8c13593d5e186f66f9c947373ee9f51e5a0421",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media_running"
+        }
+      },
+      "capture": {
+        "video_queue_id": "id"
+      }
+    },
+    {
+      "name": "media_video_cancel",
+      "method": "POST",
+      "path": "/v1/videos/{{video_queue_id}}/cancel",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_video_cancel.json",
+      "sha256": "af11cb772a42b17df59bbae64e8ce06a9899539227636780106852eafbc70f48",
+      "group": "media",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "media_running"
+        }
+      }
+    },
+    {
+      "name": "media_tasks",
+      "method": "GET",
+      "path": "/v1/media/tasks",
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "media_tasks.json",
+      "sha256": "1ed374e864a75b543d7a915f653be4b1dae4f0c09822200a4069bf21f0df9f32",
+      "group": "media",
+      "delay_ms": 1000
+    },
+    {
+      "name": "media_usage",
+      "method": "GET",
+      "path": "/usage?realm=intl",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "media_usage.json",
+      "sha256": "97e4be466e6514ee495a4ac46c5db5cf67c29ebd74b1d44fa41f2c8c6563971f",
+      "group": "media"
+    },
+    {
+      "name": "media_usage_recent",
+      "method": "GET",
+      "path": "/usage/recent?realm=intl\u0026limit=10",
+      "auth": "panel",
+      "kind": "json",
+      "status": 200,
+      "file": "media_usage_recent.json",
+      "sha256": "0f027ca483acd01a7c7e45acacbb53f3c4c9a97710c20f94a019d39e5b6db0cd",
+      "group": "media"
+    }
+  ]
+}

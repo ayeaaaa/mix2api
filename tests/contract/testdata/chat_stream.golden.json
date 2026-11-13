@@ -1,0 +1,15 @@
+[
+  {
+    "type": "chat.completion.chunk",
+    "objects": ["chat.completion.chunk"],
+    "role": "assistant",
+    "finish_reason": "stop",
+    "content": "你好",
+    "usage": {
+      "prompt_tokens": 3,
+      "completion_tokens": 2,
+      "total_tokens": 5
+    },
+    "done": true
+  }
+]

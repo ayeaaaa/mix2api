@@ -1,0 +1,175 @@
+{
+  "format": "mix2api-oracle/1",
+  "provenance": {
+    "target_version": "1.6.5",
+    "target_commit": "e40c4e8994f9cc6ace3457e350466cdd5d422a37",
+    "recorded_at": "2026-11-11T02:53:22Z",
+    "base_url": "http://127.0.0.1:18772",
+    "fake_upstream": true,
+    "network": "loopback-only",
+    "fake_control_url": "http://127.0.0.1:40381",
+    "note": "WorkBuddy failure matrix on loopback fake upstream via test-only patched v1 copy; loopback only"
+  },
+  "cases": [
+    {
+      "name": "wb_429_failover",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_429_failover.json",
+      "sha256": "3172e0b142c419fb31938f418877f9a1d8d6f6d1f3ca7f082ecf290e21a9059e",
+      "group": "workbuddy_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=workbuddy",
+      "observe_file": "wb_429_failover.observe.json",
+      "observe_sha256": "e4432675f878b33ffdd9d73127a07c8eb266eff5494f342461ff9ed1d101c053"
+    },
+    {
+      "name": "wb_429_failover_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "wb_429_failover_stream.sse",
+      "sha256": "4db6916cced3b2ee9c5c0567844519f249670338b016ad7aee7e2a90dbc383db",
+      "group": "workbuddy_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "429"
+        }
+      },
+      "observe": "/__observe?provider=workbuddy",
+      "observe_file": "wb_429_failover_stream.observe.json",
+      "observe_sha256": "e4432675f878b33ffdd9d73127a07c8eb266eff5494f342461ff9ed1d101c053"
+    },
+    {
+      "name": "wb_401_refresh",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_401_refresh.json",
+      "sha256": "ac9edf2a1afa006094ab99da8a38c3f5dd796de904a74aad3df3233a93ed37bd",
+      "group": "workbuddy_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "401"
+        }
+      },
+      "observe": "/__observe?provider=workbuddy",
+      "observe_file": "wb_401_refresh.observe.json",
+      "observe_sha256": "55b85134089ab402ec77b2fa6a20bf75e28f688082ed5364bfdfc155968abcb7"
+    },
+    {
+      "name": "wb_5xx_failover",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": false
+      },
+      "auth": "api",
+      "kind": "json",
+      "status": 200,
+      "file": "wb_5xx_failover.json",
+      "sha256": "be4e07b84869cbdc840dd9ca7becc684541dd6a0a438047291563a29fd373bf8",
+      "group": "workbuddy_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "5xx"
+        }
+      },
+      "observe": "/__observe?provider=workbuddy",
+      "observe_file": "wb_5xx_failover.observe.json",
+      "observe_sha256": "618902565603cd59f272af706c8e3805c90005cf2d52ba98fbb4e2a3abe5f003"
+    },
+    {
+      "name": "wb_5xx_failover_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions?realm=intl",
+      "body": {
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "hy4-preview",
+        "stream": true
+      },
+      "auth": "api",
+      "kind": "sse",
+      "status": 200,
+      "file": "wb_5xx_failover_stream.sse",
+      "sha256": "5d2d03fb39c0274de5d450bede03dd9aa0075a145cb5f3bb08f3e60edfe16e9b",
+      "group": "workbuddy_failure",
+      "setup": {
+        "method": "POST",
+        "path": "/__setup",
+        "body": {
+          "provider": "workbuddy",
+          "scenario": "5xx"
+        }
+      },
+      "observe": "/__observe?provider=workbuddy",
+      "observe_file": "wb_5xx_failover_stream.observe.json",
+      "observe_sha256": "618902565603cd59f272af706c8e3805c90005cf2d52ba98fbb4e2a3abe5f003"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"provider": "workbuddy", "chat_calls": 2, "refresh_calls": 1, "catalog_calls": 0, "requests": [{"method": "POST", "path": "/v2/chat/completions", "status": 401}, {"method": "POST", "path": "/v2/plugin/auth/token/refresh", "status": 200}, {"method": "POST", "path": "/v2/chat/completions", "status": 200}]}

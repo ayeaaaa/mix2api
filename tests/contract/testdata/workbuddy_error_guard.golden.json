@@ -1,0 +1,1 @@
+{"error":{"code":429,"message":"every usable WorkBuddy account reached today's token limit; the pool resumes after local midnight","reset_at":1794268800,"retry_after":18387,"type":"rate_limit_error"}}

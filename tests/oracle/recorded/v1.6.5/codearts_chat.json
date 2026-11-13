@@ -1,0 +1,1 @@
+{"id": "chatcmpl-codearts", "object": "chat.completion", "created": 1794360831, "model": "GLM-5.2", "choices": [{"index": 0, "message": {"role": "assistant", "content": "你好"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}, "elapsed_ms": 0, "first_chunk_at": 1794360831.8166556}

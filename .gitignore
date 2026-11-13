@@ -1,28 +1,27 @@
-# runtime data
-data/
+# Runtime data: account credentials, state, usage, and local databases/logs.
+/accounts/
+/usage/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
 
-# python
-__pycache__/
-*.pyc
-.pytest_cache/
+# Local build/test artifacts.
+/bin/
+/dist/
+/mix2api
+.env
+*.test
+coverage.out
+*.out
 
-# app runtime
-app/accounts/
-app/usage/
-app/catalog/product-config-*.json
-!app/accounts/README.txt
-!app/usage/README.txt
-
-# reference upstream (not built or run)
-reference/codearts2api/auths/
-reference/codearts2api/data/
-reference/codearts2api/bin/
-reference/codearts2api/config.json
-
-# editors / os
+# Editor/OS noise.
 .DS_Store
 .vscode/
 .idea/
 
-# agent workspace metadata
-.superpowers/
+# Test-only oracle copies and Python caches (also ignored locally).
+tests/oracle/v1.6.5/
+__pycache__/
+*.pyc

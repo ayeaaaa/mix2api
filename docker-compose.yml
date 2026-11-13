@@ -1,0 +1,31 @@
+services:
+  mix2api:
+    build:
+      context: .
+    image: ghcr.io/ayeaaaa/mix2api:${MIX2API_VERSION:-v2.8.1}
+    container_name: mix2api
+    restart: unless-stopped
+    ports:
+      - "58675:58675"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 58675
+      TZ: ${TZ:-UTC}
+      PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      MIX2API_API_KEY: ${MIX2API_API_KEY:-}
+      MIX2API_TLS_FINGERPRINT: ${MIX2API_TLS_FINGERPRINT:-}
+      WB_TLS_FINGERPRINT: ${WB_TLS_FINGERPRINT:-}
+      ACCOUNTS_DIR: /app/accounts
+      USAGE_DIR: /app/usage
+      WB_MEDIA_DIR: /app/media
+    user: "${MIX2API_UID:-10001}:${MIX2API_GID:-10001}"
+    volumes:
+      - ./data/accounts:/app/accounts
+      - ./data/usage:/app/usage
+      - ./data/media:/app/media
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null \"http://127.0.0.1:$${PORT}/health\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

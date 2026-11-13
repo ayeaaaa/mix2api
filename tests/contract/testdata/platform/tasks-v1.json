@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "id": "task-1",
+      "status": "completed",
+      "model": "video-model",
+      "realm": "cn",
+      "account": "uid-a",
+      "seconds": "8",
+      "resolution": "720p",
+      "created_at": 1700000000,
+      "completed_at": 1700000100,
+      "credit": 1.5,
+      "videos": ["media/task-1.mp4"],
+      "unknown_v1_task_key": {"kept": true}
+    }
+  ],
+  "unknown_v1_document_key": "kept"
+}
