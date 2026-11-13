@@ -149,6 +149,13 @@ submission still requires desktop eligibility; web-only cookies receive a clear
 dashboard JS harness pass. Published as `v2.5.0` at `b04750f`; evidence:
 `docs/smoke/2026-11-13-release-2.5.0.md`. No media or Windows SCM gate changed.
 
+**v2.6.0 addendum:** Doubao Work can claim completed campaign rewards through
+`POST /doubao/tasks/claim`; the dashboard exposes a Claim button for completed
+tasks, cached task identifiers are retained, and upstream `biz_error` responses
+are surfaced instead of faked as success. `make check`, `make race`, and the
+13/13 dashboard JS harness pass. Published as `v2.6.0` at `20bdbd4`; evidence:
+`docs/smoke/2026-11-13-release-2.6.0.md`. No media or Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
