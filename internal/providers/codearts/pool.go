@@ -1,6 +1,7 @@
 package codearts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -577,6 +578,31 @@ func (p *Pool) BindSession(sessionKey, uid string) {
 
 // Acquire reserves one concurrency slot. It does not re-check health; Pick
 // already did. The tombstone check still applies so Remove wins a race.
+func (p *Pool) AcquireWait(ctx context.Context, a *Account, wait time.Duration) bool {
+	if wait <= 0 {
+		return p.Acquire(a)
+	}
+	if p.Acquire(a) {
+		return true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			if p.Acquire(a) {
+				return true
+			}
+		}
+	}
+}
+
 func (p *Pool) Acquire(a *Account) bool {
 	if p == nil || a == nil {
 		return false

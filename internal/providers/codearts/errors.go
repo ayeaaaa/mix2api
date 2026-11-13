@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ErrorKind classifies a CodeArts chat failure. The kind drives failover and
@@ -47,9 +48,11 @@ const (
 // APIError is a classified CodeArts failure. Message is already redacted and
 // bounded, so it is safe to persist as a state reason or return to a client.
 type APIError struct {
-	Kind    ErrorKind
-	Status  int
-	Message string
+	Kind       ErrorKind
+	Status     int
+	Message    string
+	RetryAfter time.Duration
+	ResetAt    time.Time
 }
 
 // Error is the internal logging form. The API layer uses SafeMessage for the
@@ -130,4 +133,20 @@ func redactChatMessage(message string, auth Auth) string {
 	message = maskProxyURL(message)
 	message = truncateRunes(message, 500)
 	return strings.TrimSpace(message)
+}
+
+// RetryDelay implements providers.RetryMetadata.
+func (e *APIError) RetryDelay() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}
+
+// RetryReset implements providers.RetryMetadata.
+func (e *APIError) RetryReset() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	return e.ResetAt
 }
