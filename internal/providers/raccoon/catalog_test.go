@@ -296,6 +296,18 @@ func TestCatalogBareIDs(t *testing.T) {
 	if glm["vision"] != false || glm["supports_reasoning"] != true {
 		t.Fatalf("glm capabilities = %#v", glm)
 	}
+
+	deepseek := catalogModelEntry("sn-deepseek-v4-1-flash-1017", "DeepSeek V4.1 Flash 1017",
+		1000000, 100000, []string{"reasoning"}, 0)
+	efforts, _ := deepseek["reasoning_efforts"].([]string)
+	hasMax, hasHigh := false, false
+	for _, effort := range efforts {
+		hasMax = hasMax || effort == "max"
+		hasHigh = hasHigh || effort == "high"
+	}
+	if !hasMax || !hasHigh {
+		t.Fatalf("1017 reasoning_efforts = %#v, want max/high", deepseek["reasoning_efforts"])
+	}
 }
 
 func TestCatalogCacheAndForce(t *testing.T) {

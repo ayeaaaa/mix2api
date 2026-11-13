@@ -122,6 +122,14 @@ var seedModelDefinitions = []seedModelDefinition{
 	},
 }
 
+// raccoonReasoningEfforts is the upstream-validated effort list for models
+// that accept reasoning_effort. The 1017 model accepts the same range as the
+// CodeArts 1017 alias; without this list clients only offer their fallback
+// levels and a "MAX" selection can silently degrade to high.
+var raccoonReasoningEfforts = map[string][]string{
+	"sn-deepseek-v4-1-flash-1017": {"none", "low", "medium", "high", "xhigh", "max"},
+}
+
 var seedModelsByID = func() map[string]seedModelDefinition {
 	byID := make(map[string]seedModelDefinition, len(seedModelDefinitions))
 	for _, definition := range seedModelDefinitions {
@@ -708,6 +716,10 @@ func catalogModelEntry(
 	entry["supports_images"] = vision
 	entry["supports_tool_calls"] = true
 	entry["supports_reasoning"] = reasoning
+	if efforts := raccoonReasoningEfforts[strings.ToLower(id)]; len(efforts) > 0 {
+		entry["reasoning_efforts"] = append([]string(nil), efforts...)
+		entry["reasoning_default_effort"] = "high"
+	}
 	entry["vision"] = vision
 	entry["multimodal"] = vision
 	entry["abilities"] = map[string]any{

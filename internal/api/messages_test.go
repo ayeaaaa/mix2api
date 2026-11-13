@@ -193,7 +193,8 @@ func TestMessagesToolResultImageAndEffort(t *testing.T) {
 	}
 	for budget, want := range map[string]string{
 		"disabled": "none", "enabled:1000": "low", "enabled:9000": "medium",
-		"enabled:17000": "high", "enabled:40000": "xhigh",
+		"enabled:17000": "high", "enabled:24000": "xhigh",
+		"enabled:31999": "max", "enabled:40000": "max",
 	} {
 		payload := map[string]any{"thinking": map[string]any{"type": "disabled"}}
 		if strings.HasPrefix(budget, "enabled:") {

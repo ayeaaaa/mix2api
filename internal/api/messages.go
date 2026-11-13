@@ -517,7 +517,11 @@ func anthropicEffortFromMessages(payload map[string]any) string {
 		return ""
 	}
 	switch {
-	case budget >= 32000:
+	case budget >= 31999:
+		// Claude Code's "MAX" thinking level is 31,999 budget tokens. Keep it
+		// distinct from xhigh/high instead of collapsing it to high.
+		return "max"
+	case budget >= 24000:
 		return "xhigh"
 	case budget >= 16000:
 		return "high"

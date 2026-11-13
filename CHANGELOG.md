@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 修复
+
+- Anthropic Messages 的 `thinking.budget_tokens=31999`（Claude Code 的 MAX）
+  现在映射为 `max`，不再降成 `high`；24000 以上映射 `xhigh`。
+- CodeArts 的 `thinking.effort` 和 `thinking.budget_tokens` 会解析为对应
+  `reasoning_effort`，包括 `max`。
+- Raccoon 的 `sn-deepseek-v4-1-flash-1017` 模型目录补上
+  `reasoning_efforts`（含 `max`），客户端不再只能选到 high。
+
+### English
+
+#### Fixed
+
+- Anthropic Messages `thinking.budget_tokens=31999` (Claude Code MAX) now
+  maps to `max` instead of `high`; budgets at 24000+ map to `xhigh`.
+- CodeArts now derives `reasoning_effort` from `thinking.effort` and
+  `thinking.budget_tokens`, including `max`.
+- The Raccoon `sn-deepseek-v4-1-flash-1017` catalog now advertises
+  `reasoning_efforts` including `max`.
+
 ## [2.8.1] - 2026-11-13
 
 ### 中文

@@ -585,6 +585,30 @@ func TestChatReasoningEffortMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("thinking budget max", func(t *testing.T) {
+		_, body, err := t5OpenBody(t, base(map[string]any{"thinking": map[string]any{
+			"type": "enabled", "budget_tokens": 31999,
+		}}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		if body["reasoning_effort"] != "max" {
+			t.Fatalf("reasoning_effort = %#v, want max", body["reasoning_effort"])
+		}
+	})
+
+	t.Run("thinking explicit max", func(t *testing.T) {
+		_, body, err := t5OpenBody(t, base(map[string]any{"thinking": map[string]any{
+			"type": "enabled", "effort": "max",
+		}}))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		if body["reasoning_effort"] != "max" {
+			t.Fatalf("reasoning_effort = %#v, want max", body["reasoning_effort"])
+		}
+	})
+
 	t.Run("thinking disabled", func(t *testing.T) {
 		_, body, err := t5OpenBody(t, base(map[string]any{"thinking": map[string]any{"type": "disabled"}}))
 		if err != nil {
