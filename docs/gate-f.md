@@ -174,6 +174,14 @@ and the 14/14 dashboard JS harness pass. Published as `v2.6.3` at `f70eb9a`;
 evidence: `docs/smoke/2026-11-13-release-2.6.3.md`. No media or Windows SCM gate
 changed.
 
+**v2.7.0 addendum:** CodeArts usage now settles the cumulative used-credit delta
+per request (explicit credit wins; sampling is best effort; concurrent requests
+share a high-water mark). API keys support a daily token limit enforced before
+concurrency, and both providers harden tool-schema keyword types to avoid
+upstream code 11129. `make check`, `make race`, and the 14/14 dashboard JS
+harness pass. Published as `v2.7.0` at `c24b744`; evidence:
+`docs/smoke/2026-11-13-release-2.7.0.md`. No media or Windows SCM gate changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
