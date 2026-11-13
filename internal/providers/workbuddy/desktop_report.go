@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	taskDesktopReportDomain = "copilot.tencent.com"
-	taskDesktopReportCommit = "5f9692923c93033111c51ad7b003eb80204a9b75"
-	taskDesktopReportDate   = 1789036585355
+	taskDesktopReportDomain       = "copilot.tencent.com"
+	taskDesktopReportCommit       = "5f9692923c93033111c51ad7b003eb80204a9b75"
+	taskDesktopReportDate   int64 = 1789036585355
 )
 
 // taskDesktopUserAgent mirrors v1's DESKTOP_UA_CN shape without hard-coding a
