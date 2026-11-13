@@ -3,6 +3,58 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.7.0] - 2026-11-13
+
+### 中文
+
+#### 新增
+
+- CodeArts 请求积分结算：CodeArts SSE 只返回 token，不返回逐请求
+  `credit`。现在请求前采样账号累计已用积分，响应后强制刷新统计并按差值
+  写入 usage；上游显式返回非零 `credit` 时不重复记账，采样失败不影响聊天。
+  同一账号的并发请求共享高水位，避免同一段增量被重复结算。
+- API Key 新增日 token 限额：`daily_token_limit`，单位 M，`0` 不限。
+  超限在占用并发槽位之前返回 `403 permission_error`；`/v1/messages` 使用
+  Anthropic 错误信封。看板 Key 编辑器新增输入框和「日限 NM」徽标。
+- 工具 schema 关键字纠偏：WorkBuddy / CodeArts 共用
+  `providers.HardenSchemaKeywords`，数字/布尔字符串、`enum` / `examples`、
+  `description` / `title` / `format` / `pattern`、`additionalProperties` 和
+  null 关键字都会在出站前规整，修复上游 `code 11129`。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 14/14 通过。
+- 新增 CodeArts 积分 delta/显式 credit/并发高水位/采样失败、Key 日限额
+  存储/折叠/API 拒绝，以及两个 provider 的 schema 关键字纠偏测试。
+
+### English
+
+#### Added
+
+- CodeArts per-request credit settlement: CodeArts SSE reports tokens but not
+  per-request `credit`. The gateway now samples the account's cumulative used
+  credits before a request, force-refreshes statistics afterward, and writes the
+  delta to usage. Explicit non-zero upstream credit is not counted twice, and
+  sampling failures never block chat. Concurrent requests share a high-water
+  mark so the same delta is not settled twice.
+- API keys now support a daily token limit (`daily_token_limit`, in millions;
+  `0` = unlimited). The limit is enforced before a concurrency slot and returns
+  `403 permission_error`; `/v1/messages` uses the Anthropic error envelope. The
+  dashboard key editor adds the field and a `daily limit NM` badge.
+- Tool-schema keyword coercion: WorkBuddy and CodeArts share
+  `providers.HardenSchemaKeywords`, which normalizes numeric/boolean strings,
+  `enum` / `examples`, `description` / `title` / `format` / `pattern`,
+  `additionalProperties`, and null keywords before sending upstream, fixing
+  upstream `code 11129`.
+
+#### Verification
+
+- `make check` and `make race` pass; the dashboard JS harness passes 14/14
+  suites.
+- Added coverage for CodeArts credit delta/explicit/high-water/failure, key
+  daily-limit storage/fold/API rejection, and schema keyword coercion in both
+  providers.
+
 ## [2.6.3] - 2026-11-13
 
 ### 中文
