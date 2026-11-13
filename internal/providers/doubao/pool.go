@@ -322,6 +322,25 @@ func (p *Pool) SetProxySlot(uid, slot string) error {
 	return account.save()
 }
 
+// SetCheckinProbe stores the desktop-client query/UA captured for the
+// check-in activity endpoint. The query can contain one-time anti-bot tokens,
+// so it is never returned through AccountView.
+func (p *Pool) SetCheckinProbe(uid, query, ua string) error {
+	account := p.account(uid)
+	if account == nil {
+		return errors.New("doubao: account not found")
+	}
+	query = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(query), "?"))
+	if query == "" {
+		return errors.New("doubao: checkin query is empty")
+	}
+	account.mu.Lock()
+	account.CheckinQuery = query
+	account.CheckinUA = strings.TrimSpace(ua)
+	account.mu.Unlock()
+	return account.save()
+}
+
 func (p *Pool) AccountSummaries() []AccountSummary {
 	accounts := p.Accounts()
 	out := make([]AccountSummary, 0, len(accounts))

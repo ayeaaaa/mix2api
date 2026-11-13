@@ -25,14 +25,16 @@ type AccountSummary = providers.AccountSummary
 // Account is one Doubao cookie/device pair. Cookies and device are credentials
 // and never leave the provider through View or AccountSummary.
 type Account struct {
-	UID       string
-	Nickname  string
-	Cookies   map[string]string
-	Device    map[string]string
-	Enabled   bool
-	Note      string
-	ProxySlot string
-	AddedAt   string
+	UID          string
+	Nickname     string
+	Cookies      map[string]string
+	Device       map[string]string
+	Enabled      bool
+	Note         string
+	ProxySlot    string
+	AddedAt      string
+	CheckinQuery string
+	CheckinUA    string
 
 	// Reserved for the next phase. They are persisted so the account model does
 	// not need a migration when check-in/credits/tasks are added.
@@ -51,17 +53,19 @@ type Account struct {
 }
 
 type accountFile struct {
-	UID         string            `json:"uid"`
-	Nickname    string            `json:"nickname"`
-	Cookies     map[string]string `json:"cookies"`
-	Device      map[string]string `json:"device"`
-	Enabled     *bool             `json:"enabled,omitempty"`
-	Note        string            `json:"note,omitempty"`
-	ProxySlot   string            `json:"proxy_slot,omitempty"`
-	AddedAt     string            `json:"added_at,omitempty"`
-	Credits     map[string]any    `json:"credits,omitempty"`
-	Tasks       map[string]any    `json:"tasks,omitempty"`
-	LastCheckin string            `json:"last_checkin,omitempty"`
+	UID          string            `json:"uid"`
+	Nickname     string            `json:"nickname"`
+	Cookies      map[string]string `json:"cookies"`
+	Device       map[string]string `json:"device"`
+	Enabled      *bool             `json:"enabled,omitempty"`
+	Note         string            `json:"note,omitempty"`
+	ProxySlot    string            `json:"proxy_slot,omitempty"`
+	AddedAt      string            `json:"added_at,omitempty"`
+	CheckinQuery string            `json:"checkin_query,omitempty"`
+	CheckinUA    string            `json:"checkin_ua,omitempty"`
+	Credits      map[string]any    `json:"credits,omitempty"`
+	Tasks        map[string]any    `json:"tasks,omitempty"`
+	LastCheckin  string            `json:"last_checkin,omitempty"`
 }
 
 func (a *Account) fileValue() accountFile {
@@ -69,6 +73,7 @@ func (a *Account) fileValue() accountFile {
 	return accountFile{
 		UID: a.UID, Nickname: a.Nickname, Cookies: a.Cookies, Device: a.Device,
 		Enabled: &enabled, Note: a.Note, ProxySlot: a.ProxySlot, AddedAt: a.AddedAt,
+		CheckinQuery: a.CheckinQuery, CheckinUA: a.CheckinUA,
 		Credits: a.Credits, Tasks: a.Tasks, LastCheckin: a.LastCheckin,
 	}
 }
@@ -195,6 +200,7 @@ func (a *Account) view() map[string]any {
 	return map[string]any{
 		"uid": a.UID, "nickname": a.Nickname, "realm": ProviderRealm,
 		"enabled": a.Enabled, "note": a.Note, "proxy_slot": a.ProxySlot,
+		"checkin_probe":     a.CheckinQuery != "",
 		"active_concurrent": a.active, "max_concurrent": a.maxConcurrent,
 		"last_error": a.lastError,
 		"cooling":    !a.coolingUntil.IsZero() && time.Now().Before(a.coolingUntil),
@@ -242,8 +248,10 @@ func LoadAccounts(dir string) ([]*Account, error) {
 		account := &Account{
 			UID: file.UID, Nickname: file.Nickname, Cookies: cloneStringMap(file.Cookies),
 			Device: cloneStringMap(file.Device), Enabled: true, Note: file.Note,
-			ProxySlot: file.ProxySlot, AddedAt: file.AddedAt, Credits: file.Credits,
-			Tasks: file.Tasks, LastCheckin: file.LastCheckin, Path: path,
+			ProxySlot: file.ProxySlot, AddedAt: file.AddedAt,
+			CheckinQuery: file.CheckinQuery, CheckinUA: file.CheckinUA,
+			Credits: file.Credits,
+			Tasks:   file.Tasks, LastCheckin: file.LastCheckin, Path: path,
 		}
 		if file.Enabled != nil {
 			account.Enabled = *file.Enabled

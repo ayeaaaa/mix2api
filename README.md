@@ -235,7 +235,8 @@ compose 文件、日志或 Git。
    - CodeArts（遥遥领先）：华为云 OAuth；
    - Raccoon（商汤小浣熊）：导入桌面客户端 `auth.json` 或走本机回环授权；
    - 豆包 Work：在豆包 Work 视图导入 cookies/device JSON（至少包含 `sessionid`、`ttwid`）。
-     签到/积分/任务在豆包账号表中查看；签到发奖需要电脑端活动资格。
+     签到/积分/任务在豆包账号表中查看；签到发奖需要电脑端活动资格。若已抓到电脑端
+     `landing/checkin` 的 query/UA，可用 `POST /doubao/accounts/probe` 保存到账号后重放。
 3. 在「设置」中创建 API Key，按需绑定出口（具体出口或全部提供商）和模型。
 4. 用 `/v1/models` 和一次最小聊天请求验证：
 

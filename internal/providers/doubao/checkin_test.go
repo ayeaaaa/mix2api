@@ -3,6 +3,7 @@ package doubao
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -43,6 +44,43 @@ func TestCheckinSlotUsesShanghaiTime(t *testing.T) {
 	slot, ok := checkinSlot(time.Date(2026, 11, 12, 1, 15, 0, 0, time.UTC), "09:15")
 	if !ok || slot.Format("2006-01-02 15:04") != "2026-11-12 09:15" {
 		t.Fatalf("slot = %v, ok=%v", slot, ok)
+	}
+}
+
+func TestCheckinProbeOverridesQueryAndUA(t *testing.T) {
+	var gotQuery, gotUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotUA = r.URL.RawQuery, r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"progress":{"total_amount":0},"tasks":[{"task_kind":"daily_signin","daily_checkin":{"checked_in_today":true}}]}}`))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	provider, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-probe", "probe", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.cfgMu.Lock()
+	provider.cfg.BaseURL = server.URL
+	provider.cfgMu.Unlock()
+	if err := provider.pool.SetCheckinProbe(account.UID, "?device_id=d&a_bogus=abc", "SamanthaDoubao/test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.CheckinStatus(context.Background(), account.UID); err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "device_id=d&a_bogus=abc" || gotUA != "SamanthaDoubao/test" {
+		t.Fatalf("query=%q ua=%q", gotQuery, gotUA)
+	}
+	view := account.view()
+	if view["checkin_probe"] != true || strings.Contains(fmt.Sprint(view), "a_bogus") {
+		t.Fatalf("view leaked probe or missed flag: %#v", view)
 	}
 }
 

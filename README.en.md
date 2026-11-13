@@ -264,7 +264,9 @@ behavior are unchanged; see [`docs/utls-bridge.md`](docs/utls-bridge.md).
      loopback OAuth flow;
    - Doubao Work: import cookies/device JSON in the Doubao Work view (at least
      `sessionid` and `ttwid`). Check-in/credits/tasks are shown in the Doubao
-     account table; reward submission requires desktop-client eligibility.
+     account table; reward submission requires desktop-client eligibility. If
+     the desktop `landing/checkin` query/UA has been captured, save it with
+     `POST /doubao/accounts/probe` and replay it from the account.
 3. Create an API key in Settings and bind it to a concrete exit, all providers,
    or a model allow-list as needed.
 4. Verify with `/v1/models` and a minimal chat request:

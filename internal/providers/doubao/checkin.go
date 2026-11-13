@@ -72,11 +72,21 @@ func (p *Provider) postCampaignJSON(ctx context.Context, account *Account, path 
 	defer cancel()
 	cfg := p.currentConfig()
 	base := strings.TrimRight(cfg.BaseURL, "/")
+	account.mu.Lock()
+	query, ua := account.CheckinQuery, account.CheckinUA
+	account.mu.Unlock()
+	query = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(query), "?"))
+	if query == "" {
+		query = p.campaignQuery()
+	}
+	if strings.TrimSpace(ua) == "" {
+		ua = campaignUA
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path+"?"+p.campaignQuery(), bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path+"?"+query, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +97,7 @@ func (p *Provider) postCampaignJSON(ctx context.Context, account *Account, path 
 	req.Header.Set("cookie", account.cookieHeader())
 	req.Header.Set("origin", base)
 	req.Header.Set("referer", campaignReferer)
-	req.Header.Set("user-agent", campaignUA)
+	req.Header.Set("user-agent", ua)
 
 	client, err := p.clientForProxy(p.proxyURL(account))
 	if err != nil {
