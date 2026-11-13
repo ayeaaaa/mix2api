@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ func (s *Server) requireKeyAuth(next http.Handler) http.Handler {
 			writeKeyDailyLimitFailure(w, r, failure)
 			return
 		}
-		release, acquired := s.keyLimiter.Acquire(entry.ID, entry.ConcurrencyLimit)
+		release, acquired := s.keyLimiter.AcquireWait(r.Context(), entry.ID, entry.ConcurrencyLimit, keySlotWait())
 		if !acquired {
 			name := strings.TrimSpace(entry.Name)
 			if name == "" {
@@ -134,6 +135,19 @@ func writeKeyDailyLimitFailure(w http.ResponseWriter, r *http.Request, failure *
 		return
 	}
 	writeV1ErrorWithRetry(w, failure.Status, failure.Type, failure.Message, time.Until(reset), reset)
+}
+
+func keySlotWait() time.Duration {
+	const defaultWait = 30 * time.Second
+	raw := strings.TrimSpace(os.Getenv("WB_CHAT_SLOT_WAIT"))
+	if raw == "" {
+		return defaultWait
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 {
+		return defaultWait
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func nextLocalMidnight() time.Time {

@@ -2,6 +2,7 @@ package workbuddy
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -12,10 +13,12 @@ import (
 // narrow: user and tool content is never changed, only system/developer/
 // assistant text that can carry a client fingerprint.
 var (
-	sanitizeBillingLine = regexp.MustCompile(`(?im)^[ \t]*x-anthropic-billing-(?:header|hdr)[ \t]*:[^\r\n]*(?:\r?\n|$)`)
-	sanitizeBillingHdr  = regexp.MustCompile(`(?i)x-anthropic-billing-(?:header|hdr)\s*:\s*[^;\r\n]*(?:;\s*)?`)
-	sanitizeBillingKV   = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*`)
-	sanitizeBillingBare = regexp.MustCompile(`(?i)x-anthropic-billing-(?:header|hdr)`)
+	sanitizeBillingLine  = regexp.MustCompile(`(?im)^[ \t]*x-anthropic-billing-(?:header|hdr)[ \t]*:[^\r\n]*(?:\r?\n|$)`)
+	sanitizeBillingHdr   = regexp.MustCompile(`(?i)x-anthropic-billing-(?:header|hdr)\s*:\s*[^;\r\n]*(?:;\s*)?`)
+	sanitizeBillingKV    = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*`)
+	sanitizeBillingBare  = regexp.MustCompile(`(?i)x-anthropic-billing-(?:header|hdr)`)
+	sanitizeBillingToken = regexp.MustCompile(`(?i)(?:^|[;\s])(?:cc_[a-z0-9_]+|cch)=[^\s;]*`)
+	sanitizeBillingCont  = regexp.MustCompile(`(?i)^\s*(?:cc_[a-z0-9_]+|cch)=`)
 
 	sanitizeClaudeIntro = regexp.MustCompile(`(?i)You are Claude Code,\s*Anthropic['’]s official CLI(?: tool)? for Claude(?: Code)?\.?`)
 	sanitizeCodexIntro  = regexp.MustCompile(`(?i)You are a coding agent running in the Codex CLI(?: tool)?[^.\n]*\.`)
@@ -59,7 +62,13 @@ func hasSanitizeFingerprint(text string, identity, billing bool) bool {
 }
 
 func sanitizeText(text string, identity, billing bool) string {
-	if text == "" || !hasSanitizeFingerprint(text, identity, billing) {
+	if text == "" {
+		return text
+	}
+	if billing && looseBillingEnabled() {
+		text = sanitizeLooseBillingPrefix(text)
+	}
+	if !hasSanitizeFingerprint(text, identity, billing) {
 		return text
 	}
 	text = sanitizeOMO.ReplaceAllString(text, "Sisyphus-Junior - Focused executor")
@@ -238,4 +247,43 @@ func sanitizeChatMessages(messages []any) []any {
 		out = append(out, copied)
 	}
 	return out
+}
+
+func looseBillingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WB_SANITIZE_LOOSE_BILLING"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeBillingLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || len(line) > 400 {
+		return false
+	}
+	if strings.Contains(strings.ToLower(line), "x-anthropic-billing") {
+		return true
+	}
+	return len(sanitizeBillingToken.FindAllString(line, -1)) >= 2
+}
+
+// sanitizeLooseBillingPrefix drops a leading billing metadata block when the
+// strict parser no longer recognizes its field names. It is opt-in because a
+// false positive would delete ordinary system text.
+func sanitizeLooseBillingPrefix(text string) string {
+	lines := strings.SplitAfter(text, "\n")
+	if len(lines) == 0 || !looksLikeBillingLine(lines[0]) {
+		return text
+	}
+	end := 1
+	for end < len(lines) {
+		line := strings.TrimRight(lines[end], "\r\n")
+		if !sanitizeBillingCont.MatchString(line) && !looksLikeBillingLine(line) {
+			break
+		}
+		end++
+	}
+	return strings.TrimSpace(strings.Join(lines[end:], ""))
 }

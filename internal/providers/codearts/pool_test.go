@@ -2,6 +2,7 @@ package codearts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1179,4 +1180,36 @@ func TestPoolViewCheckinRedactionAndFixedCreditUnit(t *testing.T) {
 	if account.Checkin["access_token"] != "checkin-access-token" {
 		t.Fatalf("view redaction mutated the stored checkin: %#v", account.Checkin)
 	}
+}
+
+func TestPoolAcquireWait(t *testing.T) {
+	dir := t.TempDir()
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	account, err := p.Add(testAuth("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Acquire(account) {
+		t.Fatal("first acquire failed")
+	}
+	done := make(chan bool, 1)
+	go func() { done <- p.AcquireWait(context.Background(), account, time.Second) }()
+	time.Sleep(20 * time.Millisecond)
+	p.Release(account)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("waiter did not acquire after release")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter blocked")
+	}
+	p.Release(account)
+	if !p.Acquire(account) {
+		t.Fatal("reacquire failed")
+	}
+	if p.AcquireWait(context.Background(), account, 10*time.Millisecond) {
+		t.Fatal("acquired while slot was held")
+	}
+	p.Release(account)
 }

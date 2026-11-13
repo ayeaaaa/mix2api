@@ -134,6 +134,8 @@ func setupTaskProvider(t *testing.T, realm, dir, serverURL string) (*Provider, *
 	provider.tasksChatBaseURL = serverURL
 	provider.tasksBillingBaseURL = serverURL
 	provider.tasksWebBaseURL = serverURL
+	provider.tasksCampaignBaseURL = serverURL
+	provider.tasksOpenBaseURL = serverURL
 	provider.creditsBillingBaseURL = serverURL
 	provider.creditsCheckinBaseURL = serverURL
 	provider.tasksGap = -1

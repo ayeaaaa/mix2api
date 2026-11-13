@@ -6163,6 +6163,18 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
     </div>
 
     <div id="taskLogBox" style="display:none;margin-top:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:220px;overflow-y:auto"></div>
+
+    <div id="campaignPanel" style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div>
+          <b style="font-size:13px">运营活动任务</b>
+          <div id="campaignSummary" style="font-size:12px;color:var(--dim);margin-top:2px">星巴克协作 / 记者节福利 · 独立于成长任务清单</div>
+        </div>
+        <button id="btnRunCampaigns" class="primary" onclick="runCampaignTasks(this)">运行运营活动</button>
+      </div>
+      <div id="campaignList" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+      <div id="campaignLogBox" style="display:none;margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;font-family:ui-monospace,monospace;line-height:1.6;max-height:180px;overflow-y:auto"></div>
+    </div>
   </section>
   </div><!-- /pageTasks -->
 
@@ -6344,6 +6356,16 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <span class="hm-meta" id="recentMeta">—</span>
       </div>
       <div class="pbody">
+        <div class="console-filterbar" aria-label="最近请求筛选" style="margin-bottom:8px">
+          <input id="analyticsRecentAccountFilter" class="console-search" type="search" placeholder="账号" aria-label="账号筛选" oninput="setRecentFilter('account', this.value)">
+          <input id="analyticsRecentModelFilter" class="console-search" type="search" placeholder="模型" aria-label="模型筛选" oninput="setRecentFilter('model', this.value)">
+          <input id="analyticsRecentKeyFilter" class="console-search" type="search" placeholder="API Key" aria-label="API Key 筛选" oninput="setRecentFilter('key', this.value)">
+          <select id="analyticsRecentOutcomeFilter" aria-label="结果筛选" onchange="setRecentFilter('outcome', this.value)">
+            <option value="">全部结果</option>
+            <option value="completed">成功</option>
+            <option value="failed">失败</option>
+          </select>
+        </div>
         <div class="recent-list" id="recentList"><div class="empty">加载中…</div></div>
       </div>
     </section>
@@ -11224,6 +11246,7 @@ async function loadGrowthTasks(){
       const elCatDesc = document.getElementById("catDesc"); if(elCatDesc) elCatDesc.textContent = '-';
       const tb = document.querySelector("#growthTable tbody");
       if(tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:24px">暂无任务或未登录国内版账号</td></tr>';
+      loadCampaigns().catch(function(){});
       return;
     }
 
@@ -11281,6 +11304,7 @@ async function loadGrowthTasks(){
     if(!tb) return;
     if(!tasks.length){
       tb.innerHTML = '<tr><td colspan="5" class="empty">暂无任务或未登录国内版账号</td></tr>';
+      loadCampaigns().catch(function(){});
       return;
     }
     tb.innerHTML = tasks.map(t => {
@@ -11309,6 +11333,7 @@ async function loadGrowthTasks(){
         + '</tr>';
     }).join('');
     applyTableSort('growthTable');
+    loadCampaigns().catch(function(){});
   }catch(e){
     console.error('loadGrowthTasks error:', e);
   }
@@ -11367,6 +11392,105 @@ async function claimGrowthTask(btn){
       toast('领取失败: ' + (r.msg || '未知原因'), 'bad');
     }
     await loadGrowthTasks();
+    await loadAccounts();
+  }catch(e){
+    toast('领取失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function loadCampaigns(){
+  const list = document.getElementById('campaignList');
+  const summary = document.getElementById('campaignSummary');
+  if(!list) return;
+  const realm = window.VIEW_REALM || 'intl';
+  if(realm === 'raccoon' || realm === 'codearts') return;
+  const q = (CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all') ? ('?uid=' + encodeURIComponent(CURRENT_GROWTH_UID)) : '';
+  try{
+    const r = await getJSON('/activity/campaigns' + q);
+    const activities = r.activities || [];
+    if(!activities.length){
+      list.innerHTML = '<div style="color:var(--dim);font-size:12px">' + esc(r.msg || '暂无运营活动') + '</div>';
+      if(summary) summary.textContent = r.msg || '运营活动任务未下发或已结束';
+      return;
+    }
+    if(summary) summary.textContent = '星巴克协作 / 记者节福利 · 独立于成长任务清单';
+    list.innerHTML = activities.map(function(a){
+      const tasks = (a.tasks || []).map(function(t){
+        let badge = '<span class="badge">' + esc(t.state || '') + '</span>';
+        if(t.claimed) badge = '<span class="badge off">已领取</span>';
+        else if(t.completed) badge = '<span class="badge ok">待领奖</span>';
+        else if(t.manual) badge = '<span class="badge warn">需手动</span>';
+        else if(t.state === 'in_progress') badge = '<span class="badge s">进行中</span>';
+        else if(!t.issued) badge = '<span class="badge">未下发</span>';
+        const prog = (t.claimed || t.completed) ? '已达成' : ((t.progress || 0) + ' / ' + (t.target || 1));
+        const claimBtn = (!t.claimed && t.completed)
+          ? ' <button class="sec mini" data-activity="' + esc(a.code) + '" data-task="' + esc(t.task_code) + '" onclick="claimCampaignTask(this)">领取</button>'
+          : '';
+        const manual = t.manual_reason ? '<div style="font-size:11px;color:var(--dim)">' + esc(t.manual_reason) + '</div>' : '';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px dashed var(--line)">'
+          + '<div><b style="font-size:12px">' + esc(t.label || t.task_code) + '</b> <span class="mono" style="font-size:11px;color:var(--dim)">' + esc(t.task_code) + '</span>' + manual + '</div>'
+          + '<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">' + prog + ' ' + badge + claimBtn + '</div>'
+          + '</div>';
+      }).join('');
+      const head = '<div style="font-size:12px"><b>' + esc(a.label) + '</b> <span class="mono" style="color:var(--dim);font-size:11px">' + esc(a.code) + '</span>'
+        + (a.available ? '' : ' <span class="badge">未下发</span>')
+        + (a.error ? ' <span style="color:var(--warn)">' + esc(a.error) + '</span>' : '') + '</div>';
+      return '<div>' + head + tasks + '</div>';
+    }).join('');
+  }catch(e){
+    list.innerHTML = '<div style="color:var(--warn);font-size:12px">运营活动读取失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function runCampaignTasks(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '执行中...'; }
+  const logBox = document.getElementById('campaignLogBox');
+  if(logBox){
+    logBox.style.display = 'block';
+    logBox.innerHTML = '<div style="color:var(--accent)">[campaign_runner] 正在执行星巴克协作与记者节活动任务...</div>';
+  }
+  try{
+    const payload = {};
+    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
+      payload.uid = CURRENT_GROWTH_UID;
+    }
+    const autoClaim = document.getElementById('growthAutoClaim');
+    payload.claim = !autoClaim || autoClaim.checked;
+    const r = await postJSON('/activity/campaigns/run', payload);
+    const logs = r.logs || [];
+    if(logBox){
+      logBox.innerHTML = logs.map(function(l){ return '<div>' + esc(l) + '</div>'; }).join('');
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+    await loadAccounts();
+    await loadGrowthTasks();
+    const sumC = r.credit_added != null ? ('，共增加 +' + r.credit_added + ' 积分') : '';
+    toast('运营活动执行完成' + sumC + '！');
+  }catch(e){
+    if(logBox) logBox.innerHTML += '<div style="color:var(--warn)">执行出错: ' + esc(e.message) + '</div>';
+    toast('运营活动执行失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '运行运营活动'; }
+  }
+}
+
+async function claimCampaignTask(btn){
+  const activity = (btn && btn.dataset && btn.dataset.activity) || '';
+  const task = (btn && btn.dataset && btn.dataset.task) || '';
+  const uid = (CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all') ? CURRENT_GROWTH_UID : '';
+  if(!activity || !task) return;
+  if(!uid){ toast('请先在右上角选择一个国内版账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/activity/campaigns/claim', {uid, activity_code: activity, task});
+    if(r.ok){
+      toast('领取成功' + (r.credit ? ('，+' + r.credit + ' 积分') : ''), 'ok');
+    } else {
+      toast('领取失败: ' + (r.msg || '未知原因'), 'bad');
+    }
+    await loadCampaigns();
     await loadAccounts();
   }catch(e){
     toast('领取失败: ' + e.message, 'bad');
@@ -21062,8 +21186,17 @@ function setAnalyticsScope(scope){
   }
 }
 
+const WBA_RECENT_FILTERS = {account: '', model: '', key: '', outcome: ''};
+function setRecentFilter(name, value){
+  WBA_RECENT_FILTERS[name] = String(value || '').trim();
+  loadRecent();
+}
 function analyticsRecentQuery(){
-  return '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+  let q = '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+  for(const key of ['account', 'model', 'key', 'outcome']){
+    if(WBA_RECENT_FILTERS[key]) q += '&' + key + '=' + encodeURIComponent(WBA_RECENT_FILTERS[key]);
+  }
+  return q;
 }
 
 async function refreshAnalyticsScopeData(){
@@ -22363,13 +22496,17 @@ async function loadRecent(){
     const r = await api(analyticsRecentQuery());
     if(gen !== WBA_RECENT_GEN || realm !== analyticsRealmValue()) return;
     const rows = r.rows || [];
-    $('recentMeta').textContent = `共 ${fmtCompact(r.total || 0)} 条记录`;
+    let meta = `共 ${fmtCompact(r.total || 0)} 条记录`;
+    if(r.total_exact === false) meta += `（已扫描 ${fmtCompact(r.scanned || 0)} 行，可能还有更早的）`;
+    $('recentMeta').textContent = meta;
     $('recentList').innerHTML = rows.map(x => {
       const ok = x.outcome === 'completed';
       const nm = nicknameOf(x.account);
+      const err = x.error || x.error_message || x.message || '';
+      const detail = !ok && err ? `<details class="recent-error"><summary>查看错误</summary><pre>${esc(String(err))}</pre></details>` : '';
       return `<div class="recent-item">
         <span class="t">${recentStamp(x.iso)}</span>
-        <span class="m"><b>${x.model || ''}</b> → ${nm.length > 16 ? nm.slice(0, 16) + '…' : nm}${ok ? '' : ' <span class="err">[' + (x.outcome || '失败') + ']</span>'}</span>
+        <span class="m"><b>${x.model || ''}</b> → ${nm.length > 16 ? nm.slice(0, 16) + '…' : nm}${ok ? '' : ' <span class="err">[' + (x.outcome || '失败') + ']</span>'}${detail}</span>
         <span class="r"><b>${fmtCompact(x.total_tokens || 0)}</b> tok · ${((x.elapsed_ms || 0) / 1000).toFixed(1)}s</span>
       </div>`;
     }).join('') || '<div class="empty">暂无请求记录</div>';

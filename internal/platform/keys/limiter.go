@@ -1,6 +1,10 @@
 package keys
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // Limiter tracks in-flight requests per API-key id. A key with a non-positive
 // limit is not tracked and therefore never blocks.
@@ -71,6 +75,34 @@ func (l *Limiter) Acquire(entryID string, explicitLimit ...int) (func(), bool) {
 			l.mu.Unlock()
 		})
 	}, true
+}
+
+// AcquireWait waits up to wait for a slot. A non-positive wait behaves like
+// Acquire. The polling interval is deliberately small; the limiter is a
+// guardrail, not a scheduler.
+func (l *Limiter) AcquireWait(ctx context.Context, entryID string, limit int, wait time.Duration) (func(), bool) {
+	if wait <= 0 {
+		return l.Acquire(entryID, limit)
+	}
+	if release, ok := l.Acquire(entryID, limit); ok {
+		return release, true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return func() {}, false
+		case <-timer.C:
+			return func() {}, false
+		case <-ticker.C:
+			if release, ok := l.Acquire(entryID, limit); ok {
+				return release, true
+			}
+		}
+	}
 }
 
 // InFlight returns the number of slots currently held for entryID.

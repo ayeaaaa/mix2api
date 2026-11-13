@@ -10,13 +10,19 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strings"
 )
 
 // RecentOptions selects one page of rows from the tail of the ledger.
 type RecentOptions struct {
-	Limit int
-	Page  int
-	Realm string
+	Limit     int
+	Page      int
+	Realm     string
+	Account   string
+	Model     string
+	Key       string
+	Outcome   string
+	ScanLimit int
 }
 
 // RecentPage is the v1 /usage/recent payload.
@@ -25,6 +31,8 @@ type RecentPage struct {
 	Page       int              `json:"page"`
 	Limit      int              `json:"limit"`
 	TotalPages int              `json:"total_pages"`
+	TotalExact bool             `json:"total_exact"`
+	Scanned    int              `json:"scanned"`
 	USDCNY     float64          `json:"usd_cny"`
 	Rows       []map[string]any `json:"rows"`
 }
@@ -60,6 +68,9 @@ func (s *Store) Recent(opts RecentOptions) (RecentPage, error) {
 	realm := opts.Realm
 	if realm == "all" {
 		realm = ""
+	}
+	if recentHasFilters(opts) {
+		return s.recentFiltered(opts, limit, page, realm)
 	}
 
 	var (
@@ -107,9 +118,109 @@ func (s *Store) Recent(opts RecentOptions) (RecentPage, error) {
 		Page:       pageOutput,
 		Limit:      limit,
 		TotalPages: totalPages(total, limit),
+		TotalExact: true,
+		Scanned:    total,
 		USDCNY:     0,
 		Rows:       rows,
 	}, nil
+}
+
+func recentHasFilters(opts RecentOptions) bool {
+	return strings.TrimSpace(opts.Account) != "" || strings.TrimSpace(opts.Model) != "" ||
+		strings.TrimSpace(opts.Key) != "" || strings.TrimSpace(opts.Outcome) != ""
+}
+
+func recentOutcomeMatches(value, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" || want == "all" {
+		return true
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if want == "failed" {
+		return value == "failed" || value == "upstream_aborted" || value == "client_aborted"
+	}
+	if want == "completed" || want == "success" {
+		return value == "completed"
+	}
+	return value == want
+}
+
+func (s *Store) recentFiltered(opts RecentOptions, limit, page int, realm string) (RecentPage, error) {
+	if s == nil {
+		return RecentPage{}, errors.New("usage: nil store")
+	}
+	scanLimit := opts.ScanLimit
+	if scanLimit <= 0 {
+		scanLimit = 20000
+	}
+	if scanLimit < limit {
+		scanLimit = limit
+	}
+	const pageSize = 1000
+	matches := make([]map[string]any, 0, minInt(scanLimit, 1000))
+	scanned := 0
+	exact := false
+	for sourcePage := 1; scanned < scanLimit; sourcePage++ {
+		rows, err := s.recentBackwardPage(realm, sourcePage, pageSize)
+		if err != nil {
+			return RecentPage{}, err
+		}
+		if len(rows) == 0 {
+			exact = true
+			break
+		}
+		for _, row := range rows {
+			if scanned >= scanLimit {
+				break
+			}
+			scanned++
+			if recentRowMatches(row, opts) {
+				matches = append(matches, row)
+			}
+		}
+		if len(rows) < pageSize {
+			exact = true
+			break
+		}
+	}
+	total := len(matches)
+	pages := totalPages(total, limit)
+	pageOutput := page
+	if pageOutput > pages {
+		pageOutput = pages
+	}
+	start := (pageOutput - 1) * limit
+	if start >= total {
+		return RecentPage{Total: total, Page: pageOutput, Limit: limit, TotalPages: pages, TotalExact: exact, Scanned: scanned, Rows: []map[string]any{}}, nil
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return RecentPage{Total: total, Page: pageOutput, Limit: limit, TotalPages: pages, TotalExact: exact, Scanned: scanned, Rows: matches[start:end]}, nil
+}
+
+func recentRowMatches(row map[string]any, opts RecentOptions) bool {
+	r := Row(row)
+	if account := strings.TrimSpace(opts.Account); account != "" && RowAccount(r) != account {
+		return false
+	}
+	if model := strings.TrimSpace(opts.Model); model != "" {
+		if RowModel(r) != model && stringValue(r, "requested_model") != model {
+			return false
+		}
+	}
+	if key := strings.TrimSpace(opts.Key); key != "" && RowKey(r) != key {
+		return false
+	}
+	return recentOutcomeMatches(RowOutcome(r), opts.Outcome)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func totalPages(total, limit int) int {

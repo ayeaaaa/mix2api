@@ -74,6 +74,12 @@ check('最近请求在全区域模式下带 all',
   page.analyticsRecentQuery().includes('realm=all'), page.analyticsRecentQuery());
 
 /* ---- 4. 新版用量页的并发与区间一致性 -------------------------------- */
+check('最近请求提供账号/模型/Key/结果筛选',
+  /id="analyticsRecentAccountFilter"/.test(html) && /id="analyticsRecentModelFilter"/.test(html) &&
+  /id="analyticsRecentKeyFilter"/.test(html) && /id="analyticsRecentOutcomeFilter"/.test(html));
+check('最近请求筛选走服务端查询串',
+  /analyticsRecentQuery\(\)\{[\s\S]{0,300}?WBA_RECENT_FILTERS/.test(html));
+
 check('区域按钮维护 aria-pressed',
   /setAttribute\('aria-pressed', on \? 'true' : 'false'\)/.test(html));
 check('perf 折叠区使用新版 state.range 取数',

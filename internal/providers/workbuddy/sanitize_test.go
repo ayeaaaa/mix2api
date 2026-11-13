@@ -130,3 +130,18 @@ func TestSanitizeToolArguments(t *testing.T) {
 		t.Fatalf("nil arguments = %q", second)
 	}
 }
+
+func TestLooseBillingPrefixOptIn(t *testing.T) {
+	t.Setenv("WB_SANITIZE_LOOSE_BILLING", "0")
+	input := "cch=one; cch=two\nKeep me."
+	if got := sanitizeText(input, false, true); got != input {
+		t.Fatalf("loose disabled changed text: %q", got)
+	}
+	t.Setenv("WB_SANITIZE_LOOSE_BILLING", "1")
+	if got := sanitizeText(input, false, true); got != "Keep me." {
+		t.Fatalf("loose enabled = %q, want Keep me.", got)
+	}
+	if got := sanitizeText("ordinary cch=one text", false, true); got != "ordinary cch=one text" {
+		t.Fatalf("single token removed: %q", got)
+	}
+}

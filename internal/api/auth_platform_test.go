@@ -242,6 +242,7 @@ func TestBoundKeyGatewayRealmAccepted(t *testing.T) {
 }
 
 func TestMessagesAuthPreservesNon401(t *testing.T) {
+	t.Setenv("WB_CHAT_SLOT_WAIT", "0")
 	_, keyStore, _, _, _ := platformFixture(t)
 	if _, err := keyStore.Save([]keys.Entry{{
 		ID: "limited", Name: "limited", Key: "key-limited", ConcurrencyLimit: 1,
@@ -302,6 +303,7 @@ func (s *blockingStream) Next() ([]byte, error) {
 func (s *blockingStream) Close() error { return nil }
 
 func TestKeyConcurrency(t *testing.T) {
+	t.Setenv("WB_CHAT_SLOT_WAIT", "0")
 	_, keyStore, _, _, _ := platformFixture(t)
 	if _, err := keyStore.Save([]keys.Entry{{
 		ID: "limited", Name: "limited", Key: "key-limited", ConcurrencyLimit: 1,

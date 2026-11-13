@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -127,7 +128,16 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			break
 		}
 		uid, _ := account.currentUID()
-		if !p.pool.Acquire(account) {
+		if !p.pool.AcquireWait(ctx, account, codeartsBusyWait()) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			wait := codeartsBusyWait()
+			lastErr = &APIError{
+				Kind: KindConcurrency, Status: http.StatusTooManyRequests,
+				Message:    "CodeArts 账号并发已满，请稍后重试",
+				RetryAfter: wait, ResetAt: time.Now().Add(wait),
+			}
 			exclude[uid] = true
 			continue
 		}
@@ -440,6 +450,19 @@ func chatTokenError(err error, auth Auth) *APIError {
 	}
 	return newChatError(KindUnavailable, http.StatusBadGateway,
 		"CodeArts 令牌续期失败："+err.Error(), auth)
+}
+
+func codeartsBusyWait() time.Duration {
+	const defaultWait = 10 * time.Second
+	raw := strings.TrimSpace(os.Getenv("CODEARTS_BUSY_WAIT_SECONDS"))
+	if raw == "" {
+		return defaultWait
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 || seconds > 120 {
+		return defaultWait
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func sleepChatContext(ctx context.Context, delay time.Duration) error {

@@ -73,6 +73,8 @@ func newWBRoutesFixture(t *testing.T) *wbRoutesFixture {
 		provider.tasksChatBaseURL = server.URL
 		provider.tasksBillingBaseURL = server.URL
 		provider.tasksWebBaseURL = server.URL
+		provider.tasksCampaignBaseURL = server.URL
+		provider.tasksOpenBaseURL = server.URL
 		provider.creditsBillingBaseURL = server.URL
 		provider.creditsCheckinBaseURL = server.URL
 		provider.tasksGap = -1
@@ -272,6 +274,9 @@ func TestRoutesWorkBuddyPanelMetadataAndTwinOwnership(t *testing.T) {
 		"POST /tasks/travel",
 		"POST /tasks/streak-bonus",
 		"GET /activity/history",
+		"GET /activity/campaigns",
+		"POST /activity/campaigns/run",
+		"POST /activity/campaigns/claim",
 		"POST /catalog/refresh",
 		"GET /scheduler",
 		"POST /settings/restriction/reset",
