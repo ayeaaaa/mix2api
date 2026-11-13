@@ -26,9 +26,16 @@ type CodeArtsStream struct {
 	body   io.ReadCloser
 	reader *bufio.Reader
 
-	pool    *Pool
-	account *Account
-	model   string
+	pool     *Pool
+	account  *Account
+	provider *Provider
+	model    string
+
+	creditMu        sync.Mutex
+	creditBaseline  *float64
+	creditFinalized bool
+	creditKnown     bool
+	creditDelta     float64
 
 	created int64
 
@@ -65,19 +72,23 @@ func newCodeArtsStream(
 	body io.ReadCloser,
 	pool *Pool,
 	account *Account,
+	provider *Provider,
 	model string,
 	idleTimeout time.Duration,
+	creditBaseline *float64,
 ) *CodeArtsStream {
 	return &CodeArtsStream{
-		parent:      parent,
-		cancel:      cancel,
-		body:        body,
-		reader:      bufio.NewReader(body),
-		pool:        pool,
-		account:     account,
-		model:       model,
-		created:     time.Now().Unix(),
-		idleTimeout: idleTimeout,
+		parent:         parent,
+		cancel:         cancel,
+		body:           body,
+		reader:         bufio.NewReader(body),
+		pool:           pool,
+		account:        account,
+		provider:       provider,
+		model:          model,
+		created:        time.Now().Unix(),
+		idleTimeout:    idleTimeout,
+		creditBaseline: creditBaseline,
 	}
 }
 

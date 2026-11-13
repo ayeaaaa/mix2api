@@ -73,6 +73,10 @@ type Provider struct {
 	// cfg.StreamTimeoutSeconds per-read SSE idle limit. Zero uses the setting.
 	streamIdleTimeout time.Duration
 
+	// creditSample is a test seam for the cumulative used-credit sample.
+	// Nil uses FetchInfo against the live statistics endpoint.
+	creditSample func(context.Context, *Account, bool) (float64, bool)
+
 	jobsOnce   sync.Once
 	checkinJob *codeartsCheckinJob
 }

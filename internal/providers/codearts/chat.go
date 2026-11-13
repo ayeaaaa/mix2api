@@ -398,6 +398,7 @@ func (p *Provider) sendChatAttempt(
 			"codearts: build chat request failed: "+err.Error(), currentAccountAuth(account))
 	}
 
+	creditBaseline := p.takeCreditBaseline(ctx, account)
 	response, err := p.transport.Do(streamCtx, request, account.ProxyURL())
 	if err != nil {
 		cancel()
@@ -420,7 +421,7 @@ func (p *Provider) sendChatAttempt(
 
 	// v1 does not gzip request bodies. Go's transport may negotiate gzip for
 	// the response's Accept-Encoding, but the request body stays plain JSON.
-	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, model, streamTimeout)
+	stream := newCodeArtsStream(ctx, cancel, response.Body, p.pool, account, p, model, streamTimeout, creditBaseline)
 	if preflightErr := stream.preflight(); preflightErr != nil {
 		// Preflight failures have not returned a stream, so the caller still
 		// owns the slot and releases it.
