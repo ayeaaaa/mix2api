@@ -123,6 +123,11 @@ func (h *UsageHandlers) handleRecent(w http.ResponseWriter, r *http.Request) {
 	page := parseQueryInt(r, "page", 1)
 	pageData, err := h.Service.Recent(r.Context(), usage.RecentOptions{
 		Limit: limit, Page: page, Realm: h.realm(r),
+		Account:   strings.TrimSpace(r.URL.Query().Get("account")),
+		Model:     strings.TrimSpace(r.URL.Query().Get("model")),
+		Key:       strings.TrimSpace(r.URL.Query().Get("key")),
+		Outcome:   strings.TrimSpace(r.URL.Query().Get("outcome")),
+		ScanLimit: parseQueryInt(r, "scan_limit", 20000),
 	})
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "server_error", "usage recent failed")

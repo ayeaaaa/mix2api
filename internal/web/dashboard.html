@@ -6344,6 +6344,16 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <span class="hm-meta" id="recentMeta">—</span>
       </div>
       <div class="pbody">
+        <div class="console-filterbar" aria-label="最近请求筛选" style="margin-bottom:8px">
+          <input id="analyticsRecentAccountFilter" class="console-search" type="search" placeholder="账号" aria-label="账号筛选" oninput="setRecentFilter('account', this.value)">
+          <input id="analyticsRecentModelFilter" class="console-search" type="search" placeholder="模型" aria-label="模型筛选" oninput="setRecentFilter('model', this.value)">
+          <input id="analyticsRecentKeyFilter" class="console-search" type="search" placeholder="API Key" aria-label="API Key 筛选" oninput="setRecentFilter('key', this.value)">
+          <select id="analyticsRecentOutcomeFilter" aria-label="结果筛选" onchange="setRecentFilter('outcome', this.value)">
+            <option value="">全部结果</option>
+            <option value="completed">成功</option>
+            <option value="failed">失败</option>
+          </select>
+        </div>
         <div class="recent-list" id="recentList"><div class="empty">加载中…</div></div>
       </div>
     </section>
@@ -21062,8 +21072,17 @@ function setAnalyticsScope(scope){
   }
 }
 
+const WBA_RECENT_FILTERS = {account: '', model: '', key: '', outcome: ''};
+function setRecentFilter(name, value){
+  WBA_RECENT_FILTERS[name] = String(value || '').trim();
+  loadRecent();
+}
 function analyticsRecentQuery(){
-  return '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+  let q = '/usage/recent?limit=12&realm=' + encodeURIComponent(analyticsRealmValue());
+  for(const key of ['account', 'model', 'key', 'outcome']){
+    if(WBA_RECENT_FILTERS[key]) q += '&' + key + '=' + encodeURIComponent(WBA_RECENT_FILTERS[key]);
+  }
+  return q;
 }
 
 async function refreshAnalyticsScopeData(){
@@ -22363,13 +22382,17 @@ async function loadRecent(){
     const r = await api(analyticsRecentQuery());
     if(gen !== WBA_RECENT_GEN || realm !== analyticsRealmValue()) return;
     const rows = r.rows || [];
-    $('recentMeta').textContent = `共 ${fmtCompact(r.total || 0)} 条记录`;
+    let meta = `共 ${fmtCompact(r.total || 0)} 条记录`;
+    if(r.total_exact === false) meta += `（已扫描 ${fmtCompact(r.scanned || 0)} 行，可能还有更早的）`;
+    $('recentMeta').textContent = meta;
     $('recentList').innerHTML = rows.map(x => {
       const ok = x.outcome === 'completed';
       const nm = nicknameOf(x.account);
+      const err = x.error || x.error_message || x.message || '';
+      const detail = !ok && err ? `<details class="recent-error"><summary>查看错误</summary><pre>${esc(String(err))}</pre></details>` : '';
       return `<div class="recent-item">
         <span class="t">${recentStamp(x.iso)}</span>
-        <span class="m"><b>${x.model || ''}</b> → ${nm.length > 16 ? nm.slice(0, 16) + '…' : nm}${ok ? '' : ' <span class="err">[' + (x.outcome || '失败') + ']</span>'}</span>
+        <span class="m"><b>${x.model || ''}</b> → ${nm.length > 16 ? nm.slice(0, 16) + '…' : nm}${ok ? '' : ' <span class="err">[' + (x.outcome || '失败') + ']</span>'}${detail}</span>
         <span class="r"><b>${fmtCompact(x.total_tokens || 0)}</b> tok · ${((x.elapsed_ms || 0) / 1000).toFixed(1)}s</span>
       </div>`;
     }).join('') || '<div class="empty">暂无请求记录</div>';
