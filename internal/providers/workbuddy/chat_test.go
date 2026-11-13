@@ -2574,3 +2574,17 @@ func TestMirrorUpstreamReasoning(t *testing.T) {
 		t.Fatalf("deepseek message was mirrored: %#v", got)
 	}
 }
+
+func TestWorkBuddyToolSchemaHardensKeywordTypes(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"n": map[string]any{"type": "integer", "maximum": "10"},
+		},
+	}
+	normalizeChatSchema(schema)
+	props := schema["properties"].(map[string]any)
+	if props["n"].(map[string]any)["maximum"] != int64(10) {
+		t.Fatalf("maximum = %#v", props["n"])
+	}
+}

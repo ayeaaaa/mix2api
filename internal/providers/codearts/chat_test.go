@@ -2197,3 +2197,27 @@ func TestChatNoAccountUnavailableMapsV1BadGateway(t *testing.T) {
 		t.Fatalf("message = %q", apiErr.SafeMessage())
 	}
 }
+
+func TestCodeArtsToolSchemaHardensKeywordTypes(t *testing.T) {
+	schema := deepNormalizeChatSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"n": map[string]any{"type": "integer", "minimum": "1"},
+			"b": map[string]any{"type": "array", "uniqueItems": "true"},
+			"outer": map[string]any{"type": "object", "properties": map[string]any{
+				"n": map[string]any{"type": "integer", "minimum": "0"},
+			}},
+		},
+	})
+	props := schema["properties"].(map[string]any)
+	if props["n"].(map[string]any)["minimum"] != int64(1) {
+		t.Fatalf("minimum = %#v", props["n"])
+	}
+	if props["b"].(map[string]any)["uniqueItems"] != true {
+		t.Fatalf("uniqueItems = %#v", props["b"])
+	}
+	nested := props["outer"].(map[string]any)["properties"].(map[string]any)["n"].(map[string]any)
+	if nested["minimum"] != int64(0) {
+		t.Fatalf("nested minimum = %#v", nested)
+	}
+}
