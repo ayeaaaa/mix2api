@@ -3,6 +3,68 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.0] - 2026-11-13
+
+### 中文
+
+#### 新增
+
+- 最近请求支持服务端筛选：账号、模型、API Key、结果；超过扫描上限时返回
+  `total_exact=false` / `scanned`，失败行可展开完整错误。
+- 单发 `/v1/messages` 支持稳定亲和键：`WB_MSGSTAT_SHARDS` 打开后按
+  *(Key, 模型, system, tools)* 固定账号桶，`WB_MSGSTAT_DAILY_SALT` 控制每日盐。
+- Key 并发上限改为有界等待：`WB_CHAT_SLOT_WAIT` 默认 30 秒，超时才 429。
+- CodeArts 单账号并发满改为有界等待：`CODEARTS_BUSY_WAIT_SECONDS` 默认 10 秒，
+  超时返回 429 + retry metadata，不再误报 502。
+- 运营活动任务自动化：portal 活动读取/viewed/claim（回读 `claimed_at`）、
+  星巴克协作、记者节活动、活动与成长任务解耦、真实技能分享渠道、模板真实
+  场景与四事件组；看板新增运营活动面板。
+- 计费头宽松兜底：`WB_SANITIZE_LOOSE_BILLING=1` 时删除严格解析认不出但
+  明显是计费头的首段元数据，默认关闭。
+
+#### 安全边界
+
+- 运营活动不伪造成功；App/手机端任务只提示手动完成。
+- 技能分享只有拿到真实 `share_code` + link 并确认进度后才上报/领奖。
+- 模板任务在服务端进度不前进时停止，不重复刷事件。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件通过。
+
+### English
+
+#### Added
+
+- Recent requests now support server-side account / model / API-key / outcome
+  filters, `total_exact=false` + `scanned` when the scan cap is hit, and
+  expandable failure details.
+- One-shot `/v1/messages` gets a stable affinity key via
+  `WB_MSGSTAT_SHARDS`, with an optional daily salt controlled by
+  `WB_MSGSTAT_DAILY_SALT`.
+- Key concurrency limits now wait up to `WB_CHAT_SLOT_WAIT` (default 30s)
+  before returning 429.
+- CodeArts per-account concurrency waits up to
+  `CODEARTS_BUSY_WAIT_SECONDS` (default 10s) and returns 429 with retry metadata
+  instead of a misleading 502.
+- Operational campaign automation: portal activity read/viewed/claim with
+  `claimed_at` verification, Starbucks and Reporter's Day campaigns, activity/
+  growth decoupling, real skill-share channels, real template scenes and the
+  four-event group, plus a dashboard activity panel.
+- Opt-in loose billing-header cleanup via `WB_SANITIZE_LOOSE_BILLING=1`.
+
+#### Safety boundaries
+
+- Campaign actions never fake success; App/mobile-only tasks are reported as
+  manual.
+- Skill sharing reports/claims only after a real `share_code` + link and
+  verified progress.
+- Template tasks stop when server progress does not advance.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass.
+
 ## [2.7.0] - 2026-11-13
 
 ### 中文
