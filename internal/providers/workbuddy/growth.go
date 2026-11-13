@@ -63,6 +63,11 @@ type GrowthResult struct {
 	Claimable    []string        `json:"claimable"`
 	Logs         []string        `json:"logs"`
 	Credits      *CreditSnapshot `json:"credits,omitempty"`
+
+	// growthAvailable records whether the growth-task list was actually read.
+	// Campaign tasks run independently, so this flag keeps the daily reward
+	// chain tied to a real growth run instead of campaign-only success.
+	growthAvailable bool
 }
 
 type growthExpert struct {
@@ -98,6 +103,7 @@ var growthTaskSpecs = map[string]growthTaskSpec{
 	"RichMeow_Chat":                 {Kind: "richmeow", Target: 1, Reward: 100, Name: "桌面对话事件链"},
 	"Library_read":                  {Kind: "library", Target: 1, Reward: 100, Name: "浏览资料库"},
 	"first_buddy":                   {Kind: "chat", Target: 1, Reward: 300, Name: "领取一只 Buddy"},
+	"skill_share":                   {Kind: "skill_share", Target: 1, Reward: 100, Name: "分享技能给好友"},
 	"WorkBuddy_Valorant":            {Kind: "expert", Target: 1, Reward: 100, Name: "体验「无畏契约拼豆专家」", Expert: &growthExpert{ID: "ex_xQHHD1u5Jkua", Name: "无畏契约拼豆专家"}},
 	"workstation_expert":            {Kind: "expert", Target: 1, Reward: 100, Name: "工作台搭建师", Expert: &growthExpert{ID: "WorkspaceBuilder", Name: "工作台搭建师"}},
 	"expert_use_maidehao":           {Kind: "expert", Target: 1, Reward: 100, Name: "中国电商运营专家", Expert: &growthExpert{ID: "ex_GDl31WahyIH0", Name: "中国电商运营专家"}},
@@ -237,12 +243,14 @@ func growthTaskEligible(auth Auth) bool {
 
 func (p *Provider) runGrowth(ctx context.Context, account *Account, autoClaim bool, trigger string) (GrowthResult, error) {
 	result, err := p.runGrowthLocked(ctx, account, autoClaim, trigger)
-	if err != nil || !result.OK {
+	if err != nil || !result.growthAvailable {
 		return result, err
 	}
 	// v1's full growth run ends with the daily cat/Buddy chain. The growth lock
 	// has been released by runGrowthLocked, so these public task methods can
-	// acquire their own per-account lock without deadlocking.
+	// acquire their own per-account lock without deadlocking. Campaign-only
+	// runs do not reach this point: a failed growth read must not spend the
+	// daily cat/Buddy allowance.
 	p.runGrowthRewardChain(ctx, account, &result)
 	return result, nil
 }
@@ -337,27 +345,27 @@ func (p *Provider) runGrowthLocked(ctx context.Context, account *Account, autoCl
 	}
 	run.logs = append(run.logs, fmt.Sprintf("开始为账号 %s 运行成长任务自动化...", firstNonEmpty(auth.Nickname, shortUID(auth.UID))))
 
-	tasks, err := p.fetchGrowthTasks(ctx, account, false)
-	if err != nil {
-		cached := cachedGrowthSummary(auth)
-		result.Error = p.taskRedactError(account, err)
-		result.Logs = run.logs
-		result.Summary = cached
-		result.StreakDays = cached.StreakDays
-		return result, nil
-	}
-	if len(tasks) == 0 {
-		cached := cachedGrowthSummary(auth)
-		result.Error = "未能获取到任务清单，请检查网络或账号状态"
-		result.Logs = run.logs
-		result.Tasks = []GrowthTask{}
-		result.Summary = cached
-		result.StreakDays = cached.StreakDays
-		return result, nil
+	tasks, fetchErr := p.fetchGrowthTasks(ctx, account, false)
+	growthFetched := fetchErr == nil
+	growthAvailable := growthFetched && len(tasks) > 0
+	if fetchErr != nil {
+		run.growthErr = p.taskRedactError(account, fetchErr)
+		run.log("! 成长任务清单读取失败: %s（运营活动任务仍会执行）", run.growthErr)
+	} else if len(tasks) == 0 {
+		run.log("未能获取到成长任务清单，继续尝试运营活动任务")
 	}
 	run.tasks = tasks
+	run.growthFetched = growthFetched
 	baseline := cachedGrowthSummary(auth)
 	run.summary, _ = p.fetchGrowthSummary(ctx, account, baseline)
+
+	if !growthAvailable {
+		// The activity portal is a separate contract. An empty or unreadable
+		// growth list must never suppress campaign tasks.
+		run.log("继续执行运营活动任务（独立于成长任务清单）...")
+		outcome := p.executeCampaigns(ctx, account, autoClaim, now)
+		return p.finishGrowthRun(ctx, account, run, result, growthAvailable, outcome), nil
+	}
 
 	// 0. Auto tasks (first_buddy) must be completed and claimed first: the
 	// upstream gates single-task acceptance and cat travel on the Buddy
@@ -438,12 +446,34 @@ func (p *Provider) runGrowthLocked(ctx context.Context, account *Account, autoCl
 	// claimed/completed states with the pre-accept snapshot.
 	run.earned += p.runMiniProgramGrowth(ctx, run)
 
-	// 4. Refresh credits and persist the final task/claim state.
+	// 4. Operational campaigns use their own portal contract and run after the
+	// growth checklist. They are reported separately so one failure cannot be
+	// mistaken for the other.
+	outcome := p.executeCampaigns(ctx, account, autoClaim, now)
+	return p.finishGrowthRun(ctx, account, run, result, growthAvailable, outcome), nil
+}
+
+// finishGrowthRun merges campaign results, refreshes credits, and persists the
+// final growth state. It centralizes the result shape so the campaign-only path
+// and the full growth path stay consistent.
+func (p *Provider) finishGrowthRun(ctx context.Context, account *Account, run *growthRun, result GrowthResult, growthAvailable bool, outcome campaignOutcome) GrowthResult {
+	run.earned += outcome.Earned
+	run.claimed = append(run.claimed, outcome.Claimed...)
+	run.logs = append(run.logs, outcome.Logs...)
 	_ = p.refreshCreditAccount(ctx, account)
-	if err := p.persistGrowthState(account, run); err != nil {
-		run.logs = append(run.logs, "! 任务状态持久化失败: "+p.taskRedactError(account, err))
+	// Do not overwrite a cached snapshot with an empty task list after a failed
+	// read. A genuinely empty list is still persisted.
+	if run.growthFetched {
+		if err := p.persistGrowthState(account, run); err != nil {
+			run.logs = append(run.logs, "! 任务状态持久化失败: "+p.taskRedactError(account, err))
+		}
 	}
-	result.OK = true
+	// Growth and campaign success are recorded separately: a campaign read or
+	// claim failure must not turn an otherwise successful growth run into a
+	// failed one, and vice versa. The campaign-only path still fails when no
+	// campaign is available.
+	result.OK = growthAvailable || (outcome.Available > 0 && !outcome.Failed)
+	result.growthAvailable = growthAvailable
 	result.Tasks = append([]GrowthTask(nil), run.tasks...)
 	result.Summary = run.summary
 	result.StreakDays = run.summary.StreakDays
@@ -454,9 +484,26 @@ func (p *Provider) runGrowthLocked(ctx context.Context, account *Account, autoCl
 	result.Claimable = append([]string(nil), run.claimable...)
 	result.Logs = p.scrubTaskLogs(account, run.logs)
 	result.Credits = creditSnapshotOf(account)
-	result.Msg = fmt.Sprintf("成长任务执行完成: 接取 %d, 上报 %d, 领奖 %d, 新增 %g 积分",
-		len(result.Accepted), len(result.Reported), len(result.Claimed), result.EarnedCredit)
-	return result, nil
+	if growthAvailable {
+		result.Msg = fmt.Sprintf("成长任务执行完成: 接取 %d, 上报 %d, 领奖 %d, 新增 %g 积分",
+			len(result.Accepted), len(result.Reported), len(result.Claimed), result.EarnedCredit)
+		if outcome.Available > 0 {
+			result.Msg += fmt.Sprintf("；运营活动 %d 个", outcome.Available)
+		}
+	} else if outcome.Available > 0 {
+		result.Msg = fmt.Sprintf("成长任务清单不可用，运营活动执行完成: 领奖 %d, 新增 %g 积分",
+			len(outcome.Claimed), result.EarnedCredit)
+	} else {
+		result.Msg = "成长任务清单不可用，运营活动任务未下发或已结束"
+	}
+	if !result.OK {
+		if run.growthErr != "" && !growthAvailable {
+			result.Error = run.growthErr
+		} else if outcome.Failed {
+			result.Error = "运营活动任务部分失败，详见日志"
+		}
+	}
+	return result
 }
 
 type growthRun struct {
@@ -474,6 +521,12 @@ type growthRun struct {
 	claimed   []string
 	claimable []string
 	claims    map[string]growthClaimEntry
+	// growthFetched is true when the growth list was read successfully. It
+	// keeps a failed read from overwriting the cached panel snapshot.
+	growthFetched bool
+	// growthErr is the redacted growth-list failure reason. Campaign failures
+	// are recorded separately in their own logs.
+	growthErr string
 }
 
 func (r *growthRun) log(format string, args ...any) {
@@ -573,6 +626,12 @@ func (p *Provider) progressGrowthTask(ctx context.Context, run *growthRun, task 
 	if task.Status == "not_accepted" && task.TaskType != "auto" {
 		run.log("⏭ 任务 [%s] 仍未接取, 跳过 (先解决接取失败)", name)
 		return 0
+	}
+	if spec.Kind == "skill_share" {
+		return p.runSkillShareTask(ctx, run, task, spec)
+	}
+	if spec.Kind == "template" {
+		return p.runTemplateTask(ctx, run, task, spec)
 	}
 
 	target := maxInt(task.Target, spec.Target)

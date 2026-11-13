@@ -77,6 +77,9 @@ func dashboardRoutes() []dashboardRoute {
 		post("/accounts/test"),
 
 		get("/activity/history", false),
+		get("/activity/campaigns", false),
+		post("/activity/campaigns/claim"),
+		post("/activity/campaigns/run"),
 
 		get("/agents", false),
 		get("/agents/available", false),
