@@ -2,9 +2,13 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -782,6 +786,68 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 	applyTracker(&observation, tracked)
 	s.observeProtocol(r, observation)
 	writeJSONResponse(w, http.StatusOK, result)
+}
+
+func msgstatShards() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("WB_MSGSTAT_SHARDS")))
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+func msgstatDailySalt() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WB_MSGSTAT_DAILY_SALT"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// msgstatAffinityKey gives one-shot /v1/messages calls a stable account bucket.
+// A real conversation, a streamed call, or a client-supplied session key keeps
+// the normal prefix affinity.
+func msgstatAffinityKey(r *http.Request, chat map[string]any, model string) string {
+	shards := msgstatShards()
+	if shards <= 0 || chat == nil || boolValue(chat["stream"]) {
+		return ""
+	}
+	msgs, _ := chat["messages"].([]any)
+	if len(msgs) < 2 || len(msgs) > 3 {
+		return ""
+	}
+	keyID := ""
+	if entry := KeyEntryFromContext(r); entry != nil {
+		keyID = entry.ID
+	}
+	system := ""
+	if first, ok := msgs[0].(map[string]any); ok {
+		system = anthropicContentToText(first["content"], false)
+	}
+	toolNames := make([]string, 0)
+	if tools, ok := chat["tools"].([]any); ok {
+		for _, raw := range tools {
+			tool, _ := raw.(map[string]any)
+			fn, _ := tool["function"].(map[string]any)
+			if fn != nil {
+				toolNames = append(toolNames, strings.TrimSpace(anthropicText(fn["name"])))
+			}
+		}
+	}
+	sort.Strings(toolNames)
+	stableRaw, _ := json.Marshal(map[string]any{
+		"k": keyID, "m": model, "s": system, "t": toolNames,
+	})
+	stable := sha256.Sum256(stableRaw)
+	volatileRaw, _ := json.Marshal(msgs[1:])
+	volatile := sha256.Sum256(volatileRaw)
+	bucket := int(volatile[0])<<8 | int(volatile[1])
+	key := "msgstat-" + hex.EncodeToString(stable[:8]) + "-" + strconv.Itoa(bucket%shards)
+	if msgstatDailySalt() {
+		key += "-" + time.Now().Format("2006-01-02")
+	}
+	return key
 }
 
 func (s *Server) anthropicMessagesEnabled() bool {

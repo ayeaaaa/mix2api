@@ -535,3 +535,32 @@ func TestMessagesGatewayKeyQualifiedExit(t *testing.T) {
 		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
 	}
 }
+
+func TestMsgstatAffinityKey(t *testing.T) {
+	t.Setenv("WB_MSGSTAT_SHARDS", "3")
+	t.Setenv("WB_MSGSTAT_DAILY_SALT", "0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req = req.WithContext(withKeyEntry(req.Context(), &keys.Entry{ID: "k1"}))
+	chat := map[string]any{
+		"model": "m1",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "stable system"},
+			map[string]any{"role": "user", "content": "one"},
+		},
+		"tools": []any{map[string]any{"function": map[string]any{"name": "b"}},
+			map[string]any{"function": map[string]any{"name": "a"}}},
+	}
+	first := msgstatAffinityKey(req, chat, "m1")
+	second := msgstatAffinityKey(req, chat, "m1")
+	if first == "" || first != second || !strings.HasPrefix(first, "msgstat-") {
+		t.Fatalf("affinity key = %q / %q", first, second)
+	}
+	streaming := map[string]any{"stream": true, "messages": chat["messages"]}
+	if got := msgstatAffinityKey(req, streaming, "m1"); got != "" {
+		t.Fatalf("streaming key = %q, want empty", got)
+	}
+	t.Setenv("WB_MSGSTAT_SHARDS", "0")
+	if got := msgstatAffinityKey(req, chat, "m1"); got != "" {
+		t.Fatalf("disabled key = %q, want empty", got)
+	}
+}
