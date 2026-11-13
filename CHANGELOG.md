@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 变更
+
+- 清理文档、测试夹具和更新器默认路径中的历史外部项目署名与链接；更新器默认
+  请求目录改为 `/run/mix2api-updater`，已有自定义路径可用
+  `WB_UPDATE_REQUEST_DIR` 覆盖。
+- `main` 已合并 v2；v1.6.6 的 Python 代码仅保留在 tag/历史中，不再位于
+  `main` 文件树。
+
+### English
+
+#### Changed
+
+- Removed historical external-project attribution and links from documentation,
+  test fixtures, and updater defaults. The default request directory is now
+  `/run/mix2api-updater`; existing custom paths can use
+  `WB_UPDATE_REQUEST_DIR`.
+- `main` now tracks v2; the v1.6.6 Python tree remains only at the tag/history,
+  not in the `main` file tree.
+
 ## [2.8.1] - 2026-11-13
 
 ### 中文

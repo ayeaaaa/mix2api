@@ -22,13 +22,13 @@ document covers the privileged command that consumes them.
 ```sh
 # Consume one queued request:
 mix2api update run \
-  --request-dir /run/workbuddy2api-hub-updater \
+  --request-dir /run/mix2api-updater \
   --root /srv/mix2api \
   --stop-command /usr/bin/systemctl --stop-arg stop --stop-arg mix2api \
   --start-command /usr/bin/systemctl --start-arg start --start-arg mix2api
 
 # Remove a journal left by a crash, restoring the previous files:
-mix2api update recover --root /srv/mix2api --request-dir /run/workbuddy2api-hub-updater
+mix2api update recover --root /srv/mix2api --request-dir /run/mix2api-updater
 
 # Offline install from a downloaded, checksummed release archive:
 mix2api update install --root /srv/mix2api --version 2.0.0 \
@@ -38,6 +38,10 @@ mix2api update install --root /srv/mix2api --version 2.0.0 \
 # Restore a retained backup directly:
 mix2api update rollback --root /srv/mix2api --version 1.6.5
 ```
+
+The default request directory is `/run/mix2api-updater`. If an existing
+deployment uses another directory, set `WB_UPDATE_REQUEST_DIR` to that path or
+recreate the systemd unit with the new default.
 
 `--stop-command`/`--start-command` are executable paths plus fixed
 `--stop-arg`/`--start-arg` values. No shell is involved. Point them at reviewed

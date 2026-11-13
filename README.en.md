@@ -8,18 +8,17 @@ SSE, and an embedded dashboard, bringing WorkBuddy International / China,
 Huawei Cloud CodeArts（遥遥领先）, Raccoon（商汤小浣熊）, and Doubao Work into
 one API-key and account-pool surface.
 
-Current version: **2.8.1**. The default branch is `v2`; `main` keeps the frozen
-v1.6.6 history.
+Current version: **2.8.1**. The default branch is `v2`; `main` now tracks v2,
+and v1.6.6 remains only as a tag/history.
 
 ## Origin
 
-mix2api is based on the WorkBuddy2API-Hub community project, with protocol
-references from CodeArts2API.
-
-v1 is the Python single-process version, frozen at 1.6.6. v2 is a Go project
-redesigned from the behavior and data formats of v1.6.5 / v1.6.6, not a
-line-by-line translation. The Python v1 implementation remains the behavioral
-reference; new features, fixes, and releases happen in v2.
+mix2api is an independent project: v1 is the Python single-process gateway,
+frozen at 1.6.6; v2 is a Go rewrite. v2 is redesigned from the behavior and
+data formats of v1.6.5 / v1.6.6, not a line-by-line translation. The Python v1
+implementation remains the behavioral reference; new features, fixes, and
+releases happen in v2. Protocol work references public WorkBuddy client
+behavior and the CodeArts2API protocol.
 
 ## v2 architecture
 
@@ -313,8 +312,8 @@ curl -fsS http://127.0.0.1:58675/v1/models \
 
 ## Maintenance and releases
 
-- `v2` is the default development branch; `main` only keeps the frozen v1.6.6
-  history and no longer accepts features.
+- `v2` is the default development branch; `main` now tracks v2, and v1.6.6
+  remains only as a tag/history with no Python code.
 - Version identity, build metadata, and release assets are managed by
   `internal/core/version`, `make dist`, and
   [`.github/workflows/release.yml`](.github/workflows/release.yml). The image is

@@ -8,7 +8,7 @@ file replacement, service stop/start, or restart. The gateway never runs
 ## Detection
 
 - **systemd**: `WB_UPDATE_INSTALL_ENABLED=1`, the request directory exists,
-  `/etc/systemd/system/workbuddy2api-hub-updater.path` exists, and its
+  `/etc/systemd/system/mix2api-updater.path` exists, and its
   `multi-user.target.wants` link is enabled.
 - **external**: `WB_UPDATE_INSTALL_ENABLED=1`, the request directory exists, and
   either `WB_UPDATE_EXECUTOR=external` or `<request-dir>/executor.json` exists.

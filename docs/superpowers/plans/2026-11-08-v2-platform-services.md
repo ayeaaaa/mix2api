@@ -1385,7 +1385,7 @@ git commit -m "feat(platform): add web tools probes and quota scan"
 - `Checker`: `NewChecker(currentVersion, settings, fetcher, now, logger)`, `Status()`, `Check(ctx, manual bool)`, `Due(now)`, `StartupDue(now)`, `Stop()`. Fetcher interface takes a URL and returns body; tests inject.
 - `RequestManager`: `Install(tag, currentVersion, port, lan, repo) (Installation, error)`, `Rollback(version, currentVersion, port, lan) (Installation, error)`, `Status()`, `Backups()`.
 - `Executor`: `Enabled()`, `Kind()` (`systemd|external|portable|none`), `ReadRequest()`, `ReadStatus()`, `ReadBackups()`; actual install/rollback file replacement is Plan 6, not this task.
-- Request dir: `WB_UPDATE_REQUEST_DIR` default `/run/workbuddy2api-hub-updater`; `request.json` create-only with `O_EXCL|O_NOFOLLOW`, mode `0600`, fields `action`, `version`, `tag`, `requested_at`, `pid`, `port`, `root`, optional `profile`; `status.json` must be regular, owned by root/current owner per env, size ≤ 8192, mode not group/world writable, state in visible set; `backups.json` same checks, versions/sizes/times only, never paths in panel payload.
+- Request dir: `WB_UPDATE_REQUEST_DIR` default `/run/mix2api-updater`; `request.json` create-only with `O_EXCL|O_NOFOLLOW`, mode `0600`, fields `action`, `version`, `tag`, `requested_at`, `pid`, `port`, `root`, optional `profile`; `status.json` must be regular, owned by root/current owner per env, size ≤ 8192, mode not group/world writable, state in visible set; `backups.json` same checks, versions/sizes/times only, never paths in panel payload.
 
 - [ ] **Step 1: Write failing tests**
 

@@ -52,7 +52,8 @@ Wine. CI verify, multi-arch arm64 runtime, and a local registry push/pull
 passed. Dependency scanning found no reachable vulnerabilities. The owner
 explicitly approved the final `2.0.0` release while accepting that real Windows
 SCM/service execution remains unverified. The v2 source is published on branch
-`v2` of `ayeaaaa/mix2api`; `main` remains v1.6.6 (frozen).
+`v2` of `ayeaaaa/mix2api` and merged into `main`; v1.6.6 remains only as a tag
+and history.
 
 **v2.0.2 addendum:** the patch release publishes the dashboard total-quota
 column and the Raccoon daily-activity check-in ported from PR #3. The new
@@ -195,6 +196,13 @@ day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
 On a local 19.5k-row ledger the first build takes about 0.64s and later reads
 take about 3ms. `make check` and `make race` pass.
+
+**v2.8.1 addendum:** Raccoon daily activity now triggers `daily_grant` by
+refreshing the login session instead of sending a chat, so it no longer spends
+points; failed refreshes persist `refreshed=false` and the dashboard stays
+consistent with the bill. `make check`, `make race`, and the 15/15 dashboard JS
+harness pass. Published as `v2.8.1` at `4d6a24a`; evidence:
+`docs/smoke/2026-11-13-release-2.8.1.md`. No media or Windows SCM gate changed.
 
 ## Required signoff
 

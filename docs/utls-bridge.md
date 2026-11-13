@@ -47,7 +47,7 @@ WorkBuddy provider
 # 启用 WorkBuddy 国际版 / 国内版的 uTLS 指纹
 MIX2API_TLS_FINGERPRINT=node
 
-# 兼容 wb-hub 的旧变量名；两者同时设置时 MIX2API 优先
+# 兼容旧变量名；两者同时设置时 MIX2API 优先
 WB_TLS_FINGERPRINT=node
 ```
 
@@ -113,10 +113,8 @@ MIX2API_UTLS_LIVE=1 go test ./internal/core/transport/utlsbridge \
 
 ## 参考
 
-- wb-hub 原实现：`tools/wb-tls-bridge/main.go`、`wb_upstream_pool.py`
-- 指纹参考：`misakano7545/workbuddy2api-panel` 的
-  `internal/upstream/tlsfingerprint.go`
 - 本项目实现：`internal/core/transport/utlsbridge`
+- 指纹目标来自对官方 Node/OpenSSL 客户端的抓包。
 
 ## English summary
 

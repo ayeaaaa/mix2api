@@ -67,7 +67,7 @@ untouched.
 
 ```sh
 mix2api update run \
-  --request-dir /run/workbuddy2api-hub-updater \
+  --request-dir /run/mix2api-updater \
   --root /srv/mix2api \
   --stop-command /usr/bin/systemctl --stop-arg stop --stop-arg mix2api \
   --start-command /usr/bin/systemctl --start-arg start --start-arg mix2api

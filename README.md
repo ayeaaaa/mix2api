@@ -7,15 +7,14 @@ OpenAI Chat Completions、Responses、Anthropic Messages、SSE 和内嵌看板�
 WorkBuddy 国际版 / 国内版、华为云 CodeArts（遥遥领先）、Raccoon（商汤小浣熊）、
 豆包 Work 收进同一套 API Key 和账号池。
 
-当前版本：**2.8.1**。默认分支 `v2`；`main` 保留为冻结的 v1.6.6 历史。
+当前版本：**2.8.1**。默认分支 `v2`；`main` 已合并 v2，v1.6.6 仅保留为 tag/历史。
 
 ## 由来
 
-mix2api 承接于 WorkBuddy2API-Hub 社区项目，并参考 CodeArts2API 的协议实现。
-
-v1 是 Python 单进程版本，最终冻结在 1.6.6；v2 是从 v1.6.5 / v1.6.6 的行为
-和数据格式出发重新设计的 Go 项目，不是逐行翻译。v1 的 Python 实现作为行为
-基准保留，后续功能、修复和发布都在 v2 进行。
+mix2api 是独立项目：v1 是 Python 单进程网关，最终冻结在 1.6.6；v2 是用 Go
+重写的多出口网关。v2 从 v1.6.5 / v1.6.6 的行为和数据格式出发重新设计，不是
+逐行翻译。v1 的 Python 实现作为行为基准保留，后续功能、修复和发布都在 v2
+进行；协议实现参考公开的 WorkBuddy 客户端行为与 CodeArts2API 的协议。
 
 ## v2 的架构
 
@@ -275,7 +274,7 @@ curl -fsS http://127.0.0.1:58675/v1/models \
 
 ## 维护与发布
 
-- `v2` 是默认开发分支；`main` 只保留 v1.6.6 冻结历史，不再接收功能。
+- `v2` 是默认开发分支；`main` 已合并 v2，v1.6.6 仅保留为 tag/历史，不再包含 Python 代码。
 - 版本号、构建身份和发布资产由 `internal/core/version`、`make dist` 和
   [`.github/workflows/release.yml`](.github/workflows/release.yml) 管理；镜像由
   根目录 `Dockerfile` 构建。

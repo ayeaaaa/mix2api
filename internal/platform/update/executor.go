@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	DefaultRequestDir  = "/run/workbuddy2api-hub-updater"
-	DefaultUnitPath    = "/etc/systemd/system/workbuddy2api-hub-updater.path"
-	DefaultEnabledLink = "/etc/systemd/system/multi-user.target.wants/workbuddy2api-hub-updater.path"
+	DefaultRequestDir  = "/run/mix2api-updater"
+	DefaultUnitPath    = "/etc/systemd/system/mix2api-updater.path"
+	DefaultEnabledLink = "/etc/systemd/system/multi-user.target.wants/mix2api-updater.path"
 	StatusFile         = "status.json"
 	RequestFile        = "request.json"
 	BackupsFile        = "backups.json"
