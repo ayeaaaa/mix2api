@@ -69,8 +69,8 @@ func TestBuildRegistersOneProviderPerRealm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(setup.Providers) != 4 {
-		t.Fatalf("providers = %d, want raccoon, codearts, and workbuddy intl/cn", len(setup.Providers))
+	if len(setup.Providers) != 5 {
+		t.Fatalf("providers = %d, want raccoon, codearts, doubao, and workbuddy intl/cn", len(setup.Providers))
 	}
 	counts := make(map[string]int, len(setup.Providers))
 	for _, provider := range setup.Providers {
@@ -79,6 +79,7 @@ func TestBuildRegistersOneProviderPerRealm(t *testing.T) {
 	wanted := map[string]string{
 		"raccoon":        "raccoon",
 		"codearts":       "codearts",
+		"doubao":         "doubao",
 		"workbuddy-intl": "intl",
 		"workbuddy-cn":   "cn",
 	}

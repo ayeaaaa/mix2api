@@ -12,6 +12,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/codearts"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/doubao"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/raccoon"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers/workbuddy"
 )
@@ -84,6 +85,14 @@ func Build(paths Paths) (*Setup, error) {
 	}
 	if err := registry.Register(raccoonProvider); err != nil {
 		return nil, fmt.Errorf("app: register raccoon provider: %w", err)
+	}
+
+	doubaoProvider, err := doubao.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("app: initialize doubao provider: %w", err)
+	}
+	if err := registry.Register(doubaoProvider); err != nil {
+		return nil, fmt.Errorf("app: register doubao provider: %w", err)
 	}
 
 	// Exactly one CodeArts Provider/Pool is created per accounts directory.

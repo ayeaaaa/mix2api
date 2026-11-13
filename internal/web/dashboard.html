@@ -417,7 +417,7 @@ table.account-cards tr.cool-row .cool-pill{display:inline-block;width:auto;max-w
 .acct-name-row{display:flex;align-items:center;gap:6px;min-width:0}
 /* 移动端专用徽章组：桌面表格视图隐藏（版本/状态有自己的两列）。 */
 .acct-mobile-badges{display:none}
-.acct-mobile-badges .badge,.acct-mobile-badges .realm-badge-intl,.acct-mobile-badges .realm-badge-cn,.acct-mobile-badges .realm-badge-codearts,.acct-mobile-badges .realm-badge-raccoon{flex-shrink:0}
+.acct-mobile-badges .badge,.acct-mobile-badges .realm-badge-intl,.acct-mobile-badges .realm-badge-cn,.acct-mobile-badges .realm-badge-codearts,.acct-mobile-badges .realm-badge-raccoon,.acct-mobile-badges .realm-badge-doubao{flex-shrink:0}
 .credit-summary{white-space:nowrap}
 .credit-kind{font-size:11px;font-weight:500;color:var(--dim)}
 .credit-stack{display:flex;flex-direction:column;align-items:flex-start;gap:3px;white-space:nowrap;min-width:0}
@@ -514,6 +514,7 @@ a:hover{text-decoration:underline}
 .raccoon-auth-tabs button{border:1px solid var(--line);background:var(--panel2);color:var(--dim);padding:6px 14px;border-radius:8px;font:inherit;cursor:pointer}
 .raccoon-auth-tabs button.active{border-color:var(--accent);color:var(--accent);background:var(--panel);font-weight:600}
 .realm-badge-raccoon{color:#0f766e;background:rgba(15,118,110,.12);border:1px solid rgba(15,118,110,.30);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+.realm-badge-doubao{color:#1d4ed8;background:rgba(37,99,235,.11);border:1px solid rgba(37,99,235,.30);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .badge-effort{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:var(--think-soft);color:var(--think);border:1px solid rgba(138,106,150,.3);font-weight:600}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
 .realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
@@ -640,6 +641,7 @@ a:hover{text-decoration:underline}
 [data-theme="dark"] .realm-badge-cn{color:#e09a80;background:rgba(201,100,66,.22);border-color:rgba(201,100,66,.42)}
 [data-theme="dark"] .realm-badge-codearts{color:#c4b1f5;background:rgba(124,92,214,.24);border-color:rgba(124,92,214,.46)}
 [data-theme="dark"] .realm-badge-raccoon{color:#5eead4;background:rgba(20,184,166,.20);border-color:rgba(20,184,166,.42)}
+[data-theme="dark"] .realm-badge-doubao{color:#93c5fd;background:rgba(37,99,235,.23);border-color:rgba(96,165,250,.42)}
 [data-theme="dark"] .realm-switch button.active#accountsRealmCn{color:var(--bad);border-color:var(--bad)}
 [data-theme="dark"] .modal-mask{background:rgba(0,0,0,.65)}
 /* The page sections are toggled by a class so the inline head script can
@@ -1206,9 +1208,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .realm-intl{color:#17527e;background:#d9e9f7;border:1px solid #b3d0e8}
 #pageAnalytics .realm-cn{color:#8a3a22;background:#f7ded2;border:1px solid #eabfa9}
 #pageAnalytics .realm-raccoon{color:#0f766e;background:#ccfbf1;border:1px solid #99f6e4}
+#pageAnalytics .realm-doubao{color:#1d4ed8;background:#dbeafe;border:1px solid #bfdbfe}
 [data-theme="dark"] #pageAnalytics .realm-intl{color:#b5d6f5;background:rgba(106,155,204,.32);border-color:rgba(106,155,204,.5)}
 [data-theme="dark"] #pageAnalytics .realm-cn{color:#f5bd9f;background:rgba(201,100,66,.32);border-color:rgba(201,100,66,.55)}
 [data-theme="dark"] #pageAnalytics .realm-raccoon{color:#5eead4;background:rgba(20,184,166,.28);border-color:rgba(20,184,166,.5)}
+[data-theme="dark"] #pageAnalytics .realm-doubao{color:#93c5fd;background:rgba(37,99,235,.28);border-color:rgba(96,165,250,.5)}
 #pageAnalytics .minibar{position:relative;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:70px}
 #pageAnalytics .minibar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-color,var(--accent));opacity:.75}
 #pageAnalytics .tokcell{display:flex;flex-direction:column;gap:3px;min-width:100px}
@@ -1473,6 +1477,7 @@ table.account-cards .acct-actions .id-btn{padding:2px 5px;font-size:10px}
 .realm-badge-cn{color:var(--accent);background:var(--accent-soft);border-color:transparent}
 .realm-badge-codearts{color:var(--warn);background:var(--warn-soft);border-color:transparent}
 .realm-badge-raccoon{color:#0f766e;background:rgba(15,118,110,.12);border-color:transparent}
+.realm-badge-doubao{color:#1d4ed8;background:rgba(37,99,235,.11);border-color:transparent}
 .credit-main b{color:var(--accent2)}
 
 /* Keep the panel usable at tablet/mobile widths after removing the sidebar. */
@@ -2377,6 +2382,7 @@ html[data-console-layout="on"] #classicTitle {display:none}
     'CodeArts (华为云)': 'CodeArts (Huawei Cloud)',
     'CodeArts 账号': 'CodeArts accounts',
     'CodeArts 接入': 'CodeArts',
+    '豆包 Work 接入': 'Doubao Work',
     'CodeArts 出口': 'CodeArts exit',
     '启用 CodeArts 出口': 'Enable the CodeArts exit',
     '每天自动签到': 'Daily auto check-in',
@@ -4950,13 +4956,15 @@ html[data-ui="next"] .realm-card .credit-summary span[style*="font-size:22px"]{f
 html[data-ui="next"] .realm-badge-intl,
 html[data-ui="next"] .realm-badge-cn,
 html[data-ui="next"] .realm-badge-codearts,
-html[data-ui="next"] .realm-badge-raccoon{
+html[data-ui="next"] .realm-badge-raccoon,
+html[data-ui="next"] .realm-badge-doubao{
   border-radius:999px!important;padding:3px 8px!important;font-size:9.5px!important;font-weight:700!important;
 }
 html[data-ui="next"] .realm-badge-intl{background:var(--accent-soft)!important;color:var(--accent)!important;border:1px solid rgba(79,70,229,.18)!important}
 html[data-ui="next"] .realm-badge-cn{background:var(--warn-soft)!important;color:var(--warn)!important;border:1px solid rgba(247,144,9,.2)!important}
 html[data-ui="next"] .realm-badge-codearts{background:var(--accent2-soft)!important;color:#047857!important;border:1px solid rgba(18,183,106,.2)!important}
 html[data-ui="next"] .realm-badge-raccoon{background:rgba(15,118,110,.12)!important;color:#0f766e!important;border:1px solid rgba(15,118,110,.22)!important}
+html[data-ui="next"] .realm-badge-doubao{background:rgba(37,99,235,.11)!important;color:#1d4ed8!important;border:1px solid rgba(37,99,235,.20)!important}
 html[data-ui="next"] .badge{
   border-radius:999px!important;font-size:9.5px!important;padding:3px 7px!important;font-weight:650!important;
 }
@@ -5634,7 +5642,25 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       </div>
     </div>
 
-    <!-- 卡片 5: 网关出口控制 -->
+    <!-- 卡片 5: 豆包 Work (Doubao) -->
+    <div id="tabDoubao" class="realm-card" onclick="switchViewRealm('doubao')" style="display:none">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="realm-badge-doubao">豆包 Work</span>
+        <span id="tabDoubaoHost" class="mono" style="font-size:11px;color:var(--dim)">www.doubao.com</span>
+        <span id="tabDoubaoDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
+        <span id="tabDoubaoViewBadge" class="badge s mini" style="display:none">当前视图</span>
+        <span id="tabDoubaoOffline" class="badge bad mini" style="display:none">离线</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
+          <span id="tabDoubaoHealthy" style="font-size:22px;font-weight:700;color:#1d4ed8;letter-spacing:-.5px" title="健康账号数 / 账号总数">—</span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabDoubaoTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabDoubaoModels" style="color:var(--fg);font-weight:600">0</span> 模型</span>
+        </div>
+        <span id="tabDoubaoKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
+      </div>
+    </div>
+
+    <!-- 卡片 6: 网关出口控制 -->
     <div id="cardGatewayCtrl" class="realm-card gateway-ctrl" style="cursor:default">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
         <span style="font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">网关默认出口</span>
@@ -5675,6 +5701,10 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
   <!-- 小浣熊视图的统计条：看账号、模型、积分与冷却。 -->
   <div id="raccoonSummary" style="display:none;margin-bottom:18px">
     <div class="cards" id="raccoonCards"></div>
+  </div>
+  <!-- 豆包 Work 视图的统计条：账号、模型、并发与冷却。 -->
+  <div id="doubaoSummary" style="display:none;margin-bottom:18px">
+    <div class="cards" id="doubaoCards"></div>
   </div>
 
   <div class="console-insights" id="consoleInsights">
@@ -5743,6 +5773,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <button type="button" data-realm="cn" onclick="switchViewRealm('cn')">国内版</button>
           <button type="button" data-realm="codearts" id="nextGatewayRealmCodearts" onclick="switchViewRealm('codearts')">CodeArts</button>
           <button type="button" data-realm="raccoon" id="nextGatewayRealmRaccoon" onclick="switchViewRealm('raccoon')" hidden>小浣熊</button>
+          <button type="button" data-realm="doubao" id="nextGatewayRealmDoubao" onclick="switchViewRealm('doubao')" hidden>豆包 Work</button>
         </div>
       </div>
     </div>
@@ -5812,6 +5843,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <button type="button" id="accountsRealmCn" role="tab" onclick="switchViewRealm('cn')" aria-pressed="false">WorkBuddy 国内</button>
       <button type="button" id="accountsRealmCodearts" role="tab" onclick="switchViewRealm('codearts')" aria-pressed="false" style="display:none">CodeArts</button>
       <button type="button" id="accountsRealmRaccoon" role="tab" onclick="switchViewRealm('raccoon')" aria-pressed="false" style="display:none">小浣熊</button>
+      <button type="button" id="accountsRealmDoubao" role="tab" onclick="switchViewRealm('doubao')" aria-pressed="false" style="display:none">豆包 Work</button>
     </div>
   </div>
   <!-- 拆分模式下三个区块的落点（页头之后、原顺序）；合并模式搬走之后这里就空着 -->
@@ -5844,6 +5876,47 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <button class="sec" onclick="loadRaccoonOverview(true)">刷新</button>
     </div>
     <div id="raccoonAccounts"></div>
+  </section>
+  <!-- 豆包 Work 视图：cookie/device 账号池由本进程直接管理。 -->
+  <section id="doubaoAccountsSection" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <h2 style="margin:0">豆包 Work 账号<em id="doubaoAcctCount"></em></h2>
+      <div class="legend" style="margin:0">导入浏览器导出的 cookie 与 device JSON；会话粘性、并发、冷却和模型目录都由本进程直接管理。</div>
+    </div>
+    <div class="toolbar">
+      <button onclick="toggleDoubaoImport(true)">+ 添加账号</button>
+      <button class="sec" onclick="doubaoCheckinAll(this)">全员签到</button>
+      <button class="sec" onclick="doubaoRefreshAllCredits(this)">刷新积分</button>
+      <button class="sec" onclick="doubaoRefreshAllTasks(this)">刷新任务</button>
+      <button class="sec" onclick="refreshModelCatalog(this)">刷新模型目录</button>
+      <button class="sec" onclick="loadDoubaoOverview(true)">刷新</button>
+    </div>
+    <div id="doubaoImportPanel" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:10px">
+        粘贴豆包网页登录后的 cookies JSON（键值对）和 device JSON。只保存在本机账号目录，文件权限 600；不要把 cookie 提交到仓库。
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+        <label style="font-size:12px;color:var(--dim)">cookies JSON
+          <textarea id="doubaoCookiesJson" class="mono" rows="5" placeholder='{"sessionid":"...","ttwid":"...","s_v_web_id":"..."}'
+            style="width:100%;box-sizing:border-box;margin-top:4px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--fg);font-size:11px;resize:vertical"></textarea>
+        </label>
+        <label style="font-size:12px;color:var(--dim)">device JSON（可选）
+          <textarea id="doubaoDeviceJson" class="mono" rows="5" placeholder='{"web_id":"...","tea_uuid":"...","web_tab_id":"..."}'
+            style="width:100%;box-sizing:border-box;margin-top:4px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--fg);font-size:11px;resize:vertical"></textarea>
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
+        <label style="font-size:12px;color:var(--dim)">备注名
+          <input id="doubaoNickname" type="text" placeholder="可选"
+            style="display:block;margin-top:4px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--fg);font:inherit">
+        </label>
+        <button onclick="doubaoImport(this)">导入账号</button>
+        <button class="sec" onclick="toggleDoubaoImport(false)">取消</button>
+        <span id="doubaoImportHint" style="font-size:12px;color:var(--dim)"></span>
+      </div>
+    </div>
+    <div id="doubaoAccounts"></div>
+    <div id="doubaoTasksPanel" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px"></div>
   </section>
   <section id="workbuddyAccountsSection">
     <h2 title="多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个">
@@ -6703,6 +6776,62 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <button class="sec" onclick="testRaccoon(this)">测试连接</button>
         <button class="sec" onclick="openRaccoonAuth()">添加小浣熊账号</button>
         <span id="setRaccoonHint" style="font-size:12px;color:var(--dim)"></span>
+      </div>
+    </section>
+
+    <section data-cat="network" id="doubaoSettingsSection">
+      <h2>豆包 Work 接入 <em id="setDoubaoState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">第五个出口直接连豆包 Work：原生 Go 实现 cookie/device 账号池、会话粘性、SSE 流式与多轮对话。启用后网关页会出现豆包 Work 卡片，账号在「账号」页的豆包 Work 视图导入。</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="setDoubaoEnabled" type="checkbox" style="width:16px;height:16px">
+          <span>启用豆包 Work 出口<br><span style="font-size:11px;color:var(--dim)">启用后才会出现在网关出口列表</span></span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="setDoubaoCheckinEnabled" type="checkbox" style="width:16px;height:16px">
+          <span>每天自动签到<br><span style="font-size:11px;color:var(--dim)">仅对启用账号执行；签到走桌面端活动接口</span></span>
+        </label>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">签到时间（东八区）</div>
+          <input id="setDoubaoCheckinTime" type="time" value="09:15"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">Base URL</div>
+          <input id="setDoubaoBaseUrl" type="text" placeholder="https://www.doubao.com"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">AID</div>
+          <input id="setDoubaoAID" type="text" placeholder="1044603"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
+          <input id="setDoubaoMaxConcurrent" type="number" min="1" max="32" value="1"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">请求超时（秒）</div>
+          <input id="setDoubaoTimeout" type="number" min="1" max="600" value="60"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">流式超时（秒）</div>
+          <input id="setDoubaoStreamTimeout" type="number" min="1" max="3600" value="600"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">模型缓存（秒）</div>
+          <input id="setDoubaoModelsTtl" type="number" min="1" max="86400" value="300"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button onclick="saveDoubaoSettings(this)">保存豆包 Work 设置</button>
+        <button class="sec" onclick="testDoubao(this)">测试连接</button>
+        <button class="sec" onclick="switchViewRealm('doubao')">管理账号</button>
+        <span id="setDoubaoHint" style="font-size:12px;color:var(--dim)"></span>
       </div>
     </section>
 
@@ -8344,27 +8473,32 @@ window.ACCOUNTS = [];
 function updateUI(){
   const caEnabled = (window.REALM_OPTIONS || []).includes("codearts");
   const raccoonEnabled = (window.REALM_OPTIONS || []).includes("raccoon");
+  const doubaoEnabled = (window.REALM_OPTIONS || []).includes("doubao");
   // A realm can disappear while the user is looking at it (settings save or a
   // failed import). Reset an invalid view to the active gateway exit, else intl,
   // so the page immediately shows a real section instead of an empty one.
   const validView = (window.VIEW_REALM === "intl" || window.VIEW_REALM === "cn"
     || (window.VIEW_REALM === "codearts" && caEnabled)
-    || (window.VIEW_REALM === "raccoon" && raccoonEnabled));
+    || (window.VIEW_REALM === "raccoon" && raccoonEnabled)
+    || (window.VIEW_REALM === "doubao" && doubaoEnabled));
   if(!validView){
     const gw = window.ACTIVE_GATEWAY_REALM || "intl";
     const gwValid = (gw === "intl" || gw === "cn"
       || (gw === "codearts" && caEnabled)
-      || (gw === "raccoon" && raccoonEnabled));
+      || (gw === "raccoon" && raccoonEnabled)
+      || (gw === "doubao" && doubaoEnabled));
     window.VIEW_REALM = gwValid ? gw : "intl";
   }
   const isIntlView = (window.VIEW_REALM === "intl");
   const isCnView = (window.VIEW_REALM === "cn");
   const isCodeartsView = (window.VIEW_REALM === "codearts");
   const isRaccoonView = (window.VIEW_REALM === "raccoon");
+  const isDoubaoView = (window.VIEW_REALM === "doubao");
   const tIntl = document.getElementById("tabIntl");
   const tCn = document.getElementById("tabCn");
   const tCa = document.getElementById("tabCodearts");
   const tRc = document.getElementById("tabRaccoon");
+  const tDb = document.getElementById("tabDoubao");
   if(tIntl) tIntl.className = "realm-card" + (isIntlView ? " active" : "");
   if(tCn) tCn.className = "realm-card" + (isCnView ? " active" : "");
   if(tCa){
@@ -8378,6 +8512,10 @@ function updateUI(){
     tRc.style.display = raccoonEnabled ? "" : "none";
     tRc.className = "realm-card" + (isRaccoonView ? " active" : "");
   }
+  if(tDb){
+    tDb.style.display = doubaoEnabled ? "" : "none";
+    tDb.className = "realm-card" + (isDoubaoView ? " active" : "");
+  }
   const vbIntl = document.getElementById("tabIntlViewBadge");
   if(vbIntl) vbIntl.style.display = isIntlView ? "inline-block" : "none";
   const vbCn = document.getElementById("tabCnViewBadge");
@@ -8386,6 +8524,8 @@ function updateUI(){
   if(vbCa) vbCa.style.display = isCodeartsView ? "inline-block" : "none";
   const vbRc = document.getElementById("tabRaccoonViewBadge");
   if(vbRc) vbRc.style.display = isRaccoonView ? "inline-block" : "none";
+  const vbDb = document.getElementById("tabDoubaoViewBadge");
+  if(vbDb) vbDb.style.display = isDoubaoView ? "inline-block" : "none";
 
   // 账号页页头的版本切换与上面两张卡片同一份状态（VIEW_REALM），所以两边永远
   // 一起亮：在账号页切过去，回网关页看到的就是刚切的那一版，反之亦然。
@@ -8411,17 +8551,29 @@ function updateUI(){
     rsRc.classList.toggle("active", isRaccoonView);
     rsRc.setAttribute("aria-pressed", isRaccoonView ? "true" : "false");
   }
+  const rsDb = document.getElementById("accountsRealmDoubao");
+  if(rsDb){
+    rsDb.style.display = doubaoEnabled ? "" : "none";
+    rsDb.classList.toggle("active", isDoubaoView);
+    rsDb.setAttribute("aria-pressed", isDoubaoView ? "true" : "false");
+  }
   const nextRcBtn = document.getElementById("nextGatewayRealmRaccoon");
   if(nextRcBtn){
     nextRcBtn.hidden = !raccoonEnabled;
     nextRcBtn.classList.toggle("active", isRaccoonView && raccoonEnabled);
+  }
+  const nextDbBtn = document.getElementById("nextGatewayRealmDoubao");
+  if(nextDbBtn){
+    nextDbBtn.hidden = !doubaoEnabled;
+    nextDbBtn.classList.toggle("active", isDoubaoView && doubaoEnabled);
   }
 
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
   // 最近请求、模型清单），标出来免得把国际版的数字看成全局的。用 <em> 承载：
   // 侧栏导航由 h2 生成时会剥掉 <em>，所以标签不会串进导航项。
   const sectionRealm = isIntlView ? "（国际版）"
-    : (isCnView ? "（国内版）" : (isRaccoonView ? "（小浣熊）" : "（CodeArts）"));
+    : (isCnView ? "（国内版）" : (isRaccoonView ? "（小浣熊）"
+      : (isDoubaoView ? "（豆包 Work）" : "（CodeArts）")));
   ["disabledRealmTag", "recentRealmTag", "modelsRealmTag"].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.textContent = sectionRealm;
@@ -8436,6 +8588,7 @@ function updateUI(){
   const isCnGw = (gwRealm === "cn");
   const isCaGw = (gwRealm === "codearts");
   const isRcGw = (gwRealm === "raccoon");
+  const isDbGw = (gwRealm === "doubao");
   const dbIntl = document.getElementById("tabIntlDefaultBadge");
   if(dbIntl) dbIntl.style.display = isIntlGw ? "inline-block" : "none";
   const dbCn = document.getElementById("tabCnDefaultBadge");
@@ -8444,20 +8597,24 @@ function updateUI(){
   if(dbCa) dbCa.style.display = isCaGw ? "inline-block" : "none";
   const dbRc = document.getElementById("tabRaccoonDefaultBadge");
   if(dbRc) dbRc.style.display = isRcGw ? "inline-block" : "none";
+  const dbDb = document.getElementById("tabDoubaoDefaultBadge");
+  if(dbDb) dbDb.style.display = isDbGw ? "inline-block" : "none";
 
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
     gwName.textContent = isIntlGw ? "国际版 (Global)"
       : (isCnGw ? "国内版 (China)"
-        : (isCaGw ? "CodeArts (华为云)" : "小浣熊 (Raccoon)"));
+        : (isCaGw ? "CodeArts (华为云)"
+          : (isRcGw ? "小浣熊 (Raccoon)" : "豆包 Work (Doubao)")));
     gwName.style.color = isIntlGw ? "var(--accent)"
-      : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : "#0f766e"));
+      : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : (isRcGw ? "#0f766e" : "#1d4ed8")));
   }
   const ep = document.getElementById("activeEndpoint");
   if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2"
     : (isCnGw ? "https://copilot.tencent.com/v2"
               : (isCaGw ? ((window.CODEARTS_OVERVIEW || {}).base_url || "华为云 CodeArts")
-                        : ((window.RACCOON_OVERVIEW || {}).base_url || "https://xiaohuanxiong.com")));
+                        : (isRcGw ? ((window.RACCOON_OVERVIEW || {}).base_url || "https://xiaohuanxiong.com")
+                                  : ((window.DOUBAO_OVERVIEW || {}).base_url || "https://www.doubao.com"))));
 
   const gwOptions = (window.REALM_OPTIONS && window.REALM_OPTIONS.length)
     ? window.REALM_OPTIONS : ["intl", "cn"];
@@ -8465,9 +8622,10 @@ function updateUI(){
   if(gwIdx < 0) gwIdx = 0;
   const nextGw = gwOptions[(gwIdx + 1) % gwOptions.length];
   const nextGwName = (nextGw === "intl") ? "国际版"
-    : (nextGw === "cn" ? "国内版" : (nextGw === "codearts" ? "CodeArts" : "小浣熊"));
+    : (nextGw === "cn" ? "国内版" : (nextGw === "codearts" ? "CodeArts"
+      : (nextGw === "raccoon" ? "小浣熊" : "豆包 Work")));
   const gwColor = isIntlGw ? "var(--accent)"
-    : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : "#0f766e"));
+    : (isCnGw ? "var(--bad)" : (isCaGw ? "#5b3fa0" : (isRcGw ? "#0f766e" : "#1d4ed8")));
   const btnToggle = document.getElementById("btnToggleRealm");
   if(btnToggle) {
     btnToggle.textContent = "切换默认出口为【" + nextGwName + "】";
@@ -8478,10 +8636,12 @@ function updateUI(){
   if(cardGw){
     cardGw.style.borderColor = isIntlGw ? "rgba(37,99,235,.28)"
       : (isCnGw ? "rgba(220,38,38,.28)"
-        : (isCaGw ? "rgba(124,92,214,.30)" : "rgba(15,118,110,.28)"));
+        : (isCaGw ? "rgba(124,92,214,.30)"
+          : (isRcGw ? "rgba(15,118,110,.28)" : "rgba(29,78,216,.30)")));
     cardGw.style.background = isIntlGw ? "rgba(37,99,235,.03)"
       : (isCnGw ? "rgba(220,38,38,.03)"
-        : (isCaGw ? "rgba(124,92,214,.04)" : "rgba(15,118,110,.03)"));
+        : (isCaGw ? "rgba(124,92,214,.04)"
+          : (isRcGw ? "rgba(15,118,110,.03)" : "rgba(29,78,216,.04)")));
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
@@ -8496,10 +8656,12 @@ function updateUI(){
   const cnKeys = keys.filter(k => k.enabled !== false && k.realm === 'cn').length;
   const caKeys = keys.filter(k => k.enabled !== false && k.realm === 'codearts').length;
   const rcKeys = keys.filter(k => k.enabled !== false && k.realm === 'raccoon').length;
+  const dbKeys = keys.filter(k => k.enabled !== false && k.realm === 'doubao').length;
   const followKeys = keys.filter(k => k.enabled !== false && !k.realm).length;
   const activeKeysTotal = isIntlGw ? (intlKeys + followKeys)
     : (isCnGw ? (cnKeys + followKeys)
-      : (isCaGw ? (caKeys + followKeys) : (rcKeys + followKeys)));
+      : (isCaGw ? (caKeys + followKeys)
+        : (isRcGw ? (rcKeys + followKeys) : (dbKeys + followKeys))));
 
   const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
@@ -8513,6 +8675,8 @@ function updateUI(){
   if(elCaKey) elCaKey.textContent = caKeys + ' 个 Key';
   const elRcKey = document.getElementById("tabRaccoonKeyBadge");
   if(elRcKey) elRcKey.textContent = rcKeys + ' 个 Key';
+  const elDbKey = document.getElementById("tabDoubaoKeyBadge");
+  if(elDbKey) elDbKey.textContent = dbKeys + ' 个 Key';
 
   // 左侧卡片账号数与积分统计：大数字是「总剩余」（含停用账号），副行的
   // 「可用」只算 isAcctActive（启用且未触发保留/限额护栏）的账号——与旁边
@@ -8647,10 +8811,30 @@ function updateUI(){
     catch(e) { elRcHost.textContent = rc.base_url; }
   }
 
-  // CodeArts / 小浣熊视图隐藏 WorkBuddy 专属区块，避免把两套账号/积分读混。
+  // 豆包 Work 卡片：健康/总数、模型数与离线标记。积分/签到在 P3 接入前不展示。
+  const db = window.DOUBAO_OVERVIEW || {};
+  const dbStats = db.stats || {};
+  const dbHealthy = (dbStats.healthy != null) ? dbStats.healthy : "—";
+  const dbTotal = (dbStats.total != null) ? dbStats.total : 0;
+  const dbModels = (db.models || []).length;
+  const elDbHealthy = document.getElementById("tabDoubaoHealthy");
+  if(elDbHealthy) elDbHealthy.textContent = dbHealthy;
+  const elDbTotal = document.getElementById("tabDoubaoTotal");
+  if(elDbTotal) elDbTotal.textContent = dbTotal;
+  const elDbModels = document.getElementById("tabDoubaoModels");
+  if(elDbModels) elDbModels.textContent = dbModels;
+  const elDbOffline = document.getElementById("tabDoubaoOffline");
+  if(elDbOffline) elDbOffline.style.display = (db.online === false) ? "inline-block" : "none";
+  const elDbHost = document.getElementById("tabDoubaoHost");
+  if(elDbHost && db.base_url){
+    try { elDbHost.textContent = new URL(db.base_url).host; }
+    catch(e) { elDbHost.textContent = db.base_url; }
+  }
+
+  // CodeArts / 小浣熊 / 豆包 Work 视图隐藏 WorkBuddy 专属区块，避免把几套账号/积分读混。
   // 小浣熊已被停用（或视图已回落到别的出口）时不能继续隐藏 WorkBuddy，
   // 否则页面会只剩一个空壳。
-  const hideWorkbuddy = isCodeartsView || (isRaccoonView && raccoonEnabled);
+  const hideWorkbuddy = isCodeartsView || (isRaccoonView && raccoonEnabled) || (isDoubaoView && doubaoEnabled);
   ["workbuddyAccountsSection", "workbuddyDisabledSection",
    "workbuddyActivitySection"].forEach(function(id){
     const el = document.getElementById(id);
@@ -8671,7 +8855,9 @@ function updateUI(){
       ? "小浣熊积分任务、登录奖励与账号积分总览。"
       : (isCodeartsView
         ? "CodeArts 没有任务与福利接口。"
-        : "每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。");
+        : (isDoubaoView
+          ? "豆包 Work 的签到、积分与任务将在下一阶段接入。"
+          : "每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。"));
   }
   const caSection = document.getElementById("codeartsAccountsSection");
   if(caSection) caSection.style.display = isCodeartsView ? "" : "none";
@@ -8683,6 +8869,11 @@ function updateUI(){
   if(rcSection) rcSection.style.display = showRaccoon ? "" : "none";
   const rcSummary = document.getElementById("raccoonSummary");
   if(rcSummary) rcSummary.style.display = showRaccoon ? "" : "none";
+  const showDoubao = isDoubaoView && doubaoEnabled;
+  const dbSection = document.getElementById("doubaoAccountsSection");
+  if(dbSection) dbSection.style.display = showDoubao ? "" : "none";
+  const dbSummary = document.getElementById("doubaoSummary");
+  if(dbSummary) dbSummary.style.display = showDoubao ? "" : "none";
   const wbCards = document.getElementById("cards");
   if(wbCards) wbCards.style.display = hideWorkbuddy ? "none" : "";
   const wbSched = document.getElementById("schedulerBar");
@@ -8718,6 +8909,12 @@ async function switchViewRealm(r){
                        refreshAnalyticsScopeData(), refresh()]);
     return;
   }
+  if(r === "doubao"){
+    // 豆包 Work 目前没有签到/任务/调度器，只刷自己的概览与用量。
+    await Promise.all([loadDoubaoOverview(true), loadModels(),
+                       refreshAnalyticsScopeData(), refresh()]);
+    return;
+  }
   // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
   // 串行排队时后面那些毫秒级的用量接口全被它堵着，切过去看着就是"过几秒才刷新"。
   await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
@@ -8728,6 +8925,7 @@ function realmLabel(r){
   if(r === "intl") return "国际版";
   if(r === "cn") return "国内版";
   if(r === "raccoon") return "小浣熊";
+  if(r === "doubao") return "豆包 Work";
   return "CodeArts";
 }
 
@@ -8750,6 +8948,9 @@ async function toggleActiveGatewayRealm(){
                          refreshAnalyticsScopeData(), refresh()]);
     }else if(window.ACTIVE_GATEWAY_REALM === "raccoon"){
       await Promise.all([loadRaccoonOverview(true), loadModels(),
+                         refreshAnalyticsScopeData(), refresh()]);
+    }else if(window.ACTIVE_GATEWAY_REALM === "doubao"){
+      await Promise.all([loadDoubaoOverview(true), loadModels(),
                          refreshAnalyticsScopeData(), refresh()]);
     }else{
       await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
@@ -9401,6 +9602,478 @@ function raccoonEditNote(uid){
   raccoonAccountAction("note", uid, note);
 }
 
+/* ---- 豆包 Work 第五出口 ---- */
+window.DOUBAO_OVERVIEW = null;
+
+async function loadDoubaoOverview(force){
+  const box = document.getElementById("doubaoAccounts");
+  try{
+    const r = await getJSON("/doubao/overview" + (force ? "?force=1" : ""));
+    window.DOUBAO_OVERVIEW = r;
+    await loadProxySlots();
+    renderDoubaoCards(r);
+    renderDoubaoAccounts(r);
+    window.updateUI();
+  }catch(e){
+    window.DOUBAO_OVERVIEW = null;
+    const cards = document.getElementById("doubaoCards");
+    if(cards) cards.innerHTML = "";
+    if(box){
+      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
+        + escapeHtml(e.message || "读取豆包 Work 失败")
+        + '<div style="margin-top:8px;color:var(--dim);font-size:12px">检查「设置 → 豆包 Work 接入」是否已启用，或先导入 cookie 账号。</div></div>';
+    }
+    window.updateUI();
+  }
+}
+
+function renderDoubaoCards(r){
+  const box = document.getElementById("doubaoCards");
+  if(!box) return;
+  const st = r.stats || {};
+  const accounts = r.accounts || [];
+  const healthy = (st.healthy != null) ? st.healthy : "—";
+  const total = (st.total != null) ? st.total : accounts.length;
+  const cooling = (st.cooling != null) ? st.cooling : 0;
+  const disabled = (st.disabled != null) ? st.disabled : 0;
+  let active = 0, max = 0, checked = 0, totalCredits = 0, hasCredits = false;
+  accounts.forEach(function(a){
+    active += Number(a.active_concurrent || 0);
+    max += Number(a.max_concurrent || 0);
+    const cr = a.credits || {};
+    if(cr.checked_in_today) checked += 1;
+    if(cr.total_amount != null){ totalCredits += Number(cr.total_amount) || 0; hasCredits = true; }
+  });
+  box.innerHTML =
+    card("健康账号", healthy + "/" + total, "cookie / device 账号")
+    + card("模型", (r.models || []).length, "豆包 Work 目录")
+    + card("今日签到", checked + "/" + total, "已签 / 账号")
+    + card("累计额度", hasCredits ? fmt(totalCredits) : "—", "签到活动 total_amount")
+    + card("并发", active + "/" + max, "账号级并发")
+    + card("冷却 / 停用", cooling + " / " + disabled, "自动恢复 / 手动");
+}
+
+function renderDoubaoAccounts(r){
+  const box = document.getElementById("doubaoAccounts");
+  const count = document.getElementById("doubaoAcctCount");
+  const accounts = r.accounts || [];
+  if(count) count.textContent = accounts.length ? (" · " + accounts.length) : "";
+  if(!box) return;
+  if(!accounts.length){
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">还没有豆包 Work 账号。点「+ 添加账号」导入 cookie 与 device JSON。</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table id="doubaoAccountsTable"><thead><tr>'
+    + '<th>账号</th><th>状态</th><th>积分 / 签到</th><th>出口</th><th>并发</th><th>最近错误</th><th>操作</th>'
+    + '</tr></thead><tbody>';
+  accounts.forEach(function(a){
+    const uid = escapeHtml(a.uid || "");
+    const uidSafe = esc(String(a.uid || "").replace(/[^\w.@-]/g, ""));
+    const name = escapeHtml(a.nickname || a.uid || "");
+    const note = a.note
+      ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.note) + '</div>'
+      : '';
+    let status = '<span class="badge ok mini">正常</span>';
+    if(a.enabled === false) status = '<span class="badge bad mini">已停用</span>';
+    else if(a.cooling) status = '<span class="badge warn mini">冷却中</span>';
+    const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
+      + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
+    const cr = a.credits || {};
+    const creditTotal = (cr.total_amount != null) ? cr.total_amount
+      : (cr.total_credit_num != null ? cr.total_credit_num : "—");
+    const sign = cr.checked_in_today
+      ? '<span class="badge ok mini">已签</span>'
+      : (cr.has_signin_task ? '<span class="badge warn mini">未签</span>' : '<span style="color:var(--dim)">—</span>');
+    const creditsHtml = '<b>' + escapeHtml(String(creditTotal)) + '</b>'
+      + '<div style="font-size:11px;color:var(--dim);margin-top:2px">' + sign
+      + (cr.continuous_days != null ? ' · 连签 ' + escapeHtml(String(cr.continuous_days)) : '') + '</div>';
+    const lastError = a.last_error
+      ? '<span style="font-size:11px;color:var(--bad)">' + escapeHtml(a.last_error) + '</span>'
+      : '<span style="color:var(--dim);font-size:11px">—</span>';
+    const actions = [];
+    if(a.enabled === false){
+      actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'enable\',\'' + uidSafe + '\')">启用</button>');
+    }else{
+      actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'disable\',\'' + uidSafe + '\')">停用</button>');
+    }
+    actions.push('<button class="sec mini" onclick="doubaoAccountCheckin(\'' + uidSafe + '\',this)">签到</button>');
+    actions.push('<button class="sec mini" onclick="doubaoShowTasks(\'' + uidSafe + '\')">任务</button>');
+    actions.push('<button class="sec mini" onclick="doubaoAccountCredits(\'' + uidSafe + '\',this)">积分</button>');
+    actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'test\',\'' + uidSafe + '\')">检查</button>');
+    actions.push('<button class="sec mini" onclick="doubaoEditNote(\'' + uidSafe + '\')">备注</button>');
+    actions.push('<button class="sec mini" onclick="doubaoAccountAction(\'delete\',\'' + uidSafe + '\')">删除</button>');
+    html += '<tr><td><b>' + name + '</b>' + note
+      + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
+      + '<td>' + status + '</td><td>' + creditsHtml + '</td>'
+      + '<td>' + doubaoSlotSelectHtml(a) + '</td><td>' + conc + '</td>'
+      + '<td>' + lastError + '</td>'
+      + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
+}
+
+function doubaoSlotSelectHtml(a){
+  const current = a.proxy_slot || '';
+  const opts = ['<option value=""' + (current ? '' : ' selected') + '>直连</option>'];
+  const known = PROXY_SLOTS.some(s => s.id === current);
+  if(current && !known){
+    opts.push('<option value="" selected>已删除的槽位（直连）</option>');
+  }
+  opts.push.apply(opts, PROXY_SLOTS.map(s =>
+    '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
+    + esc(s.label || s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>'));
+  const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
+  return '<select class="slot-select" onchange="doubaoSetProxy(&quot;' + uidAttr + '&quot;, this.value, this)">'
+    + opts.join('') + '</select>';
+}
+
+async function doubaoSetProxy(uid, slotId, el){
+  if(el) el.disabled = true;
+  try{
+    await postJSON('/doubao/accounts/proxy', {uid: uid, proxy_slot: slotId});
+    toast('出口已更新', 'ok');
+    await loadDoubaoOverview(true);
+  }catch(e){
+    toast('出口更新失败: ' + e.message, 'bad');
+  }finally{
+    if(el) el.disabled = false;
+  }
+}
+
+async function doubaoAccountCheckin(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/doubao/accounts/checkin', {uid: uid});
+    const kind = (r && r.status === 'fail') ? 'bad' : 'ok';
+    toast((r && r.message) || '签到完成', kind);
+    await loadDoubaoOverview(true);
+    await refreshActiveRealm();
+    window.updateUI();
+  }catch(e){
+    toast('签到失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoAccountCredits(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/doubao/credits/refresh', {uid: uid});
+    toast('积分任务已刷新', 'ok');
+    await loadDoubaoOverview(true);
+  }catch(e){
+    toast('刷新积分失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoCheckinAll(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/doubao/checkin', {});
+    const list = (r && r.results) || [];
+    const ok = list.filter(x => x.status === 'success').length;
+    const already = list.filter(x => x.status === 'already').length;
+    const fail = list.filter(x => x.status === 'fail').length;
+    toast('豆包签到：成功 ' + ok + ' · 已签 ' + already + ' · 失败 ' + fail,
+      fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }catch(e){
+    toast('全员签到失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoRefreshAllCredits(btn){
+  const accounts = ((window.DOUBAO_OVERVIEW || {}).accounts || []);
+  if(!accounts.length){ toast('还没有豆包账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  let ok = 0, fail = 0;
+  try{
+    for(const a of accounts){
+      try{
+        await postJSON('/doubao/credits/refresh', {uid: a.uid});
+        ok += 1;
+      }catch(e){ fail += 1; }
+    }
+    toast('积分刷新：成功 ' + ok + ' · 失败 ' + fail, fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoRefreshAllTasks(btn){
+  const accounts = ((window.DOUBAO_OVERVIEW || {}).accounts || []);
+  if(!accounts.length){ toast('还没有豆包账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  let ok = 0, fail = 0;
+  try{
+    for(const a of accounts){
+      try{
+        await postJSON('/doubao/tasks/refresh', {uid: a.uid});
+        ok += 1;
+      }catch(e){ fail += 1; }
+    }
+    toast('任务刷新：成功 ' + ok + ' · 失败 ' + fail, fail ? 'warn' : 'ok');
+    await loadDoubaoOverview(true);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function doubaoTaskStatus(task){
+  if(!task || typeof task !== 'object') return '—';
+  if(task.task_kind === 'daily_signin'){
+    const dc = task.daily_checkin || {};
+    return dc.checked_in_today ? '已签到' : '待签到';
+  }
+  const status = Number(task.task_status);
+  if(status === 0) return '未开始';
+  if(status === 1) return '待完成';
+  if(status === 2) return '已完成';
+  return status ? ('状态 ' + status) : '—';
+}
+
+function doubaoRewardText(task){
+  const list = (task && task.reward_summaries) || [];
+  if(list.length){
+    return list.map(x => '+' + (x.reward_amount || 0)).join(' / ');
+  }
+  const dc = (task && task.daily_checkin) || {};
+  if(dc.reward && dc.reward.reward_amount != null) return '+' + dc.reward.reward_amount;
+  return '';
+}
+
+function doubaoShowTasks(uid){
+  const account = ((window.DOUBAO_OVERVIEW || {}).accounts || []).find(a => a.uid === uid) || {};
+  const panel = document.getElementById('doubaoTasksPanel');
+  if(!panel) return;
+  const tasks = (account.tasks || {});
+  const list = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+  const milestones = Array.isArray(tasks.milestones) ? tasks.milestones : [];
+  const progress = tasks.progress || {};
+  let html = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<div><b>豆包任务与福利</b> · ' + escapeHtml(account.nickname || account.uid || '')
+    + '<span style="font-size:11px;color:var(--dim);margin-left:8px">累计额度 '
+    + escapeHtml(String(progress.total_amount != null ? progress.total_amount : '—')) + '</span></div>'
+    + '<button class="sec mini" onclick="doubaoRefreshTasks(\'' + esc(String(uid).replace(/[^\w.@-]/g, '')) + '\',this)">刷新任务</button>'
+    + '</div>';
+  if(!list.length && !milestones.length){
+    html += '<div style="padding:12px;color:var(--dim);font-size:12px">还没有任务缓存。点「刷新任务」从豆包活动接口读取；签到后也会自动刷新。</div>';
+  }else{
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px">';
+    list.forEach(function(task){
+      const reward = doubaoRewardText(task);
+      html += '<div style="border:1px solid var(--line);border-radius:8px;padding:9px 11px">'
+        + '<div style="font-weight:600;font-size:12px">' + escapeHtml(task.title || task.campaign_code || '未命名任务') + '</div>'
+        + '<div style="font-size:11px;color:var(--dim);margin-top:3px">' + escapeHtml(task.subtitle || task.description || '') + '</div>'
+        + '<div style="font-size:11px;margin-top:5px">' + escapeHtml(doubaoTaskStatus(task))
+        + (reward ? ' · ' + escapeHtml(reward) : '') + '</div></div>';
+    });
+    html += '</div>';
+    if(milestones.length){
+      html += '<div style="font-size:12px;font-weight:600;margin:12px 0 6px">里程碑</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">';
+      milestones.forEach(function(task){
+        html += '<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px">'
+          + '<b>' + escapeHtml(task.title || task.campaign_code || '') + '</b>'
+          + '<div style="font-size:11px;color:var(--dim);margin-top:3px">'
+          + escapeHtml(task.subtitle || '') + (doubaoRewardText(task) ? ' · ' + escapeHtml(doubaoRewardText(task)) : '')
+          + '</div></div>';
+      });
+      html += '</div>';
+    }
+  }
+  panel.innerHTML = html;
+  panel.style.display = '';
+  panel.scrollIntoView({block:'nearest',behavior:'smooth'});
+}
+
+async function doubaoRefreshTasks(uid, btn){
+  if(btn) btn.disabled = true;
+  try{
+    await postJSON('/doubao/tasks/refresh', {uid: uid});
+    toast('任务已刷新', 'ok');
+    await loadDoubaoOverview(true);
+    doubaoShowTasks(uid);
+  }catch(e){
+    toast('刷新任务失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function doubaoAccountAction(action, uid, extra){
+  if(action === "delete"){
+    if(!confirm("删除豆包 Work 账号 " + uid + "？\n\n会删除本机 cookie 文件并移出账号池，不可恢复。")) return;
+  }
+  const payload = {uid: uid};
+  if(action === "note") payload.note = String(extra == null ? "" : extra);
+  try{
+    const r = await postJSON("/doubao/accounts/" + action, payload);
+    if(action === "test"){
+      toast((r && r.ok === false) ? ("账号检查失败: " + (r.message || "未知错误")) : "账号配置有效（尚未发起上游请求）",
+        (r && r.ok === false) ? "bad" : "ok");
+    }else{
+      toast((r && r.message) || "操作成功", "ok");
+    }
+    await loadDoubaoOverview(true);
+    await refreshActiveRealm();
+    window.updateUI();
+  }catch(e){
+    toast("操作失败: " + e.message, "bad");
+  }
+}
+
+function doubaoEditNote(uid){
+  const acct = ((window.DOUBAO_OVERVIEW || {}).accounts || [])
+    .find(a => a.uid === uid) || {};
+  const note = prompt("备注", acct.note || "");
+  if(note === null) return;
+  doubaoAccountAction("note", uid, note);
+}
+
+function toggleDoubaoImport(show){
+  const panel = document.getElementById("doubaoImportPanel");
+  if(panel) panel.style.display = show ? "" : "none";
+  const hint = document.getElementById("doubaoImportHint");
+  if(hint && show) hint.textContent = "";
+}
+
+async function doubaoImport(btn){
+  const readText = id => {
+    const el = document.getElementById(id);
+    return el ? String(el.value || "").trim() : "";
+  };
+  const parseObject = (text, label) => {
+    if(!text) return {};
+    let value;
+    try{ value = JSON.parse(text); }
+    catch(e){ throw new Error(label + " 不是合法 JSON"); }
+    if(!value || typeof value !== "object" || Array.isArray(value)){
+      throw new Error(label + " 必须是 JSON 对象");
+    }
+    return value;
+  };
+  let cookies, device;
+  try{
+    cookies = parseObject(readText("doubaoCookiesJson"), "cookies");
+    device = parseObject(readText("doubaoDeviceJson"), "device");
+    if(!Object.keys(cookies).length) throw new Error("cookies 不能为空");
+  }catch(e){
+    toast(e.message, "bad");
+    return;
+  }
+  const nickname = readText("doubaoNickname");
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/doubao/accounts/import", {
+      cookies: cookies, device: device, nickname: nickname, enabled: true,
+    });
+    toast("豆包 Work 账号已导入", "ok");
+    const panel = document.getElementById("doubaoImportPanel");
+    if(panel) panel.style.display = "none";
+    const cookiesEl = document.getElementById("doubaoCookiesJson");
+    const deviceEl = document.getElementById("doubaoDeviceJson");
+    const nickEl = document.getElementById("doubaoNickname");
+    if(cookiesEl) cookiesEl.value = "";
+    if(deviceEl) deviceEl.value = "";
+    if(nickEl) nickEl.value = "";
+    await loadDoubaoOverview(true);
+    await refreshActiveRealm();
+    window.updateUI();
+    if(r && r.account) toast("账号 " + (r.account.nickname || r.account.uid) + " 已加入", "ok");
+  }catch(e){
+    toast("导入失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function renderDoubaoSettings(cfg){
+  if(!cfg) return;
+  const enabled = cfg.enabled === true || cfg.configured === true;
+  const enabledInput = document.getElementById("setDoubaoEnabled");
+  if(enabledInput) enabledInput.checked = enabled;
+  const checkinInput = document.getElementById("setDoubaoCheckinEnabled");
+  if(checkinInput) checkinInput.checked = cfg.checkin_enabled === true;
+  const checkinTime = document.getElementById("setDoubaoCheckinTime");
+  if(checkinTime) checkinTime.value = cfg.checkin_time || "09:15";
+  const base = document.getElementById("setDoubaoBaseUrl");
+  if(base) base.value = cfg.base_url || "https://www.doubao.com";
+  const aid = document.getElementById("setDoubaoAID");
+  if(aid) aid.value = cfg.aid || "1044603";
+  const conc = document.getElementById("setDoubaoMaxConcurrent");
+  if(conc) conc.value = cfg.max_concurrent || 1;
+  const timeout = document.getElementById("setDoubaoTimeout");
+  if(timeout) timeout.value = cfg.timeout_seconds || 60;
+  const stream = document.getElementById("setDoubaoStreamTimeout");
+  if(stream) stream.value = cfg.stream_timeout_seconds || 600;
+  const ttl = document.getElementById("setDoubaoModelsTtl");
+  if(ttl) ttl.value = cfg.models_ttl_seconds || 300;
+  const state = document.getElementById("setDoubaoState");
+  if(state){
+    state.textContent = enabled ? "(已启用)" : "(未启用)";
+    state.style.color = enabled ? "var(--accent2)" : "var(--dim)";
+  }
+  const hint = document.getElementById("setDoubaoHint");
+  if(hint){
+    hint.textContent = (cfg.accounts || 0) + " 个账号，"
+      + (cfg.healthy || 0) + " 个健康；账号在「账号」页的豆包 Work 视图管理。";
+  }
+}
+
+async function saveDoubaoSettings(btn){
+  const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  const payload = {
+    enabled: !!(document.getElementById("setDoubaoEnabled") || {}).checked,
+    checkin_enabled: !!(document.getElementById("setDoubaoCheckinEnabled") || {}).checked,
+    checkin_time: String(val("setDoubaoCheckinTime") || "09:15").trim(),
+    base_url: String(val("setDoubaoBaseUrl") || "").trim(),
+    aid: String(val("setDoubaoAID") || "").trim(),
+    max_concurrent: parseInt(val("setDoubaoMaxConcurrent"), 10) || 1,
+    timeout_seconds: parseFloat(val("setDoubaoTimeout")) || 60,
+    stream_timeout_seconds: parseFloat(val("setDoubaoStreamTimeout")) || 600,
+    models_ttl_seconds: parseFloat(val("setDoubaoModelsTtl")) || 300,
+  };
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/settings/save", {doubao: payload});
+    if(r && r.warning) toast(r.warning, "warn");
+    else toast("豆包 Work 设置已保存", "ok");
+    if(r && r.doubao) renderDoubaoSettings(r.doubao);
+    await refreshActiveRealm();
+    window.updateUI();
+    if(payload.enabled) await loadDoubaoOverview(true);
+    else window.DOUBAO_OVERVIEW = null;
+  }catch(e){
+    toast("保存失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function testDoubao(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/doubao/test", {});
+    if(r && r.ok === false){
+      toast("豆包 Work 未就绪: " + (r.message || "未启用或没有可用账号"), "bad");
+    }else{
+      toast("豆包 Work 就绪（" + ((r.models != null) ? r.models : 0) + " 个模型）", "ok");
+    }
+  }catch(e){
+    toast("豆包 Work 测试失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 let RACCOON_OAUTH_SESSION = "";
 let RACCOON_OAUTH_TIMER = null;
 let RACCOON_OAUTH_DEADLINE = 0;
@@ -9907,17 +10580,35 @@ async function initRealm(){
   const viewFromUrl = new URLSearchParams(window.location.search).get('view');
   if(viewFromUrl && ['intl', 'cn', 'codearts'].includes(viewFromUrl)) window.VIEW_REALM = viewFromUrl;
   if(viewFromUrl === 'raccoon' && (window.REALM_OPTIONS || []).includes('raccoon')) window.VIEW_REALM = viewFromUrl;
+  if(viewFromUrl === 'doubao' && (window.REALM_OPTIONS || []).includes('doubao')) window.VIEW_REALM = viewFromUrl;
   const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
   if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
   window.updateUI();
   if(window.VIEW_REALM === 'codearts') loadCodeartsOverview(true);
   if(window.VIEW_REALM === 'raccoon') loadRaccoonOverview(true);
+  if(window.VIEW_REALM === 'doubao') loadDoubaoOverview(true);
 }
 
 async function refreshModelCatalog(btn){
   // 手动刷新模型清单：强制走一次上游 /v3/config（服务端执行，绕过 300s 缓存），
   // 只刷当前视图版本——这张表显示的是哪个版本，刷新按钮就只拉哪个版本，绝
   // 不跨区（服务端会挑该版本自己的账号发请求）。完成后立即重载表格。
+  if(window.VIEW_REALM === 'doubao'){
+    if(btn) btn.disabled = true;
+    const prevText = btn ? btn.textContent : '';
+    if(btn) btn.textContent = '刷新中...';
+    try{
+      const r = await postJSON('/doubao/models/refresh', {});
+      toast('豆包 Work 模型目录：' + ((r && r.models && r.models.length) || 0) + ' 个模型', 'ok');
+      await loadModels();
+      await loadDoubaoOverview(true);
+    }catch(e){
+      toast('豆包 Work 模型目录刷新失败：' + e.message, 'bad');
+    }finally{
+      if(btn){ btn.disabled = false; btn.textContent = prevText; }
+    }
+    return;
+  }
   if(window.VIEW_REALM === 'codearts' || window.VIEW_REALM === 'raccoon'){
     const isRaccoon = window.VIEW_REALM === 'raccoon';
     const label = isRaccoon ? '小浣熊' : 'CodeArts';
@@ -16565,6 +17256,7 @@ async function loadSettings(showToast){
     renderKeyRows();
     renderCodeartsSettings(data.codearts);
     renderRaccoonSettings(data.raccoon);
+    renderDoubaoSettings(data.doubao);
     updateUI();
     const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value || '-'; };
     set('setProject', data.project);
@@ -18405,7 +19097,8 @@ function renderDeletedKeyRows(){
     const realmLbl = (k.realm === 'intl') ? '固定国际版出口'
       : ((k.realm === 'cn') ? '固定国内版出口'
         : ((k.realm === 'codearts') ? '固定 CodeArts 出口'
-          : ((k.realm === 'raccoon') ? '固定小浣熊出口' : '跟随面板切换')));
+          : ((k.realm === 'raccoon') ? '固定小浣熊出口'
+            : ((k.realm === 'doubao') ? '固定豆包 Work 出口' : '跟随面板切换'))));
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
       + '<span>' + esc(realmLbl) + '</span>'
@@ -18438,7 +19131,9 @@ function renderKeyRows(){
         (window.REALM_OPTIONS || []).includes('codearts')
           ? [['codearts', '固定 CodeArts 出口']] : [],
         (window.REALM_OPTIONS || []).includes('raccoon')
-          ? [['raccoon', '固定小浣熊出口']] : []);
+          ? [['raccoon', '固定小浣熊出口']] : [],
+        (window.REALM_OPTIONS || []).includes('doubao')
+          ? [['doubao', '固定豆包 Work 出口']] : []);
       const options = realmChoices.map(([val, lbl]) =>
         '<option value="' + val + '"' + (keyEditRealm(row) === val ? ' selected' : '') + '>' + lbl + '</option>'
       ).join('');
@@ -18522,6 +19217,8 @@ function renderKeyRows(){
       ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
       : (row.realm === 'raccoon')
       ? '<span class="realm-badge-raccoon" style="font-size:11px">固定小浣熊出口</span>'
+      : (row.realm === 'doubao')
+      ? '<span class="realm-badge-doubao" style="font-size:11px">固定豆包 Work 出口</span>'
       : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
 
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
@@ -20286,7 +20983,7 @@ function onRangeCustomChange(){
 function analyticsRealmValue(){
   if(analyticsScope === 'all') return 'all';
   const realm = window.VIEW_REALM;
-  return (realm === 'intl' || realm === 'cn' || realm === 'codearts' || realm === 'raccoon')
+  return (realm === 'intl' || realm === 'cn' || realm === 'codearts' || realm === 'raccoon' || realm === 'doubao')
     ? realm : 'all';
 }
 
@@ -20296,7 +20993,8 @@ function analyticsScopeLabel(){
   return realm === 'cn' ? '国内版'
     : realm === 'intl' ? '国际版'
     : realm === 'codearts' ? 'CodeArts'
-    : realm === 'raccoon' ? '小浣熊' : '当前区域';
+    : realm === 'raccoon' ? '小浣熊'
+    : realm === 'doubao' ? '豆包 Work' : '当前区域';
 }
 
 function setAnalyticsScope(scope){
@@ -21328,6 +22026,7 @@ function keyRealmCell(k){
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
   if(k.realm === 'raccoon') return '<span class="realm-tag realm-raccoon" style="font-size:10px">小浣熊</span>';
+  if(k.realm === 'doubao') return '<span class="realm-tag realm-doubao" style="font-size:10px">豆包 Work</span>';
   // realm 为空的 Key 不绑出口，而是跟着模型走：它可能两个出口都用过，
   // 那时代理返回的积分是两个价格体系相加的结果，必须说出来。
   if(k.cross_realm) return '<span class="badge warn" style="font-size:10px">跟随 · 混合</span>';
@@ -23155,6 +23854,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     var realm = window.VIEW_REALM || 'intl';
     if(realm === 'codearts') return 'CodeArts';
     if(realm === 'raccoon') return '小浣熊';
+    if(realm === 'doubao') return '豆包 Work';
     if(realm === 'cn') return '国内版';
     return '国际版';
   }
@@ -23265,6 +23965,12 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
       var rcVisible = !!(rcCard && getComputedStyle(rcCard).display !== 'none');
       rcBtn.hidden = !rcVisible;
     }
+    var dbBtn = document.getElementById('nextGatewayRealmDoubao');
+    var dbCard = document.getElementById('tabDoubao');
+    if(dbBtn){
+      var dbVisible = !!(dbCard && getComputedStyle(dbCard).display !== 'none');
+      dbBtn.hidden = !dbVisible;
+    }
     var agentsOff = false;
     try { agentsOff = (typeof AGENTS_AVAILABLE !== 'undefined' && !AGENTS_AVAILABLE); } catch(e){}
     Array.prototype.forEach.call(document.querySelectorAll('[data-next-tab="agents"]'), function(el){
@@ -23328,8 +24034,8 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     },
     providers: {
       title: '提供商',
-      desc: 'API Key、WorkBuddy / CodeArts / 小浣熊接入与代理槽。',
-      items: ['API Key', 'CodeArts 接入', '小浣熊接入', '账号代理槽']
+      desc: 'API Key、WorkBuddy / CodeArts / 小浣熊 / 豆包 Work 接入与代理槽。',
+      items: ['API Key', 'CodeArts 接入', '小浣熊接入', '豆包 Work 接入', '账号代理槽']
     },
     models: {
       title: '模型与定价',

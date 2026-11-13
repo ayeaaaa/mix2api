@@ -124,10 +124,25 @@ func (s *RealmService) Set(ctx context.Context, realm string) error {
 		return err
 	}
 	for _, provider := range s.Providers {
-		if selector, ok := provider.(providers.RealmSelector); ok {
-			if err := selector.SetActiveRealm(ctx, realm); err != nil {
-				return err
+		selector, ok := provider.(providers.RealmSelector)
+		if !ok {
+			continue
+		}
+		// A selector only owns the realms it advertises (WorkBuddy owns
+		// intl/cn). Provider-only exits such as doubao are selected through
+		// active_realm.json and must not be rejected by WorkBuddy's validator.
+		owned := false
+		for _, option := range selector.RealmOptions() {
+			if normalizeRealm(option) == realm {
+				owned = true
+				break
 			}
+		}
+		if !owned {
+			continue
+		}
+		if err := selector.SetActiveRealm(ctx, realm); err != nil {
+			return err
 		}
 	}
 	for _, provider := range s.Providers {
@@ -205,6 +220,8 @@ func normalizeRealm(value string) string {
 		return "codearts"
 	case "raccoon":
 		return "raccoon"
+	case "doubao":
+		return "doubao"
 	default:
 		return ""
 	}

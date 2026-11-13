@@ -16,10 +16,10 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `6ad28b39b6c360fc989aa07fc90ccff805f0119929b54426d14a40dea0028102` |
+| v2 SHA-256 | `51a1ad797c39b3b7e4ed5efd80879c1eadda6519126f4375dacc9e9b96207c07` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,318,648 bytes |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls and panel branding controls; otherwise identical to v1.6.5 |
+| v2 size | 1,354,909 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, and panel branding controls; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
