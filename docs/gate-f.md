@@ -168,6 +168,12 @@ copies the authorization link instead of auto-opening it. `make check`,
 `c75bfe1`; evidence: `docs/smoke/2026-11-13-release-2.6.2.md`. No media or
 Windows SCM gate changed.
 
+**v2.6.3 addendum:** the key card and analytics table now render a CodeArts
+realm binding as “CodeArts” instead of “Follow panel”. `make check`, `make race`,
+and the 14/14 dashboard JS harness pass. Published as `v2.6.3` at `f70eb9a`;
+evidence: `docs/smoke/2026-11-13-release-2.6.3.md`. No media or Windows SCM gate
+changed.
+
 **v2.0.7 addendum:** analytics now has a persistent SQLite rollup keyed by
 day/realm/account/model/key. It advances by log offset and is only used when the
 analytics view cache is invalid; missing/corrupt data falls back to the scan.
