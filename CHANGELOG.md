@@ -3,14 +3,19 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.1] - 2026-11-13
 
 ### 中文
 
 #### 修复
 
 - Raccoon 每日活跃改为刷新登录会话触发上游 `daily_grant`，不再发送 `hi`
-  对话、不消耗积分；刷新后异步轮询账单，到账后记录当日结果。
+  对话、不消耗积分；刷新后轮询账单，到账后记录当日结果。刷新失败不会再被
+  标记为已刷新，看板状态与账单保持一致。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
 
 ### English
 
@@ -18,7 +23,13 @@ Keep a Changelog and the project uses semantic versioning.
 
 - Raccoon daily activity now triggers the upstream `daily_grant` by refreshing
   the login session instead of sending a `hi` chat, so it no longer spends
-  points. It polls the bill asynchronously after the refresh.
+  points. It polls the bill after the refresh and records the result when the
+  grant lands. A failed refresh is no longer marked as refreshed, keeping the
+  dashboard state consistent with the bill.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
 
 ## [2.8.0] - 2026-11-13
 
