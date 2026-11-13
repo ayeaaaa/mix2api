@@ -12,8 +12,17 @@ Keep a Changelog and the project uses semantic versioning.
 - 清理文档、测试夹具和更新器默认路径中的历史外部项目署名与链接；更新器默认
   请求目录改为 `/run/mix2api-updater`，已有自定义路径可用
   `WB_UPDATE_REQUEST_DIR` 覆盖。
-- `main` 已合并 v2；v1.6.6 的 Python 代码仅保留在 tag/历史中，不再位于
-  `main` 文件树。
+- `main` 现在是唯一开发分支；v1.6.6 的 Python 代码已归档在 tag/release/历史
+  中，不再位于 `main` 文件树。
+
+#### 修复
+
+- Anthropic Messages 的 `thinking.budget_tokens=31999`（Claude Code 的 MAX）
+  现在映射为 `max`，不再降成 `high`；24000 以上映射 `xhigh`。
+- CodeArts 的 `thinking.effort` 和 `thinking.budget_tokens` 会解析为对应
+  `reasoning_effort`，包括 `max`。
+- Raccoon 的 `sn-deepseek-v4-1-flash-1017` 模型目录补上
+  `reasoning_efforts`（含 `max`），客户端不再只能选到 high。
 
 ### English
 
@@ -23,8 +32,17 @@ Keep a Changelog and the project uses semantic versioning.
   test fixtures, and updater defaults. The default request directory is now
   `/run/mix2api-updater`; existing custom paths can use
   `WB_UPDATE_REQUEST_DIR`.
-- `main` now tracks v2; the v1.6.6 Python tree remains only at the tag/history,
-  not in the `main` file tree.
+- `main` is now the only development branch; the v1.6.6 Python tree is archived
+  at the tag/release/history and no longer in the `main` tree.
+
+#### Fixed
+
+- Anthropic Messages `thinking.budget_tokens=31999` (Claude Code MAX) now
+  maps to `max` instead of `high`; budgets at 24000+ map to `xhigh`.
+- CodeArts now derives `reasoning_effort` from `thinking.effort` and
+  `thinking.budget_tokens`, including `max`.
+- The Raccoon `sn-deepseek-v4-1-flash-1017` catalog now advertises
+  `reasoning_efforts` including `max`.
 
 ## [2.8.1] - 2026-11-13
 

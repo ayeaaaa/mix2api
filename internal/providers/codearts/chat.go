@@ -821,18 +821,45 @@ func requestedChatEffort(payload map[string]any) string {
 		return strings.ToLower(strings.TrimSpace(modelText(effort)))
 	}
 	if thinking, ok := payload["thinking"].(map[string]any); ok {
-		switch strings.ToLower(strings.TrimSpace(modelText(thinking["type"]))) {
-		case "disabled":
-			return "none"
-		case "enabled":
-			return "high"
-		}
+		return effortFromThinking(thinking)
 	}
 	if value, ok := payload["enable_thinking"]; ok {
 		if modelTruthy(value) {
 			return "high"
 		}
 		return "none"
+	}
+	return ""
+}
+
+func effortFromThinking(thinking map[string]any) string {
+	if len(thinking) == 0 {
+		return ""
+	}
+	for _, key := range []string{"effort", "reasoning_effort", "reasoningEffort"} {
+		if value := strings.ToLower(strings.TrimSpace(chatTruthyText(thinking[key]))); value != "" {
+			return value
+		}
+	}
+	if budget, ok := numericValue(thinking["budget_tokens"]); ok && budget > 0 {
+		switch {
+		case budget >= 31999:
+			return "max"
+		case budget >= 24000:
+			return "xhigh"
+		case budget >= 16000:
+			return "high"
+		case budget >= 8000:
+			return "medium"
+		default:
+			return "low"
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(modelText(thinking["type"]))) {
+	case "disabled":
+		return "none"
+	case "enabled":
+		return "high"
 	}
 	return ""
 }
