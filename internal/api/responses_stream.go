@@ -138,8 +138,11 @@ func runResponsesStream(w http.ResponseWriter, r *http.Request, stream providers
 	}
 
 	reader := protocol.NewReader(stream)
+	postDone := false
 	for {
-		if clientCanceled(r) {
+		// After [DONE] keep reading the provider's trailing usage/credit
+		// frames even if the client has closed; only accounting remains.
+		if !postDone && clientCanceled(r) {
 			return responsesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
 		}
 		chunk, err := reader.Next()
@@ -158,6 +161,7 @@ func runResponsesStream(w http.ResponseWriter, r *http.Request, stream providers
 		}
 		if chunk.Done {
 			state.sawDone = true
+			postDone = true
 			continue
 		}
 		if rawError, ok := chunk.Fields["error"].(map[string]any); ok {

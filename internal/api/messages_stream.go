@@ -92,7 +92,10 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 	postDone := false
 	var postDoneDeadline time.Time
 	for {
-		if clientCanceled(r) {
+		// After [DONE] keep draining post-DONE usage/credit frames even when
+		// the client has already closed. The client-visible response is
+		// complete; this tail is only for accounting.
+		if !postDone && clientCanceled(r) {
 			return messagesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
 		}
 		var chunk protocol.Chunk

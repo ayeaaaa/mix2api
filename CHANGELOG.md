@@ -24,7 +24,8 @@ Keep a Changelog and the project uses semantic versioning.
 - Raccoon 的 `sn-deepseek-v4-1-flash-1017` 模型目录补上
   `reasoning_efforts`（含 `max`），客户端不再只能选到 high。
 - Raccoon 流式请求在客户端收到 `[DONE]` 后断开时，网关仍会读取 post-DONE
-  的 credit usage 帧并记录扣分；流式和非流式的 credit 统计现在一致。
+  的 credit usage 帧并记录扣分；Chat、Messages、Responses 的流式和非流式
+  credit 统计现在一致。
 
 ### English
 
@@ -47,7 +48,7 @@ Keep a Changelog and the project uses semantic versioning.
   `reasoning_efforts` including `max`.
 - Raccoon streaming requests now drain and record the post-DONE credit usage
   frame even when the client disconnects at `[DONE]`, matching non-streaming
-  credit accounting.
+  credit accounting across Chat, Messages, and Responses.
 
 ## [2.8.1] - 2026-11-13
 
