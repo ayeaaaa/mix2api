@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.3] - 2026-11-14
 
 ### 中文
 
@@ -13,6 +13,10 @@ Keep a Changelog and the project uses semantic versioning.
   `daily_grant`；仅在 access token 被拒时刷新并重试。看板文案改为「触发每日
   活跃」，不再声称刷新登录本身会发放奖励。
 
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
 ### English
 
 #### Fixed
@@ -21,6 +25,10 @@ Keep a Changelog and the project uses semantic versioning.
   web `GET /api/web/office/v3/setting_info` startup request; a token refresh is
   only used to repair a rejected session before retrying. Dashboard wording now
   says "trigger daily activity" instead of claiming a token refresh grants it.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
 
 ## [2.8.2] - 2026-11-14
 
