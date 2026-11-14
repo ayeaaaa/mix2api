@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -14,17 +15,26 @@ var dailyActivePollDelay = 2 * time.Second
 const (
 	dailyActiveMaxAttempts = 2
 	dailyActiveRetryAfter  = time.Hour
-	// The grant is booked asynchronously by the login service. In production
-	// it landed about 14 seconds after the refresh; poll through that window.
+	// The upstream books daily_grant shortly after the authenticated web work
+	// startup request. Poll through that asynchronous window.
 	dailyActivePollTries = 10
+
+	// dailyActiveSettingPath is the authenticated web work startup request that
+	// triggers the daily activity reward. A refresh-token rotation alone does
+	// not trigger it.
+	dailyActiveSettingPath = "/api/web/office/v3/setting_info"
+	dailyActiveWorkHome    = "https://xiaohuanxiong.com/work/home"
+	dailyActiveOrigin      = "https://xiaohuanxiong.com"
+	dailyActivePlatform    = "web"
 )
 
 // DailyActiveResult is one account's daily-activity outcome. It is returned by
 // the manual endpoint and stored as a compact map in accountstate.State.Extra.
 //
-// A daily-activity refresh is a real login-session refresh: it rotates the
-// account's tokens but never sends a chat completion or spends points. Chat
-// and Model are retained only for wire compatibility with older panels.
+// Daily activity is triggered by the same authenticated web settings request
+// that the Raccoon work page sends on startup. It never sends a chat completion
+// or spends points. Chat and Model are retained only for wire compatibility
+// with older panels.
 type DailyActiveResult struct {
 	UID       string `json:"uid"`
 	OK        bool   `json:"ok"`
@@ -49,9 +59,10 @@ type DailyActiveSummary struct {
 }
 
 // DailyActive checks one account, or every enabled account when uid is empty.
-// It first reads today's bills so an already-landed reward is never refreshed
-// again. When today's grant is missing it force-refreshes the login session,
-// then polls the bill until the upstream's asynchronous daily_grant appears.
+// It first reads today's bills so an already-landed reward is never triggered
+// again. When today's grant is missing it sends the authenticated web work
+// settings request, then polls the bill until the upstream's asynchronous
+// daily_grant appears.
 func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyActiveSummary, error) {
 	if p == nil {
 		return DailyActiveSummary{}, errors.New("raccoon: pool is nil")
@@ -151,30 +162,30 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 	if !force {
 		if attempts >= dailyActiveMaxAttempts {
 			result.Skipped = true
-			result.Message = fmt.Sprintf("今日已刷新登录 %d 次，奖励未到账，明天再试", attempts)
+			result.Message = fmt.Sprintf("今日已触发每日活跃 %d 次，奖励未到账，明天再试", attempts)
 			return result
 		}
 		if last, ok := dailyActiveLastAttempt(state["last_attempt"]); ok && now.Sub(last) < dailyActiveRetryAfter {
 			result.Skipped = true
-			result.Message = "距上次刷新登录不足 60 分钟，稍后再试"
+			result.Message = "距上次触发每日活跃不足 60 分钟，稍后再试"
 			return result
 		}
 	}
 
-	// A refresh with the existing refresh token is a real login-session
-	// refresh. It does not send a chat or spend points, and the upstream books
-	// daily_grant asynchronously after the refresh succeeds.
+	// The work page sends this authenticated web settings request on startup.
+	// A token refresh alone does not trigger the reward; refresh is only used to
+	// repair a rejected access token before retrying this request.
 	attempts++
 	state["attempts"] = attempts
 	state["last_attempt"] = now.Format(time.RFC3339)
 
-	refreshErr := p.dailyActiveRefresh(ctx, account)
-	if refreshErr != nil {
+	refreshed, triggerErr := p.dailyActiveTrigger(ctx, account)
+	if triggerErr != nil {
 		result.OK = false
-		result.Message = "刷新登录失败：" + redactedPointsError(refreshErr, account, maxPointsErrorRunes)
+		result.Message = "触发每日活跃失败：" + redactedPointsError(triggerErr, account, maxPointsErrorRunes)
 		state["ok"] = false
 		state["granted"] = false
-		state["refreshed"] = false
+		state["refreshed"] = refreshed
 		state["points"] = 0
 		state["checked_at"] = p.timeNow().Format(time.RFC3339)
 		state["message"] = result.Message
@@ -182,24 +193,24 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 		return result
 	}
 
-	result.Refreshed = true
-	state["refreshed"] = true
+	result.Refreshed = refreshed
+	state["refreshed"] = refreshed
 	granted, verifyErr := p.pollDailyGrant(ctx, account)
 	result.OK = true
 	if verifyErr != nil {
-		result.Message = "登录会话已刷新，但核对每日活跃奖励失败: " + verifyErr.Error()
+		result.Message = "已触发 web 每日活跃，但核对每日活跃奖励失败: " + verifyErr.Error()
 		state["ok"] = true
 		state["granted"] = false
 		state["points"] = 0
 	} else if granted <= 0 {
-		result.Message = "登录会话已刷新，但今日每日活跃奖励尚未到账，稍后自动重试"
+		result.Message = "已触发 web 每日活跃，但今日每日活跃奖励尚未到账，稍后自动重试"
 		state["ok"] = true
 		state["granted"] = false
 		state["points"] = 0
 	} else {
 		result.Granted = true
 		result.Points = granted
-		result.Message = fmt.Sprintf("登录会话已刷新，今日每日活跃奖励 %d 积分已到账", granted)
+		result.Message = fmt.Sprintf("已触发 web 每日活跃，今日每日活跃奖励 %d 积分已到账", granted)
 		state["ok"] = true
 		state["granted"] = true
 		state["points"] = granted
@@ -212,12 +223,120 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 	return result
 }
 
-func (p *Pool) dailyActiveRefresh(ctx context.Context, account *Account) error {
-	tokens := p.TokenManager()
-	if tokens == nil {
-		return errors.New("登录 token 管理器未配置")
+// dailyActiveTrigger sends the web work settings request that causes the
+// upstream to book daily_grant. The request carries both Bearer auth and the
+// web cookies used by the browser session. It retries once after a forced
+// token refresh when the first request is rejected.
+func (p *Pool) dailyActiveTrigger(ctx context.Context, account *Account) (bool, error) {
+	client := p.HTTPClient()
+	if client == nil {
+		return false, errors.New("raccoon: points http client is not configured")
 	}
-	return tokens.Refresh(ctx, account)
+	tokens := p.TokenManager()
+	if err := ensurePointsToken(ctx, tokens, account); err != nil {
+		return false, err
+	}
+
+	payload, generation, err := p.requestDailyActiveSetting(ctx, account, client)
+	refreshed := false
+	if err != nil && IsAuthError(err) && tokens != nil {
+		if refreshErr := tokens.RefreshIfGeneration(ctx, account, generation); refreshErr != nil {
+			return false, refreshErr
+		}
+		refreshed = true
+		payload, _, err = p.requestDailyActiveSetting(ctx, account, client)
+	}
+	if err != nil {
+		return refreshed, err
+	}
+	if !dailyActiveResponseOK(payload) {
+		return refreshed, errors.New("raccoon: daily-active settings request was rejected")
+	}
+	return refreshed, nil
+}
+
+func (p *Pool) requestDailyActiveSetting(
+	ctx context.Context,
+	account *Account,
+	client *HTTPClient,
+) (map[string]any, uint64, error) {
+	generation := uint64(0)
+	if tokens := p.TokenManager(); tokens != nil {
+		generation = tokens.Generation(account)
+	}
+	snapshot := account.refreshCredentials()
+	if snapshot.Deleted {
+		return nil, 0, ErrAccountDeleted
+	}
+	if snapshot.Generation != generation {
+		generation = snapshot.Generation
+	}
+	payload, err := client.DoJSON(
+		ctx, http.MethodGet, dailyActiveSettingPath, dailyActiveWebHeaders(snapshot.Auth),
+		nil, p.ProxyURL(account), authSecretValues(snapshot.Auth)...,
+	)
+	if err != nil {
+		return nil, generation, err
+	}
+	return payload, generation, nil
+}
+
+func dailyActiveWebHeaders(auth Auth) http.Header {
+	headers := make(http.Header)
+	headers.Set("Accept", "*/*")
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Referer", dailyActiveWorkHome)
+	headers.Set("Origin", dailyActiveOrigin)
+	headers.Set("X-Client-Platform", dailyActivePlatform)
+	headers.Set("X-Raccoon-Language", ClientLanguage)
+	if token := cleanToken(auth.AccessToken); token != "" {
+		headers.Set("Authorization", "Bearer "+token)
+	}
+	if cookie := dailyActiveCookie(auth); cookie != "" {
+		headers.Set("Cookie", cookie)
+	}
+	identity := strings.TrimSpace(auth.OfficeIdentity)
+	if identity != "" &&
+		!strings.EqualFold(identity, "personal") &&
+		!strings.EqualFold(identity, "none") {
+		headers.Set("X-Org-Code", identity)
+	}
+	return headers
+}
+
+func dailyActiveCookie(auth Auth) string {
+	parts := make([]string, 0, 6)
+	add := func(name, value string) {
+		value = strings.TrimSpace(value)
+		value = strings.NewReplacer("\r", "", "\n", "", ";", "").Replace(value)
+		if value != "" {
+			parts = append(parts, name+"="+value)
+		}
+	}
+	access := cleanToken(auth.AccessToken)
+	add("xhx_token", access)
+	add("raccoon_token", access)
+	add("raccoon_refresh_token", cleanToken(auth.RefreshToken))
+	add("user_id", auth.UID)
+	add("user_name", auth.UID)
+	add("office_identity", auth.OfficeIdentity)
+	return strings.Join(parts, "; ")
+}
+
+func dailyActiveResponseOK(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	code, ok := payload["code"]
+	if !ok || code == nil {
+		return true
+	}
+	if text, ok := code.(string); ok {
+		text = strings.TrimSpace(text)
+		return text == "" || text == "0" ||
+			strings.EqualFold(text, "ok") || strings.EqualFold(text, "success")
+	}
+	return pointsInt(code) == 0
 }
 
 func (p *Pool) dailyActiveState(account *Account) map[string]any {

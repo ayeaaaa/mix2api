@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 修复
+
+- Raccoon 每日活跃改为调用 Web 端 `GET /api/web/office/v3/setting_info` 触发
+  `daily_grant`；仅在 access token 被拒时刷新并重试。看板文案改为「触发每日
+  活跃」，不再声称刷新登录本身会发放奖励。
+
+### English
+
+#### Fixed
+
+- Raccoon daily activity now triggers `daily_grant` through the authenticated
+  web `GET /api/web/office/v3/setting_info` startup request; a token refresh is
+  only used to repair a rejected session before retrying. Dashboard wording now
+  says "trigger daily activity" instead of claiming a token refresh grants it.
+
 ## [2.8.2] - 2026-11-14
 
 ### 中文

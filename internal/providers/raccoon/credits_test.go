@@ -79,12 +79,14 @@ type pointsFake struct {
 	balanceCalls     int
 	billsCalls       int
 	tasksCalls       int
+	settingCalls     int
 	desktopGrants    int
 	mobileGrants     int
 	refreshStatus    int
 	balanceStatus    int
 	billsStatus      int
 	tasksStatus      int
+	settingStatus    int
 	desktopStatus    int
 	mobileStatus     int
 	balanceByToken   map[string]int
@@ -101,10 +103,14 @@ type pointsFake struct {
 
 	lastDesktopHeaders http.Header
 	lastMobileHeaders  http.Header
+	lastSettingHeaders http.Header
+
+	settingRejectFirst bool
 
 	chatCalls           int
 	dailyGrantOnChat    bool
 	dailyGrantOnRefresh bool
+	dailyGrantOnSetting bool
 }
 
 func newPointsFake(now time.Time) *pointsFake {
@@ -188,6 +194,8 @@ func (f *pointsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveBills(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == PointsTasksPath:
 		f.serveTasks(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == dailyActiveSettingPath:
+		f.serveDailyActiveSetting(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == ChatPath:
 		f.serveDailyActiveChat(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == PointsDesktopGrantPath:
@@ -297,6 +305,39 @@ func (f *pointsFake) serveBills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeCatalogJSON(w, http.StatusOK, payload)
+}
+
+func (f *pointsFake) serveDailyActiveSetting(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.settingCalls++
+	f.lastSettingHeaders = r.Header.Clone()
+	authorized := f.allowed[fakeBearerToken(r)]
+	status := f.settingStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	grant := f.dailyGrantOnSetting
+	reject := f.settingRejectFirst
+	f.settingRejectFirst = false
+	f.mu.Unlock()
+
+	if reject || !authorized {
+		writeCatalogJSON(w, http.StatusUnauthorized, map[string]any{"message": "invalid access token"})
+		return
+	}
+	if status != http.StatusOK {
+		writeCatalogJSON(w, status, map[string]any{"message": "setting failed"})
+		return
+	}
+	if grant {
+		f.mu.Lock()
+		f.addDailyGrantBillLocked()
+		f.mu.Unlock()
+	}
+	writeCatalogJSON(w, http.StatusOK, map[string]any{
+		"code": 0, "message": "success",
+		"data": map[string]any{"available_points": 1234, "point_grant_popups": []any{}},
+	})
 }
 
 func (f *pointsFake) serveTasks(w http.ResponseWriter, r *http.Request) {
