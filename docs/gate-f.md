@@ -203,6 +203,15 @@ consistent with the bill. `make check`, `make race`, and the 15/15 dashboard JS
 harness pass. Published as `v2.8.1` at `4d6a24a`; evidence:
 `docs/smoke/2026-11-13-release-2.8.1.md`. No media or Windows SCM gate changed.
 
+**v2.8.2 addendum:** Anthropic Messages MAX (`budget_tokens=31999`), CodeArts
+thinking effort, and Raccoon 1017 reasoning efforts now preserve `max`.
+Raccoon streaming requests drain and record post-DONE credit after client
+disconnect across Chat, Messages, and Responses, with a bounded Responses
+drain. The repository is now `main`-only; v1.6.6 is archived as a tag/release.
+`make check`, `make race`, and the 15/15 dashboard JS harness pass. Published as
+`v2.8.2` at `e35e3fc`; evidence:
+`docs/smoke/2026-11-14-release-2.8.2.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
