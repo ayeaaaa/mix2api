@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.2] - 2026-11-14
 
 ### 中文
 
@@ -27,6 +27,10 @@ Keep a Changelog and the project uses semantic versioning.
   的 credit usage 帧并记录扣分；Chat、Messages、Responses 的流式和非流式
   credit 统计现在一致。
 
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
 ### English
 
 #### Changed
@@ -49,6 +53,10 @@ Keep a Changelog and the project uses semantic versioning.
 - Raccoon streaming requests now drain and record the post-DONE credit usage
   frame even when the client disconnects at `[DONE]`, matching non-streaming
   credit accounting across Chat, Messages, and Responses.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
 
 ## [2.8.1] - 2026-11-13
 

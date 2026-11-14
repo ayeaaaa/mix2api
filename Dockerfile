@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 #
 # Reproducible multi-arch runtime image. Build with:
-#   docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/ayeaaaa/mix2api:v2.8.1 .
+#   docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/ayeaaaa/mix2api:v2.8.2 .
 #
 # CGO is disabled and the dashboard is embedded in the binary, so the runtime
 # stage needs no toolchain, shell scripts, or writable application directory.
 
 FROM golang:1.26-alpine AS build
-ARG VERSION=2.8.1
+ARG VERSION=2.8.2
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 # Declare without defaults so buildx's automatic platform args are inherited.

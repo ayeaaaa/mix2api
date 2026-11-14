@@ -2,12 +2,12 @@
 
 ## Current status
 
-This tree is **`2.8.1`** final. The source is published on `main` of
+This tree is **`2.8.2`** final. The source is published on `main` of
 `ayeaaaa/mix2api`; the Python v1 tree is archived at tag/release `v1.6.6` and
 no longer on `main`. The release is
-<https://github.com/ayeaaaa/mix2api/releases/tag/v2.8.1> and the GHCR image is
-`ghcr.io/ayeaaaa/mix2api:v2.8.1`. Gate F evidence is in `docs/gate-f.md`; the
-publication evidence is `docs/smoke/2026-11-13-release-2.8.1.md`. Real Windows
+<https://github.com/ayeaaaa/mix2api/releases/tag/v2.8.2> and the GHCR image is
+`ghcr.io/ayeaaaa/mix2api:v2.8.2`. Gate F evidence is in `docs/gate-f.md`; the
+publication evidence is `docs/smoke/2026-11-14-release-2.8.2.md`. Real Windows
 SCM update execution remains the only unverified runtime item.
 
 Note: v1 is frozen at `v1.6.6`; its update checks point at the same repository
@@ -27,7 +27,7 @@ update it cannot install. v1 update checks are off by default.
 
 ```sh
 git status --short           # must be clean
-VERSION=2.8.1 \
+VERSION=2.8.2 \
 COMMIT="$(git rev-parse HEAD)" \
 BUILD_DATE="$(git show -s --format=%cI HEAD)" \
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
@@ -61,7 +61,7 @@ the injected build identity and must be the commit timestamp for reproducibility
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf mix2api-2.8.1-linux-amd64.tar.gz | head
+tar -tzf mix2api-2.8.2-linux-amd64.tar.gz | head
 ./mix2api version --json   # after extracting, must show the injected values
 ```
 
@@ -78,10 +78,10 @@ make clean
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.8.1 \
+  --build-arg VERSION=2.8.2 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
-  -t ghcr.io/ayeaaaa/mix2api:v2.8.1 .
+  -t ghcr.io/ayeaaaa/mix2api:v2.8.2 .
 ```
 
 The image runs as UID/GID 10001 with a BusyBox healthcheck on `/health`.
@@ -112,14 +112,14 @@ For this repository layout, the equivalent manual publication is:
 git push origin v2
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION=2.8.1 \
+  --build-arg VERSION=2.8.2 \
   --build-arg COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
   --provenance=false --push \
-  -t ghcr.io/ayeaaaa/mix2api:v2.8.1 .
-gh release create v2.8.1 dist/* \
+  -t ghcr.io/ayeaaaa/mix2api:v2.8.2 .
+gh release create v2.8.2 dist/* \
   --target "$(git rev-parse HEAD)" \
-  --title "mix2api v2.8.1" \
+  --title "mix2api v2.8.2" \
   --notes-file CHANGELOG.md
 ```
 
@@ -138,7 +138,7 @@ tag; `main` is the only branch.
 
 ## Versioning
 
-- Development defaults to the `2.8.1` identity in
+- Development defaults to the `2.8.2` identity in
   `internal/core/version`.
 - Release builds inject `Version`, `Commit`, and `Date` with `-ldflags -X`.
-- The current release is `v2.8.1`; future fixes use a new semantic version.
+- The current release is `v2.8.2`; future fixes use a new semantic version.
