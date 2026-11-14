@@ -212,6 +212,14 @@ drain. The repository is now `main`-only; v1.6.6 is archived as a tag/release.
 `v2.8.2` at `e35e3fc`; evidence:
 `docs/smoke/2026-11-14-release-2.8.2.md`. No media or Windows SCM gate changed.
 
+**v2.8.3 addendum:** Raccoon daily activity now triggers `daily_grant` through
+the authenticated web `GET /api/web/office/v3/setting_info` startup request;
+token refresh is only used to repair a rejected session before retrying. The
+dashboard now reports triggered / failed / not-triggered states instead of
+claiming a login refresh grants the reward. `make check`, `make race`, and the
+15/15 dashboard JS harness pass. Published as `v2.8.3` at `5363670`; evidence:
+`docs/smoke/2026-11-14-release-2.8.3.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
