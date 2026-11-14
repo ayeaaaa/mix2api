@@ -1215,6 +1215,22 @@ func TestChatStreamNormalizationSingleIDAndTrailingUsage(t *testing.T) {
 	}
 }
 
+func TestForwardPostDoneReadsCreditAfterClientCancel(t *testing.T) {
+	stream := newStubStream(`data: {"id":"chatcmpl-raccoon-usage","object":"chat.completion.chunk","created":1,"model":"m1","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"credit":1}}` + "\n\n")
+	rec := httptest.NewRecorder()
+	writer := newSSEWriter(rec)
+	defer writer.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+
+	forwardPostDone(writer, req, stream, newStreamNormalizer("m1"))
+	if body := rec.Body.String(); !strings.Contains(body, `"credit":1`) {
+		t.Fatalf("post-DONE credit was lost after client cancellation: %q", body)
+	}
+}
+
 func TestChatPostDoneUsageFrameForwardedAndAggregated(t *testing.T) {
 	frames := []string{
 		"data: {\"id\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",

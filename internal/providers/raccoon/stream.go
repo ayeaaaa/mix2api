@@ -216,7 +216,15 @@ func (s *chatStream) creditFrame() []byte {
 	if !s.pool.creditLookbackEnabled() {
 		return nil
 	}
-	credit, ok := s.pool.requestCredit(s.ctx, s.account, s.startedAt)
+	// The credit lookup is independent of the client stream. Use a detached
+	// bounded context: the client may close immediately after [DONE], while the
+	// upstream bill lookup still needs to complete.
+	creditCtx, cancel := context.WithTimeout(
+		context.Background(),
+		creditLookbackTimeout*time.Duration(creditLookbackAttempts),
+	)
+	defer cancel()
+	credit, ok := s.pool.requestCredit(creditCtx, s.account, s.startedAt)
 	if !ok {
 		return nil
 	}

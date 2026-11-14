@@ -104,6 +104,25 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamPostDoneUsage(t *testing.T) {
+	frames := chatSSE(
+		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hello"}, "finish_reason": "stop"}}},
+	)
+	frames = append(frames,
+		"data: [DONE]\n\n",
+		"data: {\"id\":\"u\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13}}\n\n",
+	)
+	stream := newStubStream(frames...)
+	server, _ := responseTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses", `{"model":"m1","input":"hi","stream":true}`, nil)
+	events := parseSSEBody(t, rec.Body.String())
+	completed := events[len(events)-1].Data["response"].(map[string]any)
+	usage := completed["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(11) || usage["output_tokens"] != float64(2) {
+		t.Fatalf("post-DONE usage = %#v", usage)
+	}
+}
+
 func TestResponsesStreamTruncatedToolDropped(t *testing.T) {
 	stream := newStubStream(chatSSE(
 		map[string]any{"id": "u", "model": "m1", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{

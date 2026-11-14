@@ -744,10 +744,10 @@ type postDoneResult struct {
 // forwardPostDone reads after [DONE] with a bounded idle timeout. The upstream
 // account slot stays held until the stream closes, matching v1's stream scope.
 func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatStream, normalizer *streamNormalizer) {
-	ctx := context.Background()
-	if r != nil {
-		ctx = r.Context()
-	}
+	// Do not use r.Context() here. Raccoon emits its credit usage frame after
+	// [DONE]; clients commonly close the stream at [DONE], which cancels the
+	// request context. Keep draining with a detached bounded timer so the
+	// gateway can still record the post-DONE credit.
 	timer := time.NewTimer(postDoneReadIdleTimeout)
 	defer timer.Stop()
 	for {
@@ -758,8 +758,6 @@ func forwardPostDone(writer *sseWriter, r *http.Request, stream providers.ChatSt
 		}()
 
 		select {
-		case <-ctx.Done():
-			return
 		case <-timer.C:
 			return
 		case result := <-results:

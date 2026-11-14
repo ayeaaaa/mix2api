@@ -68,9 +68,9 @@ func (s *Server) serveMessagesStream(w http.ResponseWriter, r *http.Request, str
 	s.observeProtocol(r, observation)
 }
 
-const messagesPostDoneTimeout = 5 * time.Second
+const postDoneDrainTimeout = 5 * time.Second
 
-var errMessagesPostDoneTimeout = errors.New("post-DONE drain timeout")
+var errPostDoneDrainTimeout = errors.New("post-DONE drain timeout")
 
 func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.ChatStream, model string, forceModel bool) messagesStreamResult {
 	writer := newSSEWriter(w)
@@ -92,7 +92,10 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 	postDone := false
 	var postDoneDeadline time.Time
 	for {
-		if clientCanceled(r) {
+		// After [DONE] keep draining post-DONE usage/credit frames even when
+		// the client has already closed. The client-visible response is
+		// complete; this tail is only for accounting.
+		if !postDone && clientCanceled(r) {
 			return messagesStreamResult{usage: state.usage, outcome: "client_aborted", status: http.StatusOK}
 		}
 		var chunk protocol.Chunk
@@ -103,7 +106,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 			chunk, err = reader.Next()
 		}
 		if err != nil {
-			if errors.Is(err, errMessagesPostDoneTimeout) {
+			if errors.Is(err, errPostDoneDrainTimeout) {
 				break
 			}
 			if errors.Is(err, io.EOF) {
@@ -124,7 +127,7 @@ func runMessagesStream(w http.ResponseWriter, r *http.Request, stream providers.
 		}
 		if chunk.Done {
 			postDone = true
-			postDoneDeadline = time.Now().Add(messagesPostDoneTimeout)
+			postDoneDeadline = time.Now().Add(postDoneDrainTimeout)
 			continue
 		}
 		if postDone {
@@ -223,7 +226,7 @@ func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream, dea
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		_ = stream.Close()
-		return protocol.Chunk{}, errMessagesPostDoneTimeout
+		return protocol.Chunk{}, errPostDoneDrainTimeout
 	}
 	timer := time.NewTimer(remaining)
 	defer timer.Stop()
@@ -235,7 +238,7 @@ func readPostDoneChunk(reader *protocol.Reader, stream providers.ChatStream, dea
 		// reader goroutine can finish, then finalize the client response with
 		// the usage already observed.
 		_ = stream.Close()
-		return protocol.Chunk{}, errMessagesPostDoneTimeout
+		return protocol.Chunk{}, errPostDoneDrainTimeout
 	}
 }
 
