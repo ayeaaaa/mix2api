@@ -381,6 +381,34 @@ func TestJobsReportActivityCN(t *testing.T) {
 	}
 }
 
+func TestJobsReportActivityIntl(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addIntlTaskAccount(t, "intl-report", true, true)
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case "/v2/report":
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok"}
+		case tasksGrowthStreakPath, tasksGrowthV2StreakPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"streak": map[string]any{"days": 1},
+			}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+	job := jobsByName(t, f.intl)["workbuddy-report-activity"]
+	report, err := job.RunForce(context.Background())
+	if err != nil {
+		t.Fatalf("intl report job: %v", err)
+	}
+	if report.Name != "workbuddy-report-activity" || report.Checked != 1 || report.Succeeded != 1 || report.Skipped != 0 || report.Failed != 0 {
+		t.Fatalf("intl report job result = %+v, want one successful intl report", report)
+	}
+	if got := f.fake.count(http.MethodPost, "/v2/report"); got != 1 {
+		t.Fatalf("intl activity report POSTs = %d, want 1", got)
+	}
+}
+
 func TestJobsReportActivityCNReplacesFailedDailyRow(t *testing.T) {
 	f := newJobsFixture(t)
 	f.addTaskAccount(t, "cn-report-daily", true, true, false)
