@@ -1612,26 +1612,30 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 		t.Fatalf("stale-state session was modified: %+v", untouched)
 	}
 
-	// v1's _find_session treats a supplied secret as authoritative. An unknown
-	// secret is rejected even when a valid ticket/state is also present.
-	_, sessionNoSecretState := mustBegin(t, sessions, store, 8788)
+	// The portal-generated secret never matches the local random one (the
+	// authorize URL only carries ticket_id), so an unknown secret falls
+	// through to the exact state/ticket match instead of rejecting, parity
+	// with the fixed v1 GET callback.
+	_, sessionSecretState := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET&state=" +
-		url.QueryEscape(sessionNoSecretState.TicketID) + "&secret=UNKNOWN-SECRET"
-	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
-		t.Fatalf("unknown secret + valid state = %v, want ErrOAuthSession", err)
+		url.QueryEscape(sessionSecretState.TicketID) + "&secret=UNKNOWN-SECRET"
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("unknown secret + valid state = %v, want exact state match", err)
 	}
-	if sessionNoSecretState.Status != "pending" {
-		t.Fatalf("unknown secret consumed the state-selected session: %+v", sessionNoSecretState)
+	if result.Status != "done" {
+		t.Fatalf("unknown secret + valid state result = %+v", result)
 	}
 
-	_, sessionNoSecretTicket := mustBegin(t, sessions, store, 8788)
+	_, sessionSecretTicket := mustBegin(t, sessions, store, 8788)
 	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-NO-SECRET-TICKET&ticket_id=" +
-		url.QueryEscape(sessionNoSecretTicket.TicketID) + "&secret=UNKNOWN-SECRET-2"
-	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
-		t.Fatalf("unknown secret + valid ticket = %v, want ErrOAuthSession", err)
+		url.QueryEscape(sessionSecretTicket.TicketID) + "&secret=UNKNOWN-SECRET-2"
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("unknown secret + valid ticket = %v, want exact ticket match", err)
 	}
-	if sessionNoSecretTicket.Status != "pending" {
-		t.Fatalf("unknown secret consumed the ticket-selected session: %+v", sessionNoSecretTicket)
+	if result.Status != "done" {
+		t.Fatalf("unknown secret + valid ticket result = %+v", result)
 	}
 
 	// With no secret, the ticket/state lookup remains valid.
@@ -1656,6 +1660,88 @@ func TestOAuthCallbackURLValidation(t *testing.T) {
 	}
 	if session5.TicketFallback {
 		t.Fatalf("foreign callback redirect armed the fallback")
+	}
+}
+
+func TestOAuthCallbackURLNestedTicketAndSolePendingFallback(t *testing.T) {
+	_, _ = newOAuthFake(t)
+	store, _ := newOAuthTestStore(t)
+
+	// Huawei's secret+redirect callback hides the real ticket id inside the
+	// redirect query; the top-level secret is portal-generated and never
+	// matches the local random one. The nested ticket must be exact-matched
+	// and arm the ticket fallback instead of reporting a missing session.
+	sessions := NewOAuthSessions()
+	start, session := mustBegin(t, sessions, store, 8788)
+	nested := "https://portal.example.test/portal/login?theme=dark&ticket_id=" +
+		url.QueryEscape(session.TicketID) + "&secret=portal-generated"
+	raw := "http://127.0.0.1:8788/oauth/callback?secret=portal-generated&redirect=" +
+		url.QueryEscape(nested)
+	result, err := sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("nested ticket callback: %v", err)
+	}
+	if result.Status != "continue" || result.NextURL != nested {
+		t.Fatalf("nested ticket result = %+v", result)
+	}
+	sessions.mu.Lock()
+	current := sessions.byStore[mustStoreKey(t, store)][start.SessionID]
+	sessions.mu.Unlock()
+	if current == nil || !current.TicketFallback || current.Status != "pending" {
+		t.Fatalf("nested ticket did not arm the fallback: %+v", current)
+	}
+
+	// An unrecognized state plus a code is accepted only when exactly one
+	// pending session exists; PKCE binds the exchange to that session.
+	sessions = NewOAuthSessions()
+	startSole, _ := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-SOLE-PENDING&state=deadbeefdeadbeefdeadbeefdeadbeef.pkg"
+	result, err = sessions.CallbackURL(store, "", raw)
+	if err != nil {
+		t.Fatalf("sole pending fallback: %v", err)
+	}
+	if result.Status != "done" || result.SessionID != startSole.SessionID {
+		t.Fatalf("sole pending fallback result = %+v", result)
+	}
+
+	// With more than one pending session the same callback is refused; both
+	// sessions must remain pending and untouched.
+	sessions = NewOAuthSessions()
+	_, first := mustBegin(t, sessions, store, 8788)
+	_, second := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?code=CODE-TWO-PENDING&state=deadbeefdeadbeefdeadbeefdeadbeef.pkg"
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("two pending sessions = %v, want ErrOAuthSession", err)
+	}
+	if first.Status != "pending" || second.Status != "pending" {
+		t.Fatalf("refused callback touched a pending session: %+v / %+v", first, second)
+	}
+
+	// An unrecognized nested ticket id plus multiple pending sessions is
+	// refused as well: no state param means no sole-pending fallback, parity
+	// with the fixed v1 GET handler.
+	sessions = NewOAuthSessions()
+	_, first = mustBegin(t, sessions, store, 8788)
+	_, second = mustBegin(t, sessions, store, 8788)
+	nestedForeign := "https://portal.example.test/portal/login?ticket_id=deadbeefdeadbeefdeadbeefdeadbeef&secret=x"
+	raw = "http://127.0.0.1:8788/oauth/callback?secret=x&redirect=" + url.QueryEscape(nestedForeign)
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("foreign nested ticket = %v, want ErrOAuthSession", err)
+	}
+	if first.Status != "pending" || second.Status != "pending" {
+		t.Fatalf("foreign nested ticket touched a pending session: %+v / %+v", first, second)
+	}
+
+	// The same foreign nested ticket against a sole pending session is also
+	// refused: the fallback only applies to callbacks carrying a state param.
+	sessions = NewOAuthSessions()
+	_, sole := mustBegin(t, sessions, store, 8788)
+	raw = "http://127.0.0.1:8788/oauth/callback?secret=x&redirect=" + url.QueryEscape(nestedForeign)
+	if _, err := sessions.CallbackURL(store, "", raw); !errors.Is(err, ErrOAuthSession) {
+		t.Fatalf("foreign nested ticket + sole pending = %v, want ErrOAuthSession", err)
+	}
+	if sole.Status != "pending" {
+		t.Fatalf("foreign nested ticket consumed the sole session: %+v", sole)
 	}
 }
 
