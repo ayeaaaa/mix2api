@@ -66,6 +66,7 @@ func requestContext(ctx context.Context) context.Context {
 func (p *Provider) hasWorkBuddySettingsPatch(patch map[string]any) bool {
 	for _, key := range []string{
 		"schedule", "workbuddy", "daily_activity", "daily_chat_web",
+		"daily_chat_web_random_prompt", "daily_chat_web_prompts",
 		"auto_switch_product", "auto_switch_products", "identity_versions",
 		"account_max_concurrent", "realm_fallback_enabled", "upstream",
 		"identity", "timeout_seconds", "stream_timeout_seconds",

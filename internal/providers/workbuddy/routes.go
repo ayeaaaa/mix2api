@@ -3199,18 +3199,22 @@ func (p *Provider) settingsView() map[string]any {
 	intlCfg := p.refreshSettings()
 	versions := versionsValues(intlCfg.IdentityVersions)
 	view := map[string]any{
-		"ok":                     true,
-		"workbuddy":              workbuddy,
-		"schedule":               p.scheduleView(),
-		"daily_activity":         p.dailyActivityEnabled(),
-		"daily_chat_web":         p.dailyChatWebEnabled(),
-		"proxySlots":             slots,
-		"auto_switch_product":    intlCfg.AutoSwitchProduct,
-		"auto_switch_products":   append([]string(nil), intlCfg.AutoSwitchProducts...),
-		"identity_versions":      versions,
-		"identity":               map[string]any{"private_data": intlCfg.PrivateData, "versions": versions},
-		"account_max_concurrent": intlCfg.AccountMaxConcurrent,
-		"realm_fallback_enabled": intlCfg.RealmFallbackEnabled,
+		"ok":                             true,
+		"workbuddy":                      workbuddy,
+		"schedule":                       p.scheduleView(),
+		"daily_activity":                 p.dailyActivityEnabled(),
+		"daily_chat_web":                 p.dailyChatWebEnabled(),
+		"daily_chat_web_random_prompt":   dailyChatWebRandomPrompt(settings),
+		"daily_chat_web_prompts":         normalizeDailyChatWebPrompts(settings["daily_chat_web_prompts"]),
+		"daily_chat_web_builtin_prompts": builtinDailyChatWebPrompts(),
+		"daily_chat_web_prompts_max":     dailyChatWebPromptsMax,
+		"proxySlots":                     slots,
+		"auto_switch_product":            intlCfg.AutoSwitchProduct,
+		"auto_switch_products":           append([]string(nil), intlCfg.AutoSwitchProducts...),
+		"identity_versions":              versions,
+		"identity":                       map[string]any{"private_data": intlCfg.PrivateData, "versions": versions},
+		"account_max_concurrent":         intlCfg.AccountMaxConcurrent,
+		"realm_fallback_enabled":         intlCfg.RealmFallbackEnabled,
 		"upstream": map[string]any{
 			"header_timeout_seconds": intlCfg.TimeoutSeconds,
 			"idle_timeout_seconds":   intlCfg.StreamTimeoutSeconds,
@@ -3353,8 +3357,25 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		patch["daily_chat_web"] = value
 		recognized = true
 	}
+	if raw, present := payload["daily_chat_web_random_prompt"]; present {
+		value, ok := raw.(bool)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("daily_chat_web_random_prompt must be true or false"))
+			return
+		}
+		patch["daily_chat_web_random_prompt"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_web_prompts"]; present {
+		if !validDailyChatWebPromptsValue(raw) {
+			writeWBAdminError(w, wbBadRequest("daily_chat_web_prompts must be a list or newline string"))
+			return
+		}
+		patch["daily_chat_web_prompts"] = normalizeDailyChatWebPrompts(raw)
+		recognized = true
+	}
 	if !recognized {
-		writeWBAdminError(w, wbBadRequest("nothing to update: pass workbuddy, schedule, daily_activity or daily_chat_web"))
+		writeWBAdminError(w, wbBadRequest("nothing to update: pass workbuddy, schedule, daily_activity, daily_chat_web or web prompt settings"))
 		return
 	}
 	if p.store != nil {
