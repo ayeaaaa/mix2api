@@ -243,6 +243,14 @@ WorkBuddy 国内 and 国际 pass without horizontal overflow. Published as
 `v2.8.6` at `ca5ebaf`; evidence: `docs/smoke/2026-11-16-release-2.8.6.md`. No
 media or Windows SCM gate changed.
 
+**v2.8.7 addendum:** WorkBuddy web activity now uses the full 300-prompt
+built-in pool, with settings view/save support and selected prompts applied to
+web conversation creation and ACP turns. The release workflow now extracts the
+current version's CHANGELOG section for GitHub Release notes. `make check`,
+`make race`, and the 15/15 dashboard JS harness pass. Published as `v2.8.7` at
+`0be783a`; evidence: `docs/smoke/2026-11-16-release-2.8.7.md`. No media or
+Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
