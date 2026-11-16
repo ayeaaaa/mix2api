@@ -3,12 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.4] - 2026-11-16
 
 ### 中文
 
+#### 变更
+
+- 提供商调度开关集中到「自动化」页：WorkBuddy 定时自动打卡、CodeArts 每天
+  自动签到、小浣熊每日活跃、豆包自动签到；未启用提供商的卡片自动隐藏，提供
+  商设置只保留连接、并发和超时参数。
+- 账号列表操作列加宽，避免「删除」等按钮被表格右边缘裁切。
+
 #### 修复
 
+- WorkBuddy 国际版账号现在会执行 `/v2/report` 活动上报，补上国际版每日积分
+  的调度路径；不会自动替用户打开账号任务开关。
+- Raccoon 每日活跃改为每 4 小时窗口随机分钟尝试一次，失败等下一个窗口重试，
+  当日奖励到账后停止触发。
 - CodeArts 门户浏览器回调现在按 `secret` → 顶层 `ticket_id` → `state` →
   `redirect` 内嵌 `ticket_id` 做精确匹配；陌生 `secret` 不再阻断
   `ticket_id`/`state` 匹配。
@@ -17,10 +28,28 @@ Keep a Changelog and the project uses semantic versioning.
 
 - 没有识别出会话标识的回调仍然拒绝；不会自动选中唯一的 pending 会话。
 
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
 ### English
+
+#### Changed
+
+- Provider schedule switches now live on the Automation page: WorkBuddy timed
+  activity, CodeArts daily check-in, Raccoon daily activity, and Doubao
+  check-in. Cards for disabled providers are hidden; provider settings keep
+  only connection, concurrency, and timeout controls.
+- The account action column is wider so trailing actions such as Delete are not
+  clipped by the table edge.
 
 #### Fixed
 
+- WorkBuddy international accounts now run the `/v2/report` activity job,
+  restoring the international daily-credit scheduling path. This does not
+  enable account task switches on the user's behalf.
+- Raccoon daily activity now attempts once per four-hour window at a random
+  minute, retries failed windows, and stops after the day's grant lands.
 - CodeArts portal browser callbacks now match exactly by `secret` → top-level
   `ticket_id` → `state` → `ticket_id` nested in `redirect`; an unknown `secret`
   no longer blocks `ticket_id`/`state` matching.
@@ -29,6 +58,10 @@ Keep a Changelog and the project uses semantic versioning.
 
 - Callbacks with no recognized session identifier are still rejected; the
   gateway does not guess the sole pending session.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
 
 ## [2.8.3] - 2026-11-14
 
