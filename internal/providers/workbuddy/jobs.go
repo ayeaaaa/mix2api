@@ -396,7 +396,7 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				}
 			}
 		case jobKindReport:
-			if auth.Realm != realmCN || taskEnterpriseID(auth) != "" {
+			if (auth.Realm != realmCN && auth.Realm != realmIntl) || taskEnterpriseID(auth) != "" {
 				result.Skipped++
 				continue
 			}
@@ -408,10 +408,9 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 				result.Errors = append(result.Errors, auth.UID+": "+safeJobError(err))
 				continue
 			}
-			// The CN activity report uses the same daily_chat task key as the
-			// intl daily-activity job, but de-duplication is scoped by
-			// uid + task + realm + day. It therefore replaces only a same-realm
-			// failed attempt and cannot collide with an intl row.
+			// The CN and intl activity reports share the daily_chat task key,
+			// but de-duplication is scoped by uid + task + realm + day. Intl
+			// report rows therefore cannot collide with CN or daily-chat rows.
 			provider.recordDailyActivity(report.Activity)
 			if report.Busy {
 				result.Skipped++
@@ -636,7 +635,7 @@ func (p *Provider) Jobs() []scheduler.Job {
 		p.jobs = []*scheduledJob{
 			{provider: p, name: jobNameCheckin, kind: jobKindCheckin, realm: jobRealmCN},
 			{provider: p, name: jobNameDailyActivity, kind: jobKindDaily, realm: jobRealmIntl},
-			{provider: p, name: jobNameReportActivity, kind: jobKindReport, realm: jobRealmCN},
+			{provider: p, name: jobNameReportActivity, kind: jobKindReport, realm: jobRealmAll},
 			{provider: p, name: jobNameGrowth, kind: jobKindGrowth, realm: jobRealmCN},
 			{provider: p, name: jobNameCatTravel, kind: jobKindCat, realm: jobRealmCN},
 			{provider: p, name: jobNameStreakBonus, kind: jobKindStreak, realm: jobRealmCN},
