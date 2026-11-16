@@ -6046,7 +6046,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
   </div>
 
   <!-- 调度开关集中在自动化页：提供商接入设置只保留连接/并发/超时等非调度项。 -->
-  <section id="sectionProviderSchedules" style="margin-bottom:24px">
+  <section id="sectionProviderSchedules" style="display:none;margin-bottom:24px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
       <div>
         <h2 style="margin:0">提供商调度</h2>
@@ -6054,7 +6054,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       </div>
     </div>
     <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr))">
-      <div class="card">
+      <div class="card schedule-provider-card" id="scheduleCardWorkbuddy">
         <div class="k">WorkBuddy</div>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:38px">
           <input id="setDailyActivity" type="checkbox" checked style="width:16px;height:16px">
@@ -6064,7 +6064,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">CN 签到 / 国际版每日活跃、成长任务与后台巡检；时段在「设置 → 自动化」。</div>
         <button class="sec mini" onclick="saveDailyChatModule(this)">保存 WorkBuddy 调度</button>
       </div>
-      <div class="card">
+      <div class="card schedule-provider-card" id="scheduleCardCodearts">
         <div class="k">CodeArts</div>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:38px">
           <input id="setCodeartsAutoCheckin" type="checkbox" style="width:16px;height:16px">
@@ -6073,7 +6073,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">跟随 WorkBuddy 的签到时段，只对已启用账号执行。</div>
         <button class="sec mini" onclick="saveCodeartsSettings(this)">保存 CodeArts 调度</button>
       </div>
-      <div class="card">
+      <div class="card schedule-provider-card" id="scheduleCardRaccoon">
         <div class="k">小浣熊</div>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:38px">
           <input id="raccoonDailyActive" type="checkbox" style="width:16px;height:16px">
@@ -6082,7 +6082,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">每 4 小时窗口随机分钟尝试；失败等下一个窗口，成功当天不再触发。</div>
         <button class="sec mini" onclick="saveRaccoonSettings(this)">保存小浣熊调度</button>
       </div>
-      <div class="card">
+      <div class="card schedule-provider-card" id="scheduleCardDoubao">
         <div class="k">豆包 Work</div>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:38px">
           <input id="setDoubaoCheckinEnabled" type="checkbox" style="width:16px;height:16px">
@@ -10086,6 +10086,7 @@ async function doubaoImport(btn){
 function renderDoubaoSettings(cfg){
   if(!cfg) return;
   const enabled = cfg.enabled === true || cfg.configured === true;
+  setProviderScheduleCard("scheduleCardDoubao", cfg.enabled === true);
   const enabledInput = document.getElementById("setDoubaoEnabled");
   if(enabledInput) enabledInput.checked = enabled;
   const checkinInput = document.getElementById("setDoubaoCheckinEnabled");
@@ -10529,9 +10530,21 @@ async function copyCodeartsAuthUrl(){
   }
 }
 
+function setProviderScheduleCard(id, visible) {
+  const card = document.getElementById(id);
+  if(card) card.style.display = visible ? "" : "none";
+  const section = document.getElementById("sectionProviderSchedules");
+  if(section){
+    const any = Array.from(section.querySelectorAll(".schedule-provider-card"))
+      .some(function(el){ return el.style.display !== "none"; });
+    section.style.display = any ? "" : "none";
+  }
+}
+
 function renderCodeartsSettings(cfg){
   if(!cfg) return;
   const enabledOn = cfg.enabled === true || cfg.configured === true;
+  setProviderScheduleCard("scheduleCardCodearts", cfg.enabled === true);
   const enabled = document.getElementById("setCodeartsEnabled");
   if(enabled) enabled.checked = enabledOn;
   const auto = document.getElementById("setCodeartsAutoCheckin");
@@ -10599,6 +10612,7 @@ async function testCodeartsConnection(btn){
 function renderRaccoonSettings(cfg){
   if(!cfg) return;
   const enabled = cfg.enabled === true || cfg.configured === true;
+  setProviderScheduleCard("scheduleCardRaccoon", cfg.enabled === true);
   const enabledInput = document.getElementById("raccoonEnabled");
   if(enabledInput) enabledInput.checked = enabled;
   const dailyActive = document.getElementById("raccoonDailyActive");
@@ -17215,6 +17229,18 @@ async function loadSettings(showToast){
         dailyActivityState.textContent = dailyActivity ? '(已启用)' : '(未启用)';
         dailyActivityState.style.color = dailyActivity ? 'var(--accent2)' : 'var(--dim)';
       }
+      const workbuddyCfg = (data.workbuddy && typeof data.workbuddy === 'object')
+        ? data.workbuddy : null;
+      let workbuddyEnabled = true;
+      if(workbuddyCfg){
+        const realms = Object.keys(workbuddyCfg)
+          .map(function(key){ return workbuddyCfg[key]; })
+          .filter(function(value){ return value && typeof value === 'object'; });
+        if(realms.length){
+          workbuddyEnabled = realms.some(function(value){ return value.enabled === true; });
+        }
+      }
+      setProviderScheduleCard('scheduleCardWorkbuddy', workbuddyEnabled);
       const dailyWeb = data.daily_chat_web !== false;
       const dailyWebInput = document.getElementById('setDailyChatWeb');
       if(dailyWebInput) dailyWebInput.checked = dailyWeb;
