@@ -297,15 +297,30 @@ table.activity-table td[data-label="结果"]{white-space:nowrap}
 table.account-cards td[data-label="账号"] .cool-list{display:flex;flex-direction:column;align-items:stretch;gap:2px;max-width:100%;overflow:hidden}
 table.account-cards td[data-label="账号"] .cool-pill{display:block;width:100%;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (min-width:641px){
-  table.account-cards{table-layout:fixed;min-width:1298px}
-  table.account-cards th:nth-child(2),table.account-cards td:nth-child(2){width:180px}
-  table.account-cards td.acct-actions,table.account-cards th:last-child{white-space:normal;min-width:268px;width:268px}
+  table.account-cards{table-layout:fixed;min-width:1076px!important}
+  table.account-cards th:nth-child(1),table.account-cards td:nth-child(1){width:64px!important}
+  table.account-cards th:nth-child(2),table.account-cards td:nth-child(2){width:150px!important}
+  table.account-cards th:nth-child(3),table.account-cards td:nth-child(3){width:64px!important}
+  table.account-cards th:nth-child(4),table.account-cards td:nth-child(4){width:100px!important}
+  table.account-cards th:nth-child(5),table.account-cards td:nth-child(5){width:96px!important}
+  table.account-cards th:nth-child(6),table.account-cards td:nth-child(6){width:48px!important}
+  table.account-cards th:nth-child(7),table.account-cards td:nth-child(7){width:110px!important}
+  table.account-cards th:nth-child(8),table.account-cards td:nth-child(8){width:56px!important}
+  table.account-cards th:nth-child(9),table.account-cards td:nth-child(9){width:64px!important}
+  table.account-cards th:nth-child(10),table.account-cards td:nth-child(10){width:56px!important}
+  table.account-cards td.acct-actions,table.account-cards th:last-child{white-space:normal;min-width:268px!important;width:268px!important}
   table.account-cards td.acct-actions{position:sticky;right:0;z-index:2;background:var(--panel);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
   table.account-cards th:last-child{position:sticky;right:0;z-index:3;background:var(--panel2);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
   table.account-cards tbody tr:hover td.acct-actions{background:var(--panel2)}
   /* 操作区沿用原来的两行布局，不在窄列中再次折成三四行。 */
   table.account-cards .acct-actions-col{min-width:max-content;max-width:none}
   table.account-cards .acct-actions-row{flex-wrap:nowrap;max-width:none}
+}
+@media (min-width:641px) and (max-width:1399px){
+  /* 窄桌面下表格需要横向滚动；此时 sticky 操作列会盖住右侧数据列。
+     让操作列跟随表格滚动，保证出口/权重/积分/请求/token/缓存完整可见。 */
+  table.account-cards td.acct-actions{position:static;box-shadow:none}
+  table.account-cards th:last-child{position:static;box-shadow:none}
 }
 @media (max-width:640px){
   table.account-cards{min-width:0!important;table-layout:auto}
