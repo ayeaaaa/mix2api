@@ -2,7 +2,6 @@ package raccoon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,8 +12,6 @@ import (
 var dailyActivePollDelay = 2 * time.Second
 
 const (
-	dailyActiveMaxAttempts = 2
-	dailyActiveRetryAfter  = time.Hour
 	// The upstream books daily_grant shortly after the authenticated web work
 	// startup request. Poll through that asynchronous window.
 	dailyActivePollTries = 10
@@ -92,7 +89,7 @@ func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyAc
 		if err := ctx.Err(); err != nil {
 			return summary, err
 		}
-		result := p.dailyActiveAccount(ctx, account, force)
+		result := p.dailyActiveAccount(ctx, account)
 		if !result.Skipped {
 			summary.Checked++
 			summary.Points += result.Points
@@ -109,7 +106,7 @@ func (p *Pool) DailyActive(ctx context.Context, uid string, force bool) (DailyAc
 	return summary, nil
 }
 
-func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force bool) DailyActiveResult {
+func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account) DailyActiveResult {
 	if account == nil {
 		return DailyActiveResult{Message: "账号不存在"}
 	}
@@ -159,22 +156,9 @@ func (p *Pool) dailyActiveAccount(ctx context.Context, account *Account, force b
 		return result
 	}
 
-	if !force {
-		if attempts >= dailyActiveMaxAttempts {
-			result.Skipped = true
-			result.Message = fmt.Sprintf("今日已触发每日活跃 %d 次，奖励未到账，明天再试", attempts)
-			return result
-		}
-		if last, ok := dailyActiveLastAttempt(state["last_attempt"]); ok && now.Sub(last) < dailyActiveRetryAfter {
-			result.Skipped = true
-			result.Message = "距上次触发每日活跃不足 60 分钟，稍后再试"
-			return result
-		}
-	}
-
-	// The work page sends this authenticated web settings request on startup.
-	// A token refresh alone does not trigger the reward; refresh is only used to
-	// repair a rejected access token before retrying this request.
+	// Attempts are paced by the scheduler: one attempt per four-hour window,
+	// with a random minute inside each window. Do not add a separate hourly
+	// throttle here; a failed window must retry at the next window.
 	attempts++
 	state["attempts"] = attempts
 	state["last_attempt"] = now.Format(time.RFC3339)
@@ -374,35 +358,6 @@ func (p *Pool) pollDailyGrant(ctx context.Context, account *Account) (int, error
 		return 0, lastErr
 	}
 	return 0, nil
-}
-
-func dailyActiveLastAttempt(value any) (time.Time, bool) {
-	if parsed, ok := parsePointsTime(value); ok {
-		return parsed, true
-	}
-	switch typed := value.(type) {
-	case float64:
-		if typed > 0 {
-			return time.Unix(int64(typed), 0), true
-		}
-	case float32:
-		if typed > 0 {
-			return time.Unix(int64(typed), 0), true
-		}
-	case int:
-		if typed > 0 {
-			return time.Unix(int64(typed), 0), true
-		}
-	case int64:
-		if typed > 0 {
-			return time.Unix(typed, 0), true
-		}
-	case json.Number:
-		if number, err := typed.Int64(); err == nil && number > 0 {
-			return time.Unix(number, 0), true
-		}
-	}
-	return time.Time{}, false
 }
 
 func intValue(value any) int {
