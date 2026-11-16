@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.5] - 2026-11-16
+
+### 中文
+
+#### 修复
+
+- 重新分配桌面端账号表列宽：1440 宽下所有数据列完整可见，操作列不再遮挡
+  出口、权重、积分、请求、总 token 和缓存列；641–1399 宽需要横向滚动时取消
+  操作列 sticky，避免盖住右侧数据。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
+### English
+
+#### Fixed
+
+- Rebalanced the desktop account-table columns so all data columns are visible at
+  1440px and the action column no longer covers outlet, weight, credits,
+  requests, total tokens, or cache. Between 641 and 1399px the action column is
+  no longer sticky, so horizontal scrolling does not hide right-hand data.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
+
 ## [2.8.4] - 2026-11-16
 
 ### 中文
