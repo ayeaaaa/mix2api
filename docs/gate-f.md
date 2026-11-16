@@ -228,6 +228,13 @@ rejecting the sole-pending fallback. `make check`, `make race`, and the 15/15
 dashboard JS harness pass. Published as `v2.8.4` at `af3a1d7`; evidence:
 `docs/smoke/2026-11-16-release-2.8.4.md`. No media or Windows SCM gate changed.
 
+**v2.8.5 addendum:** desktop account-table columns were rebalanced so all data
+columns fit at 1440px and the action column no longer covers them; between
+641–1399px the action column is non-sticky during horizontal scrolling.
+`make check`, `make race`, and the 15/15 dashboard JS harness pass. Published as
+`v2.8.5` at `30e9c95`; evidence: `docs/smoke/2026-11-16-release-2.8.5.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
