@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.7] - 2026-11-16
+
+### 中文
+
+#### 修复
+
+- WorkBuddy 网页活跃补齐 v1 的 300 条内置提示词池；设置页的提示词选择器
+  现在可用，开启随机提示词后从自定义列表或全部内置提示词中抽取，关闭时仍
+  只发送 `Hi`。
+- 发布流程改为只把当前版本的 CHANGELOG 段落写入 GitHub Release，不再把整份
+  变更记录附到每个版本；`v2.8.6` 的历史 release notes 也已修正。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
+### English
+
+#### Fixed
+
+- WorkBuddy web activity now has the full 300-prompt built-in pool from v1.
+  The settings prompt picker works again: random-prompt mode draws from the
+  custom selection or all built-ins, while the switch-off default remains `Hi`.
+- Release publishing now writes only the current version's CHANGELOG section to
+  GitHub Releases instead of attaching the whole changelog to every version;
+  the historical v2.8.6 release notes were corrected as well.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
+
 ## [2.8.6] - 2026-11-16
 
 ### 中文
