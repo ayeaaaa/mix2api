@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 修复
+
+- CodeArts 门户浏览器回调现在按 `secret` → 顶层 `ticket_id` → `state` →
+  `redirect` 内嵌 `ticket_id` 做精确匹配；陌生 `secret` 不再阻断
+  `ticket_id`/`state` 匹配。
+
+#### 安全边界
+
+- 没有识别出会话标识的回调仍然拒绝；不会自动选中唯一的 pending 会话。
+
+### English
+
+#### Fixed
+
+- CodeArts portal browser callbacks now match exactly by `secret` → top-level
+  `ticket_id` → `state` → `ticket_id` nested in `redirect`; an unknown `secret`
+  no longer blocks `ticket_id`/`state` matching.
+
+#### Safety boundary
+
+- Callbacks with no recognized session identifier are still rejected; the
+  gateway does not guess the sole pending session.
+
 ## [2.8.3] - 2026-11-14
 
 ### 中文
