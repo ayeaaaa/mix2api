@@ -61,6 +61,11 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: ./scripts/validate-release-version.sh "$VERSION"
+      - name: Validate release notes section
+        run: |
+          chmod +x scripts/extract-release-notes.sh
+          scripts/extract-release-notes.sh "${{ inputs.version }}" > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
       - name: Format, vet, tests
         run: make check
       - name: Race tests
@@ -143,6 +148,11 @@ jobs:
         run: |
           test "${{ env.RELEASE_REPOSITORY }}" = "ayeaaaa/mix2api"
           test "${{ env.IMAGE_REPOSITORY }}" = "ghcr.io/ayeaaaa/mix2api"
+      - name: Extract release notes
+        run: |
+          chmod +x scripts/extract-release-notes.sh
+          scripts/extract-release-notes.sh "${{ inputs.version }}" > release-notes.md
+          test -s release-notes.md
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -157,5 +167,5 @@ jobs:
           gh release create "$tag" dist/* -R "${{ env.RELEASE_REPOSITORY }}" \
             --target "${{ inputs.commit }}" \
             --title "mix2api $tag" \
-            --notes-file CHANGELOG.md \
+            --notes-file release-notes.md \
             "${prerelease[@]}"

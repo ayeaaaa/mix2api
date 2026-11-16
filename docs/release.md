@@ -100,9 +100,11 @@ zeroes, and build metadata before any build starts. It:
 3. builds/pushes `linux/amd64,linux/arm64` to GHCR;
 4. creates the `v<version>` tag and GitHub release with the dist assets.
 
-`CHANGELOG.md` is used verbatim as the GitHub release notes. Every version
-must include a Chinese `### 中文` section before the English `### English`
-section, so published release notes are always bilingual.
+The workflow extracts only the `## [<version>]` section from `CHANGELOG.md`
+with `scripts/extract-release-notes.sh`, so each GitHub release contains that
+version's notes rather than the whole changelog. Every version must include a
+Chinese `### 中文` section before the English `### English` section, so
+published release notes are always bilingual.
 
 There is no push/tag trigger and no scheduled release.
 
@@ -117,10 +119,11 @@ docker buildx build \
   --build-arg BUILD_DATE="$(git show -s --format=%cI HEAD)" \
   --provenance=false --push \
   -t ghcr.io/ayeaaaa/mix2api:v2.8.6 .
+scripts/extract-release-notes.sh 2.8.6 > release-notes.md
 gh release create v2.8.6 dist/* \
   --target "$(git rev-parse HEAD)" \
   --title "mix2api v2.8.6" \
-  --notes-file CHANGELOG.md
+  --notes-file release-notes.md
 ```
 
 The tag points at the release commit. Do not overwrite the archived `v1.6.6`
