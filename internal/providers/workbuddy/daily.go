@@ -408,6 +408,7 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 	}
 	tried := make([]string, 0, rounds)
 	var last DailyWebResult
+	prompt := p.dailyChatWebPrompt()
 	for index := 0; index < rounds; index++ {
 		if err := ctx.Err(); err != nil {
 			last.BudgetExhausted = true
@@ -431,7 +432,7 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 		}
 		model := models[index%len(models)]
 		tried = append(tried, model)
-		round := p.dailyWebRound(ctx, account, auth, model, wait, index)
+		round := p.dailyWebRound(ctx, account, auth, prompt, model, wait, index)
 		round.Attempts = index + 1
 		round.ModelsTried = append([]string(nil), tried...)
 		round.Model = model
@@ -466,11 +467,11 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 	return last
 }
 
-func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Auth, model string, wait time.Duration, round int) DailyWebResult {
+func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Auth, prompt, model string, wait time.Duration, round int) DailyWebResult {
 	result := DailyWebResult{Model: model}
 	headers := p.taskWebHeaders(account)
 	payload, err := json.Marshal(map[string]any{
-		"prompt":             dailyChatPrompt,
+		"prompt":             prompt,
 		"model":              model,
 		"conversationOrigin": "agents",
 		"addonSelection": map[string]any{
@@ -553,7 +554,7 @@ func (p *Provider) dailyWebRound(ctx context.Context, account *Account, auth Aut
 		return p.webConversationStatus(ctx, account, headers, conversation)
 	}
 	turn := runACPTurn(ctx, p.taskClient(), link, token, sessionID, cwd,
-		dailyChatPrompt, headers.Get("User-Agent"), model, taskProxyURL(account),
+		prompt, headers.Get("User-Agent"), model, taskProxyURL(account),
 		wait, pollInterval, pollStatus, p.acpLinkValidator)
 	statusResult := DailyWebResult{
 		OK: turn.OK, Status: turn.Status, Events: turn.Events, Chunks: turn.Chunks,
