@@ -297,9 +297,10 @@ table.activity-table td[data-label="结果"]{white-space:nowrap}
 table.account-cards td[data-label="账号"] .cool-list{display:flex;flex-direction:column;align-items:stretch;gap:2px;max-width:100%;overflow:hidden}
 table.account-cards td[data-label="账号"] .cool-pill{display:block;width:100%;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (min-width:641px){
-  table.account-cards{table-layout:fixed;min-width:1262px}
+  table.account-cards{table-layout:fixed;min-width:1298px}
   table.account-cards th:nth-child(2),table.account-cards td:nth-child(2){width:180px}
-  table.account-cards td.acct-actions{white-space:normal;min-width:232px;width:232px;position:sticky;right:0;z-index:2;background:var(--panel);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
+  table.account-cards td.acct-actions,table.account-cards th:last-child{white-space:normal;min-width:268px;width:268px}
+  table.account-cards td.acct-actions{position:sticky;right:0;z-index:2;background:var(--panel);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
   table.account-cards th:last-child{position:sticky;right:0;z-index:3;background:var(--panel2);box-shadow:-8px 0 12px -12px rgba(31,30,27,.55)}
   table.account-cards tbody tr:hover td.acct-actions{background:var(--panel2)}
   /* 操作区沿用原来的两行布局，不在窄列中再次折成三四行。 */
