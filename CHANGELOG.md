@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.6] - 2026-11-16
+
+### 中文
+
+#### 修复
+
+- 账号列表在手机和平板宽度下改为完整卡片布局：原表格只在 ≤640px 切卡片，
+  820px 等常见视口仍渲染 1076px 表格，导致积分、请求、总 token、缓存和操作
+  列被裁切。现在 <1440px 全部显示卡片，账号徽章可换行；总 token/缓存按顺序
+  显示，操作按钮和删除按钮完整可见。1440px+ 继续使用桌面表格。
+
+#### 验证
+
+- `make check`、`make race` 通过；国内版/国际版在 1440、1400、1280、820、
+  390px 视口实测无横向溢出。
+
+### English
+
+#### Fixed
+
+- Account lists now use a complete card layout on phones and tablets. The old
+  table only switched to cards at ≤640px, so common 820px viewports still
+  rendered the 1076px desktop table and clipped credits, requests, total tokens,
+  cache, and actions. Below 1440px every field is shown in a card, account
+  badges can wrap, total tokens/cache keep their order, and action/delete
+  buttons remain fully visible. 1440px+ keeps the desktop table.
+
+#### Verification
+
+- `make check` and `make race` pass; CN/INTL layouts were checked at 1440,
+  1400, 1280, 820, and 390px with no horizontal overflow.
+
 ## [2.8.5] - 2026-11-16
 
 ### 中文
