@@ -1479,6 +1479,89 @@ table.account-cards .acct-actions-row{flex-wrap:wrap;gap:3px}
 table.account-cards .acct-actions .id-btn-label{display:none}
 table.account-cards .acct-actions button.mini{padding:3px 7px;font-size:10.5px}
 table.account-cards .acct-actions .id-btn{padding:2px 5px;font-size:10px}
+/* 账号表有 11 列，桌面表格最小宽 1076px。窄于 1440px 时内容区通常放不下，
+   继续用表格会把右侧的积分/请求/token/缓存裁掉；这里改成卡片，完整展示每
+   个字段。1440px 及以上仍使用桌面表格。 */
+@media (max-width:1439px){
+  #accountsBody .table-wrap{overflow:visible}
+  table.account-cards{min-width:0!important;width:100%;display:block;table-layout:auto}
+  table.account-cards thead{display:none}
+  table.account-cards tbody{display:block}
+  table.account-cards tr{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));
+    gap:5px 8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:var(--shadow-sm)}
+  table.account-cards td{display:flex;align-items:baseline;justify-content:space-between;
+    gap:12px;grid-column:span 6;border:none;padding:1px 0;text-align:left!important;
+    font-variant-numeric:tabular-nums;min-width:0!important;max-width:none!important;
+    width:auto!important;overflow-wrap:anywhere;word-break:break-word}
+  /* 覆盖桌面表格给 td 的固定列宽，否则卡片里的单元格仍只有 48-150px。 */
+  table.account-cards td:nth-child(1),table.account-cards td:nth-child(2),
+  table.account-cards td:nth-child(3),table.account-cards td:nth-child(4),
+  table.account-cards td:nth-child(5),table.account-cards td:nth-child(6),
+  table.account-cards td:nth-child(7),table.account-cards td:nth-child(8),
+  table.account-cards td:nth-child(9),table.account-cards td:nth-child(10){
+    width:auto!important;min-width:0!important;max-width:none!important}
+  table.account-cards td::before{content:attr(data-label);color:var(--dim);font-size:11px;
+    font-weight:600;flex-shrink:0}
+  table.account-cards td:not([data-label])::before{content:none}
+  table.account-cards td[colspan]{grid-column:span 6;justify-content:center;text-align:center!important}
+  table.account-cards td[colspan]::before{content:none}
+  table.account-cards tr.cool-row td{justify-content:flex-start;text-align:left!important}
+  table.account-cards td:nth-child(1),table.account-cards td:nth-child(3){display:none}
+  .acct-mobile-badges{display:inline-flex;align-items:center;gap:4px;
+    margin-left:0;flex-wrap:wrap;flex-shrink:0}
+  table.account-cards td:nth-child(1)::before,
+  table.account-cards td:nth-child(2)::before,
+  table.account-cards td:nth-child(3)::before{content:none}
+  table.account-cards td:nth-child(2){order:1;grid-column:span 6;
+    flex-direction:column;align-items:flex-start;gap:2px}
+  table.account-cards td[data-label="账号"] .acct-name-row{width:100%;min-width:0;
+    flex-wrap:wrap;gap:4px 6px}
+  table.account-cards td[data-label="账号"] .acct-name{flex:1 1 120px;min-width:0}
+  table.account-cards td[data-label="账号"] .acct-mobile-badges{margin-left:0;
+    flex-wrap:wrap;justify-content:flex-start}
+  table.account-cards td:nth-child(4){order:4;grid-column:span 6;
+    justify-content:flex-start;flex-wrap:wrap;gap:4px 6px}
+  table.account-cards td:nth-child(4)::before{font-size:10px}
+  table.account-cards td:nth-child(5),table.account-cards td:nth-child(6){
+    order:5;flex-direction:row;align-items:center;justify-content:flex-start;
+    gap:4px;min-width:0;min-height:36px}
+  table.account-cards td:nth-child(5){grid-column:span 3}
+  table.account-cards td:nth-child(6){grid-column:span 3}
+  table.account-cards td:nth-child(6)::before{content:'权重：'}
+  table.account-cards td:nth-child(5) .slot-select{width:auto;max-width:none;
+    min-height:34px;height:34px;flex:1 1 auto;min-width:0}
+  table.account-cards td:nth-child(6) .mini-select{min-height:34px;height:34px;
+    padding:0 6px;align-self:center}
+  table.account-cards td:nth-child(7),table.account-cards td:nth-child(8),
+  table.account-cards td:nth-child(9),table.account-cards td:nth-child(10){
+    grid-column:span 3;flex-direction:column;align-items:center;justify-content:center;
+    gap:2px;padding:6px 4px;min-height:48px;background:var(--panel2);
+    border-radius:8px;text-align:center}
+  table.account-cards td:nth-child(7),table.account-cards td:nth-child(8){order:6}
+  table.account-cards td:nth-child(9),table.account-cards td:nth-child(10){order:7}
+  table.account-cards td:nth-child(7) .credit-stack{width:100%;align-items:center}
+  table.account-cards td:nth-child(7) .credit-main,
+  table.account-cards td:nth-child(7) .credit-meta{justify-content:center}
+  table.account-cards td:nth-child(7)::before{content:none}
+  table.account-cards td:nth-child(8)::before,
+  table.account-cards td:nth-child(9)::before,
+  table.account-cards td:nth-child(10)::before{font-size:10px}
+  table.account-cards td.acct-actions{order:8;grid-column:span 6;
+    justify-content:flex-start;min-width:0!important;max-width:none!important;
+    width:auto!important;border-left:none}
+  table.account-cards td.acct-actions::before{content:none}
+  table.account-cards .acct-actions-col{flex-direction:row;flex-wrap:wrap;
+    align-items:flex-start;justify-content:flex-start;gap:6px}
+  table.account-cards .acct-actions-row{flex-wrap:wrap;gap:6px}
+  table.account-cards .acct-actions button.mini{min-height:32px;padding:6px 12px}
+  table.account-cards .slot-select{max-width:none;width:100%;min-height:40px}
+  table.account-cards tr.cool-row{margin-top:-11px;border-top:none;
+    border-radius:0 0 12px 12px;padding-top:8px;padding-bottom:8px}
+  table.account-cards tr.has-alert{margin-bottom:10px;border-bottom:none;
+    border-radius:12px 12px 0 0}
+  table.account-cards tr.cool-row .cool-pill{white-space:normal}
+}
 
 .badge,.cool-pill,.badge-effort{border-color:transparent!important;box-shadow:none;font-weight:500}
 .badge{border-radius:999px;padding:1px 7px;font-size:10.5px;background:var(--panel2);color:var(--dim)}
