@@ -235,6 +235,14 @@ columns fit at 1440px and the action column no longer covers them; between
 `v2.8.5` at `30e9c95`; evidence: `docs/smoke/2026-11-16-release-2.8.5.md`. No
 media or Windows SCM gate changed.
 
+**v2.8.6 addendum:** account lists now use a complete card layout below
+1440px; the card CSS was moved into the active stylesheet after the initial
+PR #37 placement in a disabled `media="not all"` block. 1440px+ retains the
+desktop table. `make check`, `make race`, and live 1440/820/390px checks for
+WorkBuddy 国内 and 国际 pass without horizontal overflow. Published as
+`v2.8.6` at `ca5ebaf`; evidence: `docs/smoke/2026-11-16-release-2.8.6.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
