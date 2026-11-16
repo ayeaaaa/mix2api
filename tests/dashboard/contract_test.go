@@ -34,6 +34,11 @@ func TestDashboardContract(t *testing.T) {
 		"analyticsScopeSeg",
 		"intlSize",
 		"cnSize",
+		"sectionProviderSchedules",
+		"scheduleCardWorkbuddy",
+		"scheduleCardCodearts",
+		"scheduleCardRaccoon",
+		"scheduleCardDoubao",
 		"raccoonDailyActive",
 		"raccoonDailyCell",
 		"/raccoon/accounts/daily-active",
@@ -48,6 +53,27 @@ func TestDashboardContract(t *testing.T) {
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("embedded dashboard is missing marker %q", marker)
+		}
+	}
+
+	// Provider schedule switches belong to the Automation page, not the
+	// provider connection cards in Settings.
+	tasksStart := strings.Index(html, `id="pageTasks"`)
+	tasksEnd := strings.Index(html[tasksStart:], "</div><!-- /pageTasks -->")
+	if tasksStart < 0 || tasksEnd < 0 {
+		t.Fatal("dashboard task page boundary is missing")
+	}
+	tasksEnd += tasksStart
+	for _, id := range []string{
+		"setDailyActivity",
+		"setCodeartsAutoCheckin",
+		"raccoonDailyActive",
+		"setDoubaoCheckinEnabled",
+		"setDoubaoCheckinTime",
+	} {
+		index := strings.Index(html, `id="`+id+`"`)
+		if index < tasksStart || index > tasksEnd {
+			t.Fatalf("schedule switch %q is outside the Automation page", id)
 		}
 	}
 	if len(dashboardRoutes()) == 0 {

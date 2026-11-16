@@ -258,47 +258,6 @@ func TestDailyActiveTriggerFailure(t *testing.T) {
 	}
 }
 
-func TestDailyActiveThrottleAndForce(t *testing.T) {
-	oldDelay := dailyActivePollDelay
-	dailyActivePollDelay = time.Millisecond
-	t.Cleanup(func() { dailyActivePollDelay = oldDelay })
-
-	fixture := newPointsFixture(t)
-	clearDailyGrantBills(fixture.fake)
-	fixture.fake.update(func(f *pointsFake) { f.dailyGrantOnSetting = false })
-
-	first, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
-	if err != nil {
-		t.Fatalf("first DailyActive: %v", err)
-	}
-	if !first.OK || first.Results[0].Skipped || first.Results[0].Refreshed {
-		t.Fatalf("first = %+v, want a web trigger attempt", first)
-	}
-	second, err := fixture.p.DailyActive(context.Background(), fixture.uid, false)
-	if err != nil {
-		t.Fatalf("second DailyActive: %v", err)
-	}
-	if !second.Results[0].Skipped {
-		t.Fatalf("second = %+v, want throttle skip", second)
-	}
-	if fixture.fake.settingCalls != 1 {
-		t.Fatalf("setting calls after throttle = %d, want 1", fixture.fake.settingCalls)
-	}
-	forced, err := fixture.p.DailyActive(context.Background(), fixture.uid, true)
-	if err != nil {
-		t.Fatalf("forced DailyActive: %v", err)
-	}
-	if forced.Results[0].Skipped || forced.Results[0].Refreshed {
-		t.Fatalf("forced = %+v, want forced web trigger", forced)
-	}
-	if fixture.fake.settingCalls != 2 {
-		t.Fatalf("setting calls after force = %d, want 2", fixture.fake.settingCalls)
-	}
-	if fixture.fake.chatCalls != 0 || fixture.fake.refreshCalls != 0 {
-		t.Fatalf("chat/refresh calls = %d/%d, want 0/0", fixture.fake.chatCalls, fixture.fake.refreshCalls)
-	}
-}
-
 func TestDailyActiveSkipsDisabledOrTasksOff(t *testing.T) {
 	fixture := newPointsFixture(t)
 	account := fixture.p.Get(fixture.uid)
@@ -336,25 +295,37 @@ func TestDailyActiveSkipsDisabledOrTasksOff(t *testing.T) {
 func TestDailyActiveSlot(t *testing.T) {
 	loc := time.Local
 	cases := []struct {
-		hour int
-		want int
-		ok   bool
+		hour, minute int
+		random       int
+		wantHour     int
+		wantMinute   int
+		ok           bool
 	}{
-		{8, 0, false},
-		{9, 9, true},
-		{15, 9, true},
-		{21, 21, true},
-		{23, 21, true},
+		{0, 0, 30, 0, 30, false},
+		{0, 30, 30, 0, 30, true},
+		{3, 59, 239, 3, 59, true},
+		{4, 0, 30, 4, 30, false},
+		{8, 30, 30, 8, 30, true},
+		{12, 0, 0, 12, 0, true},
+		{20, 0, 239, 23, 59, false},
+		{23, 59, 239, 23, 59, true},
 	}
 	for _, tc := range cases {
-		slot, ok := dailyActiveSlot(time.Date(2026, 11, 11, tc.hour, 30, 0, 0, loc))
-		if ok != tc.ok || (ok && slot.Hour() != tc.want) {
-			t.Fatalf("hour %d: slot=%v ok=%v", tc.hour, slot, ok)
+		now := time.Date(2026, 11, 11, tc.hour, tc.minute, 0, 0, loc)
+		slot, ok := dailyActiveSlot(now, tc.random)
+		want := time.Date(2026, 11, 11, tc.wantHour, tc.wantMinute, 0, 0, loc)
+		if ok != tc.ok || !slot.Equal(want) {
+			t.Fatalf("%02d:%02d random=%d: slot=%v ok=%v, want %v/%v",
+				tc.hour, tc.minute, tc.random, slot, ok, want, tc.ok)
 		}
 	}
 }
 
 func TestDailyActiveJobRunsOncePerSlot(t *testing.T) {
+	oldRandom := dailyActiveRandomMinute
+	dailyActiveRandomMinute = func() int { return 30 }
+	t.Cleanup(func() { dailyActiveRandomMinute = oldRandom })
+
 	fixture := newRoutesFixture(t)
 	fixture.importFlat(t, fixture.uid, fixture.token, nil)
 	if _, err := SaveConfig(fixture.store, map[string]any{
@@ -368,16 +339,109 @@ func TestDailyActiveJobRunsOncePerSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if points, _ := fixture.p.pool.Get(fixture.uid).View().DailyActive.(map[string]any); len(points) != 0 {
-		t.Fatalf("daily_active before 09:00 = %#v", points)
+		t.Fatalf("daily_active before random slot = %#v", points)
 	}
 
-	fixture.now = fixture.now.Add(2 * time.Hour) // 10:00
+	fixture.now = fixture.now.Add(29 * time.Minute) // 08:29
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if points, _ := fixture.p.pool.Get(fixture.uid).View().DailyActive.(map[string]any); len(points) != 0 {
+		t.Fatalf("daily_active before 08:30 = %#v", points)
+	}
+
+	fixture.now = fixture.now.Add(time.Minute) // 08:30
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	state := fixture.p.pool.Get(fixture.uid).View().DailyActive
 	stateMap, _ := state.(map[string]any)
 	if stateMap["ok"] != true || testInt(stateMap["points"]) != 300 {
-		t.Fatalf("daily_active after slot = %#v", state)
+		t.Fatalf("daily_active at random slot = %#v", state)
+	}
+
+	// A second tick in the same four-hour window must be a no-op.
+	fixture.now = fixture.now.Add(time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.p.pool.dailyActiveState(fixture.p.pool.Get(fixture.uid)); testInt(got["attempts"]) != 0 {
+		t.Fatalf("second tick in window repeated the attempt: %#v", got)
+	}
+}
+
+func TestDailyActiveJobRetriesNextFourHourWindow(t *testing.T) {
+	oldDelay := dailyActivePollDelay
+	dailyActivePollDelay = time.Millisecond
+	t.Cleanup(func() { dailyActivePollDelay = oldDelay })
+	oldRandom := dailyActiveRandomMinute
+	dailyActiveRandomMinute = func() int { return 30 }
+	t.Cleanup(func() { dailyActiveRandomMinute = oldRandom })
+
+	fixture := newRoutesFixture(t)
+	fixture.importFlat(t, fixture.uid, fixture.token, nil)
+	if _, err := SaveConfig(fixture.store, map[string]any{
+		"enabled": true, "daily_active": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clearDailyGrantBills(fixture.fake.points)
+	fixture.fake.points.update(func(f *pointsFake) { f.dailyGrantOnSetting = false })
+	fixture.now = time.Date(fixture.now.Year(), fixture.now.Month(), fixture.now.Day(), 8, 0, 0, 0, fixture.now.Location())
+	job := &dailyActiveJob{provider: fixture.p}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.now = fixture.now.Add(30 * time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state := fixture.p.pool.dailyActiveState(fixture.p.pool.Get(fixture.uid))
+	if state["granted"] != false || testInt(state["attempts"]) != 1 {
+		t.Fatalf("first failed window state = %#v", state)
+	}
+	if fixture.fake.points.settingCalls != 1 {
+		t.Fatalf("setting calls after first window = %d, want 1", fixture.fake.points.settingCalls)
+	}
+
+	// Same window after failure must not retry on the next scheduler tick.
+	fixture.now = fixture.now.Add(time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.fake.points.settingCalls != 1 {
+		t.Fatalf("same-window retry calls = %d, want 1", fixture.fake.points.settingCalls)
+	}
+
+	// The next four-hour window retries and succeeds.
+	fixture.fake.points.update(func(f *pointsFake) { f.dailyGrantOnSetting = true })
+	fixture.now = time.Date(fixture.now.Year(), fixture.now.Month(), fixture.now.Day(), 12, 0, 0, 0, fixture.now.Location())
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.now = fixture.now.Add(30 * time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state = fixture.p.pool.dailyActiveState(fixture.p.pool.Get(fixture.uid))
+	if state["granted"] != true || testInt(state["points"]) != 300 || testInt(state["attempts"]) != 2 {
+		t.Fatalf("second window state = %#v", state)
+	}
+	if fixture.fake.points.settingCalls != 2 {
+		t.Fatalf("setting calls after second window = %d, want 2", fixture.fake.points.settingCalls)
+	}
+
+	// Once today's grant is present, later windows must not call setting_info.
+	fixture.now = time.Date(fixture.now.Year(), fixture.now.Month(), fixture.now.Day(), 16, 0, 0, 0, fixture.now.Location())
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.now = fixture.now.Add(30 * time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.fake.points.settingCalls != 2 {
+		t.Fatalf("post-grant setting calls = %d, want 2", fixture.fake.points.settingCalls)
 	}
 }

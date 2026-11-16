@@ -220,6 +220,14 @@ claiming a login refresh grants the reward. `make check`, `make race`, and the
 15/15 dashboard JS harness pass. Published as `v2.8.3` at `5363670`; evidence:
 `docs/smoke/2026-11-14-release-2.8.3.md`. No media or Windows SCM gate changed.
 
+**v2.8.4 addendum:** provider schedule switches moved to the Automation page;
+the account action column was widened; WorkBuddy international activity now
+runs `/v2/report`; Raccoon daily activity retries once per four-hour window;
+CodeArts browser callbacks accept exact nested `ticket_id` matching while
+rejecting the sole-pending fallback. `make check`, `make race`, and the 15/15
+dashboard JS harness pass. Published as `v2.8.4` at `af3a1d7`; evidence:
+`docs/smoke/2026-11-16-release-2.8.4.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
