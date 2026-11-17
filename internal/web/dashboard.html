@@ -393,6 +393,15 @@ button.mini{padding:3px 9px;font-size:11px}
 table.account-cards td[data-label="账号"]{padding-top:6px;padding-bottom:6px}
 table.account-cards td[data-label="账号"] .cool-list{max-width:100%;}
 table.account-cards td[data-label="账号"] .cool-pill{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* 桌面账号列不能只靠省略号：昵称、备注/分组/任务徽章和 OAuth 元信息
+   在 1440px+ 都可能超过原 150px 列宽。放宽账号列，并允许徽章与元信息
+   换行，保证 PC 下账号信息完整可见；其他数据列保持紧凑。 */
+@media (min-width:1440px){
+  table.account-cards th:nth-child(2),table.account-cards td:nth-child(2){width:180px!important}
+  table.account-cards td[data-label="账号"] .acct-name-row{flex-wrap:wrap;align-items:flex-start;gap:4px 6px}
+  table.account-cards td[data-label="账号"] .acct-name{flex:1 1 100px;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+  table.account-cards td[data-label="账号"] .acct-meta{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.35}
+}
 /* 冷却 / 达日限额的整行（coolRow / limitRow）：跨满表头列数，文本完整可见，
    不再有省略号，所以也不再需要 title 兜底。桌面下表格用 table-layout:fixed，
    td 是普通单元格，只要去掉 ::before 的 data-label 装饰即可；窄屏走
