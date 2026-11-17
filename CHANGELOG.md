@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.8] - 2026-11-17
+
+### 中文
+
+#### 修复
+
+- 桌面端账号列加宽到 180px，账号昵称、备注/分组/任务徽章、OAuth、过期时间
+  和设备信息允许换行显示，不再被省略号截断；其它数据列和操作列保持不变，
+  `<1440px` 继续使用卡片布局。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
+### English
+
+#### Fixed
+
+- The desktop account column is now 180px wide, and account names, note/group/
+  task badges, OAuth, expiry, and device details wrap instead of being clipped
+  with ellipses. Other data and action columns are unchanged; `<1440px` keeps
+  the card layout.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
+
 ## [2.8.7] - 2026-11-16
 
 ### 中文
