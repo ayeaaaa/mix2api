@@ -156,6 +156,10 @@ body.win-capped #pageAnalytics section.panel{overflow-y:auto}
 /* 看板面板本身是唯一的纵向滚动上下文；pbody 只保留表格横向溢出。
    overflow-y:clip 防止 overflow-x:auto 按 CSS 规则隐式生成第二根纵向滚动条。 */
 body.win-capped #pageAnalytics section.panel .pbody{overflow-y:clip!important;max-height:none!important;overscroll-behavior:auto}
+/* 账号区不要再套一层内部滚动：section 限高 + table-wrap 的 overflow:auto
+   会同时出现两条纵向滚动条。账号区只跟随页面滚动，表格保留横向滚动能力。 */
+body.win-capped #workbuddyAccountsSection{max-height:none!important;overflow:visible!important}
+body.win-capped #workbuddyAccountsSection .table-wrap{overflow-y:clip!important}
 body.win-capped .main-page section>:first-child{position:sticky;top:0;z-index:3;
   background:var(--panel);padding-top:18px;margin-bottom:0!important;padding-bottom:14px}
 body.win-capped #logTerminalBody{max-height:var(--win-max-h)}
