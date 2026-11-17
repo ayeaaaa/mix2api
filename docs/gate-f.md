@@ -251,6 +251,13 @@ current version's CHANGELOG section for GitHub Release notes. `make check`,
 `0be783a`; evidence: `docs/smoke/2026-11-16-release-2.8.7.md`. No media or
 Windows SCM gate changed.
 
+**v2.8.8 addendum:** the desktop account column is wider and account names,
+badges, OAuth, expiry, and device details wrap instead of being clipped; other
+data and action columns are unchanged, and `<1440px` keeps the card layout.
+`make check`, `make race`, and the 15/15 dashboard JS harness pass. Published as
+`v2.8.8` at `726e1de`; evidence: `docs/smoke/2026-11-17-release-2.8.8.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
