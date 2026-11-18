@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.9] - 2026-11-18
+
+### 中文
+
+#### 修复
+
+- WorkBuddy 账号列表取消内层纵向滚动，只保留页面纵向滚动；表格横向滚动
+  仍然可用，其它设置区块的窗口限高行为保持不变。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
+### English
+
+#### Fixed
+
+- The WorkBuddy account list no longer creates a nested vertical scrollbar; the
+  page remains the only vertical scroller, while horizontal table scrolling is
+  preserved and other capped sections are unchanged.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
+
 ## [2.8.8] - 2026-11-17
 
 ### 中文
