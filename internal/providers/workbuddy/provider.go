@@ -146,6 +146,15 @@ type Provider struct {
 	creditFlights  map[*Account]*creditRefreshFlight
 	creditJoinHook func()
 
+	// creditsRefresh* implement v1's background CreditsRefresher. The refresh
+	// timer is independent of the scheduler; creditsRefreshNow and
+	// creditsRefreshHook are test seams.
+	creditsRefreshInterval time.Duration
+	creditsRefreshNow      func() time.Time
+	creditsRefreshHook     func(context.Context, *Account) CreditRefreshRow
+	creditsRefreshMu       sync.Mutex
+	creditsRefreshParked   map[string]time.Time
+
 	// creditsSweepMu prevents a second multi-account panel sweep from piling
 	// onto the same accounts. A single-account refresh never takes this lock.
 	creditsSweepMu sync.Mutex
