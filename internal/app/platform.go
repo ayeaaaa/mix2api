@@ -434,6 +434,13 @@ func (p *Platform) Start(ctx context.Context) {
 	if p.Refresher != nil {
 		start(func() { p.Refresher.Run(runCtx) })
 	}
+	for _, provider := range p.Providers {
+		worker, ok := provider.(providers.BackgroundWorker)
+		if !ok || worker == nil {
+			continue
+		}
+		start(func() { worker.RunBackground(runCtx) })
+	}
 	if p.Updates != nil {
 		start(func() { p.Updates.Run() })
 		start(func() {

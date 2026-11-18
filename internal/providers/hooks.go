@@ -8,6 +8,14 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 )
 
+// BackgroundWorker is implemented by providers that own independent
+// periodic maintenance loops. The platform starts one worker per provider
+// instance and stops it through the supplied context; unlike scheduler jobs,
+// these loops are not affected by the panel's scheduler enable switch.
+type BackgroundWorker interface {
+	RunBackground(ctx context.Context)
+}
+
 // SettingsContributor is implemented by providers that own a section of the
 // panel settings document. Platform settings services merge the view into the
 // base payload and dispatch saves without importing a concrete provider.
