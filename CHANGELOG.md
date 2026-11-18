@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.10] - 2026-11-18
+
+### 中文
+
+#### 新增
+
+- WorkBuddy 国际版 / 国内版增加后台积分刷新：每 30 分钟刷新一个最久未更新
+  的启用账号，周期由 `credits_refresh_hours` 控制（默认 12 小时，0 关闭）。
+  失败账号暂停 6 小时并跳过，不会阻塞其它过期账号。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 套件 15/15。
+
+### English
+
+#### Added
+
+- WorkBuddy International and CN now refresh stale credits in the background:
+  every 30 minutes one enabled account with the oldest balance is refreshed.
+  The TTL is controlled by `credits_refresh_hours` (default 12 hours; 0
+  disables). Failed accounts are parked for six hours and skipped so one broken
+  account cannot block the rest of the queue.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites pass (15/15).
+
 ## [2.8.9] - 2026-11-18
 
 ### 中文
