@@ -81,6 +81,44 @@ func TestCreditsRefresherHonoursTTLAndSkipsFreshAccounts(t *testing.T) {
 	}
 }
 
+func TestCreditsRefresherSkipsParkedAccountAndRefreshesNext(t *testing.T) {
+	dir := t.TempDir()
+	writePoolAccount(t, dir, "a", realmIntl, map[string]any{"enabled": true})
+	writePoolAccount(t, dir, "b", realmIntl, map[string]any{"enabled": true})
+	writePoolSettings(t, dir, map[string]any{"credits_refresh_hours": 12})
+	provider, pool := newPoolProvider(t, realmIntl, dir)
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	provider.creditsRefreshNow = func() time.Time { return now }
+	setTestAccountCredits(t, pool.Get("a"), now.Add(-48*time.Hour), 10)
+	setTestAccountCredits(t, pool.Get("b"), now.Add(-24*time.Hour), 20)
+
+	var refreshed []string
+	provider.creditsRefreshHook = func(_ context.Context, account *Account) CreditRefreshRow {
+		uid := accountUID(account)
+		refreshed = append(refreshed, uid)
+		if uid == "a" {
+			return CreditRefreshRow{UID: uid, OK: false, Error: "billing unavailable"}
+		}
+		account.mu.Lock()
+		account.Credits.UpdatedAt = float64(now.Unix())
+		account.mu.Unlock()
+		return CreditRefreshRow{UID: uid, OK: true, Credits: creditSnapshotOf(account)}
+	}
+
+	if !provider.refreshStalestCredit(context.Background()) {
+		t.Fatal("first refresh was not attempted")
+	}
+	if !provider.refreshStalestCredit(context.Background()) {
+		t.Fatal("second refresh was blocked by the parked oldest account")
+	}
+	if len(refreshed) != 2 || refreshed[0] != "a" || refreshed[1] != "b" {
+		t.Fatalf("refreshed = %v, want a then b", refreshed)
+	}
+	if provider.refreshStalestCredit(context.Background()) {
+		t.Fatal("refresher selected a fresh or parked account")
+	}
+}
+
 func TestCreditsRefresherParksFailedAccountForSixHours(t *testing.T) {
 	dir := t.TempDir()
 	writePoolAccount(t, dir, "a", realmIntl, map[string]any{"enabled": true})

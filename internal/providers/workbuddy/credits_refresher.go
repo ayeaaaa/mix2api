@@ -53,17 +53,12 @@ func (p *Provider) refreshStalestCredit(ctx context.Context) bool {
 		return false
 	}
 	now := p.creditsRefreshTime()
-	account := p.stalestCreditAccount(pool.Accounts(), ttl, now)
+	parked := p.activeCreditsRefreshParked(now)
+	account := p.stalestCreditAccount(pool.Accounts(), ttl, now, parked)
 	if account == nil {
 		return false
 	}
 	uid := accountUID(account)
-	p.creditsRefreshMu.Lock()
-	if until, parked := p.creditsRefreshParked[uid]; parked && now.Before(until) {
-		p.creditsRefreshMu.Unlock()
-		return false
-	}
-	p.creditsRefreshMu.Unlock()
 
 	var row CreditRefreshRow
 	if p.creditsRefreshHook != nil {
@@ -85,7 +80,28 @@ func (p *Provider) refreshStalestCredit(ctx context.Context) bool {
 	return true
 }
 
-func (p *Provider) stalestCreditAccount(accounts []*Account, ttl time.Duration, now time.Time) *Account {
+// activeCreditsRefreshParked returns the accounts whose failed refresh is
+// still parked, and drops expired entries. Parked accounts must be excluded
+// before selecting the oldest account: otherwise one broken oldest account
+// would block every other stale account until its six-hour park expires.
+func (p *Provider) activeCreditsRefreshParked(now time.Time) map[string]bool {
+	p.creditsRefreshMu.Lock()
+	defer p.creditsRefreshMu.Unlock()
+	if len(p.creditsRefreshParked) == 0 {
+		return nil
+	}
+	parked := make(map[string]bool, len(p.creditsRefreshParked))
+	for uid, until := range p.creditsRefreshParked {
+		if now.Before(until) {
+			parked[uid] = true
+			continue
+		}
+		delete(p.creditsRefreshParked, uid)
+	}
+	return parked
+}
+
+func (p *Provider) stalestCreditAccount(accounts []*Account, ttl time.Duration, now time.Time, parked map[string]bool) *Account {
 	var selected *Account
 	var selectedAge time.Duration
 	for _, account := range accounts {
@@ -98,6 +114,9 @@ func (p *Provider) stalestCreditAccount(accounts []*Account, ttl time.Duration, 
 		credits := cloneCreditSnapshot(account.Credits)
 		account.mu.RUnlock()
 		if !enabled {
+			continue
+		}
+		if parked != nil && parked[accountUID(account)] {
 			continue
 		}
 		age := time.Duration(1 << 62)
