@@ -258,6 +258,13 @@ data and action columns are unchanged, and `<1440px` keeps the card layout.
 `v2.8.8` at `726e1de`; evidence: `docs/smoke/2026-11-17-release-2.8.8.md`. No
 media or Windows SCM gate changed.
 
+**v2.8.9 addendum:** the WorkBuddy account list now uses the page scrollbar
+only; its section cap and table-wrapper vertical overflow are disabled while
+horizontal table scrolling remains, and other capped sections are unchanged.
+`make check`, `make race`, and the 15/15 dashboard JS harness pass. Published as
+`v2.8.9` at `de07b03`; evidence: `docs/smoke/2026-11-18-release-2.8.9.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
