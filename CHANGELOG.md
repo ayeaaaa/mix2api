@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.11] - 2026-11-19
+
+### 中文
+
+#### 修复
+
+- `/v1/models` 现在遵守 `models_only_available` 设置：关闭时返回完整目录；
+  开启时，没有可用账号的 realm 不返回模型，PRO/standard 限定模型只在有
+  付费账号时出现。覆盖具体 realm、`realm=all` 与 `realm=gateway`。
+- 模型可用性判断只看账号是否启用、有凭证且可登录，不把临时冷却或限额算进去，
+  避免自动发现客户端反复刷新目录。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Fixed
+
+- `/v1/models` now honors `models_only_available`: the full catalogue is
+  returned when off; when on, a realm with no usable account advertises no
+  models and PRO/standard-gated models require a paid account. Applies to
+  concrete realms, `realm=all`, and `realm=gateway`.
+- Availability checks use enabled, credential-bearing, non-terminal accounts
+  only, ignoring transient cooldowns and quotas so auto-discovering clients do
+  not churn.
+
+#### Verification
+
+- `make check` and `make race` pass.
+
 ## [2.8.10] - 2026-11-18
 
 ### 中文
