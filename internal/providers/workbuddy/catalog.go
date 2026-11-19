@@ -1454,6 +1454,44 @@ func (p *Provider) FreeModelIDs() []string {
 	return out
 }
 
+// ModelPoolAvailable reports whether this realm has any account that can
+// serve models, and whether one of them is a paid/standard account. Cooldowns
+// and quotas are deliberately excluded, matching v1's models_available_for.
+func (p *Provider) ModelPoolAvailable(ctx context.Context, realm string) (bool, bool) {
+	if p == nil {
+		return false, false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false, false
+	}
+	pool := p.Pool()
+	if pool == nil {
+		return false, false
+	}
+	realm = strings.TrimSpace(realm)
+	usable, paid := false, false
+	for _, account := range pool.Accounts() {
+		if account == nil {
+			continue
+		}
+		account.mu.RLock()
+		enabled := account.Auth.Enabled && !account.State.Disabled &&
+			!account.tokenExpired && strings.TrimSpace(account.Auth.AccessToken) != ""
+		accountRealm := strings.TrimSpace(account.Auth.Realm)
+		isPaid := account.paidUserLocked()
+		account.mu.RUnlock()
+		if !enabled {
+			continue
+		}
+		if realm != "" && !strings.EqualFold(accountRealm, realm) {
+			continue
+		}
+		usable = true
+		paid = paid || isPaid
+	}
+	return usable, paid
+}
+
 // RequiresPro reports whether this provider realm gates modelID to paid
 // accounts. It is the instance form of requiresPro.
 func (p *Provider) RequiresPro(modelID string) bool {

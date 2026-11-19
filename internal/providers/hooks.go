@@ -95,6 +95,15 @@ type AccountInventory interface {
 	AccountSummaries(ctx context.Context) ([]AccountSummary, error)
 }
 
+// ModelAvailabilityProvider reports whether the provider's live account pool
+// can advertise models. It backs the panel's models_only_available setting:
+// usable marks any enabled credential-bearing account, paid marks a standard-
+// tier account for PRO-only models. Providers without it keep the full catalog.
+type ModelAvailabilityProvider interface {
+	ModelPoolAvailable(ctx context.Context, realm string) (usable bool, paid bool)
+	RequiresPro(modelID string) bool
+}
+
 // RealmSelector is implemented by providers that expose a switchable default
 // upstream exit. Only WorkBuddy currently implements it.
 type RealmSelector interface {
