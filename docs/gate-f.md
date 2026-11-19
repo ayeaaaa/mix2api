@@ -273,6 +273,13 @@ block the queue. `make check`, `make race`, and the 15/15 dashboard JS harness
 pass. Published as `v2.8.10` at `2d9390c`; evidence:
 `docs/smoke/2026-11-18-release-2.8.10.md`. No media or Windows SCM gate changed.
 
+**v2.8.11 addendum:** `/v1/models` now honors `models_only_available` across
+concrete, `all`, and `gateway` scopes: realms with no usable account advertise
+no models and PRO-gated models require a paid account. Availability ignores
+transient cooldowns/quotas. `make check`, `make race`, and the 15/15 dashboard
+JS harness pass. Published as `v2.8.11` at `b0feaf8`; evidence:
+`docs/smoke/2026-11-19-release-2.8.11.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
