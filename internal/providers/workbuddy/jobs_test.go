@@ -665,3 +665,61 @@ func TestJobsCatalogCooldownCountsSkippedNotSuccess(t *testing.T) {
 		t.Fatalf("catalog cooldown accounting = %+v, want skipped", report)
 	}
 }
+
+func TestJobsDailyStartupCatchupBeforeFirstSlot(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addIntlTaskAccount(t, "intl-catchup", true, true)
+	if _, err := f.store.Merge(map[string]any{"daily_chat_web": false}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	job := jobsByName(t, f.intl)["workbuddy-daily-activity"]
+
+	f.setNow(time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local))
+	report, err := job.run(context.Background(), false)
+	if err != nil {
+		t.Fatalf("startup catch-up: %v", err)
+	}
+	if !report.Ran || report.Checked != 1 {
+		t.Fatalf("startup catch-up report = %+v, want one checked account", report)
+	}
+
+	second, err := job.run(context.Background(), false)
+	if err != nil {
+		t.Fatalf("second startup catch-up: %v", err)
+	}
+	if second.Ran {
+		t.Fatalf("startup catch-up ran twice: %+v", second)
+	}
+}
+
+func TestJobsDailyStartupCatchupCanBeDisabled(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addIntlTaskAccount(t, "intl-no-catchup", true, true)
+	if _, err := f.store.Merge(map[string]any{
+		"daily_chat_web":             false,
+		"daily_chat_startup_catchup": false,
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	job := jobsByName(t, f.intl)["workbuddy-daily-activity"]
+
+	f.setNow(time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local))
+	report, err := job.run(context.Background(), false)
+	if err != nil {
+		t.Fatalf("disabled catch-up: %v", err)
+	}
+	if report.Ran || report.Checked != 0 {
+		t.Fatalf("disabled catch-up still ran: %+v", report)
+	}
+
+	// The normal slot still fires after the setting suppresses only the
+	// startup leg.
+	f.setNow(time.Date(2026, 11, 9, 9, 0, 0, 0, time.Local))
+	report, err = job.run(context.Background(), false)
+	if err != nil {
+		t.Fatalf("normal slot: %v", err)
+	}
+	if !report.Ran || report.Checked != 1 {
+		t.Fatalf("normal slot report = %+v, want one checked account", report)
+	}
+}

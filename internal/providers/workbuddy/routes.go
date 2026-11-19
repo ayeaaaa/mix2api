@@ -1769,6 +1769,22 @@ func (p *Provider) runDailyActivity(ctx context.Context, account *Account, trigg
 		if webErr != nil {
 			message = safeJobError(webErr)
 		}
+		// v1's #645 fallback: a sandbox certificate failure cannot be fixed by
+		// retrying the same turn, while POST /v2/report can still light the
+		// streak. Off by default; every other web failure keeps its meaning.
+		if p.dailyChatWebFallbackActivityEnabled() && isTLSVerifyText(message) {
+			fallback, fallbackErr := p.runReportActivity(ctx, account, trigger)
+			if fallbackErr == nil && fallback.OK {
+				result.OK = true
+				result.Error = ""
+				result.Msg = "每日活跃对话：网页通道证书校验失败，已回退对话活跃上报（" + fallback.Msg + "）"
+				_ = p.persistLastDailyChat(account, now)
+				_ = p.persistDailyEventMarker(account, now, true)
+				result.Activity = p.newActivity(account, taskDailyChatTask, trigger, true, result.Msg)
+				p.recordDailyActivity(result.Activity)
+				return result, nil
+			}
+		}
 		result.OK = false
 		result.Error = "网页通道失败：" + message
 		result.Msg = "每日活跃对话未完成（" + result.Error + "）"
@@ -3105,9 +3121,14 @@ func (p *Provider) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) handleSettingsRestrictionReset(w http.ResponseWriter, r *http.Request) {
+	for _, provider := range p.allProviders() {
+		if pool := provider.Pool(); pool != nil {
+			pool.ResetRestrictionState()
+		}
+	}
 	writeWBAdminJSON(w, http.StatusOK, map[string]any{
 		"ok":                true,
-		"message":           "v2 has no cross-account restriction-hold state; per-account restriction windows are unchanged",
+		"message":           "风控连坐暂停已立即解除 / Restriction hold cleared",
 		"restriction_holds": map[string]any{},
 	})
 }
@@ -3199,28 +3220,66 @@ func (p *Provider) settingsView() map[string]any {
 	intlCfg := p.refreshSettings()
 	versions := versionsValues(intlCfg.IdentityVersions)
 	view := map[string]any{
-		"ok":                             true,
-		"workbuddy":                      workbuddy,
-		"schedule":                       p.scheduleView(),
-		"daily_activity":                 p.dailyActivityEnabled(),
-		"daily_chat_web":                 p.dailyChatWebEnabled(),
-		"daily_chat_web_random_prompt":   dailyChatWebRandomPrompt(settings),
-		"daily_chat_web_prompts":         normalizeDailyChatWebPrompts(settings["daily_chat_web_prompts"]),
-		"daily_chat_web_builtin_prompts": builtinDailyChatWebPrompts(),
-		"daily_chat_web_prompts_max":     dailyChatWebPromptsMax,
-		"proxySlots":                     slots,
-		"auto_switch_product":            intlCfg.AutoSwitchProduct,
-		"auto_switch_products":           append([]string(nil), intlCfg.AutoSwitchProducts...),
-		"identity_versions":              versions,
-		"identity":                       map[string]any{"private_data": intlCfg.PrivateData, "versions": versions},
-		"account_max_concurrent":         intlCfg.AccountMaxConcurrent,
-		"realm_fallback_enabled":         intlCfg.RealmFallbackEnabled,
+		"ok":                                   true,
+		"workbuddy":                            workbuddy,
+		"schedule":                             p.scheduleView(),
+		"daily_activity":                       p.dailyActivityEnabled(),
+		"daily_chat_web":                       p.dailyChatWebEnabled(),
+		"daily_chat_startup_catchup":           p.dailyChatStartupCatchupEnabled(),
+		"daily_chat_budget":                    int(p.dailyChatBudgetDuration() / time.Second),
+		"daily_chat_budget_default":            dailyChatBudgetDefault,
+		"daily_chat_budget_max":                dailyChatBudgetMax,
+		"daily_chat_web_timeout":               int(p.dailyChatTurnWaitDuration() / time.Second),
+		"daily_chat_web_timeout_default":       dailyChatTurnDefault,
+		"daily_chat_web_timeout_max":           dailyChatTurnMax,
+		"daily_chat_web_retry_backoff":         int(p.dailyChatRetryBackoffDuration() / time.Second),
+		"daily_chat_web_retry_backoff_default": dailyChatBackoffDefault,
+		"daily_chat_web_retry_backoff_max":     dailyChatBackoffMax,
+		"daily_chat_models":                    p.dailyChatModelsSetting(),
+		"daily_chat_models_max":                dailyChatModelsMax,
+		"daily_chat_web_concurrency":           p.dailyChatConcurrency(),
+		"daily_chat_web_concurrency_default":   dailyChatConcurrencyDefault,
+		"daily_chat_web_concurrency_max":       dailyChatConcurrencyMax,
+		"daily_chat_web_fallback_activity":     p.dailyChatWebFallbackActivityEnabled(),
+		"daily_chat_web_random_prompt":         dailyChatWebRandomPrompt(settings),
+		"daily_chat_web_prompts":               normalizeDailyChatWebPrompts(settings["daily_chat_web_prompts"]),
+		"daily_chat_web_builtin_prompts":       builtinDailyChatWebPrompts(),
+		"daily_chat_web_prompts_max":           dailyChatWebPromptsMax,
+		"proxySlots":                           slots,
+		"auto_switch_product":                  intlCfg.AutoSwitchProduct,
+		"auto_switch_products":                 append([]string(nil), intlCfg.AutoSwitchProducts...),
+		"identity_versions":                    versions,
+		"identity":                             map[string]any{"private_data": intlCfg.PrivateData, "versions": versions},
+		"account_max_concurrent":               intlCfg.AccountMaxConcurrent,
+		"realm_fallback_enabled":               intlCfg.RealmFallbackEnabled,
+		"restriction_hold_seconds":             restrictionHoldSecondsFromSettings(settings),
+		"restriction_holds":                    p.restrictionHoldsView(),
 		"upstream": map[string]any{
 			"header_timeout_seconds": intlCfg.TimeoutSeconds,
 			"idle_timeout_seconds":   intlCfg.StreamTimeoutSeconds,
 		},
 	}
 	return view
+}
+
+// restrictionHoldsView merges both realm pools so the panel can show a pause
+// on either exit. Remaining seconds are per realm, matching v1's
+// all_restriction_holds shape.
+func (p *Provider) restrictionHoldsView() map[string]int {
+	out := map[string]int{}
+	if p == nil {
+		return out
+	}
+	for _, provider := range p.allProviders() {
+		if pool := provider.Pool(); pool != nil {
+			for realm, seconds := range pool.RestrictionHolds() {
+				if seconds > out[realm] {
+					out[realm] = seconds
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
@@ -3357,6 +3416,79 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		patch["daily_chat_web"] = value
 		recognized = true
 	}
+	if raw, present := payload["daily_chat_startup_catchup"]; present {
+		value, ok := raw.(bool)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("daily_chat_startup_catchup must be true or false"))
+			return
+		}
+		patch["daily_chat_startup_catchup"] = value
+		recognized = true
+	}
+	if raw, present := payload["restriction_hold_seconds"]; present {
+		value, ok := wbAdminInt(raw)
+		if !ok || value < 0 || value > restrictionHoldMaxSeconds {
+			writeWBAdminError(w, wbBadRequest(fmt.Sprintf("restriction_hold_seconds must be an integer between 0 and %d", restrictionHoldMaxSeconds)))
+			return
+		}
+		patch["restriction_hold_seconds"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_budget"]; present {
+		value, ok := wbAdminInt(raw)
+		if !ok || value < 0 || value > dailyChatBudgetMax {
+			writeWBAdminError(w, wbBadRequest(fmt.Sprintf("daily_chat_budget must be an integer between 0 and %d", dailyChatBudgetMax)))
+			return
+		}
+		patch["daily_chat_budget"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_web_timeout"]; present {
+		value, ok := wbAdminInt(raw)
+		if !ok || value < 1 || value > dailyChatTurnMax {
+			writeWBAdminError(w, wbBadRequest(fmt.Sprintf("daily_chat_web_timeout must be an integer between 1 and %d", dailyChatTurnMax)))
+			return
+		}
+		patch["daily_chat_web_timeout"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_web_retry_backoff"]; present {
+		value, ok := wbAdminInt(raw)
+		if !ok || value < 0 || value > dailyChatBackoffMax {
+			writeWBAdminError(w, wbBadRequest(fmt.Sprintf("daily_chat_web_retry_backoff must be an integer between 0 and %d", dailyChatBackoffMax)))
+			return
+		}
+		patch["daily_chat_web_retry_backoff"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_models"]; present {
+		switch raw.(type) {
+		case []any, []string, string, nil:
+		default:
+			writeWBAdminError(w, wbBadRequest("daily_chat_models must be a list or comma-separated string"))
+			return
+		}
+		patch["daily_chat_models"] = normalizeDailyChatModels(raw)
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_web_concurrency"]; present {
+		value, ok := wbAdminInt(raw)
+		if !ok || value < 1 || value > dailyChatConcurrencyMax {
+			writeWBAdminError(w, wbBadRequest(fmt.Sprintf("daily_chat_web_concurrency must be an integer between 1 and %d", dailyChatConcurrencyMax)))
+			return
+		}
+		patch["daily_chat_web_concurrency"] = value
+		recognized = true
+	}
+	if raw, present := payload["daily_chat_web_fallback_activity"]; present {
+		value, ok := raw.(bool)
+		if !ok {
+			writeWBAdminError(w, wbBadRequest("daily_chat_web_fallback_activity must be true or false"))
+			return
+		}
+		patch["daily_chat_web_fallback_activity"] = value
+		recognized = true
+	}
 	if raw, present := payload["daily_chat_web_random_prompt"]; present {
 		value, ok := raw.(bool)
 		if !ok {
@@ -3375,13 +3507,22 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		recognized = true
 	}
 	if !recognized {
-		writeWBAdminError(w, wbBadRequest("nothing to update: pass workbuddy, schedule, daily_activity, daily_chat_web or web prompt settings"))
+		writeWBAdminError(w, wbBadRequest("nothing to update: pass workbuddy, schedule, daily activity, restriction hold, or web prompt settings"))
 		return
 	}
 	if p.store != nil {
 		if _, err := p.store.Merge(patch); err != nil {
 			writeWBAdminError(w, wbServerError("workbuddy: save settings failed"))
 			return
+		}
+	}
+	if raw, present := patch["restriction_hold_seconds"]; present {
+		if seconds, ok := raw.(int); ok {
+			for _, provider := range p.allProviders() {
+				if pool := provider.Pool(); pool != nil {
+					pool.ClampRestrictionHolds(seconds)
+				}
+			}
 		}
 	}
 	for _, provider := range p.allProviders() {

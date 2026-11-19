@@ -17515,7 +17515,7 @@ async function loadSettings(showToast){
       if(holdAlert && holdDetails){
         if(activeRealms.length > 0){
           const desc = activeRealms.map(function(r){
-            const name = r === 'international' ? '国际版' : (r === 'domestic' ? '国内版' : r);
+            const name = (r === 'international' || r === 'intl') ? '国际版' : ((r === 'domestic' || r === 'cn') ? '国内版' : r);
             return name + ' 剩余 ' + activeHolds[r] + ' 秒';
           }).join('，');
           holdDetails.textContent = '当前 ' + desc + ' 触发了连坐暂停';

@@ -677,10 +677,13 @@ func (p *Provider) taskGapDelay() time.Duration {
 }
 
 func (p *Provider) taskBackoffDelay(round int) time.Duration {
-	if p == nil || p.tasksBackoff <= 0 {
+	if p == nil {
 		return 0
 	}
-	base := p.tasksBackoff
+	base := p.dailyChatRetryBackoffDuration()
+	if base <= 0 {
+		return 0
+	}
 	capValue := p.tasksBackoffMax
 	if capValue <= 0 {
 		capValue = tasksBackoffMax

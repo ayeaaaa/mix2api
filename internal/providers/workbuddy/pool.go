@@ -94,6 +94,13 @@ type Pool struct {
 	weightStates map[string]map[string]int
 
 	affinity *sessionAffinity
+
+	// restrictionMu guards the v1 cross-account restriction wave state. A wave
+	// is two distinct restricted accounts inside restrictionWaveWindow; it
+	// pauses every dispatch to this realm for restriction_hold_seconds.
+	restrictionMu     sync.Mutex
+	restrictionEvents map[string]map[string]time.Time
+	restrictionHolds  map[string]time.Time
 }
 
 // NewPool returns the provider's cached pool. New calls it eagerly; subsequent
@@ -139,16 +146,18 @@ func newPool(provider *Provider) (*Pool, error) {
 	}
 	cfg := provider.Config()
 	p := &Pool{
-		dir:              dir,
-		realm:            realm,
-		store:            provider.store,
-		cfg:              cfg,
-		now:              time.Now,
-		remainingWeights: make(map[string]int),
-		proOnly:          make(map[string]bool),
-		freeModels:       staticFreeModelSet(realm),
-		weightStates:     make(map[string]map[string]int),
-		affinity:         newSessionAffinity(affinityTTL, maxAffinityKeys, affinityHistory),
+		dir:               dir,
+		realm:             realm,
+		store:             provider.store,
+		cfg:               cfg,
+		now:               time.Now,
+		remainingWeights:  make(map[string]int),
+		proOnly:           make(map[string]bool),
+		freeModels:        staticFreeModelSet(realm),
+		weightStates:      make(map[string]map[string]int),
+		affinity:          newSessionAffinity(affinityTTL, maxAffinityKeys, affinityHistory),
+		restrictionEvents: make(map[string]map[string]time.Time),
+		restrictionHolds:  make(map[string]time.Time),
 	}
 	p.guardCheck = defaultGuardCheck
 	p.affinity.now = p.nowTime
@@ -1135,7 +1144,147 @@ const (
 
 	// restrictedCooldown mirrors v1 RESTRICTED_ACCOUNT_COOLDOWN (403/11140).
 	restrictedCooldown = 2 * time.Hour
+
+	// restrictionWaveWindow and restrictionWaveMin mirror v1's
+	// WB_RESTRICTION_WAVE_WINDOW (900s) and WB_RESTRICTION_WAVE_MIN (2): two
+	// distinct accounts restricted inside the window pause the whole realm.
+	restrictionWaveWindow = 15 * time.Minute
+	restrictionWaveMin    = 2
+
+	restrictionHoldDefaultSeconds = 1800
+	restrictionHoldMaxSeconds     = 7 * 24 * 60 * 60
 )
+
+// restrictionHoldSecondsFromSettings reads the panel's global hold duration.
+// Missing, malformed, or out-of-range values fall back to v1's 1800s default;
+// 0 explicitly disables the pool-wide pause.
+func restrictionHoldSecondsFromSettings(settings map[string]any) int {
+	seconds, ok := wbAdminInt(settings["restriction_hold_seconds"])
+	if !ok || seconds < 0 {
+		return restrictionHoldDefaultSeconds
+	}
+	if seconds > restrictionHoldMaxSeconds {
+		return restrictionHoldMaxSeconds
+	}
+	return seconds
+}
+
+func (p *Pool) restrictionHoldDuration() time.Duration {
+	if p == nil {
+		return time.Duration(restrictionHoldDefaultSeconds) * time.Second
+	}
+	settings, err := p.loadSettings()
+	if err != nil {
+		return time.Duration(restrictionHoldDefaultSeconds) * time.Second
+	}
+	return time.Duration(restrictionHoldSecondsFromSettings(settings)) * time.Second
+}
+
+// noteRestrictionEvent records one account-level restriction and arms the
+// realm-wide hold when the wave threshold is met. It returns the remaining
+// hold, or zero when the wave has not tripped (or the hold is disabled).
+func (p *Pool) noteRestrictionEvent(uid string) time.Duration {
+	if p == nil {
+		return 0
+	}
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return 0
+	}
+	realm := p.realm
+	now := p.nowTime()
+	hold := p.restrictionHoldDuration()
+
+	p.restrictionMu.Lock()
+	defer p.restrictionMu.Unlock()
+	events := p.restrictionEvents[realm]
+	if events == nil {
+		events = make(map[string]time.Time)
+		p.restrictionEvents[realm] = events
+	}
+	for key, at := range events {
+		if now.Sub(at) > restrictionWaveWindow {
+			delete(events, key)
+		}
+	}
+	events[uid] = now
+	if len(events) < restrictionWaveMin || hold <= 0 {
+		return 0
+	}
+	until := now.Add(hold)
+	if current := p.restrictionHolds[realm]; current.After(until) {
+		until = current
+	}
+	p.restrictionHolds[realm] = until
+	return until.Sub(now)
+}
+
+// RestrictionHold reports the remaining realm-wide dispatch pause.
+func (p *Pool) RestrictionHold() time.Duration {
+	if p == nil {
+		return 0
+	}
+	now := p.nowTime()
+	p.restrictionMu.Lock()
+	defer p.restrictionMu.Unlock()
+	until := p.restrictionHolds[p.realm]
+	if !until.After(now) {
+		delete(p.restrictionHolds, p.realm)
+		return 0
+	}
+	return until.Sub(now)
+}
+
+// RestrictionHolds returns every live hold as realm -> remaining seconds.
+func (p *Pool) RestrictionHolds() map[string]int {
+	out := map[string]int{}
+	if p == nil {
+		return out
+	}
+	now := p.nowTime()
+	p.restrictionMu.Lock()
+	defer p.restrictionMu.Unlock()
+	for realm, until := range p.restrictionHolds {
+		if !until.After(now) {
+			delete(p.restrictionHolds, realm)
+			continue
+		}
+		out[realm] = int(until.Sub(now) / time.Second)
+	}
+	return out
+}
+
+// ClampRestrictionHolds truncates live holds after the operator lowers the
+// duration, matching v1's clamp_restriction_holds. Zero clears them.
+func (p *Pool) ClampRestrictionHolds(maxSeconds int) {
+	if p == nil {
+		return
+	}
+	now := p.nowTime()
+	p.restrictionMu.Lock()
+	defer p.restrictionMu.Unlock()
+	if maxSeconds <= 0 {
+		p.restrictionHolds = make(map[string]time.Time)
+		return
+	}
+	maxUntil := now.Add(time.Duration(maxSeconds) * time.Second)
+	for realm, until := range p.restrictionHolds {
+		if until.After(maxUntil) {
+			p.restrictionHolds[realm] = maxUntil
+		}
+	}
+}
+
+// ResetRestrictionState clears both the wave events and the active holds.
+func (p *Pool) ResetRestrictionState() {
+	if p == nil {
+		return
+	}
+	p.restrictionMu.Lock()
+	defer p.restrictionMu.Unlock()
+	p.restrictionEvents = make(map[string]map[string]time.Time)
+	p.restrictionHolds = make(map[string]time.Time)
+}
 
 // NoteError records a request failure with v1 runtime semantics: terminal
 // marks the credential expired and auto-disables the account unless the
@@ -1267,7 +1416,7 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 		return nil
 	}
 	a.mu.Unlock()
-	return p.mutateAccount(uid, func(account *Account) {
+	err := p.mutateAccount(uid, func(account *Account) {
 		if account.Auth.Extra == nil {
 			account.Auth.Extra = make(map[string]json.RawMessage)
 		}
@@ -1284,6 +1433,11 @@ func (p *Pool) NoteRestricted(a *Account, message string) error {
 		account.State.TasksEnabled = false
 		account.State.CoolUntil = time.Time{}
 	})
+	// v1's cross-account wave protection: two distinct restricted accounts in
+	// the window pause the whole realm so the next request cannot rotate the
+	// same device fingerprint through the rest of the pool.
+	p.noteRestrictionEvent(uid)
+	return err
 }
 
 // ClearRestriction clears only the account-level 403/11140 restriction and the

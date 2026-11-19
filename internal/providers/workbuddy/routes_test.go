@@ -770,8 +770,8 @@ func TestRoutesCreditsAliasRealmAndRestrictionReset(t *testing.T) {
 	if reset["ok"] != true {
 		t.Fatalf("restriction reset = %#v", reset)
 	}
-	if !strings.Contains(wbRouteText(reset["message"]), "unchanged") {
-		t.Fatalf("restriction reset message overclaims: %q", reset["message"])
+	if !strings.Contains(wbRouteText(reset["message"]), "cleared") {
+		t.Fatalf("restriction reset message = %q, want cleared", reset["message"])
 	}
 }
 
@@ -2421,5 +2421,32 @@ func TestAccountSummariesExposeLivePool(t *testing.T) {
 		if row.Domain == "" || row.Issuer == "" || row.CredentialFile != row.UID+".json" {
 			t.Fatalf("%s summary = %#v", row.UID, row)
 		}
+	}
+}
+
+func TestRoutesDailyChatStartupCatchupSetting(t *testing.T) {
+	f := newWBRoutesFixture(t)
+
+	view, err := f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view: %v", err)
+	}
+	if got := view["daily_chat_startup_catchup"]; got != true {
+		t.Fatalf("default daily_chat_startup_catchup = %#v, want true", got)
+	}
+
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{"daily_chat_startup_catchup": false}); err != nil {
+		t.Fatalf("save catch-up: %v", err)
+	}
+	view, err = f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view after save: %v", err)
+	}
+	if got := view["daily_chat_startup_catchup"]; got != false {
+		t.Fatalf("saved daily_chat_startup_catchup = %#v, want false", got)
+	}
+
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{"daily_chat_startup_catchup": "false"}); err == nil {
+		t.Fatal("string catch-up setting was accepted")
 	}
 }

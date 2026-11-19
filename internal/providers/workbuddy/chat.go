@@ -148,6 +148,11 @@ func (p *Provider) openChatAdmitted(
 	cfg Config,
 	allowFallback bool,
 ) (providers.ChatStream, error) {
+	if pool := p.Pool(); pool != nil {
+		if hold := pool.RestrictionHold(); hold > 0 {
+			return nil, restrictionHoldError(hold)
+		}
+	}
 	admission := p.currentAdmission()
 	if admission == nil {
 		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy chat admission is unavailable")
@@ -200,6 +205,9 @@ func (p *Provider) openChat(
 	pool := p.Pool()
 	if pool == nil {
 		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy account pool is unavailable")
+	}
+	if hold := pool.RestrictionHold(); hold > 0 {
+		return nil, restrictionHoldError(hold)
 	}
 
 	baseBody, model, err := p.buildChatBody(req)
@@ -384,6 +392,21 @@ func (p *Provider) finalChatError(lastErr error, bestRate *APIError, model strin
 		message = fmt.Sprintf("no usable WorkBuddy account is available for realm %q; add or enable one at the dashboard", p.realm)
 	}
 	return newAPIError(KindUnavailable, http.StatusServiceUnavailable, message)
+}
+
+// restrictionHoldError is v1's realm-wide 403/11140 pause: fail fast before
+// any upstream request so the next account is not rotated into the same
+// device-level ban.
+func restrictionHoldError(hold time.Duration) *APIError {
+	seconds := int(hold/time.Second) + 1
+	message := fmt.Sprintf("上游风控已限制本区域账号（403 / code 11140，账号存在异常行为）。网关已暂停派发 %d 秒，避免继续换号重试导致同设备账号连坐被封。 Upstream restricted the account(s); dispatch paused %ds to avoid further bans.", seconds, seconds)
+	return &APIError{
+		Kind:       KindRateLimited,
+		Status:     http.StatusTooManyRequests,
+		Message:    message,
+		RetryAfter: time.Duration(seconds) * time.Second,
+		ResetAt:    time.Now().Add(time.Duration(seconds) * time.Second),
+	}
 }
 
 func rateAdmissionError(reason string, wait time.Duration) *APIError {

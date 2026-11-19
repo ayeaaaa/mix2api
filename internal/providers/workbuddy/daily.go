@@ -14,6 +14,18 @@ import (
 
 const dailyChatPrompt = "Hi"
 
+const (
+	dailyChatBudgetDefault      = 600
+	dailyChatBudgetMax          = 7200
+	dailyChatTurnDefault        = 120
+	dailyChatTurnMax            = 3600
+	dailyChatBackoffDefault     = 5
+	dailyChatBackoffMax         = 60
+	dailyChatModelsMax          = 8
+	dailyChatConcurrencyDefault = 1
+	dailyChatConcurrencyMax     = 10
+)
+
 // DailyWebResult is one web-channel daily activity result. The fields mirror
 // v1's daily_chat_web: phase is create/session/turn, attempts counts rounds, and
 // retryable tells the caller whether another round is worth trying.
@@ -396,12 +408,9 @@ func (p *Provider) runDailyWebRounds(ctx context.Context, account *Account, auth
 	}
 	budget := time.Duration(0)
 	if p != nil {
-		budget = p.tasksBudget
+		budget = p.dailyChatBudgetDuration()
 	}
-	turnWait := tasksTurnWait
-	if p != nil && p.tasksTurnWait > 0 {
-		turnWait = p.tasksTurnWait
-	}
+	turnWait := p.dailyChatTurnWaitDuration()
 	var deadline time.Time
 	if budget > 0 {
 		deadline = time.Now().Add(budget)
@@ -893,26 +902,164 @@ func (p *Provider) dailyChatModels(auth Auth) []string {
 	if raw, exists := authExtraJSON(auth, "dailyChatModels"); exists {
 		var values []string
 		if err := json.Unmarshal(raw, &values); err == nil {
-			for _, value := range values {
-				value = strings.TrimSpace(value)
-				if value != "" {
-					models = append(models, value)
-				}
-			}
+			models = append(models, values...)
 		}
 	}
+	models = normalizeDailyChatModels(models)
 	if len(models) == 0 {
-		for _, value := range strings.Split(os.Getenv("WB_DAILY_CHAT_MODELS"), ",") {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				models = append(models, value)
-			}
-		}
+		models = p.dailyChatModelsSetting()
+	}
+	if len(models) == 0 {
+		models = normalizeDailyChatModels(strings.Split(os.Getenv("WB_DAILY_CHAT_MODELS"), ","))
 	}
 	if len(models) == 0 {
 		models = []string{p.dailyChatModel(auth)}
 	}
 	return models
+}
+
+// normalizeDailyChatModels mirrors v1's _clean_models: strings only, trimmed,
+// de-duplicated, order preserved, capped at eight candidates.
+func normalizeDailyChatModels(value any) []string {
+	items := []any{}
+	switch typed := value.(type) {
+	case []any:
+		items = typed
+	case []string:
+		for _, item := range typed {
+			items = append(items, item)
+		}
+	case string:
+		items = []any{typed}
+	default:
+		return []string{}
+	}
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		text, _ := item.(string)
+		text = strings.TrimSpace(text)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		out = append(out, text)
+		if len(out) >= dailyChatModelsMax {
+			break
+		}
+	}
+	return out
+}
+
+func (p *Provider) dailyChatModelsSetting() []string {
+	if p == nil {
+		return nil
+	}
+	settings := p.settingsSnapshot()
+	return normalizeDailyChatModels(settings["daily_chat_models"])
+}
+
+// dailyChatBudgetDuration reads the panel's per-account budget. The test seam
+// (tasksBudget) is used only when the setting is absent, so a live panel edit
+// always wins; an explicit 0 means unlimited.
+func (p *Provider) dailyChatBudgetDuration() time.Duration {
+	if p != nil {
+		if raw, exists := p.settingsSnapshot()["daily_chat_budget"]; exists {
+			if seconds, ok := wbAdminInt(raw); ok && seconds >= 0 && seconds <= dailyChatBudgetMax {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+		p.mu.RLock()
+		value := p.tasksBudget
+		p.mu.RUnlock()
+		if value > 0 {
+			return value
+		}
+	}
+	return tasksBudgetDefault
+}
+
+func (p *Provider) dailyChatTurnWaitDuration() time.Duration {
+	if p != nil {
+		if raw, exists := p.settingsSnapshot()["daily_chat_web_timeout"]; exists {
+			if seconds, ok := wbAdminInt(raw); ok && seconds >= 1 && seconds <= dailyChatTurnMax {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+		p.mu.RLock()
+		value := p.tasksTurnWait
+		p.mu.RUnlock()
+		if value > 0 {
+			return value
+		}
+	}
+	return tasksTurnWait
+}
+
+func (p *Provider) dailyChatRetryBackoffDuration() time.Duration {
+	if p != nil {
+		if raw, exists := p.settingsSnapshot()["daily_chat_web_retry_backoff"]; exists {
+			if seconds, ok := wbAdminInt(raw); ok && seconds >= 0 && seconds <= dailyChatBackoffMax {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+		p.mu.RLock()
+		value := p.tasksBackoff
+		p.mu.RUnlock()
+		return value
+	}
+	return tasksBackoffDefault
+}
+
+func (p *Provider) dailyChatWebFallbackActivityEnabled() bool {
+	if p == nil {
+		return false
+	}
+	enabled, _ := p.settingsSnapshot()["daily_chat_web_fallback_activity"].(bool)
+	return enabled
+}
+
+func (p *Provider) dailyChatConcurrency() int {
+	if p == nil {
+		return dailyChatConcurrencyDefault
+	}
+	value, ok := wbAdminInt(p.settingsSnapshot()["daily_chat_web_concurrency"])
+	if !ok || value < 1 || value > dailyChatConcurrencyMax {
+		return dailyChatConcurrencyDefault
+	}
+	return value
+}
+
+// dailyChatStagger mirrors v1's concurrency path: starts are spread by 300ms
+// (capped at 2s) so a raised concurrency does not hit the upstream in the same
+// millisecond.
+func dailyChatStagger(index int) time.Duration {
+	delay := time.Duration(index) * 300 * time.Millisecond
+	if delay > 2*time.Second {
+		return 2 * time.Second
+	}
+	return delay
+}
+
+// isTLSVerifyText mirrors v1's is_tls_verify_text: the web leg stringifies the
+// live exception, so the caller only has text to classify.
+func isTLSVerifyText(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"certificate_verify_failed",
+		"certificate verify failed",
+		"self-signed certificate",
+		"self signed certificate",
+		"unable to get local issuer certificate",
+		"unable to get issuer certificate",
+		"certificate has expired",
+		"hostname mismatch",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncateTaskText(text string, limit int) string {

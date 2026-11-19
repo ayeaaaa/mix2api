@@ -497,6 +497,12 @@ func (p *Provider) pickMediaAccount(model string, excluded map[string]bool, cost
 	if pool == nil {
 		return nil, &providers.MediaError{Code: "upstream", Message: "账号池不可用"}
 	}
+	if hold := pool.RestrictionHold(); hold > 0 {
+		return nil, &providers.MediaError{
+			Code:    "rate_limit",
+			Message: fmt.Sprintf("上游账号级限制生效中（整池暂停），%d 秒后再试", int(hold/time.Second)+1),
+		}
+	}
 	skip := map[string]bool{}
 	for key, value := range excluded {
 		skip[key] = value

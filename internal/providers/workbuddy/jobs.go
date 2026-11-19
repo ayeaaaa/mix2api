@@ -83,6 +83,11 @@ type scheduledJobState struct {
 	mu          sync.Mutex
 	lastRun     time.Time
 	lastSlotKey string
+	// startupPending is the v1 daily_chat_startup_catchup one-shot. It starts
+	// true for the daily job and is consumed by the first scheduler cycle that
+	// is allowed to run daily activity, so a restart before the first slot does
+	// not lose the day.
+	startupPending bool
 }
 
 type scheduledJob struct {
@@ -277,7 +282,24 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if !force && !j.provider.schedulerIsEnabled() {
 		return result, nil
 	}
-	if !force && !j.Due(now) {
+	due := force || j.Due(now)
+	if !force && j.kind == jobKindDaily {
+		j.state.mu.Lock()
+		startup := j.state.startupPending
+		j.state.mu.Unlock()
+		if startup && j.provider.dailyActivityEnabled() {
+			// v1 consumes the flag on the first cycle that is allowed to run
+			// daily activity. If the master switch is off, keep it pending so
+			// re-enabling the switch still gets the catch-up.
+			j.state.mu.Lock()
+			j.state.startupPending = false
+			j.state.mu.Unlock()
+			if j.provider.dailyChatStartupCatchupEnabled() {
+				due = true
+			}
+		}
+	}
+	if !due {
 		return result, nil
 	}
 	if j.kind == jobKindDaily && !j.provider.dailyActivityEnabled() {
@@ -335,7 +357,92 @@ func (j *scheduledJob) realmProviders() []*Provider {
 	return nil
 }
 
+// runDailyAccountsConcurrent is v1's daily_chat_web_concurrency > 1 path. It
+// filters accounts serially, then runs the daily activity through a bounded
+// worker set. Each account still owns its task lock and its own budget, so the
+// only shared state is the result accounting guarded by mu.
+func (j *scheduledJob) runDailyAccountsConcurrent(ctx context.Context, provider *Provider, result *JobRunResult, concurrency int) {
+	hold := time.Duration(0)
+	if pool := provider.Pool(); pool != nil {
+		hold = pool.RestrictionHold()
+	}
+	targets := make([]*Account, 0)
+	for _, account := range provider.jobTaskAccounts() {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		auth := taskAuthSnapshot(account)
+		if auth.Realm != provider.realm {
+			continue
+		}
+		result.Checked++
+		if hold > 0 {
+			result.Skipped++
+			continue
+		}
+		if !jobAccountActive(account, provider.jobsNowTime()) || taskIsAPIKey(auth) || taskEnterpriseID(auth) != "" {
+			result.Skipped++
+			continue
+		}
+		targets = append(targets, account)
+	}
+	if len(targets) == 0 {
+		return
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for index, account := range targets {
+		if index > 0 {
+			provider.taskSleepFor(dailyChatStagger(index))
+		}
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		wg.Add(1)
+		go func(account *Account) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				mu.Lock()
+				result.Skipped++
+				mu.Unlock()
+				return
+			}
+			daily, err := safeJobCall(func() (DailyResult, error) {
+				return provider.runDailyActivity(ctx, account, taskTriggerScheduler)
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, taskAuthSnapshot(account).UID+": "+safeJobError(err))
+				return
+			}
+			if daily.Busy || daily.Skipped || daily.Restricted {
+				result.Skipped++
+			} else if daily.OK {
+				result.Succeeded++
+			} else {
+				result.Failed++
+				if daily.Error != "" {
+					result.Errors = append(result.Errors, taskAuthSnapshot(account).UID+": "+daily.Error)
+				}
+			}
+		}(account)
+	}
+	wg.Wait()
+}
+
 func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, result *JobRunResult) {
+	if j.kind == jobKindDaily {
+		if concurrency := provider.dailyChatConcurrency(); concurrency > 1 {
+			j.runDailyAccountsConcurrent(ctx, provider, result, concurrency)
+			return
+		}
+	}
 	for index, account := range provider.jobTaskAccounts() {
 		if err := ctx.Err(); err != nil {
 			return
@@ -348,6 +455,12 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 			continue
 		}
 		result.Checked++
+		if pool := provider.Pool(); pool != nil && pool.RestrictionHold() > 0 {
+			// v1 skips every task while a realm-wide restriction wave hold is
+			// active; probing the pool only extends the same-device ban.
+			result.Skipped++
+			continue
+		}
 		if !jobAccountActive(account, provider.jobsNowTime()) {
 			result.Skipped++
 			continue
@@ -634,7 +747,8 @@ func (p *Provider) Jobs() []scheduler.Job {
 	p.jobsOnce.Do(func() {
 		p.jobs = []*scheduledJob{
 			{provider: p, name: jobNameCheckin, kind: jobKindCheckin, realm: jobRealmCN},
-			{provider: p, name: jobNameDailyActivity, kind: jobKindDaily, realm: jobRealmIntl},
+			{provider: p, name: jobNameDailyActivity, kind: jobKindDaily, realm: jobRealmIntl,
+				state: scheduledJobState{startupPending: true}},
 			{provider: p, name: jobNameReportActivity, kind: jobKindReport, realm: jobRealmAll},
 			{provider: p, name: jobNameGrowth, kind: jobKindGrowth, realm: jobRealmCN},
 			{provider: p, name: jobNameCatTravel, kind: jobKindCat, realm: jobRealmCN},
@@ -796,10 +910,7 @@ func (p *Provider) SchedulerStatus() map[string]any {
 			nextSlot = candidate.Format("15:04")
 		}
 	}
-	budgetSeconds := int(p.tasksBudget.Seconds())
-	if budgetSeconds <= 0 {
-		budgetSeconds = int(tasksBudgetDefault.Seconds())
-	}
+	budgetSeconds := int(p.dailyChatBudgetDuration().Seconds())
 	logs, doneSlots := p.schedulerActivitySnapshot(now, times)
 	dailyChat := map[string]any{
 		"times": times, "random": randomSlots, "done_slots": doneSlots,
@@ -1155,4 +1266,8 @@ func (p *Provider) dailyActivityEnabled() bool {
 
 func (p *Provider) dailyChatWebEnabled() bool {
 	return p.settingsBool("daily_chat_web", true)
+}
+
+func (p *Provider) dailyChatStartupCatchupEnabled() bool {
+	return p.settingsBool("daily_chat_startup_catchup", true)
 }
