@@ -8,6 +8,13 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
+// modelsAvailableProvider is the provider-side contract used when
+// models_only_available is enabled. Providers without it are left untouched.
+type modelsAvailableProvider interface {
+	ModelPoolAvailable(ctx context.Context, realm string) (bool, bool)
+	RequiresPro(modelID string) bool
+}
+
 type modelsResponse struct {
 	Object   string            `json:"object"`
 	Data     []providers.Model `json:"data"`
@@ -81,6 +88,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, err)
 			return
 		}
+		data = s.filterAvailableModelsForCandidates(r.Context(), candidates, "gateway", data)
 		writeGatewayModelsResponse(w, data, catalogs)
 		return
 	}
@@ -106,6 +114,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		data = s.filterAvailableModelsForCandidates(r.Context(), candidates, "all", data)
 		writeModelsResponse(w, "all", data, catalog)
 		return
 	}
@@ -131,7 +140,156 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		data = append(data, entry)
 	}
+	data = s.filterAvailableModels(r.Context(), provider, providerRealm(provider), data)
 	writeModelsResponse(w, providerRealm(provider), data, catalogProvenance(provider))
+}
+
+// filterAvailableModels applies v1's models_only_available setting. The
+// setting is off by default, so the full catalogue is preserved. When on, a
+// realm with no usable account advertises nothing and a PRO-only model needs
+// at least one paid account.
+func (s *Server) filterAvailableModels(ctx context.Context, provider providers.Provider, realm string, data []providers.Model) []providers.Model {
+	if s == nil || s.settings == nil || provider == nil {
+		return data
+	}
+	view, err := s.settings.View(ctx)
+	if err != nil {
+		return data
+	}
+	enabled, _ := view["models_only_available"].(bool)
+	if !enabled {
+		return data
+	}
+	availability, ok := provider.(modelsAvailableProvider)
+	if !ok {
+		return data
+	}
+	return filterModelsByAvailability(ctx, availability, realm, data)
+}
+
+// filterAvailableModelsForCandidates applies the same filter across a gateway
+// or all-realm union. Each entry is checked against its own provider/realm.
+func (s *Server) filterAvailableModelsForCandidates(ctx context.Context, candidates []providers.Provider, scope string, data []providers.Model) []providers.Model {
+	if s == nil || s.settings == nil || len(candidates) == 0 {
+		return data
+	}
+	view, err := s.settings.View(ctx)
+	if err != nil {
+		return data
+	}
+	enabled, _ := view["models_only_available"].(bool)
+	if !enabled {
+		return data
+	}
+	return filterModelsByAvailabilityForCandidates(ctx, candidates, scope, data)
+}
+
+func (s *Server) availabilityFor(ctx context.Context, candidates []providers.Provider, realm, providerID, scope string) modelsAvailableProvider {
+	for _, candidate := range candidates {
+		if realm != "" && providerRealm(candidate) != realm {
+			continue
+		}
+		if providerID != "" && providerIDOf(candidate) != providerID {
+			continue
+		}
+		if availability, ok := candidate.(modelsAvailableProvider); ok {
+			return availability
+		}
+	}
+	if scope == "gateway" || scope == "all" {
+		for _, candidate := range candidates {
+			if availability, ok := candidate.(modelsAvailableProvider); ok {
+				return availability
+			}
+		}
+	}
+	return nil
+}
+
+func realmOfModel(model providers.Model, fallback string) string {
+	if realm, _ := model["realm"].(string); strings.TrimSpace(realm) != "" {
+		return realm
+	}
+	return fallback
+}
+
+func filterModelsByAvailabilityForCandidates(ctx context.Context, candidates []providers.Provider, scope string, data []providers.Model) []providers.Model {
+	out := make([]providers.Model, 0, len(data))
+	for _, model := range data {
+		realm, _ := model["realm"].(string)
+		providerID, _ := model["provider"].(string)
+		availability := availabilityFor(ctx, candidates, realm, providerID, scope)
+		if availability == nil {
+			out = append(out, model)
+			continue
+		}
+		realm = realmOfModel(model, realm)
+		usable, paid := availability.ModelPoolAvailable(ctx, realm)
+		if !usable {
+			continue
+		}
+		id, _ := model["id"].(string)
+		if id == "" {
+			if upstream, _ := model["upstream_id"].(string); upstream != "" {
+				id = upstream
+			}
+		}
+		if availability.RequiresPro(id) && !paid {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func availabilityFor(ctx context.Context, candidates []providers.Provider, realm, providerID, scope string) modelsAvailableProvider {
+	for _, candidate := range candidates {
+		if realm != "" && !strings.EqualFold(providerRealm(candidate), strings.TrimSpace(realm)) {
+			continue
+		}
+		if providerID != "" && !strings.EqualFold(candidate.ID(), strings.TrimSpace(providerID)) {
+			continue
+		}
+		if availability, ok := candidate.(modelsAvailableProvider); ok {
+			return availability
+		}
+	}
+	if scope == "gateway" || scope == "all" {
+		for _, candidate := range candidates {
+			if availability, ok := candidate.(modelsAvailableProvider); ok {
+				return availability
+			}
+		}
+	}
+	return nil
+}
+
+func providerIDOf(provider providers.Provider) string {
+	if provider == nil {
+		return ""
+	}
+	return provider.ID()
+}
+
+func filterModelsByAvailability(ctx context.Context, availability modelsAvailableProvider, realm string, data []providers.Model) []providers.Model {
+	usable, paid := availability.ModelPoolAvailable(ctx, realm)
+	if !usable {
+		return []providers.Model{}
+	}
+	out := make([]providers.Model, 0, len(data))
+	for _, model := range data {
+		id, _ := model["id"].(string)
+		if id == "" {
+			if upstream, _ := model["upstream_id"].(string); upstream != "" {
+				id = upstream
+			}
+		}
+		if availability.RequiresPro(id) && !paid {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
 }
 
 func catalogProvenance(provider providers.Provider) map[string]any {
