@@ -265,6 +265,14 @@ horizontal table scrolling remains, and other capped sections are unchanged.
 `v2.8.9` at `de07b03`; evidence: `docs/smoke/2026-11-18-release-2.8.9.md`. No
 media or Windows SCM gate changed.
 
+**v2.8.10 addendum:** WorkBuddy International and CN refresh stale credits in
+the background every 30 minutes, one oldest enabled account per tick. TTL is
+controlled by `credits_refresh_hours` (default 12h; 0 disables); failed
+accounts are parked for six hours and skipped so one broken account cannot
+block the queue. `make check`, `make race`, and the 15/15 dashboard JS harness
+pass. Published as `v2.8.10` at `2d9390c`; evidence:
+`docs/smoke/2026-11-18-release-2.8.10.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
