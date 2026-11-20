@@ -280,6 +280,13 @@ transient cooldowns/quotas. `make check`, `make race`, and the 15/15 dashboard
 JS harness pass. Published as `v2.8.11` at `b0feaf8`; evidence:
 `docs/smoke/2026-11-19-release-2.8.11.md`. No media or Windows SCM gate changed.
 
+**v2.8.12 addendum:** CodeArts check-in status is date-aware and the provider
+now applies shared account limits (reserve credits, daily tokens/credits,
+per-model tokens) during selection with a `guard` view field. `make check`,
+`make race`, and the 15/15 dashboard JS harness pass. Published as `v2.8.12` at
+`9d84299`; evidence: `docs/smoke/2026-11-20-release-2.8.12.md`. No media or
+Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
