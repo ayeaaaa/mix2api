@@ -112,6 +112,11 @@ type AccountView struct {
 	Note             string       `json:"note"`
 	TasksEnabled     bool         `json:"tasks_enabled"`
 	Guard            string       `json:"guard"`
+
+	// CheckedInToday is the date-aware projection of Checkin. The stored
+	// checkin record is the last run, so after midnight it still carries
+	// yesterday's success; the panel must not present that as today's.
+	CheckedInToday bool `json:"checked_in_today"`
 }
 
 // Account is one CodeArts account's v1 credentials, list-state entry,
@@ -516,6 +521,30 @@ func (a *Account) setCheckin(ok bool, message string, checkedAt time.Time) {
 	a.mu.Unlock()
 }
 
+// checkinIsToday reports whether the last successful check-in happened on the
+// provider's local day. The scheduler and setCheckin both format checked_at in
+// time.Local, so the comparison uses the same zone; a browser in another zone
+// still sees the provider's notion of "today".
+func checkinIsToday(checkin CheckinState, now time.Time) bool {
+	if checkin == nil {
+		return false
+	}
+	ok, _ := checkin["ok"].(bool)
+	if !ok {
+		return false
+	}
+	text, _ := checkin["checked_at"].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	parsed, err := time.ParseInLocation("2006-01-02T15:04:05", text, time.Local)
+	if err != nil {
+		return false
+	}
+	return parsed.In(time.Local).Format("2006-01-02") == now.In(time.Local).Format("2006-01-02")
+}
+
 // View returns the public v1-compatible snapshot.
 func (a *Account) View() AccountView {
 	if a == nil {
@@ -581,6 +610,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		Credits:          publicCredits(a.Info),
 		Package:          packageName(a.Info),
 		Checkin:          checkin,
+		CheckedInToday:   checkinIsToday(checkin, now),
 		Disabled:         disabled,
 		ManualDisabled:   a.State.ManualDisabled,
 		Cooling:          cooling,

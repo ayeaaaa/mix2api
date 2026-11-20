@@ -2,6 +2,7 @@
   "accounts": [
     {
       "active_concurrent": 0,
+      "checked_in_today": false,
       "checkin": null,
       "cooling": false,
       "credits": {
@@ -37,6 +38,7 @@
     },
     {
       "active_concurrent": 0,
+      "checked_in_today": false,
       "checkin": null,
       "cooling": false,
       "credits": {
