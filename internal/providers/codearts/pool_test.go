@@ -677,7 +677,7 @@ func TestPoolViewKeysMaskingAndSecretRedaction(t *testing.T) {
 	}
 	for _, key := range []string{
 		"name", "uid", "nickname", "user_name", "default_model", "credits",
-		"package", "checkin", "disabled", "manual_disabled", "cooling", "until",
+		"package", "checkin", "checked_in_today", "disabled", "manual_disabled", "cooling", "until",
 		"err_count", "reason", "last_error", "active_concurrent", "max_concurrent",
 		"token_remaining", "expires_at", "models", "proxy_slot", "proxy", "note",
 		"tasks_enabled",
@@ -1212,4 +1212,34 @@ func TestPoolAcquireWait(t *testing.T) {
 		t.Fatal("acquired while slot was held")
 	}
 	p.Release(account)
+}
+
+func TestAccountViewCheckedInToday(t *testing.T) {
+	now := time.Date(2026, 11, 21, 0, 56, 0, 0, time.Local)
+	dir := t.TempDir()
+	writeTestAuth(t, dir, "u-checkin-today", "")
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	account := p.Get("u-checkin-today")
+
+	cases := []struct {
+		name    string
+		checkin CheckinState
+		want    bool
+	}{
+		{"yesterday", CheckinState{"ok": true, "checked_at": "2026-11-20T21:00:26"}, false},
+		{"today", CheckinState{"ok": true, "checked_at": "2026-11-21T00:10:00"}, true},
+		{"failed today", CheckinState{"ok": false, "checked_at": "2026-11-21T00:10:00"}, false},
+		{"no date", CheckinState{"ok": true}, false},
+		{"bad date", CheckinState{"ok": true, "checked_at": "not-a-date"}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account.Checkin = tc.checkin
+			view := account.viewAt(now)
+			if view.CheckedInToday != tc.want {
+				t.Fatalf("checked_in_today = %v, want %v (checkin=%#v)", view.CheckedInToday, tc.want, view.Checkin)
+			}
+		})
+	}
 }
