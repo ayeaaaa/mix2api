@@ -9247,8 +9247,15 @@ function renderCodeartsAccounts(r){
     const conc = (a.active_concurrent != null ? a.active_concurrent : 0)
       + "/" + (a.max_concurrent != null ? a.max_concurrent : "—");
     let checkin = "—";
-    if(a.checkin && a.checkin.ok) checkin = "已签到";
-    else if(a.checkin && a.checkin.message) checkin = escapeHtml(a.checkin.message);
+    if(a.checked_in_today) {
+      checkin = "已签到";
+    } else if(a.checkin && a.checkin.checked_at) {
+      const last = String(a.checkin.checked_at).replace("T", " ").slice(0, 16);
+      checkin = '<span class="badge warn mini">今日未签到</span>'
+        + '<div style="font-size:11px;color:var(--dim)" title="' + escapeHtml(a.checkin.message || "") + '">上次 ' + escapeHtml(last) + '</div>';
+    } else if(a.checkin && a.checkin.message) {
+      checkin = escapeHtml(a.checkin.message);
+    }
     const actions = [];
     if(a.disabled){
       actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'enable\',\'' + uidSafe + '\')">启用</button>');
