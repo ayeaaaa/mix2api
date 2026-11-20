@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.12] - 2026-11-20
+
+### 中文
+
+#### 修复
+
+- CodeArts 账号的签到状态按当前日期判断：昨天的成功记录不再显示为「已签到」，
+  跨天但未签到时显示「今日未签到」及上次尝试时间。
+- CodeArts 现在应用面板的共享账号限额：保留积分、每日 token / 积分、模型每日
+  token 限制会在选号时拦截账号；福利模型和零倍率模型不受每日积分限制。账号
+  视图新增 `guard` 状态，超限账号计入 `limited` 而非 `healthy`。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Fixed
+
+- CodeArts check-in status is now date-aware: yesterday's success no longer
+  shows as checked in; before today's run the row shows "not checked in today"
+  with the last attempt time.
+- CodeArts now applies the panel's shared account limits (reserve credits,
+  daily tokens/credits, per-model daily tokens) during account selection;
+  benefit and zero-multiplier models stay exempt from the daily credit limit.
+  Account views expose `guard`, and limited accounts count toward `limited`
+  rather than `healthy`.
+
+#### Verification
+
+- `make check` and `make race` pass.
+
 ## [2.8.11] - 2026-11-19
 
 ### 中文
