@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -110,6 +111,7 @@ type AccountView struct {
 	Proxy            string       `json:"proxy"`
 	Note             string       `json:"note"`
 	TasksEnabled     bool         `json:"tasks_enabled"`
+	Guard            string       `json:"guard"`
 }
 
 // Account is one CodeArts account's v1 credentials, list-state entry,
@@ -147,6 +149,17 @@ type Account struct {
 	maxConcurrent    int
 	lastUsed         time.Time
 	removed          bool
+
+	// Shared daily-guard projection. Values come from the panel's global
+	// account limits; usage comes from the platform usage fold for this realm.
+	// Unknown usage stays nil/zero and never blocks.
+	reserveCredits       int64
+	dailyTokenLimit      int64
+	dailyCreditLimit     int64
+	modelDailyTokenLimit int64
+	dailyTokensToday     *int64
+	dailyCreditsToday    *float64
+	modelDailyTokens     map[string]int64
 
 	// infoMu serializes statistics/plugin refreshes for this account. It may
 	// be held across network I/O and is never acquired while mu is held.
@@ -216,6 +229,86 @@ func (a *Account) healthyLocked(now time.Time) bool {
 		return false
 	}
 	return !a.creditExhaustedLocked()
+}
+
+// reserveBlockedLocked is v1's low-credit guard. An unknown balance never
+// blocks, matching the WorkBuddy/Raccoon projection.
+func (a *Account) reserveBlockedLocked() bool {
+	if a.reserveCredits <= 0 || a.Info == nil || a.Info.Credits.Total == nil {
+		return false
+	}
+	return int64(a.Info.Credits.Total.Remain) <= a.reserveCredits
+}
+
+func (a *Account) dailyLimitBlockedLocked() bool {
+	return a.dailyTokenLimit > 0 &&
+		a.dailyTokensToday != nil &&
+		*a.dailyTokensToday >= a.dailyTokenLimit
+}
+
+func (a *Account) modelDailyLimitBlockedLocked(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if a.modelDailyTokenLimit <= 0 || model == "" {
+		return false
+	}
+	for key, used := range a.modelDailyTokens {
+		if strings.ToLower(strings.TrimSpace(key)) == model {
+			return used >= a.modelDailyTokenLimit
+		}
+	}
+	return false
+}
+
+func (a *Account) creditLimitReachedLocked() bool {
+	return a.dailyCreditLimit > 0 &&
+		a.dailyCreditsToday != nil &&
+		*a.dailyCreditsToday >= float64(a.dailyCreditLimit)
+}
+
+// freeModelLocked mirrors the panel's "x0.00 models stay allowed after the
+// daily credit cap" rule. CodeArts' benefit models and any catalogue entry with
+// a zero credit multiplier qualify.
+func (a *Account) freeModelLocked(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return false
+	}
+	if a.modelBenefit[model] {
+		return true
+	}
+	for _, item := range a.Models {
+		id, _ := item["id"].(string)
+		if strings.ToLower(strings.TrimSpace(id)) != model {
+			continue
+		}
+		rate := strings.TrimSpace(modelText(item["credits"]))
+		rate = strings.TrimPrefix(rate, "x")
+		if rate == "" {
+			return false
+		}
+		value, err := strconv.ParseFloat(rate, 64)
+		return err == nil && value == 0
+	}
+	return false
+}
+
+// guardBlockedLocked returns the first active limit guard, matching the names
+// the panel already renders: reserve, daily_token, model_daily_token,
+// daily_credit.
+func (a *Account) guardBlockedLocked(model string) string {
+	if a.reserveBlockedLocked() {
+		return "reserve"
+	}
+	if a.dailyLimitBlockedLocked() {
+		return "daily_token"
+	}
+	if a.modelDailyLimitBlockedLocked(model) {
+		return "model_daily_token"
+	}
+	if a.creditLimitReachedLocked() && !a.freeModelLocked(model) {
+		return "daily_credit"
+	}
+	return ""
 }
 
 // CreditExhausted reports whether the last account-info snapshot says no
@@ -504,6 +597,7 @@ func (a *Account) viewAt(now time.Time) AccountView {
 		Proxy:            maskProxyURL(a.proxy),
 		Note:             note,
 		TasksEnabled:     a.State.TasksEnabled,
+		Guard:            a.guardBlockedLocked(""),
 	}
 }
 
@@ -571,11 +665,12 @@ type accountSelection struct {
 	max      int
 	lastUsed time.Time
 	healthy  bool
+	guard    string
 	expiring float64
 	removed  bool
 }
 
-func (a *Account) selectionSnapshot(now time.Time) accountSelection {
+func (a *Account) selectionSnapshot(now time.Time, model string) accountSelection {
 	if a == nil {
 		return accountSelection{removed: true}
 	}
@@ -587,6 +682,7 @@ func (a *Account) selectionSnapshot(now time.Time) accountSelection {
 		max:      normalizedMaxConcurrent(a.maxConcurrent),
 		lastUsed: a.lastUsed,
 		healthy:  a.healthyLocked(now),
+		guard:    a.guardBlockedLocked(model),
 		expiring: a.expiringCreditRemainLocked(),
 		removed:  a.removed,
 	}
