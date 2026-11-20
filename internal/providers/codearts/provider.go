@@ -388,7 +388,8 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 // statsPayload extends the v1 scheduler counters with the aggregated
 // statistics/plugin credit totals. limited is a v2 extension that counts
 // accounts paused by a local account-limit guard or sitting at their
-// per-account concurrency cap; healthy excludes both.
+// per-account concurrency cap. Guard-blocked accounts are excluded from
+// healthy; at-cap accounts still overlap healthy as before.
 func (p *Provider) statsPayload() map[string]any {
 	stats := PoolStats{}
 	remain := float64(0)
