@@ -49,6 +49,7 @@ type PoolStats struct {
 	Healthy  int `json:"healthy"`
 	Disabled int `json:"disabled"`
 	Cooling  int `json:"cooling"`
+	Limited  int `json:"limited"`
 }
 
 // Pool is the provider-owned CodeArts account pool. It owns auth loading,
@@ -105,6 +106,13 @@ type Pool struct {
 	// later save must not silently wipe their notes, manual disables, check-in
 	// results, or unknown fields.
 	preserved map[string]AccountState
+
+	// limitValues/usageValues are the latest shared account-limit projection.
+	// usageValues survives a nil-usage settings reload so daily counters are
+	// not reset to zero between usage folds.
+	limitValues   map[string]any
+	usageValues   map[string]any
+	limitsApplied bool
 
 	// now is the scheduler clock. Production keeps time.Now; tests may set it.
 	now func() time.Time
@@ -419,6 +427,10 @@ func (p *Pool) Stats() PoolStats {
 		account.mu.Lock()
 		disabled := account.State.Disabled || account.State.ManualDisabled
 		cooling := !disabled && account.State.CoolUntil > unixSeconds(now)
+		guard := ""
+		if !disabled && !cooling {
+			guard = account.guardBlockedLocked("")
+		}
 		account.mu.Unlock()
 
 		stats.Total++
@@ -427,6 +439,8 @@ func (p *Pool) Stats() PoolStats {
 			stats.Disabled++
 		case cooling:
 			stats.Cooling++
+		case guard != "":
+			stats.Limited++
 		default:
 			stats.Healthy++
 		}
@@ -464,9 +478,9 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	accounts := p.Accounts()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
-			selection := account.selectionSnapshot(now)
+			selection := account.selectionSnapshot(now, model)
 			if selection.removed || selection.uid != affinityUID ||
-				!selection.healthy || selection.active >= selection.max {
+				!selection.healthy || selection.guard != "" || selection.active >= selection.max {
 				continue
 			}
 			if account.HasModel(model) {
@@ -484,9 +498,9 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	}
 	candidates := make([]candidate, 0, len(accounts))
 	for _, account := range accounts {
-		selection := account.selectionSnapshot(now)
+		selection := account.selectionSnapshot(now, model)
 		if selection.removed || exclude[selection.uid] ||
-			!selection.healthy || selection.active >= selection.max {
+			!selection.healthy || selection.guard != "" || selection.active >= selection.max {
 			continue
 		}
 		urgent := 1
@@ -913,11 +927,177 @@ func (p *Pool) reapplyRuntimeSettings(account *Account) {
 	account.maxConcurrent = normalizedMaxConcurrent(maxConcurrentFor(cfg))
 	account.proxy = slots.URL(account.proxySlotLocked())
 	account.mu.Unlock()
+	p.applyStoredLimits(account)
 }
 
-// ApplyLimits is reserved for provider-wide scheduling limits. CodeArts v1 has
-// no shared reserve/daily guards, so this intentionally does nothing yet.
-func (p *Pool) ApplyLimits(values, usage map[string]any) {}
+// ApplyLimits projects the shared account limits and today's folded usage onto
+// every CodeArts account. values uses the panel's grouped shape
+// ({"reserve_credits":{"global":1000}, ...}); usage is the CodeArts realm fold
+// ({"tokens":{uid:n}, "credits":{uid:x}, "models":{uid:{model:n}}}). A nil
+// usage keeps the last known counters, matching the LimitApplier contract.
+func (p *Pool) ApplyLimits(values, usage map[string]any) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.limitValues = cloneAnyMap(values)
+	if usage != nil {
+		p.usageValues = cloneAnyMap(usage)
+	}
+	p.limitsApplied = true
+	storedValues := p.limitValues
+	storedUsage := p.usageValues
+	p.mu.Unlock()
+
+	for _, account := range p.Accounts() {
+		applyLimitsToAccount(account, storedValues, storedUsage)
+	}
+}
+
+// applyStoredLimits gives accounts added after the last ApplyLimits the same
+// guard projection as the accounts already in the pool.
+func (p *Pool) applyStoredLimits(account *Account) {
+	if p == nil || account == nil {
+		return
+	}
+	p.mu.RLock()
+	applied := p.limitsApplied
+	values := p.limitValues
+	usage := p.usageValues
+	p.mu.RUnlock()
+	if !applied {
+		return
+	}
+	applyLimitsToAccount(account, values, usage)
+}
+
+func applyLimitsToAccount(account *Account, values, usage map[string]any) {
+	if account == nil {
+		return
+	}
+	account.mu.Lock()
+	account.reserveCredits = limitGlobal(values, "reserve_credits")
+	account.dailyTokenLimit = limitGlobal(values, "daily_token_limit")
+	account.dailyCreditLimit = limitGlobal(values, "daily_credit_limit")
+	account.modelDailyTokenLimit = limitGlobal(values, "model_daily_token_limit")
+	if usage != nil {
+		uid := strings.TrimSpace(account.Auth.UserID)
+		if uid == "" {
+			uid = strings.TrimSpace(account.State.Name)
+		}
+		tokens := int64(0)
+		if value, ok := lookupNumber(usageGroup(usage, "tokens"), uid); ok {
+			tokens = int64(value)
+		}
+		credits := float64(0)
+		if value, ok := lookupNumber(usageGroup(usage, "credits"), uid); ok {
+			credits = value
+		}
+		account.dailyTokensToday = &tokens
+		account.dailyCreditsToday = &credits
+		account.modelDailyTokens = lookupModelCounts(usageGroup(usage, "models"), uid)
+	}
+	account.mu.Unlock()
+}
+
+func limitGlobal(values map[string]any, key string) int64 {
+	if values == nil {
+		return 0
+	}
+	entry := values[key]
+	if grouped, ok := entry.(map[string]any); ok {
+		entry = grouped["global"]
+	}
+	value, ok := numericValue(entry)
+	if !ok {
+		return 0
+	}
+	return int64(value)
+}
+
+func usageGroup(usage map[string]any, key string) any {
+	if usage == nil {
+		return nil
+	}
+	return usage[key]
+}
+
+func lookupNumber(container any, uid string) (float64, bool) {
+	switch values := container.(type) {
+	case map[string]any:
+		return numericValue(values[uid])
+	case map[string]float64:
+		value, ok := values[uid]
+		return value, ok
+	case map[string]int64:
+		value, ok := values[uid]
+		return float64(value), ok
+	case map[string]int:
+		value, ok := values[uid]
+		return float64(value), ok
+	default:
+		return 0, false
+	}
+}
+
+func lookupModelCounts(container any, uid string) map[string]int64 {
+	switch values := container.(type) {
+	case map[string]any:
+		return modelCounts(values[uid])
+	case map[string]map[string]int64:
+		return copyModelCounts(values[uid])
+	case map[string]map[string]any:
+		return modelCounts(values[uid])
+	default:
+		return map[string]int64{}
+	}
+}
+
+func modelCounts(value any) map[string]int64 {
+	counts := make(map[string]int64)
+	switch values := value.(type) {
+	case map[string]any:
+		for model, count := range values {
+			if number, ok := numericValue(count); ok {
+				counts[model] = int64(number)
+			}
+		}
+	case map[string]int64:
+		return copyModelCounts(values)
+	case map[string]int:
+		for model, count := range values {
+			counts[model] = int64(count)
+		}
+	case map[string]float64:
+		for model, count := range values {
+			counts[model] = int64(count)
+		}
+	}
+	return counts
+}
+
+func copyModelCounts(values map[string]int64) map[string]int64 {
+	copied := make(map[string]int64, len(values))
+	for model, count := range values {
+		copied[model] = count
+	}
+	return copied
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		if nested, ok := item.(map[string]any); ok {
+			out[key] = cloneAnyMap(nested)
+			continue
+		}
+		out[key] = item
+	}
+	return out
+}
 
 // Add imports or replaces one account under the canonical AuthPath. It refuses
 // to overwrite a file whose embedded user_id differs (sanitized filename

@@ -219,8 +219,45 @@ func (p *Provider) applySettings() (Config, error) {
 	if p.pool != nil {
 		p.pool.SetConfig(cfg)
 		p.pool.ApplyProxySlots(transport.SlotsFromSettings(settings))
+		// Values arrive immediately from the settings file; daily usage is
+		// supplied by the platform limits guard on its next fold. Nil usage
+		// preserves whatever counters the guard last projected.
+		p.pool.ApplyLimits(limitsFromSettings(settings), nil)
 	}
 	return cfg, nil
+}
+
+// ApplyLimits implements providers.LimitApplier so the platform guard also
+// publishes the realm usage fold to CodeArts, not just the settings values.
+func (p *Provider) ApplyLimits(values, usage map[string]any) {
+	if p == nil || p.pool == nil {
+		return
+	}
+	p.pool.ApplyLimits(values, usage)
+}
+
+// limitsFromSettings extracts the shared grouped limits, folding the legacy
+// flat keys when the grouped object is absent, matching WorkBuddy.
+func limitsFromSettings(settings map[string]any) map[string]any {
+	keys := []string{
+		"reserve_credits", "daily_token_limit", "daily_credit_limit",
+		"model_daily_token_limit", "expiring_window_days",
+	}
+	out := make(map[string]any, len(keys))
+	if grouped, ok := settings["limits"].(map[string]any); ok {
+		for _, key := range keys {
+			if value, exists := grouped[key]; exists {
+				out[key] = value
+			}
+		}
+		return out
+	}
+	for _, key := range keys {
+		if value, exists := settings[key]; exists {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func (p *Provider) nowTime() time.Time {
@@ -350,8 +387,9 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 
 // statsPayload extends the v1 scheduler counters with the aggregated
 // statistics/plugin credit totals. limited is a v2 extension that counts
-// accounts at their per-account concurrency cap; it overlaps healthy so the v1
-// counter semantics stay unchanged.
+// accounts paused by a local account-limit guard or sitting at their
+// per-account concurrency cap. Guard-blocked accounts are excluded from
+// healthy; at-cap accounts still overlap healthy as before.
 func (p *Provider) statsPayload() map[string]any {
 	stats := PoolStats{}
 	remain := float64(0)
@@ -360,12 +398,17 @@ func (p *Provider) statsPayload() map[string]any {
 	limited := 0
 	if p.pool != nil {
 		stats = p.pool.Stats()
+		limited = stats.Limited
 		now := p.nowTime()
 		for _, account := range p.pool.Accounts() {
 			account.mu.Lock()
 			disabled := account.removed || account.State.Disabled || account.State.ManualDisabled
 			cooling := !disabled && account.State.CoolUntil > unixSeconds(now)
-			atCap := !disabled && !cooling && account.maxConcurrent > 0 &&
+			guard := ""
+			if !disabled && !cooling {
+				guard = account.guardBlockedLocked("")
+			}
+			atCap := !disabled && !cooling && guard == "" && account.maxConcurrent > 0 &&
 				account.activeConcurrent >= account.maxConcurrent
 			var bucket *CreditTotal
 			if account.Info != nil && account.Info.Credits.Total != nil {

@@ -44,11 +44,11 @@ func TestProviderHookOptionality(t *testing.T) {
 	}
 
 	var codeartsProvider interface{} = &codearts.Provider{}
-	if capabilities := (&codearts.Provider{}).Capabilities(); capabilities.UsageLimits || capabilities.MediaGeneration || capabilities.WindowProbe || capabilities.QuotaScan {
+	if capabilities := (&codearts.Provider{}).Capabilities(); !capabilities.UsageLimits || capabilities.MediaGeneration || capabilities.WindowProbe || capabilities.QuotaScan {
 		t.Fatalf("CodeArts capabilities = %+v", capabilities)
 	}
-	if _, ok := codeartsProvider.(providers.LimitApplier); ok {
-		t.Fatal("CodeArts implements LimitApplier")
+	if _, ok := codeartsProvider.(providers.LimitApplier); !ok {
+		t.Fatal("CodeArts does not implement LimitApplier")
 	}
 	var raccoonProvider interface{} = &raccoon.Provider{}
 	if capabilities := (&raccoon.Provider{}).Capabilities(); capabilities.UsageLimits || capabilities.MediaGeneration || capabilities.WindowProbe || capabilities.QuotaScan {
