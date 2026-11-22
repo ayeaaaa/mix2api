@@ -287,6 +287,13 @@ per-model tokens) during selection with a `guard` view field. `make check`,
 `9d84299`; evidence: `docs/smoke/2026-11-20-release-2.8.12.md`. No media or
 Windows SCM gate changed.
 
+**v2.8.13 addendum:** WorkBuddy CLI identity is aligned with CodeBuddy
+2.185.0 (wire-shape change), and provider scheduling supports independent daily
+check-in times with same-day 30-minute retries after failed check-ins for
+WorkBuddy, CodeArts, and Doubao. `make check`, `make race`, and the 15/15
+dashboard JS harness pass. Published as `v2.8.13` at `5fabb3c`; evidence:
+`docs/smoke/2026-11-22-release-2.8.13.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
