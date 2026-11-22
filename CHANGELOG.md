@@ -3,6 +3,42 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.13] - 2026-11-22
+
+### 中文
+
+#### 变更
+
+- WorkBuddy CLI 身份对齐官方 CodeBuddy `2.185.0`：CLI/SDK/Node 版本、新增
+  `X-Agent-Core` / `X-Feature-Module` 头和 `extra_vars` 字段；账号 UUIDv7 形状
+  不变。
+- 「任务与福利 → 提供商调度」支持每个 Provider 独立设置每日签到时间：
+  WorkBuddy / CodeArts / Raccoon；CodeArts 留空时跟随 WorkBuddy 时间，Raccoon
+  留空时保持每 4 小时窗口随机分钟。
+- WorkBuddy / CodeArts / 豆包当日签到失败后每 30 分钟重试，直到当天结束；
+  已成功的账号不会重复签到。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Changed
+
+- WorkBuddy CLI identity now matches official CodeBuddy `2.185.0`: CLI/SDK/
+  Node versions, new `X-Agent-Core` / `X-Feature-Module` headers and
+  `extra_vars` fields; account UUIDv7 shapes are unchanged.
+- Provider scheduling now supports independent daily check-in times for
+  WorkBuddy, CodeArts, and Raccoon; blank CodeArts follows WorkBuddy, and blank
+  Raccoon keeps the random minute in each 4-hour window.
+- WorkBuddy, CodeArts, and Doubao retry a failed same-day check-in every 30
+  minutes until local midnight; already-successful accounts are skipped.
+
+#### Verification
+
+- `make check` and `make race` pass.
+
 ## [2.8.12] - 2026-11-20
 
 ### 中文
