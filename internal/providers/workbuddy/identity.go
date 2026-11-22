@@ -21,15 +21,18 @@ import (
 
 // Verified default versions. These are the values pinned by v1's captures and
 // unpacked official packages; panel overrides change only the emitted strings.
+// The CLI/SDK/Node trio follows the official CodeBuddy CLI 2.185.0 package
+// (openai 7.39.0, bundled Node v22.23.3); desktop and VSCode keep their
+// captured 5.9.4 / 4.12.39997873 values.
 const (
 	defaultDesktopVersionIntl = "5.9.4"
 	defaultDesktopVersionCN   = "5.8.3"
 	defaultDesktopCLI         = "2.165.0"
 	defaultVSCodeProduct      = "4.12.39997873"
 	defaultVSCodeIDE          = "1.119.0"
-	defaultCLI                = "2.168.2"
-	defaultSDK                = "6.25.0"
-	defaultNode               = "v22.21.1"
+	defaultCLI                = "2.185.0"
+	defaultSDK                = "7.39.0"
+	defaultNode               = "v22.23.3"
 
 	cnChatBaseDefault   = "https://copilot.tencent.com"
 	intlChatBaseDefault = "https://www.workbuddy.ai"
@@ -460,8 +463,8 @@ func desktopChatCompatEnabled() bool {
 	return strings.TrimSpace(os.Getenv("WB_DESKTOP_CHAT_COMPAT")) == "1"
 }
 
-// cliStainlessHeaders mirrors the official OpenAI Node SDK 6.25.0 fingerprint
-// headers sent by the CodeBuddy CLI.
+// cliStainlessHeaders mirrors the official OpenAI Node SDK 7.39.0 fingerprint
+// headers sent by the CodeBuddy CLI 2.185.0.
 func cliStainlessHeaders(versions Versions) map[string]string {
 	return map[string]string{
 		"x-stainless-lang":            "js",
@@ -715,6 +718,8 @@ func buildIdentityHeaders(options IdentityOptions) http.Header {
 			"X-Agent-Purpose":           "conversation",
 			"X-Agent-Runtime":           "other",
 			"X-Agent-Type":              "main",
+			"X-Agent-Core":              "agent-cli",
+			"X-Feature-Module":          "cli_local",
 			"X-IDE-Type":                "CLI",
 			"X-IDE-Name":                "CLI",
 			"X-IDE-Version":             version,

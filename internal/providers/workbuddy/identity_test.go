@@ -173,7 +173,7 @@ func TestIdentityDesktopUAVersions(t *testing.T) {
 		t.Fatalf("settings override did not beat env: %q", got)
 	}
 
-	if got, want := cliUA(), "CLI/2.168.2 CodeBuddy/2.168.2"; got != want {
+	if got, want := cliUA(), "CLI/2.185.0 CodeBuddy/2.185.0"; got != want {
 		t.Fatalf("cliUA() = %q, want %q", got, want)
 	}
 	if got, want := cliUAWithVersions(Versions{CLI: "9.8.7"}),
@@ -384,12 +384,14 @@ func TestIdentityCLIHeaders(t *testing.T) {
 		"X-Agent-Purpose":           "conversation",
 		"X-Agent-Runtime":           "other",
 		"X-Agent-Type":              "main",
+		"X-Agent-Core":              "agent-cli",
+		"X-Feature-Module":          "cli_local",
 		"X-IDE-Type":                "CLI",
 		"X-IDE-Name":                "CLI",
-		"X-IDE-Version":             "2.168.2",
+		"X-IDE-Version":             "2.185.0",
 		"X-Product":                 "SaaS",
 		"X-Domain":                  "copilot.tencent.com",
-		"User-Agent":                "CLI/2.168.2 CodeBuddy/2.168.2",
+		"User-Agent":                "CLI/2.185.0 CodeBuddy/2.185.0",
 		"X-Conversation-ID":         conversationIDFor("uid-1", "session-1"),
 		"X-Conversation-Request-ID": "turn-1",
 		"X-Root-Request-ID":         "turn-1",
@@ -418,11 +420,11 @@ func TestIdentityCLIHeaders(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"x-stainless-lang":            "js",
-		"x-stainless-package-version": "6.25.0",
+		"x-stainless-package-version": "7.39.0",
 		"x-stainless-os":              "Linux",
 		"x-stainless-arch":            "x64",
 		"x-stainless-runtime":         "node",
-		"x-stainless-runtime-version": "v22.21.1",
+		"x-stainless-runtime-version": "v22.23.3",
 		"x-stainless-retry-count":     "0",
 		"x-stainless-timeout":         "1200",
 	} {
@@ -808,7 +810,7 @@ func TestIdentityVersionSettingsRoundTrip(t *testing.T) {
 	if resolved.DesktopCN != "9.9.9" || resolved.Node != "v23.0.0" {
 		t.Fatalf("resolved versions = %#v", resolved)
 	}
-	if resolved.DesktopIntl != "5.9.4" || resolved.CLI != "2.168.2" {
+	if resolved.DesktopIntl != "5.9.4" || resolved.CLI != "2.185.0" {
 		t.Fatalf("defaults were not filled: %#v", resolved)
 	}
 	// The stored config must contain only overrides, not a frozen copy of every

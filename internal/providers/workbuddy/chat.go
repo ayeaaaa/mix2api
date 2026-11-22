@@ -578,7 +578,7 @@ func (p *Provider) sendChatOnce(
 	if promptCacheKeyEnabled() {
 		body = injectChatPromptCacheKey(body, auth.UID, req.SessionKey)
 	}
-	body, err := chatBodyForProduct(body, product)
+	body, err := chatBodyForProduct(body, product, cfg.Versions())
 	if err != nil {
 		return nil, err
 	}
@@ -1554,7 +1554,7 @@ func injectChatPromptCacheKey(base map[string]any, uid, sessionKey string) map[s
 	return out
 }
 
-func chatBodyForProduct(base map[string]any, product string) (map[string]any, error) {
+func chatBodyForProduct(base map[string]any, product string, versions Versions) (map[string]any, error) {
 	if base == nil {
 		return nil, newAPIError(KindInvalid, http.StatusBadRequest, "invalid chat body")
 	}
@@ -1567,8 +1567,88 @@ func chatBodyForProduct(base map[string]any, product string) (map[string]any, er
 			delete(body, key)
 		}
 		body["cache_retention"] = cliCacheRetention
+		if err := injectCLIExtraVars(body, versions); err != nil {
+			return nil, err
+		}
 	}
 	return body, nil
+}
+
+// injectCLIExtraVars mirrors the extra_vars object the official CodeBuddy CLI
+// 2.185.0 adds to a product-gateway chat request. The client's explicit values
+// win; missing keys get the CLI's normal main-loop defaults.
+func injectCLIExtraVars(body map[string]any, versions Versions) error {
+	extra := map[string]any{}
+	if existing, ok := body["extra_vars"].(map[string]any); ok {
+		for key, value := range existing {
+			extra[key] = value
+		}
+	}
+	initiator, interactionType := cliTrailingInteraction(body)
+	if _, exists := extra["initiator"]; !exists {
+		extra["initiator"] = initiator
+	}
+	if _, exists := extra["interactionType"]; !exists {
+		extra["interactionType"] = interactionType
+	}
+	if _, exists := extra["harnessMetadata"]; !exists {
+		effective := versions.withDefaults()
+		harness, err := json.Marshal(map[string]any{
+			"schemaVersion":  1,
+			"harnessVersion": effective.CLI,
+			"stepIndex":      0,
+			"agent":          map[string]any{"depth": 0},
+		})
+		if err != nil {
+			return newAPIError(KindInvalid, http.StatusBadRequest, "chat metadata could not be encoded")
+		}
+		extra["harnessMetadata"] = string(harness)
+	}
+	body["extra_vars"] = extra
+	return nil
+}
+
+// cliTrailingInteraction follows the CLI's initiator/interaction classifier for
+// the trailing user message. A normal prompt is user/prompt; scheduled and
+// teammate messages are agent-originated.
+func cliTrailingInteraction(body map[string]any) (string, string) {
+	messages, _ := body["messages"].([]any)
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, _ := messages[index].(map[string]any)
+		if message == nil {
+			continue
+		}
+		if role, _ := message["role"].(string); role != "user" {
+			break
+		}
+		if attached, _ := message["attachedContext"].(bool); attached {
+			continue
+		}
+		if skip, _ := message["skipRun"].(bool); skip {
+			continue
+		}
+		if _, exists := message["scheduledTaskTrigger"]; exists {
+			return "agent", "schedule"
+		}
+		if teammate, exists := message["teammateMessage"]; exists {
+			from := ""
+			if object, ok := teammate.(map[string]any); ok {
+				from, _ = object["from"].(string)
+			}
+			if from == "system" {
+				return "agent", "notification"
+			}
+			return "agent", "teammate"
+		}
+		if compact, _ := message["isCompactInternal"].(bool); compact {
+			return "agent", "prompt"
+		}
+		if meta, _ := message["isMeta"].(bool); meta {
+			return "agent", "prompt"
+		}
+		return "user", "prompt"
+	}
+	return "agent", "prompt"
 }
 
 func marshalCompactJSON(value any) ([]byte, error) {

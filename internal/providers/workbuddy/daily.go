@@ -199,7 +199,7 @@ func (p *Provider) runDailyChatDesktop(ctx context.Context, account *Account, au
 	upstreamModel := intlModelAlias(model, auth.Realm)
 	body["model"] = upstreamModel
 	product := normalizeProduct(auth.Product)
-	body, err := chatBodyForProduct(body, product)
+	body, err := chatBodyForProduct(body, product, p.Config().Versions())
 	if err != nil {
 		return false, err
 	}
