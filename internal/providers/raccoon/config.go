@@ -40,6 +40,7 @@ type Config struct {
 	AutoClaimLogin       bool    `json:"auto_claim_login"`
 	DailyActive          bool    `json:"daily_active"`
 	DailyActiveModel     string  `json:"daily_active_model"`
+	DailyActiveTime      string  `json:"daily_active_time"`
 }
 
 func defaultConfig() Config {
@@ -84,7 +85,7 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 		switch key {
 		case "enabled", "timeout_seconds", "stream_timeout_seconds",
 			"models_ttl_seconds", "max_concurrent", "auto_claim_login",
-			"daily_active", "daily_active_model":
+			"daily_active", "daily_active_model", "daily_active_time":
 			raw[key] = value
 		}
 	}
@@ -106,6 +107,7 @@ func configValues(cfg Config) map[string]any {
 		"auto_claim_login":       cfg.AutoClaimLogin,
 		"daily_active":           cfg.DailyActive,
 		"daily_active_model":     cfg.DailyActiveModel,
+		"daily_active_time":      cfg.DailyActiveTime,
 	}
 }
 
@@ -132,7 +134,27 @@ func normalizeConfig(raw map[string]any) Config {
 	cfg.AutoClaimLogin = isTrue(raw["auto_claim_login"])
 	cfg.DailyActive = isTrue(raw["daily_active"])
 	cfg.DailyActiveModel = strings.TrimSpace(pointsText(raw["daily_active_model"]))
+	cfg.DailyActiveTime = normalizeClockTime(raw["daily_active_time"])
 	return cfg
+}
+
+// normalizeClockTime accepts H:MM or HH:MM and stores HH:MM. Anything else
+// (including an empty value) means "no explicit time, keep the window schedule".
+func normalizeClockTime(value any) string {
+	text := strings.TrimSpace(pointsText(value))
+	if text == "" {
+		return ""
+	}
+	parts := strings.Split(strings.ReplaceAll(text, "：", ":"), ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
+	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
 }
 
 func isTrue(value any) bool {

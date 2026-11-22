@@ -92,13 +92,13 @@ func (j *codeartsCheckinJob) Due(now time.Time) bool {
 }
 
 func (j *codeartsCheckinJob) due(now time.Time) bool {
-	latest, ok := latestCheckinHour(j.provider.checkinScheduleHours(), now)
+	latest, ok := latestCheckinSlot(j.provider.checkinScheduleSlots(), now)
 	if !ok {
 		return false
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.lastSlotKey != slotKey(now, latest)
+	return j.lastSlotKey != latest.key(now)
 }
 
 // NextRun returns the next configured hour strictly after now.
@@ -106,18 +106,19 @@ func (j *codeartsCheckinJob) NextRun(now time.Time) time.Time {
 	if j == nil || j.provider == nil {
 		return time.Time{}
 	}
-	hours := j.provider.checkinScheduleHours()
-	for _, hour := range hours {
-		candidate := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	slots := j.provider.checkinScheduleSlots()
+	for _, slot := range slots {
+		candidate := time.Date(now.Year(), now.Month(), now.Day(), slot.Hour, slot.Minute, 0, 0, now.Location())
 		if candidate.After(now) {
 			return candidate
 		}
 	}
-	if len(hours) == 0 {
+	if len(slots) == 0 {
 		return time.Time{}
 	}
 	tomorrow := now.AddDate(0, 0, 1)
-	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), hours[0], 0, 0, 0, now.Location())
+	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
+		slots[0].Hour, slots[0].Minute, 0, 0, now.Location())
 }
 
 // LastRun returns the last attempted slot start, or the zero time.
@@ -131,33 +132,87 @@ func (j *codeartsCheckinJob) LastRun() time.Time {
 }
 
 func (j *codeartsCheckinJob) markSlot(now time.Time) {
-	latest, ok := latestCheckinHour(j.provider.checkinScheduleHours(), now)
+	latest, ok := latestCheckinSlot(j.provider.checkinScheduleSlots(), now)
 	if !ok {
 		return
 	}
 	j.mu.Lock()
 	j.lastRun = now
-	j.lastSlotKey = slotKey(now, latest)
+	j.lastSlotKey = latest.key(now)
 	j.mu.Unlock()
 }
 
-func slotKey(now time.Time, hour int) string {
-	return fmt.Sprintf("%s %02d:00", now.Format("2006-01-02"), hour)
+type checkinSlot struct {
+	Hour   int
+	Minute int
 }
 
-func latestCheckinHour(hours []int, now time.Time) (int, bool) {
-	best := 0
+func (s checkinSlot) String() string {
+	return fmt.Sprintf("%02d:%02d", s.Hour, s.Minute)
+}
+
+func (s checkinSlot) key(now time.Time) string {
+	return now.Format("2006-01-02") + " " + s.String()
+}
+
+func latestCheckinSlot(slots []checkinSlot, now time.Time) (checkinSlot, bool) {
+	current := now.Hour()*60 + now.Minute()
+	best := checkinSlot{}
 	found := false
-	for _, hour := range hours {
-		if hour > now.Hour() {
+	for _, slot := range slots {
+		minute := slot.Hour*60 + slot.Minute
+		if minute > current {
 			continue
 		}
-		if !found || hour > best {
-			best = hour
+		if !found || minute > best.Hour*60+best.Minute {
+			best = slot
 			found = true
 		}
 	}
 	return best, found
+}
+
+// checkinScheduleSlots prefers the provider's explicit checkin_time; an empty
+// value keeps the historical WorkBuddy schedule.checkin hours.
+func (p *Provider) checkinScheduleSlots() []checkinSlot {
+	if p != nil {
+		if cfg := p.Config(); strings.TrimSpace(cfg.CheckinTime) != "" {
+			if slot, ok := parseCheckinSlot(cfg.CheckinTime); ok {
+				return []checkinSlot{slot}
+			}
+		}
+		// No CodeArts-specific time: follow the WorkBuddy effective time,
+		// including its newer explicit checkin_time override.
+		if p.store != nil {
+			if settings, err := p.store.Load(); err == nil {
+				raw, _ := settings["schedule"].(map[string]any)
+				if text, _ := raw["checkin_time"].(string); strings.TrimSpace(text) != "" {
+					if slot, ok := parseCheckinSlot(text); ok {
+						return []checkinSlot{slot}
+					}
+				}
+			}
+		}
+	}
+	hours := p.checkinScheduleHours()
+	out := make([]checkinSlot, 0, len(hours))
+	for _, hour := range hours {
+		out = append(out, checkinSlot{Hour: hour})
+	}
+	return out
+}
+
+func parseCheckinSlot(value string) (checkinSlot, bool) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return checkinSlot{}, false
+	}
+	hour, errHour := strconv.Atoi(parts[0])
+	minute, errMinute := strconv.Atoi(parts[1])
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return checkinSlot{}, false
+	}
+	return checkinSlot{Hour: hour, Minute: minute}, true
 }
 
 // checkinScheduleHours reads schedule.checkin from the shared settings file.

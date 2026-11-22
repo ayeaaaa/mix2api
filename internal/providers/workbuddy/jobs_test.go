@@ -665,3 +665,65 @@ func TestJobsCatalogCooldownCountsSkippedNotSuccess(t *testing.T) {
 		t.Fatalf("catalog cooldown accounting = %+v, want skipped", report)
 	}
 }
+
+func TestJobsCheckinTimeOverride(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-time", true, true, false)
+	if _, err := f.store.Merge(map[string]any{
+		"schedule": map[string]any{"checkin_time": "08:45"},
+	}); err != nil {
+		t.Fatalf("save checkin time: %v", err)
+	}
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+
+	f.setNow(time.Date(2026, 11, 9, 8, 44, 0, 0, time.Local))
+	if job.Due(f.now) {
+		t.Fatal("checkin due before the explicit 08:45 time")
+	}
+	f.setNow(time.Date(2026, 11, 9, 8, 45, 0, 0, time.Local))
+	if !job.Due(f.now) {
+		t.Fatal("checkin not due at the explicit 08:45 time")
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("checkin at 08:45: %v", err)
+	}
+	if job.Due(f.now) {
+		t.Fatal("checkin repeated in the same explicit slot")
+	}
+	slots := f.intl.checkinSlots()
+	if len(slots) != 1 || slots[0].Hour != 8 || slots[0].Minute != 45 {
+		t.Fatalf("checkinSlots() = %#v, want one 08:45 slot", slots)
+	}
+}
+
+func TestRoutesCheckinTimeSetting(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_time": "09:15"},
+	}); err != nil {
+		t.Fatalf("save checkin time: %v", err)
+	}
+	view, err := f.intl.SettingsView(context.Background())
+	if err != nil {
+		t.Fatalf("settings view: %v", err)
+	}
+	schedule, _ := view["schedule"].(map[string]any)
+	if schedule["checkin_time"] != "09:15" || schedule["checkin_effective"] != "09:15" {
+		t.Fatalf("schedule view = %#v", schedule)
+	}
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_time": "25:00"},
+	}); err == nil {
+		t.Fatal("invalid checkin_time was accepted")
+	}
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_time": ""},
+	}); err != nil {
+		t.Fatalf("clear checkin time: %v", err)
+	}
+	view, _ = f.intl.SettingsView(context.Background())
+	schedule, _ = view["schedule"].(map[string]any)
+	if schedule["checkin_time"] != "" || schedule["checkin_effective"] != "09:00/21:00" {
+		t.Fatalf("cleared schedule view = %#v", schedule)
+	}
+}

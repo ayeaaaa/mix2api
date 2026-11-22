@@ -164,3 +164,68 @@ func TestCodeArtsCheckinJobReportsPerAccountFailures(t *testing.T) {
 		t.Fatal("a failed slot must not rerun until the next slot")
 	}
 }
+
+func TestCodeArtsCheckinTimeOverridesSharedSlots(t *testing.T) {
+	fake := newCreditFake()
+	provider, job, _ := newCheckinJobFixture(t, fake)
+	enableCodeArtsAutoCheckin(t, provider, true)
+	if _, err := SaveConfig(provider.store, map[string]any{"checkin_time": "09:15"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if _, err := provider.applySettings(); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 12, hour, minute, 0, 0, time.Local)
+	}
+	if job.Due(at(9, 14)) {
+		t.Fatal("job due before the explicit 09:15 time")
+	}
+	if !job.Due(at(9, 15)) {
+		t.Fatal("job not due at the explicit 09:15 time")
+	}
+	if got := job.NextRun(at(9, 14)); !got.Equal(at(9, 15)) {
+		t.Fatalf("NextRun(09:14) = %v, want 09:15", got)
+	}
+	if got := provider.Config().CheckinTime; got != "09:15" {
+		t.Fatalf("CheckinTime = %q, want 09:15", got)
+	}
+	slots := provider.checkinScheduleSlots()
+	if len(slots) != 1 || slots[0].String() != "09:15" {
+		t.Fatalf("checkinScheduleSlots() = %#v, want one 09:15 slot", slots)
+	}
+
+	// With no CodeArts-specific time, follow the shared WorkBuddy checkin_time.
+	if _, err := SaveConfig(provider.store, map[string]any{"checkin_time": ""}); err != nil {
+		t.Fatalf("clear CodeArts checkin time: %v", err)
+	}
+	if _, err := provider.store.Merge(map[string]any{
+		"schedule": map[string]any{"checkin_time": "10:30"},
+	}); err != nil {
+		t.Fatalf("save shared checkin time: %v", err)
+	}
+	if _, err := provider.applySettings(); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	slots = provider.checkinScheduleSlots()
+	if len(slots) != 1 || slots[0].String() != "10:30" {
+		t.Fatalf("shared checkin_time slots = %#v, want one 10:30 slot", slots)
+	}
+}
+
+func TestNormalizeCheckinTime(t *testing.T) {
+	cases := map[string]string{
+		"9:5":      "09:05",
+		"09:15":    "09:15",
+		"23:59":    "23:59",
+		"24:00":    "",
+		"09:60":    "",
+		"nonsense": "",
+		"":         "",
+	}
+	for input, want := range cases {
+		if got := normalizeClockTime(input); got != want {
+			t.Fatalf("normalizeClockTime(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

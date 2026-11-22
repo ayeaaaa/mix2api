@@ -3258,6 +3258,19 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			}
 			normalized["daily_chat"] = times
 		}
+		if value, exists := schedule["checkin_time"]; exists {
+			text := strings.TrimSpace(wbAdminText(value))
+			if text == "" {
+				normalized["checkin_time"] = ""
+			} else {
+				times := normalizeScheduleTimes(value)
+				if len(times) != 1 {
+					writeWBAdminError(w, wbBadRequest("schedule.checkin_time must be one HH:MM time"))
+					return
+				}
+				normalized["checkin_time"] = times[0]
+			}
+		}
 		if len(normalized) > 0 {
 			patch["schedule"] = normalized
 			recognized = true

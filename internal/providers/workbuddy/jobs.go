@@ -178,14 +178,16 @@ func (j *scheduledJob) schedule(now time.Time) []jobSlot {
 	}
 	switch j.kind {
 	case jobKindCheckin:
-		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
+		return j.provider.checkinSlots()
 	case jobKindDaily:
 		if times := normalizeScheduleTimes(j.provider.scheduleRaw("daily_chat")); len(times) > 0 {
 			return jobSlotsFromTimes(times)
 		}
+		// The intl daily fallback stays on the legacy check-in hours so the
+		// domestic checkin_time cannot move the intl activity schedule.
 		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
 	case jobKindReport:
-		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
+		return j.provider.checkinSlots()
 	case jobKindGrowth:
 		return jobSlotsFromHours(j.provider.scheduleHours("cat", defaultHours(1)))
 	case jobKindCat, jobKindStreak:
@@ -775,11 +777,11 @@ func (p *Provider) SchedulerStatus() map[string]any {
 	if !next.IsZero() {
 		nextText = next.Format("2006-01-02 15:04:05")
 	}
-	checkin := formatScheduleHours(p.scheduleHours("checkin", defaultHours(9, 21)))
+	checkin := formatJobSlots(p.checkinSlots())
 	travel := formatScheduleHours(p.scheduleHours("travel", defaultHours(9, 21)))
 	keepalive := formatScheduleHours(p.scheduleHours("keepalive", defaultHours(22)))
 	cat := formatScheduleHours(p.scheduleHours("cat", defaultHours(1)))
-	modeCN := fmt.Sprintf("整点排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · Token保活 %s · 夜猫 %s) + 模型额度窗口探针",
+	modeCN := fmt.Sprintf("定时排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · Token保活 %s · 夜猫 %s) + 模型额度窗口探针",
 		checkin, travel, keepalive, cat)
 	modeIntl := fmt.Sprintf("账号 Token 自动保活与凭证常驻 (每日 %s 集中巡检) + 模型额度窗口探针", keepalive)
 
@@ -1030,12 +1032,41 @@ func (p *Provider) scheduleHours(key string, fallback []int) []int {
 	return append([]int(nil), fallback...)
 }
 
+// checkinSlots resolves the domestic check-in schedule. An explicit
+// schedule.checkin_time (HH:MM) replaces the legacy hour list; an empty or
+// malformed value keeps the historical 09:00/21:00 fallback.
+func (p *Provider) checkinSlots() []jobSlot {
+	if raw, _ := p.scheduleRaw("checkin_time").(string); strings.TrimSpace(raw) != "" {
+		if slots := jobSlotsFromTimes([]string{strings.TrimSpace(raw)}); len(slots) > 0 {
+			return slots
+		}
+	}
+	return jobSlotsFromHours(p.scheduleHours("checkin", defaultHours(9, 21)))
+}
+
+func formatJobSlots(slots []jobSlot) string {
+	if len(slots) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		parts = append(parts, slot.String())
+	}
+	return strings.Join(parts, "/")
+}
+
 func (p *Provider) scheduleView() map[string]any {
+	checkinTime := ""
+	if raw, _ := p.scheduleRaw("checkin_time").(string); strings.TrimSpace(raw) != "" {
+		checkinTime = strings.TrimSpace(raw)
+	}
 	view := map[string]any{
-		"checkin":   p.scheduleHours("checkin", defaultHours(9, 21)),
-		"travel":    p.scheduleHours("travel", defaultHours(9, 21)),
-		"keepalive": p.scheduleHours("keepalive", defaultHours(22)),
-		"cat":       p.scheduleHours("cat", defaultHours(1)),
+		"checkin":           p.scheduleHours("checkin", defaultHours(9, 21)),
+		"checkin_time":      checkinTime,
+		"checkin_effective": formatJobSlots(p.checkinSlots()),
+		"travel":            p.scheduleHours("travel", defaultHours(9, 21)),
+		"keepalive":         p.scheduleHours("keepalive", defaultHours(22)),
+		"cat":               p.scheduleHours("cat", defaultHours(1)),
 	}
 	times := normalizeScheduleTimes(p.scheduleRaw("daily_chat"))
 	if times == nil {
