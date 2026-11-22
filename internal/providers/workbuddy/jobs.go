@@ -79,10 +79,17 @@ type JobRunResult struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
+// checkinRetryInterval is the automatic retry spacing after a failed domestic
+// check-in. Successful accounts are skipped by their daily stamp, so a retry
+// only re-attempts the failed ones.
+const checkinRetryInterval = 30 * time.Minute
+
 type scheduledJobState struct {
 	mu          sync.Mutex
 	lastRun     time.Time
 	lastSlotKey string
+	retryAt     time.Time
+	retryUntil  time.Time
 }
 
 type scheduledJob struct {
@@ -141,7 +148,14 @@ func (j *scheduledJob) Due(now time.Time) bool {
 	}
 	j.state.mu.Lock()
 	defer j.state.mu.Unlock()
-	return j.state.lastSlotKey != latest.key(now)
+	if j.state.lastSlotKey != latest.key(now) {
+		return true
+	}
+	// The slot already ran, but a failed check-in may have a same-day retry
+	// pending. Retries stop at local midnight.
+	return !j.state.retryAt.IsZero() &&
+		!now.Before(j.state.retryAt) &&
+		now.Before(j.state.retryUntil)
 }
 
 func (j *scheduledJob) NextRun(now time.Time) time.Time {
@@ -149,18 +163,28 @@ func (j *scheduledJob) NextRun(now time.Time) time.Time {
 		return time.Time{}
 	}
 	slots := j.schedule(now)
+	var next time.Time
 	for _, slot := range slots {
 		candidate := time.Date(now.Year(), now.Month(), now.Day(), slot.Hour, slot.Minute, 0, 0, now.Location())
 		if candidate.After(now) {
-			return candidate
+			next = candidate
+			break
 		}
 	}
-	if len(slots) == 0 {
-		return time.Time{}
+	if next.IsZero() && len(slots) > 0 {
+		tomorrow := now.Add(24 * time.Hour)
+		first := slots[0]
+		next = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), first.Hour, first.Minute, 0, 0, now.Location())
 	}
-	tomorrow := now.Add(24 * time.Hour)
-	first := slots[0]
-	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), first.Hour, first.Minute, 0, 0, now.Location())
+	if j.kind == jobKindCheckin {
+		j.state.mu.Lock()
+		retryAt, retryUntil := j.state.retryAt, j.state.retryUntil
+		j.state.mu.Unlock()
+		if !retryAt.IsZero() && retryUntil.After(now) && (next.IsZero() || retryAt.Before(next)) {
+			return retryAt
+		}
+	}
+	return next
 }
 
 func (j *scheduledJob) LastRun() time.Time {
@@ -178,14 +202,16 @@ func (j *scheduledJob) schedule(now time.Time) []jobSlot {
 	}
 	switch j.kind {
 	case jobKindCheckin:
-		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
+		return j.provider.checkinSlots()
 	case jobKindDaily:
 		if times := normalizeScheduleTimes(j.provider.scheduleRaw("daily_chat")); len(times) > 0 {
 			return jobSlotsFromTimes(times)
 		}
+		// The intl daily fallback stays on the legacy check-in hours so the
+		// domestic checkin_time cannot move the intl activity schedule.
 		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
 	case jobKindReport:
-		return jobSlotsFromHours(j.provider.scheduleHours("checkin", defaultHours(9, 21)))
+		return j.provider.checkinSlots()
 	case jobKindGrowth:
 		return jobSlotsFromHours(j.provider.scheduleHours("cat", defaultHours(1)))
 	case jobKindCat, jobKindStreak:
@@ -258,6 +284,12 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if j != nil {
 		result = JobRunResult{Name: j.name}
 	}
+	var now time.Time
+	defer func() {
+		if j != nil && result.Ran && j.kind == jobKindCheckin {
+			j.updateCheckinRetry(now, result)
+		}
+	}()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result.Ran = true
@@ -273,7 +305,7 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	now := j.provider.jobsNowTime()
+	now = j.provider.jobsNowTime()
 	if !force && !j.provider.schedulerIsEnabled() {
 		return result, nil
 	}
@@ -317,6 +349,33 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 		return result, errors.New(strings.Join(result.Errors, "; "))
 	}
 	return result, nil
+}
+
+// updateCheckinRetry schedules the next same-day attempt when the check-in
+// batch had failures. A run with no failures (including all accounts already
+// done or skipped) clears the retry state.
+func (j *scheduledJob) updateCheckinRetry(now time.Time, result JobRunResult) {
+	j.state.mu.Lock()
+	defer j.state.mu.Unlock()
+	if result.Failed == 0 {
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return
+	}
+	until := endOfLocalDay(now)
+	next := now.Add(checkinRetryInterval)
+	if !next.Before(until) {
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return
+	}
+	j.state.retryAt = next
+	j.state.retryUntil = until
+}
+
+func endOfLocalDay(now time.Time) time.Time {
+	local := now.Local()
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
 }
 
 func (j *scheduledJob) realmProviders() []*Provider {
@@ -775,11 +834,11 @@ func (p *Provider) SchedulerStatus() map[string]any {
 	if !next.IsZero() {
 		nextText = next.Format("2006-01-02 15:04:05")
 	}
-	checkin := formatScheduleHours(p.scheduleHours("checkin", defaultHours(9, 21)))
+	checkin := formatJobSlots(p.checkinSlots())
 	travel := formatScheduleHours(p.scheduleHours("travel", defaultHours(9, 21)))
 	keepalive := formatScheduleHours(p.scheduleHours("keepalive", defaultHours(22)))
 	cat := formatScheduleHours(p.scheduleHours("cat", defaultHours(1)))
-	modeCN := fmt.Sprintf("整点排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · Token保活 %s · 夜猫 %s) + 模型额度窗口探针",
+	modeCN := fmt.Sprintf("定时排程 (签到 %s · 猫猫旅行 %s · 每日活跃上报 · Token保活 %s · 夜猫 %s) + 模型额度窗口探针",
 		checkin, travel, keepalive, cat)
 	modeIntl := fmt.Sprintf("账号 Token 自动保活与凭证常驻 (每日 %s 集中巡检) + 模型额度窗口探针", keepalive)
 
@@ -1030,12 +1089,41 @@ func (p *Provider) scheduleHours(key string, fallback []int) []int {
 	return append([]int(nil), fallback...)
 }
 
+// checkinSlots resolves the domestic check-in schedule. An explicit
+// schedule.checkin_time (HH:MM) replaces the legacy hour list; an empty or
+// malformed value keeps the historical 09:00/21:00 fallback.
+func (p *Provider) checkinSlots() []jobSlot {
+	if raw, _ := p.scheduleRaw("checkin_time").(string); strings.TrimSpace(raw) != "" {
+		if slots := jobSlotsFromTimes([]string{strings.TrimSpace(raw)}); len(slots) > 0 {
+			return slots
+		}
+	}
+	return jobSlotsFromHours(p.scheduleHours("checkin", defaultHours(9, 21)))
+}
+
+func formatJobSlots(slots []jobSlot) string {
+	if len(slots) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		parts = append(parts, slot.String())
+	}
+	return strings.Join(parts, "/")
+}
+
 func (p *Provider) scheduleView() map[string]any {
+	checkinTime := ""
+	if raw, _ := p.scheduleRaw("checkin_time").(string); strings.TrimSpace(raw) != "" {
+		checkinTime = strings.TrimSpace(raw)
+	}
 	view := map[string]any{
-		"checkin":   p.scheduleHours("checkin", defaultHours(9, 21)),
-		"travel":    p.scheduleHours("travel", defaultHours(9, 21)),
-		"keepalive": p.scheduleHours("keepalive", defaultHours(22)),
-		"cat":       p.scheduleHours("cat", defaultHours(1)),
+		"checkin":           p.scheduleHours("checkin", defaultHours(9, 21)),
+		"checkin_time":      checkinTime,
+		"checkin_effective": formatJobSlots(p.checkinSlots()),
+		"travel":            p.scheduleHours("travel", defaultHours(9, 21)),
+		"keepalive":         p.scheduleHours("keepalive", defaultHours(22)),
+		"cat":               p.scheduleHours("cat", defaultHours(1)),
 	}
 	times := normalizeScheduleTimes(p.scheduleRaw("daily_chat"))
 	if times == nil {

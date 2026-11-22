@@ -51,6 +51,7 @@ type Config struct {
 	BenefitAutoClaim        bool    `json:"benefit_auto_claim"`
 	CreditsAutoClaim        bool    `json:"credits_auto_claim"`
 	CreditsExpiringPriority bool    `json:"credits_expiring_priority"`
+	CheckinTime             string  `json:"checkin_time"`
 }
 
 func defaultConfig() Config {
@@ -101,7 +102,7 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 		switch key {
 		case "enabled", "timeout_seconds", "stream_timeout_seconds",
 			"models_ttl_seconds", "max_concurrent", "benefit_auto_claim",
-			"credits_auto_claim", "credits_expiring_priority":
+			"credits_auto_claim", "credits_expiring_priority", "checkin_time":
 			raw[key] = value
 		}
 	}
@@ -123,6 +124,7 @@ func configValues(cfg Config) map[string]any {
 		"benefit_auto_claim":        cfg.BenefitAutoClaim,
 		"credits_auto_claim":        cfg.CreditsAutoClaim,
 		"credits_expiring_priority": cfg.CreditsExpiringPriority,
+		"checkin_time":              cfg.CheckinTime,
 	}
 }
 
@@ -149,7 +151,27 @@ func normalizeConfig(raw map[string]any) Config {
 	cfg.BenefitAutoClaim = defaultOn(raw["benefit_auto_claim"])
 	cfg.CreditsAutoClaim = defaultOn(raw["credits_auto_claim"])
 	cfg.CreditsExpiringPriority = defaultOn(raw["credits_expiring_priority"])
+	cfg.CheckinTime = normalizeClockTime(raw["checkin_time"])
 	return cfg
+}
+
+// normalizeClockTime accepts H:MM or HH:MM and stores HH:MM. Anything else
+// (including an empty value) means "no explicit time, use the fallback".
+func normalizeClockTime(value any) string {
+	text := strings.TrimSpace(modelText(value))
+	if text == "" {
+		return ""
+	}
+	parts := strings.Split(strings.ReplaceAll(text, "：", ":"), ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	hour, errHour := strconv.Atoi(strings.TrimSpace(parts[0]))
+	minute, errMinute := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
 }
 
 func isTrue(value any) bool {

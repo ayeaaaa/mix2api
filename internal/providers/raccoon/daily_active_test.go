@@ -445,3 +445,46 @@ func TestDailyActiveJobRetriesNextFourHourWindow(t *testing.T) {
 		t.Fatalf("post-grant setting calls = %d, want 2", fixture.fake.points.settingCalls)
 	}
 }
+
+func TestDailyActiveJobFixedTime(t *testing.T) {
+	oldRandom := dailyActiveRandomMinute
+	dailyActiveRandomMinute = func() int { return 30 }
+	t.Cleanup(func() { dailyActiveRandomMinute = oldRandom })
+
+	fixture := newRoutesFixture(t)
+	fixture.importFlat(t, fixture.uid, fixture.token, nil)
+	if _, err := SaveConfig(fixture.store, map[string]any{
+		"enabled": true, "daily_active": true, "daily_active_time": "09:15",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	job := &dailyActiveJob{provider: fixture.p}
+	base := fixture.now
+	day := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())
+
+	fixture.now = day.Add(9 * time.Hour)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if points, _ := fixture.p.pool.Get(fixture.uid).View().DailyActive.(map[string]any); len(points) != 0 {
+		t.Fatalf("daily_active before 09:15 = %#v", points)
+	}
+
+	fixture.now = day.Add(9*time.Hour + 15*time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state := fixture.p.pool.Get(fixture.uid).View().DailyActive
+	stateMap, _ := state.(map[string]any)
+	if stateMap["ok"] != true || testInt(stateMap["points"]) != 300 {
+		t.Fatalf("daily_active at fixed 09:15 = %#v", state)
+	}
+
+	fixture.now = day.Add(9*time.Hour + 16*time.Minute)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.p.pool.dailyActiveState(fixture.p.pool.Get(fixture.uid)); testInt(got["attempts"]) != 0 {
+		t.Fatalf("second tick in the fixed window repeated the attempt: %#v", got)
+	}
+}

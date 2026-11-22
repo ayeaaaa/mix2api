@@ -6174,7 +6174,12 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           定时自动打卡
           <em id="setDailyActivityState" style="font-style:normal;font-size:12px;color:var(--dim)"></em>
         </label>
-        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">CN 签到 / 国际版每日活跃、成长任务与后台巡检；时段在「设置 → 自动化」。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--dim)">国内签到时间</span>
+          <input id="setWorkbuddyCheckinTime" type="time" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
+          <span id="setWorkbuddyCheckinEffective" style="font-size:11px;color:var(--dim)"></span>
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 09:00 / 21:00；国际版每日活跃时段仍在「设置 → 自动化」。</div>
         <button class="sec mini" onclick="saveDailyChatModule(this)">保存 WorkBuddy 调度</button>
       </div>
       <div class="card schedule-provider-card" id="scheduleCardCodearts">
@@ -6183,7 +6188,11 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <input id="setCodeartsAutoCheckin" type="checkbox" style="width:16px;height:16px">
           每天自动签到
         </label>
-        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">跟随 WorkBuddy 的签到时段，只对已启用账号执行。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--dim)">签到时间</span>
+          <input id="setCodeartsCheckinTime" type="time" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 跟随 WorkBuddy；只对已启用账号执行。</div>
         <button class="sec mini" onclick="saveCodeartsSettings(this)">保存 CodeArts 调度</button>
       </div>
       <div class="card schedule-provider-card" id="scheduleCardRaccoon">
@@ -6192,7 +6201,11 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <input id="raccoonDailyActive" type="checkbox" style="width:16px;height:16px">
           每日活跃（Web 触发）
         </label>
-        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">每 4 小时窗口随机分钟尝试；失败等下一个窗口，成功当天不再触发。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--dim)">每日活跃时间</span>
+          <input id="raccoonDailyActiveTime" type="time" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 每 4 小时窗口随机分钟；填了先在该时间尝试，失败后按 4 小时窗口重试，成功当天不再触发。</div>
         <button class="sec mini" onclick="saveRaccoonSettings(this)">保存小浣熊调度</button>
       </div>
       <div class="card schedule-provider-card" id="scheduleCardDoubao">
@@ -10669,6 +10682,8 @@ function renderCodeartsSettings(cfg){
   if(enabled) enabled.checked = enabledOn;
   const auto = document.getElementById("setCodeartsAutoCheckin");
   if(auto) auto.checked = cfg.credits_auto_claim === true;
+  const checkinTime = document.getElementById("setCodeartsCheckinTime");
+  if(checkinTime) checkinTime.value = typeof cfg.checkin_time === "string" ? cfg.checkin_time : "";
   const expiring = document.getElementById("setCodeartsExpiringPriority");
   if(expiring) expiring.checked = cfg.credits_expiring_priority !== false;
   const conc = document.getElementById("setCodeartsMaxConcurrent");
@@ -10696,6 +10711,7 @@ async function saveCodeartsSettings(btn){
   const payload = {
     enabled: !!(document.getElementById("setCodeartsEnabled") || {}).checked,
     credits_auto_claim: !!(document.getElementById("setCodeartsAutoCheckin") || {}).checked,
+    checkin_time: String(val("setCodeartsCheckinTime") || "").trim(),
     credits_expiring_priority: !!(document.getElementById("setCodeartsExpiringPriority") || {}).checked,
     max_concurrent: parseInt(val("setCodeartsMaxConcurrent"), 10) || 1,
     timeout_seconds: parseFloat(val("setCodeartsTimeout")) || 30,
@@ -10737,6 +10753,8 @@ function renderRaccoonSettings(cfg){
   if(enabledInput) enabledInput.checked = enabled;
   const dailyActive = document.getElementById("raccoonDailyActive");
   if(dailyActive) dailyActive.checked = cfg.daily_active === true;
+  const dailyActiveTime = document.getElementById("raccoonDailyActiveTime");
+  if(dailyActiveTime) dailyActiveTime.value = typeof cfg.daily_active_time === "string" ? cfg.daily_active_time : "";
   const timeout = document.getElementById("raccoonTimeout");
   if(timeout) timeout.value = cfg.timeout_seconds || 60;
   const stream = document.getElementById("raccoonStreamTimeout");
@@ -10760,6 +10778,7 @@ async function saveRaccoonSettings(btn){
   const payload = {
     enabled: !!(document.getElementById("raccoonEnabled") || {}).checked,
     daily_active: !!(document.getElementById("raccoonDailyActive") || {}).checked,
+    daily_active_time: String(val("raccoonDailyActiveTime") || "").trim(),
     timeout_seconds: parseFloat(val("raccoonTimeout")) || 60,
     stream_timeout_seconds: parseFloat(val("raccoonStreamTimeout")) || 900,
     max_concurrent: parseInt(val("raccoonMaxConcurrent"), 10) || 1,
@@ -17371,6 +17390,16 @@ async function loadSettings(showToast){
       }
       // ① 时段：显式时段优先；留空时后端每天随机抽两个（间隔 12 小时）。
       const scheduleCfg = (data.schedule && typeof data.schedule === 'object') ? data.schedule : {};
+      const workbuddyCheckinTime = document.getElementById('setWorkbuddyCheckinTime');
+      if(workbuddyCheckinTime){
+        workbuddyCheckinTime.value = (typeof scheduleCfg.checkin_time === 'string')
+          ? scheduleCfg.checkin_time : '';
+      }
+      const workbuddyCheckinEffective = document.getElementById('setWorkbuddyCheckinEffective');
+      if(workbuddyCheckinEffective){
+        workbuddyCheckinEffective.textContent = scheduleCfg.checkin_effective
+          ? ('生效: ' + scheduleCfg.checkin_effective) : '';
+      }
       const dailyChatTimes = Array.isArray(scheduleCfg.daily_chat) ? scheduleCfg.daily_chat : [];
       renderDailyChatTimes(dailyChatTimes);
       const dailyChatEffective = Array.isArray(scheduleCfg.daily_chat_effective)
@@ -18541,6 +18570,7 @@ async function saveDailyChatModule(btn){
   const backoffEl = document.getElementById('setDailyChatWebRetryBackoff');
   const catchupEl = document.getElementById('setDailyChatStartupCatchup');
   const fallbackEl = document.getElementById('setDailyChatActivityFallback');
+  const workbuddyCheckinEl = document.getElementById('setWorkbuddyCheckinTime');
   const payload = {
     daily_chat_web: !!(webEl && webEl.checked),
     daily_chat_models: DAILY_CHAT_MODEL_SELECTED.slice(),
@@ -18550,7 +18580,10 @@ async function saveDailyChatModule(btn){
     daily_chat_web_retry_backoff: Number((backoffEl && backoffEl.value) || 0),
     daily_chat_startup_catchup: !!(catchupEl && catchupEl.checked),
     daily_chat_web_fallback_activity: !!(fallbackEl && fallbackEl.checked),
-    schedule: {daily_chat: DAILY_CHAT_TIMES_SELECTED.slice()}
+    schedule: {
+      daily_chat: DAILY_CHAT_TIMES_SELECTED.slice(),
+      checkin_time: String((workbuddyCheckinEl && workbuddyCheckinEl.value) || '').trim()
+    }
   };
   // 总开关只在勾选框已按 /settings 回填过时才提交：设置没读到（或页面上没有
   // 这个元素）时不能凭默认状态把它悄悄写成关闭——缺省是开，不提交就保持原值。

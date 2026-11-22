@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,12 +48,20 @@ func (j *dailyActiveJob) Run(ctx context.Context) error {
 	}
 
 	now := j.provider.nowTime()
+	fixed, hasFixed := dailyActiveFixedSlot(now, cfg.DailyActiveTime)
+	if hasFixed && now.Before(fixed) {
+		return nil
+	}
 	window := dailyActiveWindow(now)
 	key := window.Format("2006-01-02T15")
 	j.mu.Lock()
 	if j.windowKey != key {
 		j.windowKey = key
-		j.slotAt = dailyActiveSlotAt(window, dailyActiveRandomMinute())
+		if hasFixed && window.Equal(dailyActiveWindow(fixed)) {
+			j.slotAt = fixed
+		} else {
+			j.slotAt = dailyActiveSlotAt(window, dailyActiveRandomMinute())
+		}
 	}
 	slotAt := j.slotAt
 	already := j.lastKey == key
@@ -75,6 +84,20 @@ func (j *dailyActiveJob) Run(ctx context.Context) error {
 			summary.Checked, summary.Granted, summary.Points)
 	}
 	return nil
+}
+
+// dailyActiveFixedSlot turns the configured HH:MM into today's local slot.
+func dailyActiveFixedSlot(now time.Time, clock string) (time.Time, bool) {
+	clock = strings.TrimSpace(clock)
+	if clock == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.ParseInLocation("15:04", clock, now.Location())
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(),
+		parsed.Hour(), parsed.Minute(), 0, 0, now.Location()), true
 }
 
 // dailyActiveWindow returns the start of the current four-hour local window.
