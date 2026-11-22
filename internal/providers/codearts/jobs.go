@@ -14,7 +14,11 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
 
-const codeartsCheckinJobName = "codearts-checkin"
+const (
+	codeartsCheckinJobName = "codearts-checkin"
+	// checkinRetryInterval is the same-day retry spacing after a failed batch.
+	checkinRetryInterval = 30 * time.Minute
+)
 
 // checkinJobSlots is the WorkBuddy-compatible fallback: the same 09:00/21:00
 // slots used by the domestic WorkBuddy check-in. The live setting is read from
@@ -27,6 +31,8 @@ type codeartsCheckinJob struct {
 	mu          sync.Mutex
 	lastRun     time.Time
 	lastSlotKey string
+	retryAt     time.Time
+	retryUntil  time.Time
 }
 
 var _ scheduler.Job = (*codeartsCheckinJob)(nil)
@@ -60,6 +66,7 @@ func (j *codeartsCheckinJob) Run(ctx context.Context) error {
 	}
 	j.markSlot(now)
 	result, err := j.provider.CheckinAll(ctx)
+	j.updateRetry(now, result, err)
 	if err != nil {
 		return err
 	}
@@ -98,7 +105,12 @@ func (j *codeartsCheckinJob) due(now time.Time) bool {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.lastSlotKey != latest.key(now)
+	if j.lastSlotKey != latest.key(now) {
+		return true
+	}
+	return !j.retryAt.IsZero() &&
+		!now.Before(j.retryAt) &&
+		now.Before(j.retryUntil)
 }
 
 // NextRun returns the next configured hour strictly after now.
@@ -107,18 +119,52 @@ func (j *codeartsCheckinJob) NextRun(now time.Time) time.Time {
 		return time.Time{}
 	}
 	slots := j.provider.checkinScheduleSlots()
+	var next time.Time
 	for _, slot := range slots {
 		candidate := time.Date(now.Year(), now.Month(), now.Day(), slot.Hour, slot.Minute, 0, 0, now.Location())
 		if candidate.After(now) {
-			return candidate
+			next = candidate
+			break
 		}
 	}
-	if len(slots) == 0 {
-		return time.Time{}
+	if next.IsZero() && len(slots) > 0 {
+		tomorrow := now.AddDate(0, 0, 1)
+		next = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
+			slots[0].Hour, slots[0].Minute, 0, 0, now.Location())
 	}
-	tomorrow := now.AddDate(0, 0, 1)
-	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
-		slots[0].Hour, slots[0].Minute, 0, 0, now.Location())
+	j.mu.Lock()
+	retryAt, retryUntil := j.retryAt, j.retryUntil
+	j.mu.Unlock()
+	if !retryAt.IsZero() && retryUntil.After(now) && (next.IsZero() || retryAt.Before(next)) {
+		return retryAt
+	}
+	return next
+}
+
+// updateRetry schedules a same-day retry after a failed batch. A batch with
+// every account already done or successfully checked clears the retry state.
+func (j *codeartsCheckinJob) updateRetry(now time.Time, result CheckinResult, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err == nil && result.OK {
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return
+	}
+	until := endOfLocalDay(now)
+	next := now.Add(checkinRetryInterval)
+	if !next.Before(until) {
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return
+	}
+	j.retryAt = next
+	j.retryUntil = until
+}
+
+func endOfLocalDay(now time.Time) time.Time {
+	local := now.Local()
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
 }
 
 // LastRun returns the last attempted slot start, or the zero time.

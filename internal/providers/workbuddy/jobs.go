@@ -79,10 +79,17 @@ type JobRunResult struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
+// checkinRetryInterval is the automatic retry spacing after a failed domestic
+// check-in. Successful accounts are skipped by their daily stamp, so a retry
+// only re-attempts the failed ones.
+const checkinRetryInterval = 30 * time.Minute
+
 type scheduledJobState struct {
 	mu          sync.Mutex
 	lastRun     time.Time
 	lastSlotKey string
+	retryAt     time.Time
+	retryUntil  time.Time
 }
 
 type scheduledJob struct {
@@ -141,7 +148,14 @@ func (j *scheduledJob) Due(now time.Time) bool {
 	}
 	j.state.mu.Lock()
 	defer j.state.mu.Unlock()
-	return j.state.lastSlotKey != latest.key(now)
+	if j.state.lastSlotKey != latest.key(now) {
+		return true
+	}
+	// The slot already ran, but a failed check-in may have a same-day retry
+	// pending. Retries stop at local midnight.
+	return !j.state.retryAt.IsZero() &&
+		!now.Before(j.state.retryAt) &&
+		now.Before(j.state.retryUntil)
 }
 
 func (j *scheduledJob) NextRun(now time.Time) time.Time {
@@ -149,18 +163,28 @@ func (j *scheduledJob) NextRun(now time.Time) time.Time {
 		return time.Time{}
 	}
 	slots := j.schedule(now)
+	var next time.Time
 	for _, slot := range slots {
 		candidate := time.Date(now.Year(), now.Month(), now.Day(), slot.Hour, slot.Minute, 0, 0, now.Location())
 		if candidate.After(now) {
-			return candidate
+			next = candidate
+			break
 		}
 	}
-	if len(slots) == 0 {
-		return time.Time{}
+	if next.IsZero() && len(slots) > 0 {
+		tomorrow := now.Add(24 * time.Hour)
+		first := slots[0]
+		next = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), first.Hour, first.Minute, 0, 0, now.Location())
 	}
-	tomorrow := now.Add(24 * time.Hour)
-	first := slots[0]
-	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), first.Hour, first.Minute, 0, 0, now.Location())
+	if j.kind == jobKindCheckin {
+		j.state.mu.Lock()
+		retryAt, retryUntil := j.state.retryAt, j.state.retryUntil
+		j.state.mu.Unlock()
+		if !retryAt.IsZero() && retryUntil.After(now) && (next.IsZero() || retryAt.Before(next)) {
+			return retryAt
+		}
+	}
+	return next
 }
 
 func (j *scheduledJob) LastRun() time.Time {
@@ -260,6 +284,12 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if j != nil {
 		result = JobRunResult{Name: j.name}
 	}
+	var now time.Time
+	defer func() {
+		if j != nil && result.Ran && j.kind == jobKindCheckin {
+			j.updateCheckinRetry(now, result)
+		}
+	}()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result.Ran = true
@@ -275,7 +305,7 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	now := j.provider.jobsNowTime()
+	now = j.provider.jobsNowTime()
 	if !force && !j.provider.schedulerIsEnabled() {
 		return result, nil
 	}
@@ -319,6 +349,33 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 		return result, errors.New(strings.Join(result.Errors, "; "))
 	}
 	return result, nil
+}
+
+// updateCheckinRetry schedules the next same-day attempt when the check-in
+// batch had failures. A run with no failures (including all accounts already
+// done or skipped) clears the retry state.
+func (j *scheduledJob) updateCheckinRetry(now time.Time, result JobRunResult) {
+	j.state.mu.Lock()
+	defer j.state.mu.Unlock()
+	if result.Failed == 0 {
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return
+	}
+	until := endOfLocalDay(now)
+	next := now.Add(checkinRetryInterval)
+	if !next.Before(until) {
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return
+	}
+	j.state.retryAt = next
+	j.state.retryUntil = until
+}
+
+func endOfLocalDay(now time.Time) time.Time {
+	local := now.Local()
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
 }
 
 func (j *scheduledJob) realmProviders() []*Provider {

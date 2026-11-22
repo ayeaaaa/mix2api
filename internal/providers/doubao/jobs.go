@@ -9,11 +9,16 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
 
+// checkinRetryInterval is the same-day retry spacing after a failed batch.
+const checkinRetryInterval = 30 * time.Minute
+
 type checkinJob struct {
 	provider *Provider
 
-	mu      sync.Mutex
-	lastKey string
+	mu         sync.Mutex
+	lastKey    string
+	retryAt    time.Time
+	retryUntil time.Time
 }
 
 var _ scheduler.Job = (*checkinJob)(nil)
@@ -31,17 +36,22 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	if err != nil || !cfg.Enabled || !cfg.CheckinEnabled {
 		return err
 	}
-	slot, ok := checkinSlot(j.provider.nowTime(), cfg.CheckinTime)
+	now := j.provider.nowTime()
+	slot, ok := checkinSlot(now, cfg.CheckinTime)
 	if !ok {
 		return nil
 	}
 	key := slot.Format("2006-01-02")
 	j.mu.Lock()
-	already := j.lastKey == key
-	j.mu.Unlock()
-	if already {
+	if j.lastKey == key {
+		j.mu.Unlock()
 		return nil
 	}
+	if !j.retryAt.IsZero() && now.Before(j.retryAt) {
+		j.mu.Unlock()
+		return nil
+	}
+	j.mu.Unlock()
 
 	results, runErr := j.provider.CheckinAll(ctx)
 	success, alreadyCount, failed := 0, 0, 0
@@ -58,12 +68,32 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	if len(results) > 0 {
 		log.Printf("doubao: daily checkin success=%d already=%d failed=%d", success, alreadyCount, failed)
 	}
-	if runErr == nil {
-		j.mu.Lock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if runErr == nil && failed == 0 {
 		j.lastKey = key
-		j.mu.Unlock()
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return nil
 	}
+	until := endOfZoneDay(now, slot.Location())
+	next := now.Add(checkinRetryInterval)
+	if !next.Before(until) {
+		// No room for another attempt today; mark the day exhausted so a
+		// restart cannot loop on the same slot.
+		j.lastKey = key
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return runErr
+	}
+	j.retryAt = next
+	j.retryUntil = until
 	return runErr
+}
+
+func endOfZoneDay(now time.Time, loc *time.Location) time.Time {
+	local := now.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc)
 }
 
 // checkinSlot returns the configured Asia/Shanghai slot for the current day

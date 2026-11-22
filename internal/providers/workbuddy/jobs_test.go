@@ -727,3 +727,64 @@ func TestRoutesCheckinTimeSetting(t *testing.T) {
 		t.Fatalf("cleared schedule view = %#v", schedule)
 	}
 }
+
+func TestJobsCheckinRetriesAfterFailure(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-retry", true, true, false)
+	if _, err := f.store.Merge(map[string]any{
+		"schedule": map[string]any{"checkin_time": "08:45"},
+	}); err != nil {
+		t.Fatalf("save checkin time: %v", err)
+	}
+	checkinCalls := 0
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case tasksCheckinStatusPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"today_checked_in": false,
+			}}
+		case tasksCheckinPath:
+			checkinCalls++
+			if checkinCalls == 1 {
+				return http.StatusInternalServerError, map[string]any{"code": 500, "msg": "temporary"}
+			}
+			return http.StatusOK, map[string]any{"code": 0, "msg": "ok", "data": map[string]any{}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 9, hour, minute, 0, 0, time.Local)
+	}
+	f.setNow(at(8, 45))
+	first, err := job.run(context.Background(), false)
+	if err == nil || first.Failed != 1 {
+		t.Fatalf("first checkin = %+v, err=%v, want one failure", first, err)
+	}
+	if job.Due(at(9, 14)) {
+		t.Fatal("retry ran before the 30-minute interval")
+	}
+	if !job.Due(at(9, 15)) {
+		t.Fatal("retry not due at 09:15")
+	}
+	if got := job.NextRun(at(9, 0)); !got.Equal(at(9, 15)) {
+		t.Fatalf("NextRun(09:00) = %v, want the 09:15 retry", got)
+	}
+
+	f.setNow(at(9, 15))
+	second, err := job.run(context.Background(), false)
+	if err != nil || second.Failed != 0 || second.Succeeded != 1 {
+		t.Fatalf("retry checkin = %+v, err=%v, want success", second, err)
+	}
+	if checkinCalls != 2 {
+		t.Fatalf("checkin calls = %d, want 2", checkinCalls)
+	}
+	if job.Due(at(9, 16)) {
+		t.Fatal("successful retry left a retry pending")
+	}
+	if !job.Due(at(8, 45).AddDate(0, 0, 1)) {
+		t.Fatal("next day's checkin slot is not due")
+	}
+}

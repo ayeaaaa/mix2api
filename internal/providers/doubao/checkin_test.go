@@ -239,3 +239,75 @@ func TestCampaignCheckinAndCredits(t *testing.T) {
 		t.Fatalf("creditCalls=%d credits=%#v", creditCalls, account.Credits)
 	}
 }
+
+func TestCheckinJobRetriesFailuresSameDay(t *testing.T) {
+	checkinCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case campaignDetailPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"progress":{"total_amount":0},"tasks":[{"task_kind":"daily_signin","daily_checkin":{"checked_in_today":false}}]}}`))
+		case campaignCheckinPath:
+			checkinCalls++
+			if checkinCalls == 1 {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"checked_in":false}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"checked_in":true,"reward_amount":100,"continuous_days":1,"checkin_date":"2026-11-12"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := SaveConfig(store, map[string]any{
+		"enabled": true, "checkin_enabled": true, "checkin_time": "09:15",
+		"base_url": server.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-retry", "retry", true); err != nil {
+		t.Fatal(err)
+	}
+	zone := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 11, 12, 9, 15, 0, 0, zone)
+	provider.SetNow(func() time.Time { return now })
+	job := &checkinJob{provider: provider}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("first checkin: %v", err)
+	}
+	if checkinCalls != 1 || job.retryAt.IsZero() {
+		t.Fatalf("first checkin calls=%d retryAt=%v, want one failure and a retry", checkinCalls, job.retryAt)
+	}
+
+	now = time.Date(2026, 11, 12, 9, 44, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("early retry tick: %v", err)
+	}
+	if checkinCalls != 1 {
+		t.Fatalf("retry ran before the interval: calls=%d", checkinCalls)
+	}
+
+	now = time.Date(2026, 11, 12, 9, 45, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("retry checkin: %v", err)
+	}
+	if checkinCalls != 2 || !job.retryAt.IsZero() {
+		t.Fatalf("retry checkin calls=%d retryAt=%v, want success and cleared retry", checkinCalls, job.retryAt)
+	}
+
+	now = time.Date(2026, 11, 12, 9, 46, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("post-success tick: %v", err)
+	}
+	if checkinCalls != 2 {
+		t.Fatalf("successful day repeated the checkin: calls=%d", checkinCalls)
+	}
+}
