@@ -202,10 +202,14 @@ func (p *Provider) openChat(
 		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy account pool is unavailable")
 	}
 
+	originalRequest := req
 	baseBody, model, err := p.buildChatBody(req)
 	if err != nil {
 		return nil, err
 	}
+	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot())
+	route := providers.ResolveAffinityForBody(req, baseBody, affinityOptions)
+	req.SessionKey = route.Key
 	turnRequestID := newTurnRequestID()
 	vscodeConversationID := newMessageID()
 
@@ -215,6 +219,13 @@ func (p *Provider) openChat(
 		attemptLimit = 2
 	}
 	blocked := blockedAccounts(accounts, req.AllowedAccounts)
+	authorized := []string{}
+	for _, a := range accounts {
+		if !blocked[a.UID()] {
+			authorized = append(authorized, a.UID())
+		}
+	}
+	policy := route.Policy(authorized, p.realm, intlModelAlias(model, p.realm), affinityOptions)
 	exclude := cloneExclude(blocked)
 	refreshed := make(map[string]bool)
 	var lastErr error
@@ -228,7 +239,7 @@ func (p *Provider) openChat(
 			return nil, ctxErr
 		}
 
-		account, pickErr := pool.Pick(model, req.SessionKey, exclude)
+		account, pickErr := pool.Pick(model, req.SessionKey, exclude, policy)
 		if pickErr != nil {
 			// v1 clears the tried set once after a transient/network failure so
 			// a one-account pool gets a real second upstream attempt instead of
@@ -281,8 +292,11 @@ func (p *Provider) openChat(
 			ctx, account, baseBody, model, req, cfg, turnRequestID, vscodeConversationID, refreshed,
 		)
 		if attemptErr == nil {
+			stream.affinity = route.Diagnostics(policy, account.UID())
 			_ = pool.NoteSuccess(account, model)
-			pool.BindSession(req.SessionKey, account.UID())
+			if !route.Rotate {
+				pool.BindSession(req.SessionKey, account.UID())
+			}
 			return stream, nil
 		}
 
@@ -351,7 +365,7 @@ func (p *Provider) openChat(
 		if !peerCfg.Enabled {
 			return nil, primaryErr
 		}
-		return peer.openChat(ctx, req, peerCfg, false)
+		return peer.openChat(ctx, originalRequest, peerCfg, false)
 	}
 	return nil, primaryErr
 }

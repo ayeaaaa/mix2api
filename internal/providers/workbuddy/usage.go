@@ -28,6 +28,7 @@ func (s *chatStream) UsageSnapshot() providers.UsageSnapshot {
 		Free:             usage.Free,
 		CostPolicy:       strings.TrimSpace(usage.CostPolicy),
 		Kind:             "chat",
+		Affinity:         s.affinity,
 	}
 	if snapshot.TotalTokens == 0 {
 		if usage.Tokens > 0 {

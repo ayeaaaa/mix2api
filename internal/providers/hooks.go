@@ -55,6 +55,7 @@ type UsageSnapshot struct {
 	Free             bool
 	CostPolicy       string
 	Kind             string
+	Affinity         AffinityDiagnostics
 }
 
 // UsageSnapshotReporter is implemented by stream wrappers that track the

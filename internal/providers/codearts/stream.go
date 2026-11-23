@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 	"io"
 	"net/http"
 	"strconv"
@@ -30,6 +31,7 @@ type CodeArtsStream struct {
 	account  *Account
 	provider *Provider
 	model    string
+	affinity providers.AffinityDiagnostics
 
 	creditMu        sync.Mutex
 	creditBaseline  *float64

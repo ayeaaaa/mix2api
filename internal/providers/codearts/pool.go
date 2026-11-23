@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
 const (
@@ -74,12 +75,13 @@ type Pool struct {
 	folder    string
 	statePath string
 
-	mu       sync.RWMutex
-	cfg      Config
-	accounts []*Account
-	slots    transport.Slots
-	affinity map[string]string
-	order    []string
+	mu               sync.RWMutex
+	cfg              Config
+	accounts         []*Account
+	slots            transport.Slots
+	affinity         map[string]string
+	order            []string
+	affinityRotation providers.AffinityRotation
 
 	// authOpsMu serializes Add/Remove/SetProxySlot auth-file operations.
 	authOpsMu sync.Mutex
@@ -460,7 +462,7 @@ func (p *Pool) Stats() PoolStats {
 // Expiring-credit priority is the "urgent" rank field only. It breaks ties
 // within the same active-concurrency tier; a busy expiring account never
 // outranks a less busy non-expiring account, matching v1 exactly.
-func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account, error) {
+func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing ...providers.AffinityPolicy) (*Account, error) {
 	if p == nil {
 		return nil, ErrNoAccount
 	}
@@ -468,8 +470,12 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 
 	expiringFirst := p.expiringPriorityEnabled()
 	affinityUID := ""
+	policy := providers.AffinityPolicy{}
+	if len(routing) > 0 {
+		policy = routing[0]
+	}
 	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey != "" {
+	if !policy.Rotate && sessionKey != "" {
 		p.mu.RLock()
 		affinityUID = p.affinity[sessionKey]
 		p.mu.RUnlock()
@@ -531,6 +537,18 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if len(policy.Cohort) > 0 {
+		uids := []string{}
+		byUID := map[string]candidate{}
+		for _, item := range selected {
+			uids = append(uids, item.uid)
+			byUID[item.uid] = item
+		}
+		selected = nil
+		for _, uid := range p.affinityRotation.Candidates(uids, policy) {
+			selected = append(selected, byUID[uid])
+		}
 	}
 	sort.SliceStable(selected, func(i, j int) bool {
 		if selected[i].active != selected[j].active {

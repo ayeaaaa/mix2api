@@ -83,6 +83,14 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 		}
 	}
 
+	var settings map[string]any
+	if p.store != nil {
+		settings, _ = p.store.Load()
+	}
+	options := providers.LoadAffinityOptions(settings)
+	route := providers.ResolveAffinity(req, options)
+	req.SessionKey = route.Key
+
 	body, model, err := buildChatBody(req)
 	if err != nil {
 		return nil, err
@@ -101,6 +109,14 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 		attempts = 2
 	}
 	exclude := blockedRaccoonAccounts(accounts, req.AllowedAccounts)
+	authorized := []string{}
+	for _, a := range accounts {
+		uid, _ := a.currentUID()
+		if !exclude[uid] {
+			authorized = append(authorized, uid)
+		}
+	}
+	policy := route.Policy(authorized, ProviderRealm, model, options)
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -108,7 +124,7 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 			return nil, ctxErr
 		}
 
-		account, pickErr := p.Pick(model, req.SessionKey, exclude)
+		account, pickErr := p.Pick(model, req.SessionKey, exclude, policy)
 		if pickErr != nil {
 			// v1 waits briefly while the only candidates are at their
 			// concurrency limit, so a transient burst does not immediately
@@ -134,7 +150,12 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 			// A refresh may have rotated the JWT subject while the request
 			// was in flight; bind the session to the live UID.
 			boundUID, _ := account.currentUID()
-			p.BindSession(req.SessionKey, boundUID)
+			if s, ok := stream.(*chatStream); ok {
+				s.affinity = route.Diagnostics(policy, boundUID)
+			}
+			if !route.Rotate {
+				p.BindSession(req.SessionKey, boundUID)
+			}
 			return stream, nil
 		}
 		p.Release(account)

@@ -2588,3 +2588,180 @@ func TestWorkBuddyToolSchemaHardensKeywordTypes(t *testing.T) {
 		t.Fatalf("maximum = %#v", props["n"])
 	}
 }
+
+// Clients that do not send a conversation header must still keep one
+// conversation on one account: the upstream prefix cache is account-scoped.
+func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-affinity", realmIntl, map[string]any{"product": productDesktop})
+	writeChatAccount(t, dir, "b-affinity", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	payload := map[string]any{
+		"model": "deepseek-v4.1-flash",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "sys"},
+			map[string]any{"role": "user", "content": "first"},
+		},
+	}
+	for i := 0; i < 2; i++ {
+		stream, err := provider.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", payload))
+		if err != nil {
+			t.Fatalf("OpenChat %d: %v", i, err)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+	}
+
+	calls := fake.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("upstream calls = %d, want 2", len(calls))
+	}
+	firstAuth, secondAuth := calls[0].Header.Get("Authorization"), calls[1].Header.Get("Authorization")
+	if firstAuth == "" || firstAuth != secondAuth {
+		t.Fatalf("conversation rotated accounts: %q vs %q", firstAuth, secondAuth)
+	}
+	firstConv, secondConv := calls[0].Header.Get("X-Conversation-ID"), calls[1].Header.Get("X-Conversation-ID")
+	if firstConv == "" || firstConv != secondConv {
+		t.Fatalf("conversation id not stable: %q vs %q", firstConv, secondConv)
+	}
+}
+
+// The shared affinity_stable_key_enabled switch must actually reach the
+// conversation key: two chats with the same opening line but different first
+// assistant replies should occupy different accounts when it is on.
+func TestChatPrefixSessionAffinityStableKey(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a-stable", realmIntl, map[string]any{"product": productDesktop})
+	writeChatAccount(t, dir, "b-stable", realmIntl, map[string]any{"product": productDesktop})
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{
+		"affinity_stable_key_enabled": true,
+	})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	server := newChatTestServer(t, fake)
+	provider.chatBaseURL = server.URL
+
+	request := func(answer string) providers.ChatRequest {
+		return chatRequest(t, "deepseek-v4.1-flash", map[string]any{
+			"model": "deepseek-v4.1-flash",
+			"messages": []any{
+				map[string]any{"role": "system", "content": "sys"},
+				map[string]any{"role": "user", "content": "same opening"},
+				map[string]any{"role": "assistant", "content": answer},
+				map[string]any{"role": "user", "content": "next"},
+			},
+		})
+	}
+	call := func(answer string) string {
+		stream, err := provider.OpenChat(context.Background(), request(answer))
+		if err != nil {
+			t.Fatalf("OpenChat: %v", err)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+		calls := fake.snapshot()
+		return calls[len(calls)-1].Header.Get("Authorization")
+	}
+
+	firstA := call("answer A")
+	firstB := call("answer B")
+	secondA := call("answer A")
+	if firstA == "" || firstB == "" || firstA == firstB {
+		t.Fatalf("stable keys did not separate conversations: A=%q B=%q", firstA, firstB)
+	}
+	if firstA != secondA {
+		t.Fatalf("conversation A moved accounts: %q vs %q", firstA, secondA)
+	}
+}
+
+func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 8; i++ {
+		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}
+	for len(msgs) < 401 {
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": "history"})
+	}
+	for i := 0; i < 9; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": msgs}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 3 || snapshot.Affinity.MessageCount != 401 {
+			t.Fatalf("missing routing diagnostics: %+v", snapshot.Affinity)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+	}
+	counts := map[string]int{}
+	for _, call := range fake.snapshot() {
+		counts[call.Header.Get("Authorization")]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("long conversation pinned or sprayed: %v", counts)
+	}
+	for _, count := range counts {
+		if count != 3 {
+			t.Fatalf("not page round robin: %v", counts)
+		}
+	}
+}
+
+func TestChatModelCohortBoundsNewConversations(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 10; i++ {
+		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_model_pool_sizes": map[string]any{"intl/deepseek-v4.1-flash": 3}})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	counts := map[string]int{}
+	for i := 0; i < 9; i++ {
+		r := chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": []any{map[string]any{"role": "user", "content": fmt.Sprintf("new conversation %d", i)}}})
+		s, err := p.OpenChat(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainChatFrames(t, s)
+		_ = s.Close()
+		counts[fake.snapshot()[i].Header.Get("Authorization")]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("new conversations escaped model cohort: %v", counts)
+	}
+}
+
+func TestChatExplicitKeyWinsPrefixAndPageSettings(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"a", "b", "c", "d"} {
+		writeChatAccount(t, dir, uid, realmIntl, nil)
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_max_messages": 1, "affinity_page_size": 3, "affinity_stable_key_enabled": true})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	for i := 0; i < 2; i++ {
+		r := chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": []any{map[string]any{"role": "user", "content": fmt.Sprint(i)}, map[string]any{"role": "assistant", "content": "different prefix"}}})
+		r.SessionKey = "client-private-session"
+		s, err := p.OpenChat(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := s.(providers.UsageSnapshotReporter).UsageSnapshot().Affinity
+		if d.Mode != "explicit" || d.PrefixSHA != "" {
+			t.Fatalf("explicit ID hashed as prefix: %+v", d)
+		}
+		drainChatFrames(t, s)
+		_ = s.Close()
+	}
+	calls := fake.snapshot()
+	if calls[0].Header.Get("Authorization") != calls[1].Header.Get("Authorization") {
+		t.Fatal("explicit session rotated")
+	}
+}

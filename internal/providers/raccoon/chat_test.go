@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -71,6 +73,70 @@ type chatFake struct {
 	balance   map[string]any
 	billItems []map[string]any
 	billCalls int
+}
+
+func TestAffinityUsesInjectedSettingsStore(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"u0", "u1"} {
+		writePoolAuth(t, dir, uid, "", time.Now().Add(time.Hour), nil)
+	}
+	store := config.New(filepath.Join(dir, "custom.json"))
+	if _, err := store.Merge(map[string]any{"raccoon": map[string]any{"enabled": true}, "affinity_by_prefix": false}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.pool.SetCreditLookbackEnabled(false)
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p.pool, server.URL)
+	for i := 0; i < 2; i++ {
+		r := chatRequest(chatRaw(t, map[string]any{"model": "raccoon-090dd3", "messages": []map[string]any{{"role": "user", "content": "same"}}}), "")
+		s, err := p.OpenChat(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainChat(t, s)
+		_ = s.Close()
+	}
+	_, _, _, _, auths := fake.snapshot()
+	if auths[0] == auths[1] {
+		t.Fatal("ignored prefix=false in injected settings store")
+	}
+}
+
+func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u0", "u1", "u2", "u3", "u4", "u5")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+	for i := 0; i < 6; i++ {
+		payload := chatRaw(t, map[string]any{"model": "raccoon-090dd3", "messages": []map[string]any{{"role": "user", "content": "first"}, {"role": "assistant", "content": fmt.Sprint(i)}}})
+		s, err := p.OpenChat(context.Background(), chatRequest(payload, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainChat(t, s)
+		_ = s.Close()
+	}
+	counts := map[string]int{}
+	_, _, _, _, auths := fake.snapshot()
+	for _, auth := range auths {
+		counts[auth]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("long affinity not bounded rotation: %v", counts)
+	}
+	for _, n := range counts {
+		if n != 2 {
+			t.Fatalf("not round robin: %v", counts)
+		}
+	}
 }
 
 func (f *chatFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -2325,4 +2391,35 @@ func reflectDeepEqual(left, right any) bool {
 		return false
 	}
 	return reflect.DeepEqual(leftValue, rightValue)
+}
+
+// Clients that send no conversation header must still keep one conversation on
+// one account; upstream prefix caching is account-scoped.
+func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "a-affinity", "b-affinity")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	payload := chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "first"}},
+	})
+	for i := 0; i < 2; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(payload, ""))
+		if err != nil {
+			t.Fatalf("OpenChat %d: %v", i, err)
+		}
+		drainChat(t, stream)
+		_ = stream.Close()
+	}
+
+	chatCalls, _, _, _, auths := fake.snapshot()
+	if chatCalls != 2 || len(auths) != 2 {
+		t.Fatalf("chat calls = %d, auths = %d", chatCalls, len(auths))
+	}
+	if auths[0] == "" || auths[0] != auths[1] {
+		t.Fatalf("conversation rotated accounts: %q vs %q", auths[0], auths[1])
+	}
 }

@@ -166,7 +166,8 @@ global.__toasts = toasts;
   assert.equal(element('setLocalWebTools').checked, true);
   assert.equal(element('setRemainingPriority').checked, true,
     '剩余用量优先调度的复选框没写回');
-  assert.equal(element('setRemainingPriorityState').textContent, '(已启用)');
+  assert.equal(element('setRemainingPriorityState').textContent, '(当前未支持，配置保留)');
+  assert.equal(element('setRemainingPriority').disabled, true, '未接入运行时的控件应禁用，但保留原值');
   assert.equal(element('setLimitsPerRealm').checked, true, '有分版本覆盖时应勾上');
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',

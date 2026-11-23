@@ -90,10 +90,13 @@ type Pool struct {
 	// writeMu serializes mutations and credential-file writes.
 	writeMu sync.Mutex
 
-	pickMu       sync.Mutex
-	weightStates map[string]map[string]int
+	pickMu            sync.Mutex
+	weightStates      map[string]map[string]int
+	cohortWeightOrder map[string]uint64
+	weightSequence    uint64
 
-	affinity *sessionAffinity
+	affinity         *sessionAffinity
+	affinityRotation providers.AffinityRotation
 }
 
 // NewPool returns the provider's cached pool. New calls it eagerly; subsequent
@@ -559,7 +562,7 @@ func (p *Pool) UnbindSession(sessionKey string) {
 // manual weight > 1, expiring credits inside the account window, remaining
 // usage hook, then deterministic equal-weight rotation. All weighted layers
 // use smooth weighted round-robin with per-layer state.
-func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account, error) {
+func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing ...providers.AffinityPolicy) (*Account, error) {
 	if p == nil {
 		return nil, ErrNoAccount
 	}
@@ -580,8 +583,12 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	if len(eligible) == 0 {
 		return nil, ErrNoAccount
 	}
+	policy := providers.AffinityPolicy{}
+	if len(routing) > 0 {
+		policy = routing[0]
+	}
 
-	if sessionKey != "" && p.affinity != nil {
+	if !policy.Rotate && sessionKey != "" && p.affinity != nil {
 		for _, uid := range p.affinity.recent(sessionKey) {
 			if exclude != nil && exclude[uid] {
 				continue
@@ -592,21 +599,39 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 			}
 		}
 	}
+	if len(policy.Cohort) > 0 {
+		uids := []string{}
+		for _, a := range eligible {
+			uids = append(uids, accountUID(a))
+		}
+		preferred := p.affinityRotation.Candidates(uids, policy)
+		if policy.Rotate && len(preferred) == 1 {
+			return byUID[preferred[0]], nil
+		}
+		eligible = nil
+		for _, uid := range preferred {
+			eligible = append(eligible, byUID[uid])
+		}
+	}
 
-	selected := p.pickManual(eligible)
+	scope := ""
+	if len(policy.Cohort) > 0 {
+		scope = policy.Scope
+	}
+	selected := p.pickManual(eligible, scope)
 	if selected == nil {
-		selected = p.pickExpiring(eligible)
+		selected = p.pickExpiring(eligible, scope)
 	}
 	if selected == nil {
 		selected = p.pickRemaining(eligible, model)
 	}
 	if selected == nil {
-		selected = p.pickFallback(eligible)
+		selected = p.pickFallback(eligible, scope)
 	}
 	if selected == nil {
 		return nil, ErrNoAccount
 	}
-	if sessionKey != "" && p.affinity != nil {
+	if !policy.Rotate && sessionKey != "" && p.affinity != nil {
 		p.affinity.bind(sessionKey, accountUID(selected))
 	}
 	return selected, nil
@@ -666,7 +691,7 @@ func (p *Pool) accountUsable(account *Account, model string, exclude map[string]
 	return true
 }
 
-func (p *Pool) pickManual(eligible []*Account) *Account {
+func (p *Pool) pickManual(eligible []*Account, scopes ...string) *Account {
 	entries := make([]weightEntry, 0)
 	for _, account := range eligible {
 		account.mu.RLock()
@@ -681,10 +706,10 @@ func (p *Pool) pickManual(eligible []*Account) *Account {
 	if len(entries) == 0 {
 		return nil
 	}
-	return p.smoothWeightedPick("manual", entries, nil)
+	return p.scopedWeightedPick("manual", entries, scopes)
 }
 
-func (p *Pool) pickExpiring(eligible []*Account) *Account {
+func (p *Pool) pickExpiring(eligible []*Account, scopes ...string) *Account {
 	entries := make([]weightEntry, 0)
 	for _, account := range eligible {
 		account.mu.RLock()
@@ -716,7 +741,7 @@ func (p *Pool) pickExpiring(eligible []*Account) *Account {
 	if len(entries) == 0 {
 		return nil
 	}
-	return p.smoothWeightedPick("expiring", entries, nil)
+	return p.scopedWeightedPick("expiring", entries, scopes)
 }
 
 func (p *Pool) pickRemaining(eligible []*Account, model string) *Account {
@@ -757,13 +782,27 @@ func (p *Pool) pickRemaining(eligible []*Account, model string) *Account {
 	return p.smoothWeightedPick("remaining", entries, keep)
 }
 
-func (p *Pool) pickFallback(eligible []*Account) *Account {
+func (p *Pool) pickFallback(eligible []*Account, scopes ...string) *Account {
 	entries := make([]weightEntry, 0, len(eligible))
 	for _, account := range eligible {
 		uid := accountUID(account)
 		entries = append(entries, weightEntry{account: account, key: uid, weight: 1})
 	}
-	return p.smoothWeightedPick("rotation", entries, nil)
+	return p.scopedWeightedPick("rotation", entries, scopes)
+}
+
+// Model cohorts keep independent shares without creating an unbounded outer
+// scheduler-state map. Ordinary picks keep their original state, and page
+// rotations never enter this layer (the cohort cursor already chose a member).
+func (p *Pool) scopedWeightedPick(layer string, entries []weightEntry, scopes []string) *Account {
+	if len(scopes) == 0 || scopes[0] == "" {
+		return p.smoothWeightedPick(layer, entries, nil)
+	}
+	live := map[string]bool{}
+	for _, a := range p.Accounts() {
+		live[accountUID(a)] = true
+	}
+	return p.smoothWeightedPick("cohort/"+layer+"/"+providers.NormalizeSessionKey(scopes[0]), entries, func(key string) bool { return live[key] })
 }
 
 // smoothWeightedPick implements nginx's smooth weighted round-robin. Every
@@ -777,6 +816,26 @@ func (p *Pool) smoothWeightedPick(stateName string, entries []weightEntry, keep 
 	}
 	p.pickMu.Lock()
 	defer p.pickMu.Unlock()
+	if strings.HasPrefix(stateName, "cohort/") {
+		if p.cohortWeightOrder == nil {
+			p.cohortWeightOrder = map[string]uint64{}
+		}
+		// Three weighted layers for at most 256 configured model cohorts.
+		if _, present := p.cohortWeightOrder[stateName]; !present && len(p.cohortWeightOrder) >= 3*256 {
+			oldest := ""
+			var sequence uint64
+			for name, at := range p.cohortWeightOrder {
+				if oldest == "" || at < sequence {
+					oldest = name
+					sequence = at
+				}
+			}
+			delete(p.cohortWeightOrder, oldest)
+			delete(p.weightStates, oldest)
+		}
+		p.weightSequence++
+		p.cohortWeightOrder[stateName] = p.weightSequence
+	}
 	state := p.weightStates[stateName]
 	if state == nil {
 		state = make(map[string]int)

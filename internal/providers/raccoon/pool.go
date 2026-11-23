@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/accountstate"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -62,13 +63,15 @@ type Pool struct {
 	dir       string
 	folder    string
 	statePath string
+	store     *config.Store
 
-	mu       sync.RWMutex
-	cfg      Config
-	accounts []*Account
-	slots    transport.Slots
-	affinity map[string]string
-	order    []string
+	mu               sync.RWMutex
+	cfg              Config
+	accounts         []*Account
+	slots            transport.Slots
+	affinity         map[string]string
+	order            []string
+	affinityRotation providers.AffinityRotation
 
 	// apiMu guards the provider-owned upstream client and token manager. The
 	// provider wiring injects them after NewPool; catalog (and later chat and
@@ -150,6 +153,7 @@ func NewPool(dir string, cfg Config) (*Pool, error) {
 	p := &Pool{
 		dir:       dir,
 		folder:    filepath.Join(dir, "raccoon"),
+		store:     config.New(filepath.Join(dir, "settings.json")),
 		statePath: filepath.Join(dir, "raccoon", "state.json"),
 		cfg:       cfg,
 		affinity:  make(map[string]string),
@@ -575,15 +579,19 @@ func (p *Pool) Stats() PoolStats {
 // Matching v1, when no ready account claims the model, non-capable accounts
 // remain eligible. This keeps a missing/stale catalog from taking the provider
 // offline; HasModel is still consulted whenever any candidate knows the model.
-func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account, error) {
+func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing ...providers.AffinityPolicy) (*Account, error) {
 	if p == nil {
 		return nil, ErrNoAccount
 	}
 	now := time.Now()
 
 	affinityUID := ""
+	policy := providers.AffinityPolicy{}
+	if len(routing) > 0 {
+		policy = routing[0]
+	}
 	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey != "" {
+	if !policy.Rotate && sessionKey != "" {
 		p.mu.RLock()
 		affinityUID = p.affinity[sessionKey]
 		p.mu.RUnlock()
@@ -639,6 +647,18 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if len(policy.Cohort) > 0 {
+		uids := []string{}
+		byUID := map[string]candidate{}
+		for _, item := range selected {
+			uids = append(uids, item.uid)
+			byUID[item.uid] = item
+		}
+		selected = nil
+		for _, uid := range p.affinityRotation.Candidates(uids, policy) {
+			selected = append(selected, byUID[uid])
+		}
 	}
 	sort.SliceStable(selected, func(i, j int) bool {
 		if selected[i].active != selected[j].active {
