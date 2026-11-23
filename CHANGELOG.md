@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.8.15] - 2026-11-23
+
+### 中文
+
+#### 修复
+
+- CodeArts / Raccoon 的缓存命中 token 现在会从嵌套 usage 字段
+  `prompt_tokens_details.cached_tokens` 以及若干旧别名读取；此前看板的缓存命中
+  率显示为 0%，实际上游返回的是 95%–99%。历史用量记录不会回补，本修复只对
+  新请求生效。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Fixed
+
+- CodeArts / Raccoon cached-token counts are now read from the nested usage
+  field `prompt_tokens_details.cached_tokens` and legacy aliases. The dashboard
+  previously showed 0% cache hits while upstreams reported 95%–99%. Historical
+  usage rows are not backfilled; the fix applies to new requests.
+
+#### Verification
+
+- `make check` and `make race` pass.
+
 ## [2.8.14] - 2026-11-23
 
 ### 中文
