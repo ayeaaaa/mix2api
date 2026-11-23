@@ -3,22 +3,48 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.17] - 2026-11-23
 
-### Changed / 变更
+### 中文
 
-- 长会话调度改为可选策略：默认保持 v2.8.16 的「固定账号数」，
-  可全局或按 WorkBuddy / CodeArts / 小浣熊切换为 V1 分区；未设置的提供商
-  跟随全局。V1 分区保留 UID 取模、共享页游标、区内优先级、全 realm 小池
-  粘滞与合法组外回退；`affinity_page_size` 的含义随解析后的策略变化。
-- Long-conversation scheduling is now selectable. The default remains the
-  v2.8.16 account-count cohort; V1 rank-modulo partitions can be enabled
-  globally or per provider, with unset providers inheriting the global choice.
-  V1 keeps its shared page cursors, in-page priorities, small-realm sticky
-  guard and safe group-external fallback. `affinity_page_size` means an account
-  count under `cohort` and a partition count under `partition`.
-- PR #53 was revised from a default-behavior replacement into this opt-in
-  strategy. It is not included in the already-published v2.8.16 release.
+#### 变更
+
+- 长会话调度改为可选策略：新增全局 `affinity_long_strategy`，默认 `cohort`
+  保持 v2.8.16 的固定账号数轮转，可切换为 `partition` 启用 V1 的 UID 排序
+  取模分区。
+- 新增 `affinity_provider_strategies` 和 `affinity_provider_page_sizes`，可按
+  WorkBuddy / CodeArts / 小浣熊分别覆盖策略和数量；留空或 `-1` 跟随全局，
+  `affinity_page_size` 的含义随解析后的策略变化（账号数或分区数）。
+- `partition` 模式保留 V1 的共享页游标、区内优先级、分区数覆盖整个 realm 时
+  的小池粘滞，以及组外合法回退；`page_size=0` 释放长会话派生键，`1` 保持粘滞。
+- 模型设置面板新增策略选择、按提供商覆盖和账号数/分区数动态说明；嵌入
+  dashboard 摘要同步更新。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Changed
+
+- Long-conversation routing is now selectable through the global
+  `affinity_long_strategy`: the default `cohort` keeps the v2.8.16 fixed-account
+  rotation, while `partition` enables V1 UID-sorted rank-modulo partitions.
+- New `affinity_provider_strategies` and `affinity_provider_page_sizes` overrides
+  apply per WorkBuddy, CodeArts, or Raccoon; empty or `-1` inherits the global
+  setting, and `affinity_page_size` means an account count or a partition count
+  depending on the resolved strategy.
+- Partition mode preserves V1 shared page cursors, in-page priorities, the
+  small-realm sticky guard when partitions cover the whole realm, and safe
+  group-external fallback; `page_size=0` drops the long derived key and `1`
+  stays sticky.
+- Models settings expose the strategy selector, provider overrides, and dynamic
+  account-vs-partition labels; the embedded dashboard digest is synchronized.
+
+#### Verification
+
+- `make check` and `make race` pass.
 
 ## [2.8.16] - 2026-11-23
 
