@@ -216,7 +216,7 @@ func TestProxyProbeFailurePreservesSlot(t *testing.T) {
 	}
 	body = decodeBody(t, rec)
 	slot, _ := body["slot"].(map[string]any)
-	if slot == nil || slot["ip"] != "203.0.113.12" || slot["country"] != "美国" || slot["isp"] != "Old ISP" {
+	if slot == nil || slot["ip"] != "203.0.113.12" || slot["country"] != "美国" || slot["country_code"] != "US" || slot["ip_type"] != "residential" || slot["isp"] != "Old ISP" || slot["asn"] != "AS64502" {
 		t.Fatalf("success without intel did not preserve old intel: %#v", slot)
 	}
 }

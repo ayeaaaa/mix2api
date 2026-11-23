@@ -21,7 +21,8 @@ const byId = id => page.document.getElementById(id);
     '代理服务器只填主机名或 IP，不要带协议、端口或路径':'Enter only a hostname or IP; do not include a scheme, port, or path',
     '代理服务器格式无效':'Invalid proxy server',
     '代理端口必须是 1–65535':'Proxy port must be 1–65535',
-    '认证用户名不能为空':'Auth username cannot be empty'
+    '认证用户名不能为空':'Auth username cannot be empty',
+    '支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。':'Supports HTTP / HTTPS / SOCKS5. Inside Docker, 127.0.0.1 is the container itself; use the host address, a container name, or host.docker.internal. After adding, click Save slots, then bind the exit in the account table.'
   };
   for(const [src,want] of Object.entries(en)) assert.equal(page.WB_I18N.translate(src),want,src);
   const hant = {
@@ -29,7 +30,18 @@ const byId = id => page.document.getElementById(id);
     '+ 添加空槽位':'+ 新增空槽位',
     '代理服务器，如 127.0.0.1':'代理伺服器，如 127.0.0.1',
     '认证 user:pass（可选）':'認證 user:pass（可選）',
-    '代理端口必须是 1–65535':'代理埠必須是 1–65535'
+    '代理端口必须是 1–65535':'代理埠必須是 1–65535',
+    '高级：添加一行后直接填写完整代理 URL':'進階：新增一行後直接填寫完整代理 URL',
+    '端口':'埠',
+    '该代理地址已在槽位中':'此代理位址已在槽位中',
+    '已加入代理槽，记得点「保存槽位」':'已加入代理槽，記得點「儲存槽位」',
+    '添加失败: ':'新增失敗: ',
+    '不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）':'不支援的代理協定（請使用 HTTP / HTTPS / SOCKS5）',
+    '请填写代理服务器':'請填寫代理伺服器',
+    '代理服务器只填主机名或 IP，不要带协议、端口或路径':'代理伺服器只填主機名稱或 IP，不要帶協定、埠或路徑',
+    '代理服务器格式无效':'代理伺服器格式無效',
+    '认证用户名不能为空':'認證使用者名稱不能為空',
+    '支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。':'支援 HTTP / HTTPS / SOCKS5。Docker 部署時 127.0.0.1 指容器自身，請填主機位址、容器名稱或 host.docker.internal；新增後記得點「儲存槽位」，再在帳號表綁定出口。'
   };
   for(const [src,want] of Object.entries(hant)) assert.equal(page.WB_I18N.translateHant(src),want,src);
   assert.equal(page.proxyURLFromParts('socks5','127.0.0.1','10808',''), 'socks5://127.0.0.1:10808');
