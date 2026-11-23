@@ -123,7 +123,7 @@ func translateResponsesObject(payload map[string]any, opts responseTranslateOpti
 		if chatTools := responsesToolsForChat(flat); len(chatTools) > 0 {
 			chat["tools"] = chatTools
 		}
-		if choice, ok := rewriteNamespacedToolChoice(payload["tool_choice"], mapping); ok {
+		if choice, ok := chatToolChoiceFromResponses(payload["tool_choice"], mapping); ok {
 			chat["tool_choice"] = choice
 		}
 	}
@@ -868,17 +868,51 @@ func responsesToolsForChat(tools []any) []any {
 		}
 		toolType := strings.ToLower(stringValue(tool["type"]))
 		if toolType == "custom" {
-			out = append(out, downgradeCustomTool(tool))
+			out = append(out, chatToolFromResponses(downgradeCustomTool(tool)))
 			continue
 		}
 		if toolType == "" || toolType == "function" || tool["function"] != nil {
-			out = append(out, tool)
+			out = append(out, chatToolFromResponses(tool))
 			continue
 		}
 		// Unknown server-side tools have no executor on the Chat upstream.
 		// Dropping them keeps the rest of the request usable.
 	}
 	return out
+}
+
+// chatToolFromResponses converts a Responses-style flat function declaration
+// ({"type":"function","name":...,"parameters":...}) into the nested Chat
+// Completions shape ({"type":"function","function":{"name":...,...}}).
+// Tools that already carry a function object are returned unchanged.
+//
+// Responses tools keep name/description/parameters at the top level; strict
+// Chat upstreams such as Raccoon/litellm reject that form with
+// "tools[0].function.name is invalid or missing".
+func chatToolFromResponses(tool map[string]any) map[string]any {
+	if tool == nil {
+		return nil
+	}
+	if _, ok := tool["function"].(map[string]any); ok {
+		return tool
+	}
+	name := strings.TrimSpace(stringValue(tool["name"]))
+	if name == "" {
+		return tool
+	}
+	function := map[string]any{"name": name}
+	if description, exists := tool["description"]; exists {
+		function["description"] = description
+	}
+	if parameters, exists := tool["parameters"]; exists {
+		function["parameters"] = parameters
+	} else if schema, exists := tool["input_schema"]; exists {
+		function["parameters"] = schema
+	}
+	if strict, exists := tool["strict"]; exists {
+		function["strict"] = strict
+	}
+	return map[string]any{"type": "function", "function": function}
 }
 
 func downgradeCustomTool(tool map[string]any) map[string]any {
@@ -931,34 +965,30 @@ func unwrapCustomInput(arguments any) string {
 	return text
 }
 
-func rewriteNamespacedToolChoice(value any, mapping map[string]string) (any, bool) {
+// chatToolChoiceFromResponses normalizes a Responses function choice into the
+// nested Chat Completions shape ({"type":"function","function":{"name":...}}).
+// Responses clients may send the flat {"type":"function","name":...} form;
+// strict Chat upstreams validate tool_choice.function.name.
+func chatToolChoiceFromResponses(value any, mapping map[string]string) (any, bool) {
 	choice, ok := value.(map[string]any)
-	if !ok || len(mapping) == 0 {
-		return nil, false
-	}
-	function, ok := choice["function"].(map[string]any)
 	if !ok {
 		return nil, false
 	}
-	name := stringValue(function["name"])
+	function, hasFunction := choice["function"].(map[string]any)
+	if strings.ToLower(stringValue(choice["type"])) != "function" && !hasFunction {
+		return nil, false
+	}
+	name := strings.TrimSpace(stringValue(choice["name"]))
+	if hasFunction {
+		name = strings.TrimSpace(stringValue(function["name"]))
+	}
 	if name == "" {
 		return nil, false
 	}
-	bare, _ := resolveNamespacedName(name, mapping)
-	if bare == name {
-		return nil, false
+	if bare, _ := resolveNamespacedName(name, mapping); bare != "" {
+		name = bare
 	}
-	copied := map[string]any{}
-	for key, item := range choice {
-		copied[key] = item
-	}
-	copiedFunction := map[string]any{}
-	for key, item := range function {
-		copiedFunction[key] = item
-	}
-	copiedFunction["name"] = bare
-	copied["function"] = copiedFunction
-	return copied, true
+	return map[string]any{"type": "function", "function": map[string]any{"name": name}}, true
 }
 
 func resolveNamespacedName(name string, mapping map[string]string) (string, string) {
