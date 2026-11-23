@@ -27,3 +27,18 @@ func TestUsageSnapshotFromStreamIncludingCreditFrame(t *testing.T) {
 		t.Fatalf("credit/policy = %+v", snapshot)
 	}
 }
+
+// Raccoon reports cache hits in prompt_tokens_details.cached_tokens on the
+// upstream usage frame. The snapshot must read that nested alias or every
+// real hit is recorded as zero.
+func TestUsageSnapshotReadsNestedCachedTokens(t *testing.T) {
+	stream := &chatStream{
+		lastUsage: map[string]any{
+			"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,
+			"prompt_tokens_details": map[string]any{"cached_tokens": 80},
+		},
+	}
+	if got := stream.UsageSnapshot().CachedTokens; got != 80 {
+		t.Fatalf("CachedTokens = %d, want 80", got)
+	}
+}

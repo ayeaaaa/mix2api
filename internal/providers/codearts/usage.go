@@ -28,7 +28,7 @@ func (s *CodeArtsStream) UsageSnapshot() providers.UsageSnapshot {
 		PromptTokens:     codeArtsUsageInt(usage, "prompt_tokens"),
 		CompletionTokens: codeArtsUsageInt(usage, "completion_tokens"),
 		TotalTokens:      codeArtsUsageInt(usage, "total_tokens"),
-		CachedTokens:     codeArtsUsageInt(usage, "cached_tokens"),
+		CachedTokens:     providers.BestCachedTokens(usage),
 		ReasoningTokens:  codeArtsUsageInt(usage, "reasoning_tokens"),
 		Kind:             "chat",
 		CostPolicy:       "codearts:unpriced",
