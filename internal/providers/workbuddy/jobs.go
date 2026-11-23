@@ -79,10 +79,13 @@ type JobRunResult struct {
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// checkinRetryInterval is the automatic retry spacing after a failed domestic
-// check-in. Successful accounts are skipped by their daily stamp, so a retry
-// only re-attempts the failed ones.
-const checkinRetryInterval = 30 * time.Minute
+// Default and bounds for the configurable same-day check-in retry spacing.
+// Successful accounts are skipped by their daily stamp, so a retry only
+// re-attempts the failed ones. 0 disables automatic retries.
+const (
+	defaultCheckinRetryMinutes = 30
+	maxCheckinRetryMinutes     = 120
+)
 
 type scheduledJobState struct {
 	mu          sync.Mutex
@@ -362,8 +365,14 @@ func (j *scheduledJob) updateCheckinRetry(now time.Time, result JobRunResult) {
 		j.state.retryUntil = time.Time{}
 		return
 	}
+	interval := j.provider.checkinRetryInterval()
+	if interval <= 0 {
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return
+	}
 	until := endOfLocalDay(now)
-	next := now.Add(checkinRetryInterval)
+	next := now.Add(interval)
 	if !next.Before(until) {
 		j.state.retryAt = time.Time{}
 		j.state.retryUntil = time.Time{}
@@ -1089,6 +1098,30 @@ func (p *Provider) scheduleHours(key string, fallback []int) []int {
 	return append([]int(nil), fallback...)
 }
 
+func (p *Provider) checkinRetryMinutes() int {
+	minutes := defaultCheckinRetryMinutes
+	if raw, _ := p.settingsSnapshot()["schedule"].(map[string]any); raw != nil {
+		if value, ok := wbAdminInt(raw["checkin_retry_minutes"]); ok {
+			minutes = value
+		}
+	}
+	return clampCheckinRetryMinutes(minutes)
+}
+
+func clampCheckinRetryMinutes(minutes int) int {
+	if minutes < 0 {
+		return 0
+	}
+	if minutes > maxCheckinRetryMinutes {
+		return maxCheckinRetryMinutes
+	}
+	return minutes
+}
+
+func (p *Provider) checkinRetryInterval() time.Duration {
+	return time.Duration(p.checkinRetryMinutes()) * time.Minute
+}
+
 // checkinSlots resolves the domestic check-in schedule. An explicit
 // schedule.checkin_time (HH:MM) replaces the legacy hour list; an empty or
 // malformed value keeps the historical 09:00/21:00 fallback.
@@ -1118,12 +1151,13 @@ func (p *Provider) scheduleView() map[string]any {
 		checkinTime = strings.TrimSpace(raw)
 	}
 	view := map[string]any{
-		"checkin":           p.scheduleHours("checkin", defaultHours(9, 21)),
-		"checkin_time":      checkinTime,
-		"checkin_effective": formatJobSlots(p.checkinSlots()),
-		"travel":            p.scheduleHours("travel", defaultHours(9, 21)),
-		"keepalive":         p.scheduleHours("keepalive", defaultHours(22)),
-		"cat":               p.scheduleHours("cat", defaultHours(1)),
+		"checkin":               p.scheduleHours("checkin", defaultHours(9, 21)),
+		"checkin_time":          checkinTime,
+		"checkin_effective":     formatJobSlots(p.checkinSlots()),
+		"checkin_retry_minutes": p.checkinRetryMinutes(),
+		"travel":                p.scheduleHours("travel", defaultHours(9, 21)),
+		"keepalive":             p.scheduleHours("keepalive", defaultHours(22)),
+		"cat":                   p.scheduleHours("cat", defaultHours(1)),
 	}
 	times := normalizeScheduleTimes(p.scheduleRaw("daily_chat"))
 	if times == nil {

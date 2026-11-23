@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 变更
+
+- 「任务与福利 → 提供商调度」的 WorkBuddy / CodeArts / 豆包卡片新增
+  「失败重试（分钟）」：默认 30，范围 0–120，0 表示关闭当日自动重试；
+  仍只重试失败账号，截止当天结束。
+
+### English
+
+#### Changed
+
+- The WorkBuddy, CodeArts, and Doubao scheduling cards now expose a
+  "retry failed check-in every N minutes" setting: default 30, range 0–120,
+  with 0 disabling same-day retries. Only failed accounts are retried, and
+  retries still stop at local midnight.
+
 ## [2.8.13] - 2026-11-22
 
 ### 中文

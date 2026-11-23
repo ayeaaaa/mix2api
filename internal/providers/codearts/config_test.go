@@ -24,6 +24,7 @@ func TestConfigDefaults(t *testing.T) {
 		BenefitAutoClaim:        true,
 		CreditsAutoClaim:        true,
 		CreditsExpiringPriority: true,
+		CheckinRetryMinutes:     30,
 	}
 
 	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
@@ -53,6 +54,7 @@ func TestConfigLoadClampsValues(t *testing.T) {
 		BenefitAutoClaim:        false,
 		CreditsAutoClaim:        false,
 		CreditsExpiringPriority: false,
+		CheckinRetryMinutes:     30,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadConfig() = %#v, want %#v", got, want)
@@ -72,6 +74,7 @@ func TestConfigLoadClampsValues(t *testing.T) {
 		BenefitAutoClaim:        true,
 		CreditsAutoClaim:        true,
 		CreditsExpiringPriority: true,
+		CheckinRetryMinutes:     30,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadConfig() = %#v, want %#v", got, want)
@@ -98,6 +101,7 @@ func TestConfigLoadDefaultsInvalidValues(t *testing.T) {
 		BenefitAutoClaim:        true,
 		CreditsAutoClaim:        true,
 		CreditsExpiringPriority: true,
+		CheckinRetryMinutes:     30,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadConfig() = %#v, want %#v", got, want)
@@ -241,6 +245,7 @@ func TestConfigSaveClampsAndPreservesUnknownKeys(t *testing.T) {
 		BenefitAutoClaim:        false,
 		CreditsAutoClaim:        false,
 		CreditsExpiringPriority: false,
+		CheckinRetryMinutes:     30,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SaveConfig() = %#v, want %#v", got, want)
@@ -327,6 +332,7 @@ func TestConfigSaveInvalidValuesFallBackToDefaults(t *testing.T) {
 		BenefitAutoClaim:        true,
 		CreditsAutoClaim:        true,
 		CreditsExpiringPriority: true,
+		CheckinRetryMinutes:     30,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SaveConfig() = %#v, want %#v", got, want)

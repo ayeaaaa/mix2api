@@ -9,9 +9,6 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
 
-// checkinRetryInterval is the same-day retry spacing after a failed batch.
-const checkinRetryInterval = 30 * time.Minute
-
 type checkinJob struct {
 	provider *Provider
 
@@ -76,8 +73,16 @@ func (j *checkinJob) Run(ctx context.Context) error {
 		j.retryUntil = time.Time{}
 		return nil
 	}
+	if cfg.CheckinRetryMinutes <= 0 {
+		// Retries disabled: mark the day exhausted so the next tick does not
+		// loop on the same failed batch.
+		j.lastKey = key
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return runErr
+	}
 	until := endOfZoneDay(now, slot.Location())
-	next := now.Add(checkinRetryInterval)
+	next := now.Add(time.Duration(cfg.CheckinRetryMinutes) * time.Minute)
 	if !next.Before(until) {
 		// No room for another attempt today; mark the day exhausted so a
 		// restart cannot loop on the same slot.
