@@ -2326,3 +2326,34 @@ func reflectDeepEqual(left, right any) bool {
 	}
 	return reflect.DeepEqual(leftValue, rightValue)
 }
+
+// Clients that send no conversation header must still keep one conversation on
+// one account; upstream prefix caching is account-scoped.
+func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "a-affinity", "b-affinity")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+
+	payload := chatRaw(t, map[string]any{
+		"model":    "raccoon-090dd3",
+		"messages": []map[string]any{{"role": "user", "content": "first"}},
+	})
+	for i := 0; i < 2; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(payload, ""))
+		if err != nil {
+			t.Fatalf("OpenChat %d: %v", i, err)
+		}
+		drainChat(t, stream)
+		_ = stream.Close()
+	}
+
+	chatCalls, _, _, _, auths := fake.snapshot()
+	if chatCalls != 2 || len(auths) != 2 {
+		t.Fatalf("chat calls = %d, auths = %d", chatCalls, len(auths))
+	}
+	if auths[0] == "" || auths[0] != auths[1] {
+		t.Fatalf("conversation rotated accounts: %q vs %q", auths[0], auths[1])
+	}
+}

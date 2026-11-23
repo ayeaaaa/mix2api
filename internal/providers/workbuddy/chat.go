@@ -202,6 +202,10 @@ func (p *Provider) openChat(
 		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy account pool is unavailable")
 	}
 
+	if strings.TrimSpace(req.SessionKey) == "" {
+		req.SessionKey = providers.DerivePrefixSessionKey(providers.ChatRequestMessages(req), p.affinityStableKeyEnabled())
+	}
+
 	baseBody, model, err := p.buildChatBody(req)
 	if err != nil {
 		return nil, err

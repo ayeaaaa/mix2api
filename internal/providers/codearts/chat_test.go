@@ -2245,3 +2245,42 @@ func TestCodeArtsToolSchemaHardensKeywordTypes(t *testing.T) {
 		t.Fatalf("nested minimum = %#v", nested)
 	}
 }
+
+// Clients that send no conversation header must still keep one conversation on
+// one account; upstream prefix caching is account-scoped.
+func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
+	fake, _ := newT5Fake(t, nil)
+	provider, _ := newT5Provider(t, "a-affinity", "b-affinity")
+	payload := map[string]any{
+		"model":    "glm-5.2",
+		"messages": t5Messages(t5UserMessage("first")),
+	}
+	for i := 0; i < 2; i++ {
+		stream, err := provider.OpenChat(context.Background(), t5Request(t, payload, ""))
+		if err != nil {
+			t.Fatalf("OpenChat %d: %v", i, err)
+		}
+		_ = t5CollectFrames(t, stream)
+		_ = stream.Close()
+	}
+	captures := fake.snapshot()
+	if len(captures) != 2 {
+		t.Fatalf("upstream calls = %d, want 2", len(captures))
+	}
+	access := func(header string) string {
+		_, rest, ok := strings.Cut(header, "Access=")
+		if !ok {
+			return ""
+		}
+		value, _, _ := strings.Cut(rest, ",")
+		return value
+	}
+	firstAccount, secondAccount := access(captures[0].Header.Get("Authorization")), access(captures[1].Header.Get("Authorization"))
+	if firstAccount == "" || firstAccount != secondAccount {
+		t.Fatalf("conversation rotated accounts: %q vs %q", firstAccount, secondAccount)
+	}
+	firstChat, secondChat := captures[0].Body["chat_id"], captures[1].Body["chat_id"]
+	if firstChat == nil || firstChat != secondChat {
+		t.Fatalf("chat_id not stable: %#v vs %#v", firstChat, secondChat)
+	}
+}

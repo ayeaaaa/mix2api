@@ -83,6 +83,10 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 		}
 	}
 
+	if strings.TrimSpace(req.SessionKey) == "" {
+		req.SessionKey = providers.DerivePrefixSessionKey(providers.ChatRequestMessages(req), false)
+	}
+
 	body, model, err := buildChatBody(req)
 	if err != nil {
 		return nil, err

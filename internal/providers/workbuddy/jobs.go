@@ -1082,6 +1082,18 @@ func (p *Provider) settingsSnapshot() map[string]any {
 	return settings
 }
 
+// affinityStableKeyEnabled reads the shared v1-compatible switch that adds the
+// first assistant reply to the derived conversation key. The v2 default is
+// off; an explicit true separates conversations that share an opening line.
+func (p *Provider) affinityStableKeyEnabled() bool {
+	if raw, ok := p.settingsSnapshot()["affinity_stable_key_enabled"]; ok {
+		if enabled, ok := wbAdminBool(raw); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
 func (p *Provider) scheduleRaw(key string) any {
 	settings := p.settingsSnapshot()
 	raw, _ := settings["schedule"].(map[string]any)

@@ -110,6 +110,13 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	if buildErr != nil {
 		return nil, buildErr
 	}
+	// Keep the upstream chat_id/prompt_cache_key derivation unchanged for
+	// clients without a session header, but give the account pool a stable
+	// prefix key so one conversation does not rotate accounts each turn.
+	affinityKey := strings.TrimSpace(req.SessionKey)
+	if affinityKey == "" {
+		affinityKey = providers.DerivePrefixSessionKey(providers.ChatRequestMessages(req), false)
+	}
 
 	accounts := p.pool.Accounts()
 	attempts := len(accounts) + 1
@@ -123,7 +130,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		account, pickErr := p.pool.Pick(build.Model, req.SessionKey, exclude)
+		account, pickErr := p.pool.Pick(build.Model, affinityKey, exclude)
 		if pickErr != nil {
 			break
 		}
@@ -146,7 +153,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		if attemptErr == nil {
 			_ = p.pool.NoteSuccess(account)
 			boundUID, _ := account.currentUID()
-			p.pool.BindSession(req.SessionKey, boundUID)
+			p.pool.BindSession(affinityKey, boundUID)
 			return stream, nil
 		}
 
