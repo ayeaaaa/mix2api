@@ -37,4 +37,4 @@
 ### Task 4: Verification and delivery
 - [x] Run `make check`, `make race`, `git diff --check`.
 - [x] Independent whole-branch review and address concrete findings; reviewer reproductions and persistent regression tests now pass.
-- [ ] Commit only owned changes, push/update PR #52; report precise test and deployment status.
+- [x] Commit only owned changes, push/update PR #52; report precise test and deployment status.
