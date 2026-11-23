@@ -7610,7 +7610,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
               <input id="setRemainingPriority" type="checkbox" style="width:16px;height:16px">
               启用优先调度
             </label>
-            <button onclick="saveRemainingPriority(this)">保存</button>
+            <button id="setRemainingPrioritySave" onclick="saveRemainingPriority(this)" disabled>当前未支持</button>
           </div>
         </div>
       </section>
@@ -7807,9 +7807,9 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <div>
             <h2 style="margin:0">更稳的会话粘滞键 <span class="help-mark" role="button" tabindex="0" aria-label="功能说明" onclick="toggleHelpDetail('affinityStableKeyHelp', event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleHelpDetail('affinityStableKeyHelp', event);}">!</span> <em id="setAffinityStableKeyState"></em></h2>
             <div class="help-detail" id="affinityStableKeyHelp" hidden>
-              会话粘滞（同一段对话每轮回到同一个账号）默认只用「system 提示 + 首条提问」算会话键。两个开场白相同的会话会算出同一个键、共享同一个绑定槽，于是每轮互相覆盖、轮流换账号，缓存每轮归零。开启后把「首条 assistant 回复」也算进键里，两个会话从第 2 轮起各走各的账号。默认关闭，关着时与上游逻辑一字不差。
+              WorkBuddy / CodeArts / 小浣熊在客户端没有提供会话 ID 时，默认用「前置 system/developer + 首条 user」派生会话键。开启后再包含首条 assistant，分开相同开场白的对话。默认关闭；显式会话 ID 始终优先。
               <br><br>
-              代价：前缀真的完全相同的会话仍会共用一个账号（那本来就是最优的缓存共享）；开启后前两条消息的哈希变成前三条，正在进行的对话会一次性重新绑定账号（那一轮缓存掉一次）。
+              切换此项会让已有对话重新绑定一次，可能出现一次冷缓存。长会话会按下方账号组轮转；缓存命中仍取决于上游、前缀和缓存存活时间。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -7820,6 +7820,20 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
             <button onclick="saveAffinityStableKey(this)">保存</button>
           </div>
         </div>
+      </section>
+
+      <section data-cat="models">
+        <h2>前缀缓存调度</h2>
+        <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:10px 0">
+          <label><input id="setAffinityPrefix" type="checkbox" style="width:16px;height:16px"> 无会话 ID 时自动亲和</label>
+          <label>长会话阈值 <input id="setAffinityMaxMessages" type="number" min="0" max="100000" step="1" style="width:90px"> 条</label>
+          <label>轮转账号组 <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> 个</label>
+        </div>
+        <p style="font-size:12px;color:var(--dim)">默认超过 400 条消息后只在 3 个账号中轮转。阈值 0 = 不分组；账号组 0 = 全池轮转，1 = 保持粘滞。账号忙、限流或不可用时仍按原有规则安全换号。</p>
+        <label for="setAffinityModelPools" style="display:block;font-size:13px;margin:12px 0 6px">低流量模型优先账号数（JSON，可选）</label>
+        <textarea id="setAffinityModelPools" class="mono" rows="3" style="width:100%;max-width:640px" placeholder='{"intl/deepseek-v4.1-flash-sg":3}'></textarea>
+        <p style="font-size:12px;color:var(--dim)">按 realm/model 配置 1–64 个优先账号，0 或删除条目关闭。只影响无显式会话 ID 的请求，不改变账号开关、权限或限额；默认不收敛账号池。</p>
+        <button onclick="saveAffinityRouting(this)">保存缓存调度</button>
       </section>
 
       <section data-cat="system">
@@ -17606,6 +17620,7 @@ async function loadSettings(showToast){
         accountConcurrentState.style.color = accountConcurrent > 0 ? 'var(--accent2)' : 'var(--dim)';
       }
       const affinityStableKey = data.affinity_stable_key_enabled === true;
+      renderAffinitySettings(data);
       const affinityStableKeyInput = document.getElementById('setAffinityStableKey');
       if(affinityStableKeyInput) affinityStableKeyInput.checked = affinityStableKey;
       const affinityStableKeyState = document.getElementById('setAffinityStableKeyState');
@@ -18765,6 +18780,7 @@ async function saveLocalWebTools(btn){
 }
 
 async function saveRemainingPriority(btn){
+  if(!REMAINING_PRIORITY_SUPPORTED){ toast('当前版本未接入剩余用量优先；原配置已保留', 'bad'); return; }
   const el = document.getElementById('setRemainingPriority');
   const value = !!(el && el.checked);
   if(btn) btn.disabled = true;
@@ -18822,6 +18838,46 @@ async function saveAffinityStableKey(btn){
   } finally {
     if(btn) btn.disabled = false;
   }
+}
+
+let AFFINITY_MODEL_POOL_SIZES = {};
+let REMAINING_PRIORITY_SUPPORTED = false;
+function renderAffinitySettings(data){
+  const set = (id,value) => { const el=document.getElementById(id); if(el) el.value=String(value); };
+  const prefix=document.getElementById('setAffinityPrefix');
+  if(prefix) prefix.checked=data.affinity_by_prefix !== false;
+  set('setAffinityMaxMessages',data.affinity_max_messages ?? 400);
+  set('setAffinityPageSize',data.affinity_page_size ?? 3);
+  AFFINITY_MODEL_POOL_SIZES=data.affinity_model_pool_sizes || {};
+  set('setAffinityModelPools',JSON.stringify(AFFINITY_MODEL_POOL_SIZES,null,2));
+  REMAINING_PRIORITY_SUPPORTED=data.remaining_priority_supported === true;
+  const remaining=document.getElementById('setRemainingPriority');
+  if(remaining){ remaining.disabled=!REMAINING_PRIORITY_SUPPORTED; remaining.title=REMAINING_PRIORITY_SUPPORTED?'':'未接入运行时；原配置已保留'; }
+  const save=document.getElementById('setRemainingPrioritySave');
+  if(save) save.disabled=!REMAINING_PRIORITY_SUPPORTED;
+  const state=document.getElementById('setRemainingPriorityState');
+  if(state && !REMAINING_PRIORITY_SUPPORTED){state.textContent='(当前未支持，配置保留)';state.style.color='var(--dim)';}
+}
+async function saveAffinityRouting(btn){
+  if(btn) btn.disabled=true;
+  try {
+    const val=id=>document.getElementById(id).value.trim();
+    const integer=(id,max)=>{const raw=val(id),n=Number(raw);if(raw==='' || !Number.isInteger(n) || n<0 || n>max) throw new Error('账号数/阈值必须是范围内的整数');return n;};
+    const sizes=JSON.parse(val('setAffinityModelPools') || '{}');
+    if(!sizes || typeof sizes!=='object' || Array.isArray(sizes)) throw new Error('模型账号数必须是 JSON 对象');
+    for(const [key,n] of Object.entries(sizes)) {
+      if(!/^(intl|cn|codearts|raccoon)\/.+$/i.test(key) || !Number.isInteger(n) || n<0 || n>64) throw new Error('使用 realm/model: 0–64 的整数');
+    }
+    // Deep-merge settings need explicit zeros to disable removed entries.
+    for(const key of Object.keys(AFFINITY_MODEL_POOL_SIZES)) if(!Object.hasOwn(sizes,key)) sizes[key]=0;
+    await postJSON('/settings/save',{
+      affinity_by_prefix:!!document.getElementById('setAffinityPrefix').checked,
+      affinity_max_messages:integer('setAffinityMaxMessages',100000),
+      affinity_page_size:integer('setAffinityPageSize',64),affinity_model_pool_sizes:sizes
+    });
+    toast('缓存调度已保存','ok');await loadSettings();
+  } catch(e){toast('保存失败: '+e.message,'bad');}
+  finally {if(btn) btn.disabled=false;}
 }
 
 /* 账号级并发上限：0 = 不限，1..10 = 每账号同时几个。后端只接受整数，

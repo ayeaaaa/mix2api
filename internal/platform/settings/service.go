@@ -240,6 +240,9 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"project":                     s.Project,
 		"version":                     s.Version,
 	}
+	for key, value := range providers.AffinitySettingsView(data) {
+		view[key] = value
+	}
 	return view
 }
 
@@ -425,6 +428,14 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 
 	// Validate and build the platform-owned patch before any non-key write.
 	platformPatch := map[string]any{}
+	affinityPatch, affinityErr := providers.ValidateAffinityPatch(patch)
+	if affinityErr != nil {
+		return nil, affinityErr
+	}
+	for key, value := range affinityPatch {
+		platformPatch[key] = value
+		reply[key] = value
+	}
 	if raw, present := patch["auth_disabled"]; present {
 		disabled, ok := raw.(bool)
 		if !ok {

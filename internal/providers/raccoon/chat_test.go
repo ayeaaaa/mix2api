@@ -73,6 +73,37 @@ type chatFake struct {
 	billCalls int
 }
 
+func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
+	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u0", "u1", "u2", "u3", "u4", "u5")
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p, server.URL)
+	for i := 0; i < 6; i++ {
+		payload := chatRaw(t, map[string]any{"model": "raccoon-090dd3", "messages": []map[string]any{{"role": "user", "content": "first"}, {"role": "assistant", "content": fmt.Sprint(i)}}})
+		s, err := p.OpenChat(context.Background(), chatRequest(payload, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainChat(t, s)
+		_ = s.Close()
+	}
+	counts := map[string]int{}
+	_, _, _, _, auths := fake.snapshot()
+	for _, auth := range auths {
+		counts[auth]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("long affinity not bounded rotation: %v", counts)
+	}
+	for _, n := range counts {
+		if n != 2 {
+			t.Fatalf("not round robin: %v", counts)
+		}
+	}
+}
+
 func (f *chatFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == ChatPath:

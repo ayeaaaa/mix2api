@@ -185,6 +185,7 @@ type ProtocolObservation struct {
 	Message        string
 	Free           bool
 	CostPolicy     string
+	Affinity       providers.AffinityDiagnostics
 }
 
 // healthResponse is the wire shape of GET /health. The original {ok,version}
@@ -1112,25 +1113,30 @@ func (s *Server) observeProtocol(r *http.Request, observation ProtocolObservatio
 			ctx = r.Context()
 		}
 		in := usage.RecordInput{
-			At:             time.Now(),
-			Model:          observation.Model,
-			RequestedModel: observation.RequestedModel,
-			Realm:          observation.Realm,
-			Account:        observation.Account,
-			KeyID:          keyIDFromRequest(r),
-			Kind:           observation.Kind,
-			Outcome:        observation.Outcome,
-			Stream:         observation.Stream,
-			Usage:          observation.Usage,
-			ElapsedMS:      observation.ElapsedMS,
-			TTFTMS:         observation.TTFTMS,
-			GenMS:          observation.GenMS,
-			Effort:         observation.Effort,
-			Error:          observation.Error,
-			Status:         observation.Status,
-			Message:        observation.Message,
-			Free:           observation.Free,
-			CostPolicy:     observation.CostPolicy,
+			At:               time.Now(),
+			Model:            observation.Model,
+			RequestedModel:   observation.RequestedModel,
+			Realm:            observation.Realm,
+			Account:          observation.Account,
+			KeyID:            keyIDFromRequest(r),
+			Kind:             observation.Kind,
+			Outcome:          observation.Outcome,
+			Stream:           observation.Stream,
+			Usage:            observation.Usage,
+			ElapsedMS:        observation.ElapsedMS,
+			TTFTMS:           observation.TTFTMS,
+			GenMS:            observation.GenMS,
+			Effort:           observation.Effort,
+			Error:            observation.Error,
+			Status:           observation.Status,
+			Message:          observation.Message,
+			Free:             observation.Free,
+			CostPolicy:       observation.CostPolicy,
+			AffinityMode:     observation.Affinity.Mode,
+			PrefixSHA:        observation.Affinity.PrefixSHA,
+			NMessages:        observation.Affinity.MessageCount,
+			AffinityPoolSize: observation.Affinity.PoolSize,
+			AffinityFallback: observation.Affinity.Fallback,
 		}
 		if in.Kind == "" {
 			in.Kind = "chat"

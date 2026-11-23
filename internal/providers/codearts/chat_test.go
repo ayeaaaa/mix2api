@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -34,6 +35,33 @@ func TestChat1017ToolChoiceNoneKeepsDeclarations(t *testing.T) {
 	tools, _ := build.Body["tools"].([]any)
 	if len(tools) != 1 || build.Body["tool_choice"] != "none" || build.Body["model"] != "deepseek-v4.1-flash-1017" {
 		t.Fatalf("1017 tool declarations/choice/model lost: %v", build.Body)
+	}
+}
+
+func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
+	fake, _ := newT5Fake(t, nil)
+	p, _ := newT5Provider(t, "u0", "u1", "u2", "u3", "u4", "u5")
+	for i := 0; i < 6; i++ {
+		req := t5Request(t, map[string]any{"model": "GLM-5.2", "messages": t5Messages(t5UserMessage("first"), map[string]any{"role": "assistant", "content": fmt.Sprint(i)})}, "")
+		s, err := p.OpenChat(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t5CollectFrames(t, s)
+		_ = s.Close()
+	}
+	counts := map[string]int{}
+	for _, call := range fake.snapshot() {
+		counts[call.Header.Get("X-Auth-Token")]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("long affinity not bounded rotation: %v", counts)
+	}
+	for _, n := range counts {
+		if n != 2 {
+			t.Fatalf("not round robin: %v", counts)
+		}
 	}
 }
 

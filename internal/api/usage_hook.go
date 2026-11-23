@@ -168,6 +168,7 @@ func applySnapshot(observation *ProtocolObservation, snapshot providers.UsageSna
 	if observation == nil {
 		return
 	}
+	observation.Affinity = snapshot.Affinity
 	if model := strings.TrimSpace(snapshot.Model); model != "" && model != observation.Model {
 		// The protocol already knows which model the client requested; a
 		// provider-reported alias may legitimately differ. Only derive

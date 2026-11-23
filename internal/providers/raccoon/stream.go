@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 	"io"
 	"math"
 	"net/http"
@@ -33,6 +34,7 @@ type chatStream struct {
 	pool      *Pool
 	account   *Account
 	model     string
+	affinity  providers.AffinityDiagnostics
 	secrets   []string
 	startedAt time.Time
 

@@ -13,6 +13,7 @@ const {spawnSync} = require('node:child_process');
 const path = require('node:path');
 
 const SUITES = [
+  '_test_affinity_settings.js',
   '_test_page_nav.js',
   '_test_panel_gate_first_paint.js',
   '_test_accounts_realm_switch.js',

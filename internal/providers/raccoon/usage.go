@@ -35,6 +35,7 @@ func (s *chatStream) UsageSnapshot() providers.UsageSnapshot {
 		Credit:           credit,
 		CreditKnown:      creditKnown,
 		Kind:             "chat",
+		Affinity:         s.affinity,
 		CostPolicy:       "raccoon:unpriced",
 	}
 	if snapshot.TotalTokens == 0 {

@@ -93,7 +93,8 @@ type Pool struct {
 	pickMu       sync.Mutex
 	weightStates map[string]map[string]int
 
-	affinity *sessionAffinity
+	affinity         *sessionAffinity
+	affinityRotation providers.AffinityRotation
 }
 
 // NewPool returns the provider's cached pool. New calls it eagerly; subsequent
@@ -559,7 +560,7 @@ func (p *Pool) UnbindSession(sessionKey string) {
 // manual weight > 1, expiring credits inside the account window, remaining
 // usage hook, then deterministic equal-weight rotation. All weighted layers
 // use smooth weighted round-robin with per-layer state.
-func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account, error) {
+func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing ...providers.AffinityPolicy) (*Account, error) {
 	if p == nil {
 		return nil, ErrNoAccount
 	}
@@ -580,8 +581,12 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	if len(eligible) == 0 {
 		return nil, ErrNoAccount
 	}
+	policy := providers.AffinityPolicy{}
+	if len(routing) > 0 {
+		policy = routing[0]
+	}
 
-	if sessionKey != "" && p.affinity != nil {
+	if !policy.Rotate && sessionKey != "" && p.affinity != nil {
 		for _, uid := range p.affinity.recent(sessionKey) {
 			if exclude != nil && exclude[uid] {
 				continue
@@ -590,6 +595,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 				p.affinity.bind(sessionKey, uid)
 				return account, nil
 			}
+		}
+	}
+	if len(policy.Cohort) > 0 {
+		uids := []string{}
+		for _, a := range eligible {
+			uids = append(uids, accountUID(a))
+		}
+		preferred := p.affinityRotation.Candidates(uids, policy)
+		eligible = nil
+		for _, uid := range preferred {
+			eligible = append(eligible, byUID[uid])
 		}
 	}
 
@@ -606,7 +622,7 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool) (*Account
 	if selected == nil {
 		return nil, ErrNoAccount
 	}
-	if sessionKey != "" && p.affinity != nil {
+	if !policy.Rotate && sessionKey != "" && p.affinity != nil {
 		p.affinity.bind(sessionKey, accountUID(selected))
 	}
 	return selected, nil

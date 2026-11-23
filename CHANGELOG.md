@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 修复 / Fixed
+
+- WorkBuddy / CodeArts / Raccoon 为无会话 ID 的请求派生前缀亲和，覆盖 Chat、
+  Responses 和 Messages。稳定键开关现已接入；多条 system 与 user-only 对话
+  不再误绑定或跨轮改变键。
+- 超过 400 条消息的派生会话默认在实际 3 个账号中轮转；新增可选的 realm/model
+  优先账号数，保留权限、限额和安全换号规则。提供前缀哈希、路由模式和组外回退诊断。
+- 明确显示剩余用量优先未接入运行时，禁用面板控件但保留原配置。
+- Prefix affinity now works across protocols, with bounded long-conversation
+  cohorts, optional per-model preferred pools, and privacy-safe diagnostics.
+  Cache reuse remains subject to upstream behavior; no hit-rate guarantee.
+
 ## [2.8.15] - 2026-11-23
 
 ### 中文

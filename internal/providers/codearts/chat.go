@@ -113,10 +113,10 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	// Keep the upstream chat_id/prompt_cache_key derivation unchanged for
 	// clients without a session header, but give the account pool a stable
 	// prefix key so one conversation does not rotate accounts each turn.
-	affinityKey := strings.TrimSpace(req.SessionKey)
-	if affinityKey == "" {
-		affinityKey = providers.DerivePrefixSessionKey(providers.ChatRequestMessages(req), false)
-	}
+	settings, _ := p.store.Load()
+	options := providers.LoadAffinityOptions(settings)
+	route := providers.ResolveAffinity(req, options)
+	affinityKey := route.Key
 
 	accounts := p.pool.Accounts()
 	attempts := len(accounts) + 1
@@ -124,13 +124,21 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		attempts = 2
 	}
 	exclude := blockedCodeArtsAccounts(accounts, req.AllowedAccounts)
+	authorized := []string{}
+	for _, a := range accounts {
+		uid, _ := a.currentUID()
+		if !exclude[uid] {
+			authorized = append(authorized, uid)
+		}
+	}
+	policy := route.Policy(authorized, ProviderRealm, build.Model, options)
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		account, pickErr := p.pool.Pick(build.Model, affinityKey, exclude)
+		account, pickErr := p.pool.Pick(build.Model, affinityKey, exclude, policy)
 		if pickErr != nil {
 			break
 		}
@@ -153,7 +161,12 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		if attemptErr == nil {
 			_ = p.pool.NoteSuccess(account)
 			boundUID, _ := account.currentUID()
-			p.pool.BindSession(affinityKey, boundUID)
+			if s, ok := stream.(*CodeArtsStream); ok {
+				s.affinity = route.Diagnostics(policy, boundUID)
+			}
+			if !route.Rotate {
+				p.pool.BindSession(affinityKey, boundUID)
+			}
 			return stream, nil
 		}
 

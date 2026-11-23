@@ -46,8 +46,9 @@ func TestDerivePrefixSessionKey(t *testing.T) {
 	if got := DerivePrefixSessionKey(grown, true); got == key {
 		t.Fatal("stable key did not include the first assistant turn")
 	}
-	if got := DerivePrefixSessionKey(grown, true); got != DerivePrefixSessionKey(grown, true) {
-		t.Fatal("stable key is not deterministic")
+	later := append(append([]json.RawMessage(nil), grown...), sessionRaw(t, map[string]any{"role": "user", "content": "next"})...)
+	if got := DerivePrefixSessionKey(grown, true); got != DerivePrefixSessionKey(later, true) {
+		t.Fatal("later turns changed the stable key")
 	}
 
 	// Reordered JSON object keys must not change the conversation key.
@@ -58,6 +59,37 @@ func TestDerivePrefixSessionKey(t *testing.T) {
 
 	if got := DerivePrefixSessionKey(nil, false); got != "" {
 		t.Fatalf("empty messages key = %q, want empty", got)
+	}
+}
+
+func TestPrefixKeyUsesFirstUserNotSecondSystem(t *testing.T) {
+	sys := map[string]any{"role": "system", "content": "sys"}
+	dev := map[string]any{"role": "developer", "content": "rules"}
+	a := sessionRaw(t, sys, dev, map[string]any{"role": "user", "content": "A"})
+	b := sessionRaw(t, sys, dev, map[string]any{"role": "user", "content": "B"})
+	if DerivePrefixSessionKey(a, false) == DerivePrefixSessionKey(b, false) {
+		t.Fatal("different users collided behind two system messages")
+	}
+}
+
+func TestPrefixKeyUserOnlyDoesNotHashLaterTurns(t *testing.T) {
+	head := sessionRaw(t, map[string]any{"role": "user", "content": "first"})
+	grown := append(append([]json.RawMessage(nil), head...), sessionRaw(t, map[string]any{"role": "assistant", "content": "answer"}, map[string]any{"role": "user", "content": "next"})...)
+	if DerivePrefixSessionKey(head, false) != DerivePrefixSessionKey(grown, false) {
+		t.Fatal("user-only conversation moved when the assistant appeared")
+	}
+}
+
+func TestPrefixKeyRejectsUnusableHeads(t *testing.T) {
+	for _, head := range [][]json.RawMessage{
+		sessionRaw(t, map[string]any{"role": "system", "content": "sys"}),
+		{json.RawMessage(`null`)},
+		{json.RawMessage(`{"role":"user","content":"hi"} {}`)},
+		{json.RawMessage(`{"role":"user","content":"hi"`)},
+	} {
+		if key := DerivePrefixSessionKey(head, false); key != "" {
+			t.Fatalf("invalid or system-only head produced %q", key)
+		}
 	}
 }
 

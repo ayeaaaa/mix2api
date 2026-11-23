@@ -31,6 +31,7 @@ func (s *CodeArtsStream) UsageSnapshot() providers.UsageSnapshot {
 		CachedTokens:     providers.BestCachedTokens(usage),
 		ReasoningTokens:  codeArtsUsageInt(usage, "reasoning_tokens"),
 		Kind:             "chat",
+		Affinity:         s.affinity,
 		CostPolicy:       "codearts:unpriced",
 	}
 	if snapshot.TotalTokens == 0 {

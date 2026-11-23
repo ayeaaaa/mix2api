@@ -1,0 +1,26 @@
+'use strict';
+const assert = require('node:assert');
+const {loadDashboard} = require('./_dashboard_sandbox.js');
+const dom = require('./_dom_stub.js');
+const page = loadDashboard();
+const posts=[];
+page.postJSON=async (url,body)=>{posts.push({url,body:JSON.parse(JSON.stringify(body))});return {ok:true};};
+page.loadSettings=async ()=>{};
+page.toast=()=>{};
+(async ()=>{
+  page.renderAffinitySettings({affinity_by_prefix:true,affinity_max_messages:400,affinity_page_size:3,affinity_model_pool_sizes:{'intl/deepseek-v4.1-flash-sg':3},remaining_priority_supported:false,remaining_priority_enabled:true});
+  assert.equal(dom.byId('setAffinityPrefix').checked,true);
+  assert.equal(dom.byId('setAffinityPageSize').value,'3');
+  assert.equal(dom.byId('setRemainingPriority').disabled,true);
+  assert.equal(dom.byId('setRemainingPrioritySave').disabled,true);
+  await page.saveRemainingPriority({disabled:false});
+  assert.equal(posts.length,0,'unsupported control must not POST');
+  dom.byId('setAffinityModelPools').value='{}';
+  await page.saveAffinityRouting({disabled:false});
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].body.affinity_model_pool_sizes['intl/deepseek-v4.1-flash-sg'],0,'clearing uses explicit off, not an empty deep-merge');
+  dom.byId('setAffinityPageSize').value='1.5';
+  await page.saveAffinityRouting({disabled:false});
+  assert.equal(posts.length,1,'invalid fractional page must not POST');
+  console.log('affinity settings tests passed');
+})().catch(e=>{console.error(e);process.exit(1);});

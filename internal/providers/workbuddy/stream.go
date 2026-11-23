@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 	"io"
 	"net/http"
 	"strings"
@@ -57,8 +58,9 @@ type chatStream struct {
 	pump   *sseLinePump
 	idle   time.Duration
 
-	pool    *Pool
-	account *Account
+	pool     *Pool
+	account  *Account
+	affinity providers.AffinityDiagnostics
 
 	usageMu sync.Mutex
 	usage   StreamUsage

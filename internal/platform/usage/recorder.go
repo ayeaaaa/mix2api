@@ -39,8 +39,13 @@ type RecordInput struct {
 	// Free and CostPolicy come from the provider usage snapshot. CostPolicy is
 	// only used when it names a real provider policy; WorkBuddy's generic
 	// "credits" marker keeps the pricing-table policy id v1 wrote.
-	Free       bool
-	CostPolicy string
+	Free             bool
+	CostPolicy       string
+	AffinityMode     string
+	PrefixSHA        string
+	NMessages        int
+	AffinityPoolSize int
+	AffinityFallback bool
 }
 
 // Recorder writes the v1 usage row shape.
@@ -95,6 +100,15 @@ func (r *Recorder) Record(ctx context.Context, in RecordInput) error {
 	}
 	if in.Free {
 		row["free"] = true
+	}
+	if in.AffinityMode != "" {
+		row["affinity_mode"] = in.AffinityMode
+		row["n_msgs"] = in.NMessages
+		row["affinity_pool_size"] = in.AffinityPoolSize
+		row["affinity_fallback"] = in.AffinityFallback
+		if in.PrefixSHA != "" {
+			row["prefix_sha"] = in.PrefixSHA
+		}
 	}
 	if in.RequestedModel != "" && in.RequestedModel != in.Model {
 		row["requested_model"] = in.RequestedModel
