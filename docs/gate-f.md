@@ -308,6 +308,17 @@ not backfilled. `make check`, `make race`, and the 15/15 dashboard JS harness
 pass. Published as `v2.8.15` at `ad977c9`; evidence:
 `docs/smoke/2026-11-23-release-2.8.15.md`. No media or Windows SCM gate changed.
 
+**v2.8.16 addendum:** requests without an explicit session ID now derive prefix
+affinity from leading system/developer messages plus the first user across Chat,
+Responses, and Messages on WorkBuddy, CodeArts, and Raccoon; derived
+conversations above 400 messages rotate within at most 3 accounts, optional
+per-model cohorts are supported, models settings expose the routing controls,
+and usage rows gain privacy-safe affinity diagnostics. Remaining-usage priority
+stays stored but is reported unsupported and disabled. `make check`, `make
+race`, and the 16/16 dashboard JS harness pass. Published as `v2.8.16` at
+`07401b4`; evidence: `docs/smoke/2026-11-23-release-2.8.16.md`. No media or
+Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
