@@ -301,6 +301,13 @@ strict upstreams such as Raccoon. `make check`, `make race`, and the 15/15
 dashboard JS harness pass. Published as `v2.8.14` at `afbb7a5`; evidence:
 `docs/smoke/2026-11-23-release-2.8.14.md`. No media or Windows SCM gate changed.
 
+**v2.8.15 addendum:** CodeArts and Raccoon usage snapshots now read cached
+tokens from nested `prompt_tokens_details.cached_tokens` and legacy aliases, so
+cache-hit percentages are no longer reported as zero. Historical usage rows are
+not backfilled. `make check`, `make race`, and the 15/15 dashboard JS harness
+pass. Published as `v2.8.15` at `ad977c9`; evidence:
+`docs/smoke/2026-11-23-release-2.8.15.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
