@@ -329,6 +329,15 @@ controls. `make check`, `make race`, and the 16/16 dashboard JS harness pass.
 Published as `v2.8.17` at `1c1ee4e`; evidence:
 `docs/smoke/2026-11-23-release-2.8.17.md`. No media or Windows SCM gate changed.
 
+**v2.8.18 addendum:** proxy slots now perform real HTTP / HTTPS(CONNECT) /
+SOCKS5 exit probing and mihomo port discovery, wired into the production
+composition; the panel adds a structured protocol/server/port/credentials form,
+stores privacy-safe geo metadata, sanitizes probe errors, and documents the
+Docker loopback caveat. Failures stay per slot/candidate and never block saving
+or account binding. `make check`, `make race`, and the 17/17 dashboard JS harness
+pass. Published as `v2.8.18` at `de86865`; evidence:
+`docs/smoke/2026-11-23-release-2.8.18.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
