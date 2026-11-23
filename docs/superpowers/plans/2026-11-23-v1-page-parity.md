@@ -53,7 +53,8 @@ upstreams.
 - [x] RED: WorkBuddy default cohort, provider partition override, cohort cursor
   before manual priority; CodeArts/Raccoon default cohort and V1 override.
 - [x] GREEN: resolve options per provider; keep v2.8.16 cohort selection and use
-  V1 ordering only for `Page && Partition`.
+  `AffinityPolicy.UsesV1PriorityOrder()` (`Partition && (Page || Rotate)`) for
+  partition pages and the partition zero-page model-cohort rotation.
 
 ### Task 3: Settings, panel, docs
 - [x] RED: settings defaults/save/validation/merge-clear; panel render/save.

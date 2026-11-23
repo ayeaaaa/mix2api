@@ -168,3 +168,22 @@ func TestAffinityStrategyPerProviderChangesPolicy(t *testing.T) {
 		t.Fatalf("codearts should inherit global cohort: %+v", codearts)
 	}
 }
+
+func TestAffinityPolicyUsesV1PriorityOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    AffinityPolicy
+		want bool
+	}{
+		{"partition page", AffinityPolicy{Partition: true, Page: true, Rotate: true}, true},
+		{"partition zero page with model cohort", AffinityPolicy{Partition: true, Page: false, Rotate: true}, true},
+		{"partition model cohort", AffinityPolicy{Partition: true, Page: false, Rotate: false}, false},
+		{"partition sticky", AffinityPolicy{Partition: true, Page: false, Rotate: false, Sticky: true}, false},
+		{"cohort page", AffinityPolicy{Page: true, Rotate: true}, false},
+		{"cohort zero page", AffinityPolicy{Rotate: true}, false},
+	} {
+		if got := tc.p.UsesV1PriorityOrder(); got != tc.want {
+			t.Fatalf("%s: UsesV1PriorityOrder() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -7837,7 +7837,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
             <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> <span id="setAffinityPageSizeUnit">个</span>
           </label>
         </div>
-        <p id="setAffinityLongHint" style="font-size:12px;color:var(--dim)">超过阈值后在最多 3 个固定账号内轮转；保留现有优先级与轮询。阈值 0 = 不切换；数量 0 = 全池轮转，1 = 保持粘滞。</p>
+        <p id="setAffinityLongHint" style="font-size:12px;color:var(--dim)">默认在最多 3 个固定账号内轮转；阈值 0 = 不切换；数量 0 = 全池轮转，1 = 保持粘滞。</p>
         <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0;max-width:780px">
           <div style="font-size:13px;font-weight:600;margin-bottom:8px">按提供商覆盖（未选择或留空 = 跟随全局）</div>
           <div style="display:grid;gap:8px">
@@ -7848,7 +7848,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px">数量 <input id="setAffinityPageWorkbuddy" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelWorkbuddy">数量（个账号）</span> <input id="setAffinityPageWorkbuddy" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <span style="min-width:90px;font-size:13px">CodeArts</span>
@@ -7857,7 +7857,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px">数量 <input id="setAffinityPageCodearts" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelCodearts">数量（个账号）</span> <input id="setAffinityPageCodearts" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <span style="min-width:90px;font-size:13px">小浣熊</span>
@@ -7866,7 +7866,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px">数量 <input id="setAffinityPageRaccoon" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelRaccoon">数量（个账号）</span> <input id="setAffinityPageRaccoon" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
           </div>
         </div>
@@ -18882,13 +18882,14 @@ async function saveAffinityStableKey(btn){
 }
 
 let AFFINITY_MODEL_POOL_SIZES = {};
+let AFFINITY_PROVIDER_PAGE_SIZES = {};
 let REMAINING_PRIORITY_SUPPORTED = false;
+const AFFINITY_PROVIDER_ROWS=[['workbuddy','Workbuddy'],['codearts','Codearts'],['raccoon','Raccoon']];
 function updateAffinityLongStrategyHelp(){
   const strategyEl=document.getElementById('setAffinityLongStrategy');
   const pageEl=document.getElementById('setAffinityPageSize');
   const strategy=strategyEl?strategyEl.value:'cohort';
   const page=pageEl?pageEl.value.trim():'3';
-  const n=Number(page);
   const label=document.getElementById('setAffinityPageSizeLabel');
   const unit=document.getElementById('setAffinityPageSizeUnit');
   const hint=document.getElementById('setAffinityLongHint');
@@ -18902,6 +18903,32 @@ function updateAffinityLongStrategyHelp(){
     }
   }
 }
+function updateAffinityProviderHelp(){
+  const globalStrategyEl=document.getElementById('setAffinityLongStrategy');
+  const globalStrategy=globalStrategyEl&&globalStrategyEl.value==='partition'?'partition':'cohort';
+  const globalPageEl=document.getElementById('setAffinityPageSize');
+  const globalRaw=globalPageEl?globalPageEl.value.trim():'3';
+  const globalPage=Number(globalRaw);
+  for(const [key,suffix] of AFFINITY_PROVIDER_ROWS){
+    const select=document.getElementById('setAffinityStrategy'+suffix);
+    const selected=select?select.value:'';
+    const strategy=(selected==='cohort'||selected==='partition')?selected:globalStrategy;
+    const unit=strategy==='partition'?'个分区':'个账号';
+    const label=document.getElementById('setAffinityPageLabel'+suffix);
+    if(label) label.textContent='数量（'+unit+'）';
+    const input=document.getElementById('setAffinityPage'+suffix);
+    if(input){
+      const override=AFFINITY_PROVIDER_PAGE_SIZES[key];
+      const hasOverride=Number.isInteger(override)&&override>=0;
+      const resolved=hasOverride?override:(Number.isInteger(globalPage)&&globalPage>=0?globalPage:0);
+      input.placeholder=(hasOverride?'本提供商':'跟随全局')+'：'+resolved+' '+unit;
+    }
+  }
+}
+function updateAffinityHelp(){
+  updateAffinityLongStrategyHelp();
+  updateAffinityProviderHelp();
+}
 function renderAffinitySettings(data){
   const set = (id,value) => { const el=document.getElementById(id); if(el) el.value=String(value); };
   const prefix=document.getElementById('setAffinityPrefix');
@@ -18912,29 +18939,30 @@ function renderAffinitySettings(data){
   if(strategy){
     const saved=data.affinity_long_strategy==='partition'?'partition':'cohort';
     strategy.value=saved;
-    strategy.onchange=updateAffinityLongStrategyHelp;
+    strategy.onchange=updateAffinityHelp;
   }
   const globalPage=document.getElementById('setAffinityPageSize');
-  if(globalPage) globalPage.oninput=updateAffinityLongStrategyHelp;
+  if(globalPage) globalPage.oninput=updateAffinityHelp;
   const strategies=data.affinity_provider_strategies||{};
   const providerPages=data.affinity_provider_page_sizes||{};
+  AFFINITY_PROVIDER_PAGE_SIZES=providerPages;
   const setProvider=(key,suffix)=>{
     const select=document.getElementById('setAffinityStrategy'+suffix);
     if(select){
       const value=typeof strategies[key]==='string'?strategies[key]:'';
       select.value=(value==='cohort'||value==='partition')?value:'';
+      select.onchange=updateAffinityProviderHelp;
     }
     const input=document.getElementById('setAffinityPage'+suffix);
     if(input){
       const n=providerPages[key];
       input.value=Number.isInteger(n)&&n>=0?String(n):'';
-      input.placeholder='跟随全局（'+(data.affinity_page_size ?? 3)+'）';
     }
   };
   setProvider('workbuddy','Workbuddy');
   setProvider('codearts','Codearts');
   setProvider('raccoon','Raccoon');
-  updateAffinityLongStrategyHelp();
+  updateAffinityHelp();
   AFFINITY_MODEL_POOL_SIZES=data.affinity_model_pool_sizes || {};
   set('setAffinityModelPools',JSON.stringify(AFFINITY_MODEL_POOL_SIZES,null,2));
   REMAINING_PRIORITY_SUPPORTED=data.remaining_priority_supported === true;

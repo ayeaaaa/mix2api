@@ -380,3 +380,30 @@ func TestPartitionZeroPageRunsPriorities(t *testing.T) {
 		}
 	}
 }
+
+func TestCohortPageFallbackDoesNotCreateStickyBinding(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"a", "b", "c", "d"} {
+		writeChatAccount(t, dir, uid, realmIntl, nil)
+	}
+	p := setupChatProvider(t, realmIntl, dir, nil).Pool()
+	policy := providers.AffinityPolicy{Cohort: []string{"a", "b"}, Rotate: true, Scope: "intl/m/pfx-test", Page: true}
+	a, err := p.Pick("m", "long", map[string]bool{"a": true, "b": true}, policy)
+	if err != nil || (a.UID() != "c" && a.UID() != "d") {
+		t.Fatalf("no legal cohort fallback: %v %v", a, err)
+	}
+	if len(p.affinity.recent("long")) != 0 {
+		t.Fatal("cohort fallback pinned the conversation")
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		a, err := p.Pick("m", "long", nil, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[a.UID()] = true
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Fatalf("cohort page cursor did not rotate: %v", seen)
+	}
+}

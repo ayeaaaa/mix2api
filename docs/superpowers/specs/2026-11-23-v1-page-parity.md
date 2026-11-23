@@ -27,7 +27,9 @@ constraints remain.
   exclusions do not alter ranks. V1's small-realm guard uses the full realm pool
   before the key allow-list; a smaller allow-list in a larger realm rotates its
   whole allowed subset without pinning. Provider priorities run before the
-  shared page cursor (WorkBuddy manual/expiry shares span models).
+  shared page cursor (WorkBuddy manual/expiry shares span models). The same
+  ordering applies to the partition `page_size=0` boundary when a model cohort
+  is configured; `AffinityPolicy.UsesV1PriorityOrder()` names this predicate.
 - No sticky binding for real pages. If a page is unavailable, use normal legal
   pool fallback. Explicit session IDs always use existing sticky behavior.
 - In partition mode, `page_size=1` pins, `page_size=0` releases derived

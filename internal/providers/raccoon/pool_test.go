@@ -1351,3 +1351,23 @@ func TestPoolStatsAndSetConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolCohortCursorPrecedesLeastBusy(t *testing.T) {
+	dir := t.TempDir()
+	expiry := poolExpiry(time.Now())
+	for _, uid := range []string{"a", "b"} {
+		writePoolAuth(t, dir, uid, "", expiry, nil)
+	}
+	p := mustPool(t, dir, Config{MaxConcurrent: 2})
+	if !p.Acquire(p.Get("a")) {
+		t.Fatal("acquire a")
+	}
+	policy := providers.AffinityPolicy{Cohort: []string{"a", "b"}, Rotate: true, Scope: "cohort/test", Page: true}
+	got, err := p.Pick("", "", nil, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountUID(t, got) != "a" {
+		t.Fatalf("cohort cursor lost to least-busy ordering: %q", accountUID(t, got))
+	}
+}

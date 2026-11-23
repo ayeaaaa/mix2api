@@ -540,6 +540,14 @@ func (p AffinityPolicy) HasEligibleMember(eligible []string) bool {
 	return false
 }
 
+// UsesV1PriorityOrder reports whether provider pools should run their normal
+// priorities before the partition cursor. Partition pages and the partition
+// zero-page rotation with a model cohort use V1 ordering; the default cohort
+// branch keeps the v2.8.16 cursor-first behavior.
+func (p AffinityPolicy) UsesV1PriorityOrder() bool {
+	return p.Partition && (p.Page || p.Rotate)
+}
+
 // AffinityRotation is a bounded, per-pool set of cohort cursors. Readiness
 // changes do not redefine membership or reset another model's turn.
 type AffinityRotation struct {

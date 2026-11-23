@@ -548,7 +548,7 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 		}
 		// V1 runs priorities before its cursor. Page=false with Rotate=true is
 		// the page_size=0 boundary with a model cohort; keep the same ordering.
-		if policy.Partition && (policy.Page || policy.Rotate) {
+		if policy.UsesV1PriorityOrder() {
 			if policy.HasEligibleMember(uids) {
 				filter := policy
 				filter.Rotate = false
