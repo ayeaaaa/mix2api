@@ -1,5 +1,7 @@
 # Complete cache-affinity repair
 
+**Long-page strategy amended by the user:** `2026-11-23-v1-page-parity.md` supersedes this document's earlier real-size-three cohort choice. Current long pages follow V1 partition-count semantics; all other cache fixes remain.
+
 ## Intent
 Finish PR #52 in one change: prevent unlabelled conversations from spraying account-scoped prefixes over the pool, bound long-conversation fan-out, support opt-in low-traffic model cohorts, and make diagnostic/settings behavior honest.
 

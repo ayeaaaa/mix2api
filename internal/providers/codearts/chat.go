@@ -131,7 +131,11 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			authorized = append(authorized, uid)
 		}
 	}
-	policy := route.Policy(authorized, ProviderRealm, build.Model, options)
+	policy := route.Policy(authorized, ProviderRealm, build.Model, options, len(accounts))
+	if policy.Sticky {
+		route.Rotate = false
+		route.Mode = "prefix"
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {

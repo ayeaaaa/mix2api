@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed / 变更
+
+- 长会话调度按用户要求跟随 V1：超过 400 条上游消息后，按 UID 排序取模分区，
+  默认 3 个分区（40 个账号时每组约 13–14 个），不是最多 3 个账号。
+  保留区内优先级、普通页游标、全 realm 小池粘滞与合法组外回退；显式会话 ID 优先。
+- Long-conversation paging now matches V1 partition-count semantics, including
+  shared page cursors/priorities, small-realm sticky selection and safe fallback.
+  This adjustment is not included in the already-published v2.8.16 release.
+
 ## [2.8.16] - 2026-11-23
 
 ### 中文

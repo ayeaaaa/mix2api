@@ -225,7 +225,11 @@ func (p *Provider) openChat(
 			authorized = append(authorized, a.UID())
 		}
 	}
-	policy := route.Policy(authorized, p.realm, intlModelAlias(model, p.realm), affinityOptions)
+	policy := route.Policy(authorized, p.realm, intlModelAlias(model, p.realm), affinityOptions, len(accounts))
+	if policy.Sticky {
+		route.Rotate = false
+		route.Mode = "prefix"
+	}
 	exclude := cloneExclude(blocked)
 	refreshed := make(map[string]bool)
 	var lastErr error

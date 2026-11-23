@@ -24,3 +24,7 @@ The original reviewer's Go-overlay reproductions also pass after the fix. Extra 
 - Short-prefix experiments do not establish Hy4 long-context support or upstream cache TTL. No real cache-rate guarantee, live config edits, account changes, or production deployment was performed.
 
 No review findings are deferred. After the fix pass, `make check` and `make race` pass (42 test packages, dashboard harness 16/16). Linux builds are verified separately; all tests here use local fixtures, not private production prompts.
+
+## Subsequent user-directed V1 parity
+
+The user subsequently chose V1's actual rank-modulo partition behavior instead of the earlier real-size-three cohort design. Those old cardinality expectations are intentionally superseded: a 48-account pool with 3 partitions rotates over 16 accounts in one partition; a 6-account pool rotates over 2. Current verification additionally covers small-realm sticky behavior versus small allow-lists, V1 zero/one controls, shared page cursors, and priorities before ordinary round robin. The original findings about semantic heads, policy filters, bounded state and fallback provenance remain fixed.

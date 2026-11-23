@@ -108,7 +108,7 @@ func TestAffinityUsesInjectedSettingsStore(t *testing.T) {
 	}
 }
 
-func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+func TestChatLongPrefixRotatesWithinV1Partition(t *testing.T) {
 	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
 	p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u0", "u1", "u2", "u3", "u4", "u5")
 	fake := &chatFake{}
@@ -129,11 +129,11 @@ func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
 	for _, auth := range auths {
 		counts[auth]++
 	}
-	if len(counts) != 3 {
+	if len(counts) != 2 {
 		t.Fatalf("long affinity not bounded rotation: %v", counts)
 	}
 	for _, n := range counts {
-		if n != 2 {
+		if n != 3 {
 			t.Fatalf("not round robin: %v", counts)
 		}
 	}

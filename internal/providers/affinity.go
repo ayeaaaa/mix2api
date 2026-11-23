@@ -186,6 +186,7 @@ func ResolveAffinity(req ChatRequest, o AffinityOptions) AffinityRoute {
 		r.Mode = "page"
 		if o.PageSize == 0 {
 			r.Mode = "rotation"
+			r.Key = ""
 		}
 	}
 	return r
@@ -238,6 +239,7 @@ type AffinityPolicy struct {
 	Cohort []string
 	Scope  string
 	Rotate bool
+	Sticky bool
 }
 
 type AffinityDiagnostics struct {
@@ -262,7 +264,7 @@ func (r AffinityRoute) Diagnostics(p AffinityPolicy, uid string) AffinityDiagnos
 	return d
 }
 
-func (r AffinityRoute) Policy(authorized []string, realm, model string, o AffinityOptions) AffinityPolicy {
+func (r AffinityRoute) Policy(authorized []string, realm, model string, o AffinityOptions, realmCounts ...int) AffinityPolicy {
 	p := AffinityPolicy{Rotate: r.Rotate, Scope: NormalizeSessionKey(strings.ToLower(strings.TrimSpace(realm) + "/" + strings.TrimSpace(model)))}
 	if r.Mode == "explicit" {
 		return p
@@ -273,10 +275,67 @@ func (r AffinityRoute) Policy(authorized []string, realm, model string, o Affini
 		uids = p.Cohort
 	}
 	if r.Mode == "page" {
-		p.Scope += "/" + r.PrefixHash
-		p.Cohort = AffinityCohort(uids, p.Scope, o.PageSize)
+		realmCount := len(authorized)
+		if len(realmCounts) > 0 {
+			realmCount = realmCounts[0]
+		}
+		// V1 restores normal affinity when the partition parameter covers the
+		// full realm. A small key allow-list in a larger realm is different:
+		// _page_slice returns that whole allowed subset, still without pinning.
+		if o.PageSize >= realmCount {
+			p.Rotate = false
+			p.Sticky = true
+			return p
+		}
+		index := 0
+		digest := strings.TrimPrefix(r.PrefixHash, "pfx-")
+		if len(digest) >= 8 && o.PageSize > 1 {
+			if seed, err := strconv.ParseUint(digest[:8], 16, 32); err == nil {
+				index = int(seed % uint64(o.PageSize))
+			}
+		}
+		p.Cohort = AffinityPartition(uids, index, o.PageSize)
+		// V1's page cursor is shared by conversations/models on the same page.
+		p.Scope = NormalizeSessionKey(fmt.Sprintf("page/%s/%d/%d", strings.ToLower(realm), index, o.PageSize))
 	}
 	return p
+}
+
+// AffinityPartition matches V1 rank-modulo membership. Rank over the static
+// authorized snapshot, before temporary readiness/exclusions are applied.
+func AffinityPartition(uids []string, index, count int) []string {
+	ordered := []string{}
+	seen := map[string]bool{}
+	for _, uid := range uids {
+		if uid != "" && !seen[uid] {
+			ordered = append(ordered, uid)
+			seen[uid] = true
+		}
+	}
+	sort.Strings(ordered)
+	if count <= 1 || count >= len(ordered) {
+		return ordered
+	}
+	out := []string{}
+	for rank, uid := range ordered {
+		if rank%count == index%count {
+			out = append(out, uid)
+		}
+	}
+	return out
+}
+
+func (p AffinityPolicy) HasEligibleMember(eligible []string) bool {
+	members := map[string]bool{}
+	for _, uid := range p.Cohort {
+		members[uid] = true
+	}
+	for _, uid := range eligible {
+		if members[uid] {
+			return true
+		}
+	}
+	return false
 }
 
 // AffinityRotation is a bounded, per-pool set of cohort cursors. Readiness
@@ -314,7 +373,11 @@ func (r *AffinityRotation) Candidates(eligible []string, p AffinityPolicy) []str
 		r.cursors = map[string]int{}
 		r.recent = map[string]*list.Element{}
 	}
-	key := NormalizeSessionKey(p.Scope + "\x00" + strings.Join(p.Cohort, "\x00"))
+	keySource := p.Scope
+	if !strings.HasPrefix(p.Scope, "page/") {
+		keySource += "\x00" + strings.Join(p.Cohort, "\x00")
+	}
+	key := NormalizeSessionKey(keySource)
 	start := r.cursors[key] % len(p.Cohort)
 	for i := 0; i < len(p.Cohort); i++ {
 		idx := (start + i) % len(p.Cohort)

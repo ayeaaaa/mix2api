@@ -38,7 +38,7 @@ func TestChat1017ToolChoiceNoneKeepsDeclarations(t *testing.T) {
 	}
 }
 
-func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+func TestChatLongPrefixRotatesWithinV1Partition(t *testing.T) {
 	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
 	fake, _ := newT5Fake(t, nil)
 	p, _ := newT5Provider(t, "u0", "u1", "u2", "u3", "u4", "u5")
@@ -55,11 +55,11 @@ func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
 	for _, call := range fake.snapshot() {
 		counts[call.Header.Get("X-Auth-Token")]++
 	}
-	if len(counts) != 3 {
+	if len(counts) != 2 {
 		t.Fatalf("long affinity not bounded rotation: %v", counts)
 	}
 	for _, n := range counts {
-		if n != 2 {
+		if n != 3 {
 			t.Fatalf("not round robin: %v", counts)
 		}
 	}

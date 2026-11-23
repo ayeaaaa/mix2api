@@ -7827,9 +7827,9 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:10px 0">
           <label><input id="setAffinityPrefix" type="checkbox" style="width:16px;height:16px"> 无会话 ID 时自动亲和</label>
           <label>长会话阈值 <input id="setAffinityMaxMessages" type="number" min="0" max="100000" step="1" style="width:90px"> 条</label>
-          <label>轮转账号组 <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> 个</label>
+          <label>长会话分区数量 <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> 组</label>
         </div>
-        <p style="font-size:12px;color:var(--dim)">默认超过 400 条消息后只在 3 个账号中轮转。阈值 0 = 不分组；账号组 0 = 全池轮转，1 = 保持粘滞。账号忙、限流或不可用时仍按原有规则安全换号。</p>
+        <p style="font-size:12px;color:var(--dim)">跟随 V1：默认超过 400 条上游消息后，按 UID 排序分成 3 个分区；会话固定落入一组，区内保留原有优先级与轮询。40 个账号时每组约 13–14 个。阈值 0 = 不切换；分区数 0 = 全池轮转，1 = 保持粘滞。分区数已覆盖整个 realm 池时恢复粘滞；区内不可用时安全回退。</p>
         <label for="setAffinityModelPools" style="display:block;font-size:13px;margin:12px 0 6px">低流量模型优先账号数（JSON，可选）</label>
         <textarea id="setAffinityModelPools" class="mono" rows="3" style="width:100%;max-width:640px" placeholder='{"intl/deepseek-v4.1-flash-sg":3}'></textarea>
         <p style="font-size:12px;color:var(--dim)">按 realm/model 配置 1–64 个优先账号，0 或删除条目关闭。只影响无显式会话 ID 的请求，不改变账号开关、权限或限额；默认不收敛账号池。</p>

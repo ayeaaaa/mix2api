@@ -1,5 +1,7 @@
 # Complete Cache Affinity Implementation Plan
 
+The long-page choice in this completed plan is superseded by the user's V1-parity amendment in `2026-11-23-v1-page-parity.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. Track progress here.
 
 **Goal:** Finish PR #52 without a deferred cache-routing phase.

@@ -599,24 +599,24 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 			}
 		}
 	}
+	pageReady := false
+	scope := ""
 	if len(policy.Cohort) > 0 {
 		uids := []string{}
 		for _, a := range eligible {
 			uids = append(uids, accountUID(a))
 		}
-		preferred := p.affinityRotation.Candidates(uids, policy)
-		if policy.Rotate && len(preferred) == 1 {
-			return byUID[preferred[0]], nil
+		if policy.HasEligibleMember(uids) {
+			filter := policy
+			filter.Rotate = false
+			preferred := p.affinityRotation.Candidates(uids, filter)
+			eligible = nil
+			for _, uid := range preferred {
+				eligible = append(eligible, byUID[uid])
+			}
+			pageReady = policy.Rotate
+			scope = policy.Scope
 		}
-		eligible = nil
-		for _, uid := range preferred {
-			eligible = append(eligible, byUID[uid])
-		}
-	}
-
-	scope := ""
-	if len(policy.Cohort) > 0 {
-		scope = policy.Scope
 	}
 	selected := p.pickManual(eligible, scope)
 	if selected == nil {
@@ -626,7 +626,18 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 		selected = p.pickRemaining(eligible, model)
 	}
 	if selected == nil {
-		selected = p.pickFallback(eligible, scope)
+		if pageReady {
+			uids := []string{}
+			for _, a := range eligible {
+				uids = append(uids, accountUID(a))
+			}
+			picked := p.affinityRotation.Candidates(uids, policy)
+			if len(picked) > 0 {
+				selected = byUID[picked[0]]
+			}
+		} else {
+			selected = p.pickFallback(eligible, scope)
+		}
 	}
 	if selected == nil {
 		return nil, ErrNoAccount

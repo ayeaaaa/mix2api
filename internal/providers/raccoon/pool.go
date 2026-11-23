@@ -648,6 +648,7 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(capable) > 0 {
 		selected = capable
 	}
+	pageReady := false
 	if len(policy.Cohort) > 0 {
 		uids := []string{}
 		byUID := map[string]candidate{}
@@ -655,9 +656,14 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 			uids = append(uids, item.uid)
 			byUID[item.uid] = item
 		}
-		selected = nil
-		for _, uid := range p.affinityRotation.Candidates(uids, policy) {
-			selected = append(selected, byUID[uid])
+		if policy.HasEligibleMember(uids) {
+			filter := policy
+			filter.Rotate = false
+			selected = nil
+			for _, uid := range p.affinityRotation.Candidates(uids, filter) {
+				selected = append(selected, byUID[uid])
+			}
+			pageReady = policy.Rotate
 		}
 	}
 	sort.SliceStable(selected, func(i, j int) bool {
@@ -669,6 +675,20 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 		}
 		return selected[i].uid < selected[j].uid
 	})
+	if pageReady {
+		uids := []string{}
+		byUID := map[string]*Account{}
+		for _, item := range selected {
+			if item.active == selected[0].active {
+				uids = append(uids, item.uid)
+				byUID[item.uid] = item.account
+			}
+		}
+		picked := p.affinityRotation.Candidates(uids, policy)
+		if len(picked) > 0 {
+			return byUID[picked[0]], nil
+		}
+	}
 	return selected[0].account, nil
 }
 

@@ -8,8 +8,8 @@ The upstream owns the cache. Routing preserves opportunities for reuse; it canno
 |---|---:|---|
 | `affinity_by_prefix` | true | Derive a session when the client supplies no ID |
 | `affinity_stable_key_enabled` | false | Also include the first assistant reply |
-| `affinity_max_messages` | 400 | Above this number, rotate within a cohort; 0 disables the threshold |
-| `affinity_page_size` | 3 | **Account count**, not partition count; 0 whole-pool rotation, 1 pin |
+| `affinity_max_messages` | 400 | Above this normalized upstream-message count, use V1 page routing; 0 disables the threshold |
+| `affinity_page_size` | 3 | **Partition count**, matching V1; 0 whole-pool rotation, 1 pin |
 | `affinity_model_pool_sizes` | `{}` | Optional preferred account counts per `realm/model`; 0 off, 1–64 |
 
 The existing Models settings section exposes these controls. `WB_AFFINITY_BY_PREFIX`, `WB_AFFINITY_MAX_MSGS`, and `WB_AFFINITY_PAGE_SIZE` supply defaults; an explicit panel setting wins. The stable-key switch is consumed by WorkBuddy, CodeArts and Raccoon, not just saved/displayed.
@@ -30,10 +30,14 @@ Submit through `POST /settings/save` with panel authentication, or the JSON fiel
 
 1. Explicit `X-Conversation-Id`, `X-Session-Id`, body `conversation_id`/`session_id`, or supported metadata always wins; prefix fallback does not override it or force it into a model cohort.
 2. Otherwise hash canonical leading system/developer messages and the first user. Equivalent developer/system roles and text-block/string forms share a key; WorkBuddy hashes its sanitized messages so volatile billing metadata cannot move a conversation. Later history does not change the key. System-only or malformed heads have no derived binding. Stable mode also hashes the first assistant, so the first reply can cause one deliberate rebinding.
-3. Ordinary conversations use existing affinity. New conversations may prefer a model's configured cohort. Long derived conversations rotate within a deterministic cohort of up to the configured account count; they do not bind to the last selected account. Cohort scheduling state is model-scoped, page cursors use bounded LRU eviction, and realm fallback preserves whether a key was actually client-supplied.
-4. Membership uses authorized realm accounts, not the temporarily ready subset, so busy/cooldown changes do not reshuffle it. Existing model eligibility, account enablement, guards, concurrency and account allow-lists still filter every candidate. When the cohort has no eligible member, the normal allowed pool can serve the request. Consequently cohort size is a **soft preference**, not a hard concurrency limit or authorization boundary.
+3. Ordinary conversations use existing affinity. Long derived conversations match V1: choose a page index from the first 8 digest hex digits modulo `affinity_page_size`, rank authorized realm UIDs in sorted order, and use accounts whose rank modulo that count equals the page index. Thus 40 accounts with 3 partitions form groups of 14/13/13, not groups of 3 accounts. Real page conversations are not sticky; page cursors are shared by realm/index/count even across different authorized subsets, with bounded LRU state. Existing provider priorities still run before ordinary page round robin; WorkBuddy manual/expiry shares within a page also span models, as in V1.
+4. If the partition count covers the full realm pool (for example 2 or 3 accounts with the default 3), V1's small-pool guard restores normal sticky selection. A key restricted to 2 accounts in a larger realm is different: V1's partition slice covers its whole allowed subset but remains non-sticky. `page_size=0` drops the long derived key and uses normal pool routing; `page_size=1` remains sticky.
+5. Ranks use the static authorized snapshot before readiness/exclusion, so busy/cooldown changes do not reshuffle pages. Account enablement, model/tier eligibility, guards, concurrency and allow-lists still filter every candidate. An unavailable page falls back through normal legal pool selection, without binding that page conversation to the fallback account.
+6. Optional `affinity_model_pool_sizes` retains its separate meaning: **preferred account count** for that model (default empty/off). It is an opt-in additional filter, not the V1 partition parameter. Model-cohort weighted shares remain independent across models.
 
 CodeArts's upstream `chat_id` and `prompt_cache_key` behavior is unchanged. WorkBuddy's effective key also feeds its upstream conversation/cache IDs. Protocol translation happens before provider-side affinity, so Chat, Responses and Messages all participate.
+
+The earlier PR #52 draft used a real-size-three long-conversation cohort. The user requested V1 parity instead; the current partition strategy above replaces that draft. No production configuration was modified as part of this revision.
 
 ## Diagnostics
 
