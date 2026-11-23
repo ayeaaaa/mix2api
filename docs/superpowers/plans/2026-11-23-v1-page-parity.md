@@ -1,6 +1,6 @@
 # V1 Page-Parity Implementation Plan
 
-> **For agentic workers:** Use superpowers:executing-plans inline; user already chose the V1 behavior and existing PR workflow.
+> **For agentic workers:** Use superpowers:executing-plans inline; user already chose V1 behavior. PR #52 merged during the adjustment; delivery is a separate v2.8.16-based follow-up.
 
 **Goal:** Align long-conversation selection with V1 without reverting the cache-routing fixes.
 **Architecture:** Shared route policy computes deterministic rank-modulo partitions and the small-realm guard; provider pools run existing priorities before page round robin. Update callers, tests and panel descriptions together.
@@ -10,7 +10,7 @@
 ## Global Constraints
 - max_messages=400; page_size=3 means partitions; explicit IDs win; page_size=0/1 and threshold=0 follow V1.
 - Preserve authorization, limits, concurrency, strict 11140, semantic prefixes and default-off optional model cohorts.
-- No live container/config/data changes; continue PR #52.
+- No live container/config/data changes; follow up merged PR #52 from v2.8.16.
 
 ## Review Focus
 - Disabled/cooling/excluded accounts must not shift partition ranks.
@@ -27,7 +27,7 @@
 ### Task 2: UI, documentation, delivery
 - [x] Update labels/hints, operator guide and PR amendment; synchronize embedded digest.
 - [x] Run make check/make race and focused independent review; correct findings. Final full check/race passed after the fixes.
-- [x] Commit owned files, push/update PR #52; preserve worktree and official endpoints.
+- [ ] Commit owned files, push/create follow-up PR; preserve worktree and official endpoints.
 
 ## Review fix record
 
