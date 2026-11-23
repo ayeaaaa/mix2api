@@ -205,7 +205,7 @@ func TestProxyProbeFailurePreservesSlot(t *testing.T) {
 		t.Fatalf("failure body = %#v", body)
 	}
 	current, _ := slots.List()
-	if len(current) != 1 || current[0].IP != "198.51.100.1" || current[0].Country != "美国" || current[0].ISP != "Old ISP" {
+	if len(current) != 1 || current[0].IP != "198.51.100.1" || current[0].Country != "美国" || current[0].CountryCode != "US" || current[0].IPType != "residential" || current[0].ISP != "Old ISP" || current[0].ASN != "AS64502" {
 		t.Fatalf("failed probe erased slot data: %#v", current)
 	}
 

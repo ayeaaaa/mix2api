@@ -2,19 +2,19 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
-	"encoding/pem"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -167,12 +167,19 @@ func TestProbeHTTPSThroughConnectProxy(t *testing.T) {
 		_, _ = io.WriteString(w, "203.0.113.14\n")
 	}))
 	defer target.Close()
-	certFile := filepath.Join(t.TempDir(), "target.pem")
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: target.Certificate().Raw})
-	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
-		t.Fatal(err)
+
+	// transport.newTransport clones http.DefaultTransport, so a test-only root
+	// pool makes the local TLS certificate portable to Windows/macOS too.
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatal("http.DefaultTransport is not *http.Transport")
 	}
-	t.Setenv("SSL_CERT_FILE", certFile)
+	cloned := base.Clone()
+	roots := x509.NewCertPool()
+	roots.AddCert(target.Certificate())
+	cloned.TLSClientConfig = &tls.Config{RootCAs: roots}
+	http.DefaultTransport = cloned
+	t.Cleanup(func() { http.DefaultTransport = base })
 
 	geoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"status":"success","country":"美国","countryCode":"US","hosting":false}`)
@@ -181,13 +188,16 @@ func TestProbeHTTPSThroughConnectProxy(t *testing.T) {
 	t.Setenv("WB_PROXY_PROBE_URL", target.URL)
 	t.Setenv("WB_PROXY_GEO_URL", geoServer.URL)
 
-	proxyServer := startConnectProxy(t)
+	proxyServer, proxyHits := startConnectProxy(t)
 	result, err := Probe(context.Background(), proxyServer.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := result["ok"].(bool); !ok || result["exit_ip"] != "203.0.113.14" {
 		t.Fatalf("HTTPS CONNECT probe = %#v", result)
+	}
+	if proxyHits.Load() == 0 {
+		t.Fatal("HTTPS probe did not use the CONNECT proxy")
 	}
 }
 
@@ -203,22 +213,28 @@ func TestProbeSOCKS5Proxy(t *testing.T) {
 	t.Setenv("WB_PROXY_PROBE_URL", target.URL)
 	t.Setenv("WB_PROXY_GEO_URL", geoServer.URL)
 
-	result, err := Probe(context.Background(), startSOCKS5Proxy(t))
+	socksURL, proxyHits := startSOCKS5Proxy(t)
+	result, err := Probe(context.Background(), socksURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := result["ok"].(bool); !ok || result["exit_ip"] != "203.0.113.15" {
 		t.Fatalf("SOCKS5 probe = %#v", result)
 	}
+	if proxyHits.Load() == 0 {
+		t.Fatal("SOCKS5 probe did not use the SOCKS5 proxy")
+	}
 }
 
-func startConnectProxy(t *testing.T) *httptest.Server {
+func startConnectProxy(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
+	hits := &atomic.Int32{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {
 			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
 			return
 		}
+		hits.Add(1)
 		upstream, err := net.DialTimeout("tcp", r.Host, 5*time.Second)
 		if err != nil {
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
@@ -248,29 +264,30 @@ func startConnectProxy(t *testing.T) *httptest.Server {
 		<-done
 	}))
 	t.Cleanup(server.Close)
-	return server
+	return server, hits
 }
 
-func startSOCKS5Proxy(t *testing.T) string {
+func startSOCKS5Proxy(t *testing.T) (string, *atomic.Int32) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
+	hits := &atomic.Int32{}
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			go serveSOCKS5(conn)
+			go serveSOCKS5(conn, hits)
 		}
 	}()
-	return "socks5://" + listener.Addr().String()
+	return "socks5://" + listener.Addr().String(), hits
 }
 
-func serveSOCKS5(conn net.Conn) {
+func serveSOCKS5(conn net.Conn, hits *atomic.Int32) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	header := make([]byte, 2)
@@ -288,6 +305,7 @@ func serveSOCKS5(conn net.Conn) {
 	if _, err := io.ReadFull(conn, request); err != nil || request[0] != 5 || request[1] != 1 {
 		return
 	}
+	hits.Add(1)
 	host := ""
 	switch request[3] {
 	case 1:
