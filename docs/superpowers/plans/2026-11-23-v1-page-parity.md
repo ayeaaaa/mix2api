@@ -61,7 +61,9 @@ upstreams.
 - [x] GREEN: settings view/validation; global dropdown, per-provider controls,
   dynamic labels/help; docs/changelog/spec.
 - [x] Run focused suites, `make check`, `make race`, panel suites and review.
-- [ ] Commit, update PR #53 title/body, push, and wait for owner merge/release.
+- [x] Commit, update PR #53 title/body, and push.
+- [x] Final focused review: ready to merge after the provider count-label and placeholder fixes.
+- [ ] Wait for owner merge and an official release; do not deploy a custom build.
 
 ## Historical review fix record
 
