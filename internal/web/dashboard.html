@@ -2172,6 +2172,22 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '(选填，留空 = 不限制)': '(optional, empty = no limit)',
     '+ 添加 API Key': '+ Add API Key',
     '+ 添加槽位': '+ Add slot',
+    '+ 添加空槽位': '+ Add empty slot',
+    '高级：添加一行后直接填写完整代理 URL': 'Advanced: add a row and enter the full proxy URL',
+    '添加代理槽': 'Add proxy slot',
+    '代理服务器，如 127.0.0.1': 'Proxy server, e.g. 127.0.0.1',
+    '端口': 'Port',
+    '认证 user:pass（可选）': 'Auth user:pass (optional)',
+    '支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。': 'Supports HTTP / HTTPS / SOCKS5. Inside Docker, 127.0.0.1 is the container itself; use the host address, a container name, or host.docker.internal. After adding, click Save slots, then bind the exit in the account table.',
+    '该代理地址已在槽位中': 'This proxy URL is already in a slot',
+    '已加入代理槽，记得点「保存槽位」': 'Added to proxy slots; remember to click Save slots',
+    '添加失败: ': 'Add failed: ',
+    '不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）': 'Unsupported proxy protocol (use HTTP / HTTPS / SOCKS5)',
+    '请填写代理服务器': 'Enter a proxy server',
+    '代理服务器只填主机名或 IP，不要带协议、端口或路径': 'Enter only a hostname or IP; do not include a scheme, port, or path',
+    '代理服务器格式无效': 'Invalid proxy server',
+    '代理端口必须是 1–65535': 'Proxy port must be 1–65535',
+    '认证用户名不能为空': 'Auth username cannot be empty',
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
     '「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。': 'Settings is where this switch lives, so it cannot be unticked - there would be no way back.',
     '取消勾选可隐藏对应功能入口，勾选后恢复；偏好保存在本网关。「设置」入口固定保留。': 'Untick a feature to hide its navigation entry; tick it again to restore it. Preferences are stored on this gateway. Settings always remains available.',
@@ -3545,7 +3561,7 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '运行日志': 'Logs',
     '返回内容不是 JSON': 'The response is not JSON',
     '还没取过价，暂用出厂快照': 'No price fetched yet; using the factory snapshot for now',
-    '还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。': 'No proxy slot yet. Click Auto-discover mihomo ports or + Add slot.',
+    '还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加空槽位」。': 'No proxy slot yet. Click Auto-discover mihomo ports or + Add slot.',
     '还没有请求记录': 'No requests recorded yet',
     '还没有账号': 'No accounts yet',
     '还没有配置 API Key，点击右上角「+ 添加 API Key」创建。': 'No API key configured yet; click + Add API Key in the top right to create one.',
@@ -3733,6 +3749,22 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "(每账号每模型每天": "(每帳號每模型每天",
     "+ 添加 API Key": "+ 新增 API Key",
     "+ 添加槽位": "+ 新增槽位",
+    "+ 添加空槽位": "+ 新增空槽位",
+    "高级：添加一行后直接填写完整代理 URL": "進階：新增一行後直接填寫完整代理 URL",
+    "添加代理槽": "新增代理槽",
+    "代理服务器，如 127.0.0.1": "代理伺服器，如 127.0.0.1",
+    "端口": "埠",
+    "认证 user:pass（可选）": "認證 user:pass（可選）",
+    "支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。": "支援 HTTP / HTTPS / SOCKS5。Docker 部署時 127.0.0.1 指容器自身，請填主機位址、容器名稱或 host.docker.internal；新增後記得點「儲存槽位」，再在帳號表綁定出口。",
+    "该代理地址已在槽位中": "此代理位址已在槽位中",
+    "已加入代理槽，记得点「保存槽位」": "已加入代理槽，記得點「儲存槽位」",
+    "添加失败: ": "新增失敗: ",
+    "不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）": "不支援的代理協定（請使用 HTTP / HTTPS / SOCKS5）",
+    "请填写代理服务器": "請填寫代理伺服器",
+    "代理服务器只填主机名或 IP，不要带协议、端口或路径": "代理伺服器只填主機名稱或 IP，不要帶協定、埠或路徑",
+    "代理服务器格式无效": "代理伺服器格式無效",
+    "代理端口必须是 1–65535": "代理埠必須是 1–65535",
+    "认证用户名不能为空": "認證使用者名稱不能為空",
     "+ 添加账号 (OAuth)": "+ 新增帳號 (OAuth)",
     "「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。": "「設定」是頁面顯示開關自己的入口，收起來就放不回去了，固定保留。",
     "取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。": "取消勾選就把該頁籤從頂部收起來，勾回來即恢復；清單按頂部現有的頁籤現場生成，上游增刪頁面這裡自動跟上；偏好存在本閘道，換瀏覽器、重啟服務都記得。「設定」是這一頁自己的入口，固定保留。",
@@ -4235,7 +4267,7 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "运行中 · ": "執行中 · ",
     "运行信息": "執行資訊",
     "运行日志": "執行日誌",
-    "还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。": "還沒有代理槽。點選「自動發現 mihomo 埠」或「+ 新增槽位」。",
+    "还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加空槽位」。": "還沒有代理槽。點選「自動發現 mihomo 埠」或「+ 新增槽位」。",
     "还没有账号": "還沒有帳號",
     "还没有配置 API Key，点击右上角「+ 添加 API Key」创建。": "還沒有配置 API Key，點選右上角「+ 新增 API Key」建立。",
     "连接中断:": "連線中斷:",
@@ -7065,7 +7097,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <input id="slotAddAuth" placeholder="认证 user:pass（可选）" style="width:190px">
           <button class="sec" onclick="addProxySlotFromForm(this)">添加</button>
         </div>
-        <div style="font-size:12px;color:var(--dim);margin-top:7px">支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 <span class="mono">host.docker.internal</span>；添加后记得点「保存槽位」，再在账号表绑定出口。</div>
+        <div style="font-size:12px;color:var(--dim);margin-top:7px">支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。</div>
       </div>
       <div id="slotList"></div>
       <div id="slotDiscover"></div>
@@ -20636,7 +20668,7 @@ function renderProxySlots(){
   if(!box) return;
   renderSlotState();
   if(!PROXY_SLOTS.length){
-    box.innerHTML = '<div class="hint" style="color:var(--dim)">还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。</div>';
+    box.innerHTML = '<div class="hint" style="color:var(--dim)">还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加空槽位」。</div>';
     return;
   }
   box.innerHTML = '<div class="table-wrap"><table class="data-cards"><thead><tr>'
@@ -20677,9 +20709,18 @@ function proxyURLFromParts(protocol, host, port, auth){
   if(!['http','https','socks5'].includes(scheme)) throw new Error('不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）');
   let server = String(host || '').trim();
   if(!server) throw new Error('请填写代理服务器');
-  if(/\s/.test(server) || server.includes('://') || server.includes('/')) throw new Error('代理服务器只填主机名或 IP，不要带协议、端口或路径');
-  server = server.replace(/^\[|\]$/g, '');
-  if(server.includes(':') && !/^[0-9a-f:]+$/i.test(server)) throw new Error('代理服务器格式无效');
+  if(/[\s?#@]/.test(server) || server.includes('://') || server.includes('/')) throw new Error('代理服务器只填主机名或 IP，不要带协议、端口或路径');
+  let bracketed = false;
+  if(server.startsWith('[')){
+    if(!server.endsWith(']')) throw new Error('代理服务器格式无效');
+    bracketed = true;
+    server = server.slice(1, -1);
+  } else if(server.endsWith(']')){
+    throw new Error('代理服务器格式无效');
+  }
+  if(bracketed && !server.includes(':')) throw new Error('代理服务器格式无效');
+  if(server.includes(':') && (!/^[0-9a-f:]+$/i.test(server) || server.includes(':::') || (server.match(/::/g) || []).length > 1)) throw new Error('代理服务器格式无效');
+  if(server.includes(':') && !server.includes('::') && server.split(':').length !== 8) throw new Error('代理服务器格式无效');
   const portNumber = Number(port);
   if(!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) throw new Error('代理端口必须是 1–65535');
   let userinfo = '';
@@ -20695,12 +20736,28 @@ function proxyURLFromParts(protocol, host, port, auth){
   return scheme + '://' + userinfo + authority + ':' + portNumber;
 }
 
+function proxyCompareKey(raw){
+  let text = String(raw || '').trim();
+  if(!text) return '';
+  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'http://' + text;
+  try{
+    const u = new URL(text);
+    let protocol = u.protocol.toLowerCase();
+    if(protocol === 'socks5h:') protocol = 'socks5:';
+    const auth = u.username ? u.username + (u.password ? ':' + u.password : '') + '@' : '';
+    return protocol + '//' + auth + u.host.toLowerCase();
+  }catch(e){
+    return text.toLowerCase();
+  }
+}
+
 function addProxySlotFromForm(btn){
   if(btn) btn.disabled = true;
   try{
     const val = id => document.getElementById(id).value.trim();
     const url = proxyURLFromParts(val('slotAddProtocol'), val('slotAddHost'), val('slotAddPort'), val('slotAddAuth'));
-    if(PROXY_SLOTS.some(s => s.url === url)){ toast('该代理地址已在槽位中', 'warn'); return; }
+    const key = proxyCompareKey(url);
+    if(PROXY_SLOTS.some(s => proxyCompareKey(s.url) === key)){ toast('该代理地址已在槽位中', 'warn'); return; }
     PROXY_SLOTS.push({id: '', name: '', url: url, enabled: true, bound: 0});
     SLOTS_DIRTY = true;
     renderProxySlots();

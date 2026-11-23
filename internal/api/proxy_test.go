@@ -173,3 +173,50 @@ func TestProxyProbeAndDiscoverInjected(t *testing.T) {
 		t.Fatalf("candidate = %#v", candidate)
 	}
 }
+
+func TestProxyProbeFailurePreservesSlot(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	slots := platformproxy.New(store, nil)
+	saved, err := slots.Replace([]platformproxy.Slot{{
+		URL: "http://127.0.0.1:7890", IP: "198.51.100.1",
+		Country: "美国", CountryCode: "US", IPType: "residential", ISP: "Old ISP", ASN: "AS64502",
+	}})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("seed slots = %#v, %v", saved, err)
+	}
+	mode := "fail"
+	server := New(ServerOptions{
+		ProxySlots: slots,
+		PanelAuth:  passThroughAuth,
+		ProxyProbe: func(context.Context, string) (map[string]any, error) {
+			if mode == "fail" {
+				return map[string]any{"ok": false, "exit_ip": "", "error": "proxy unreachable"}, nil
+			}
+			return map[string]any{"ok": true, "exit_ip": "203.0.113.12", "latency_ms": int64(9), "intel_ok": false}, nil
+		},
+	})
+
+	rec := doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+saved[0].ID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("failure status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if ok, _ := body["ok"].(bool); ok || body["error"] != "proxy unreachable" || body["slot"] != nil {
+		t.Fatalf("failure body = %#v", body)
+	}
+	current, _ := slots.List()
+	if len(current) != 1 || current[0].IP != "198.51.100.1" || current[0].Country != "美国" || current[0].ISP != "Old ISP" {
+		t.Fatalf("failed probe erased slot data: %#v", current)
+	}
+
+	mode = "success"
+	rec = doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+saved[0].ID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("success status=%d body=%s", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	slot, _ := body["slot"].(map[string]any)
+	if slot == nil || slot["ip"] != "203.0.113.12" || slot["country"] != "美国" || slot["isp"] != "Old ISP" {
+		t.Fatalf("success without intel did not preserve old intel: %#v", slot)
+	}
+}

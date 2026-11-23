@@ -16,8 +16,9 @@ Use the **添加代理槽** form above the table:
 - Authentication: optional `user:pass`
 
 The form composes the URL; the table still accepts advanced raw URLs. A new
-slot is not persisted until **保存槽位** is clicked. After saving, bind accounts
-to it in the gateway account table or use **一键分配代理**.
+slot is not persisted until **保存槽位** is clicked; clicking **测试** on an
+unsaved row saves it first so it has an id. After saving, bind accounts to it in
+the gateway account table or use **一键分配代理**.
 
 If the gateway runs in Docker, `127.0.0.1` inside a slot refers to the gateway
 container itself, not the host's proxy. Use `host.docker.internal`, a shared

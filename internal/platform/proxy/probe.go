@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,8 +30,10 @@ const (
 	discoverWorkers      = 8
 	maxProbeBody         = 256
 	maxDiscoverPorts     = 64
-	geoFields            = "lang=zh-CN&fields=status,message,country,countryCode,isp,org,as,hosting"
+	geoFields            = "status,message,country,countryCode,isp,org,as,hosting"
 )
+
+var discoverRangeSpace = regexp.MustCompile(`\s*-\s*`)
 
 type intelFields struct {
 	Country     string
@@ -246,17 +249,31 @@ func geoEndpoint(ip string) string {
 	if base == "" {
 		base = defaultGeoURL
 	}
+	escapedIP := url.PathEscape(ip)
 	var endpoint string
 	if strings.Contains(base, "%s") {
-		endpoint = fmt.Sprintf(base, url.PathEscape(ip))
+		endpoint = fmt.Sprintf(base, escapedIP)
 	} else {
-		endpoint = strings.TrimRight(base, "/") + "/" + url.PathEscape(ip)
+		parsed, err := url.Parse(base)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return ""
+		}
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + escapedIP
+		query := parsed.Query()
+		query.Set("lang", "zh-CN")
+		query.Set("fields", geoFields)
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
 	}
-	separator := "?"
-	if strings.Contains(endpoint, "?") {
-		separator = "&"
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
 	}
-	return endpoint + separator + geoFields
+	query := parsed.Query()
+	query.Set("lang", "zh-CN")
+	query.Set("fields", geoFields)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func discoverHost(host string) string {
@@ -270,6 +287,7 @@ func discoverPorts(raw string) []int {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
+	raw = discoverRangeSpace.ReplaceAllString(raw, "-")
 	out := make([]int, 0, 16)
 	seen := map[int]bool{}
 	add := func(port int) {
