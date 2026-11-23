@@ -1,6 +1,6 @@
 # Complete Cache Affinity Implementation Plan
 
-The long-page choice in this completed plan is superseded by the user's V1-parity amendment in `2026-11-23-v1-page-parity.md`.
+The long-page choice in this completed plan was extended by the user's V1-parity request in `2026-11-23-v1-page-parity.md`. That V1 behavior is now an optional global/per-provider strategy; the v2.8.16 cohort remains the default.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. Track progress here.
 

@@ -7,12 +7,18 @@ Keep a Changelog and the project uses semantic versioning.
 
 ### Changed / 变更
 
-- 长会话调度按用户要求跟随 V1：超过 400 条上游消息后，按 UID 排序取模分区，
-  默认 3 个分区（40 个账号时每组约 13–14 个），不是最多 3 个账号。
-  保留区内优先级、普通页游标、全 realm 小池粘滞与合法组外回退；显式会话 ID 优先。
-- Long-conversation paging now matches V1 partition-count semantics, including
-  shared page cursors/priorities, small-realm sticky selection and safe fallback.
-  This adjustment is not included in the already-published v2.8.16 release.
+- 长会话调度改为可选策略：默认保持 v2.8.16 的「固定账号数」，
+  可全局或按 WorkBuddy / CodeArts / 小浣熊切换为 V1 分区；未设置的提供商
+  跟随全局。V1 分区保留 UID 取模、共享页游标、区内优先级、全 realm 小池
+  粘滞与合法组外回退；`affinity_page_size` 的含义随解析后的策略变化。
+- Long-conversation scheduling is now selectable. The default remains the
+  v2.8.16 account-count cohort; V1 rank-modulo partitions can be enabled
+  globally or per provider, with unset providers inheriting the global choice.
+  V1 keeps its shared page cursors, in-page priorities, small-realm sticky
+  guard and safe group-external fallback. `affinity_page_size` means an account
+  count under `cohort` and a partition count under `partition`.
+- PR #53 was revised from a default-behavior replacement into this opt-in
+  strategy. It is not included in the already-published v2.8.16 release.
 
 ## [2.8.16] - 2026-11-23
 

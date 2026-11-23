@@ -35,7 +35,7 @@ func TestAffinityBillingMetadataDoesNotRebind(t *testing.T) {
 
 func TestAffinityRealmFallbackRetainsDerivedPage(t *testing.T) {
 	dir := t.TempDir()
-	writePoolSettings(t, dir, map[string]any{"affinity_max_messages": 1, "workbuddy": map[string]any{"intl": map[string]any{"realm_fallback_enabled": true}}})
+	writePoolSettings(t, dir, map[string]any{"affinity_max_messages": 1, "affinity_long_strategy": "partition", "workbuddy": map[string]any{"intl": map[string]any{"realm_fallback_enabled": true}}})
 	writeChatAccount(t, dir, "intl-a", realmIntl, nil)
 	for _, uid := range []string{"cn-a", "cn-b", "cn-c", "cn-d", "cn-e", "cn-f"} {
 		writeChatAccount(t, dir, uid, realmCN, nil)
@@ -134,7 +134,7 @@ func TestV1PageRunsPrioritiesBeforeCursor(t *testing.T) {
 			writeChatAccount(t, dir, "b", realmIntl, map[string]any{"credits": poolCredits(30)})
 			p := setupChatProvider(t, realmIntl, dir, nil).Pool()
 			setAccountWindow(t, p, 7)
-			policy := providers.AffinityPolicy{Cohort: []string{"b", "a"}, Rotate: true, Scope: "page/intl/0/3"}
+			policy := providers.AffinityPolicy{Cohort: []string{"b", "a"}, Rotate: true, Scope: "page/intl/0/3", Page: true, Partition: true}
 			for i := 0; i < 3; i++ {
 				a, err := p.Pick("m", "", nil, policy)
 				if err != nil || a.UID() != "a" {
@@ -150,7 +150,7 @@ func TestV1SmallPoolLongConversationStaysSticky(t *testing.T) {
 	for _, uid := range []string{"a", "b", "c"} {
 		writeChatAccount(t, dir, uid, realmIntl, nil)
 	}
-	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_max_messages": 1})
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_max_messages": 1, "affinity_long_strategy": "partition"})
 	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
 	p.chatBaseURL = newChatTestServer(t, fake).URL
 	for i := 0; i < 3; i++ {
@@ -179,7 +179,7 @@ func TestV1PageFallbackDoesNotCreateStickyBinding(t *testing.T) {
 		writeChatAccount(t, dir, uid, realmIntl, nil)
 	}
 	p := setupChatProvider(t, realmIntl, dir, nil).Pool()
-	policy := providers.AffinityPolicy{Cohort: []string{"a", "b"}, Rotate: true, Scope: "page/intl/0/3"}
+	policy := providers.AffinityPolicy{Cohort: []string{"a", "b"}, Rotate: true, Scope: "page/intl/0/3", Page: true, Partition: true}
 	a, err := p.Pick("m", "long", map[string]bool{"a": true, "b": true}, policy)
 	if err != nil || (a.UID() != "c" && a.UID() != "d") {
 		t.Fatal("no legal group-external fallback")
@@ -212,7 +212,7 @@ func TestV1PageWeightedSharesSpanModels(t *testing.T) {
 			}
 			p := setupChatProvider(t, realmIntl, dir, nil).Pool()
 			setAccountWindow(t, p, 7)
-			policy := providers.AffinityPolicy{Cohort: []string{"a", "d"}, Rotate: true, Scope: "page/intl/0/3"}
+			policy := providers.AffinityPolicy{Cohort: []string{"a", "d"}, Rotate: true, Scope: "page/intl/0/3", Page: true, Partition: true}
 			for i, want := range []string{"a", "d", "a", "d"} {
 				model := []string{"m", "n"}[i%2]
 				a, err := p.Pick(model, "", nil, policy)
@@ -221,5 +221,162 @@ func TestV1PageWeightedSharesSpanModels(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestChatLongPrefixDefaultCohortRotatesThreeAccounts(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 48; i++ {
+		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}
+	for len(msgs) < 401 {
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": "history"})
+	}
+	for i := 0; i < 32; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": msgs}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 3 {
+			t.Fatalf("default cohort diagnostics: %+v", snapshot.Affinity)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+	}
+	counts := map[string]int{}
+	for _, call := range fake.snapshot() {
+		counts[call.Header.Get("Authorization")]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("default cohort sprayed accounts: %v", counts)
+	}
+	for _, count := range counts {
+		if count < 10 || count > 11 {
+			t.Fatalf("default cohort did not round robin: %v", counts)
+		}
+	}
+}
+
+func TestChatLongPrefixWorkbuddyPartitionOverride(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 48; i++ {
+		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{
+		"affinity_provider_strategies": map[string]any{"workbuddy": "partition"},
+	})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}
+	for len(msgs) < 401 {
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": "history"})
+	}
+	for i := 0; i < 32; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": msgs}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 16 {
+			t.Fatalf("provider partition diagnostics: %+v", snapshot.Affinity)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+	}
+	counts := map[string]int{}
+	for _, call := range fake.snapshot() {
+		counts[call.Header.Get("Authorization")]++
+	}
+	if len(counts) != 16 {
+		t.Fatalf("provider partition used wrong membership: %v", counts)
+	}
+	for _, count := range counts {
+		if count != 2 {
+			t.Fatalf("provider partition did not round robin: %v", counts)
+		}
+	}
+}
+
+func TestDefaultCohortPageCursorPrecedesManualPriority(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a", realmIntl, map[string]any{"weight": 10})
+	writeChatAccount(t, dir, "b", realmIntl, nil)
+	writeChatAccount(t, dir, "c", realmIntl, nil)
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_max_messages": 1, "affinity_page_size": 3})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	for i := 0; i < 3; i++ {
+		r := chatRequest(t, "m", map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "first"}, map[string]any{"role": "assistant", "content": fmt.Sprint(i)}}})
+		s, err := p.OpenChat(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := s.(providers.UsageSnapshotReporter).UsageSnapshot().Affinity; d.Mode != "page" || d.PoolSize != 3 {
+			t.Fatalf("default cohort diagnostics: %+v", d)
+		}
+		drainChatFrames(t, s)
+		_ = s.Close()
+	}
+	seen := map[string]bool{}
+	for _, call := range fake.snapshot() {
+		seen[call.Header.Get("Authorization")] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("manual priority bypassed the default cohort page cursor: %v", seen)
+	}
+}
+
+func TestChatGlobalPartitionWorkbuddyCohortOverride(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 48; i++ {
+		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
+	}
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{
+		"affinity_long_strategy":       "partition",
+		"affinity_page_size":           5,
+		"affinity_provider_strategies": map[string]any{"workbuddy": "cohort"},
+		"affinity_provider_page_sizes": map[string]any{"workbuddy": 3},
+	})
+	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+	p.chatBaseURL = newChatTestServer(t, fake).URL
+	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}
+	for len(msgs) < 401 {
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": "history"})
+	}
+	for i := 0; i < 3; i++ {
+		stream, err := p.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": msgs}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 3 {
+			t.Fatalf("cohort provider override diagnostics: %+v", snapshot.Affinity)
+		}
+		drainChatFrames(t, stream)
+		_ = stream.Close()
+	}
+	seen := map[string]bool{}
+	for _, call := range fake.snapshot() {
+		seen[call.Header.Get("Authorization")] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("provider cohort override did not use three accounts: %v", seen)
+	}
+}
+
+func TestPartitionZeroPageRunsPriorities(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "a", realmIntl, map[string]any{"weight": 10})
+	writeChatAccount(t, dir, "b", realmIntl, nil)
+	p := setupChatProvider(t, realmIntl, dir, nil).Pool()
+	setAccountWindow(t, p, 7)
+	policy := providers.AffinityPolicy{Cohort: []string{"b", "a"}, Rotate: true, Scope: "intl/m", Page: false, Partition: true}
+	for i := 0; i < 2; i++ {
+		a, err := p.Pick("m", "", nil, policy)
+		if err != nil || a.UID() != "a" {
+			t.Fatalf("partition zero page bypassed priority: %v %v", a, err)
+		}
 	}
 }

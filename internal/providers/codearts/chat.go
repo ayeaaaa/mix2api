@@ -114,7 +114,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	// clients without a session header, but give the account pool a stable
 	// prefix key so one conversation does not rotate accounts each turn.
 	settings, _ := p.store.Load()
-	options := providers.LoadAffinityOptions(settings)
+	options := providers.LoadAffinityOptions(settings).ForProvider("codearts")
 	route := providers.ResolveAffinityForBody(req, build.Body, options)
 	affinityKey := route.Key
 

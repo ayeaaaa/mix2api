@@ -2677,12 +2677,12 @@ func TestChatPrefixSessionAffinityStableKey(t *testing.T) {
 	}
 }
 
-func TestChatLongPrefixRotatesWithinV1Partition(t *testing.T) {
+func TestChatGlobalPartitionLongPrefix(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 48; i++ {
 		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
 	}
-	p := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_long_strategy": "partition"})
 	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
 	p.chatBaseURL = newChatTestServer(t, fake).URL
 	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}

@@ -78,7 +78,7 @@ func TestV1LongPageUsesRankModuloPartition(t *testing.T) {
 	for i := 39; i >= 0; i-- {
 		uids = append(uids, fmt.Sprintf("u%02d", i))
 	}
-	o := LoadAffinityOptions(nil)
+	o := LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"})
 	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
 	p := r.Policy(uids, "intl", "deepseek", o)
 	want := []string{"u01", "u04", "u07", "u10", "u13", "u16", "u19", "u22", "u25", "u28", "u31", "u34", "u37"}
@@ -95,18 +95,18 @@ func TestV1LongPageUsesRankModuloPartition(t *testing.T) {
 
 func TestV1SmallRealmRestoresStickySelection(t *testing.T) {
 	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
-	p := r.Policy([]string{"a", "b", "c"}, "intl", "m", LoadAffinityOptions(nil))
+	p := r.Policy([]string{"a", "b", "c"}, "intl", "m", LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"}))
 	if p.Rotate {
 		t.Fatalf("small realm should stay sticky: %+v", p)
 	}
-	limited := r.Policy([]string{"a", "b"}, "intl", "m", LoadAffinityOptions(nil), 40)
+	limited := r.Policy([]string{"a", "b"}, "intl", "m", LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"}), 40)
 	if !limited.Rotate || !reflect.DeepEqual(limited.Cohort, []string{"a", "b"}) {
 		t.Fatalf("small allow-list in large realm is still a page: %+v", limited)
 	}
 }
 
 func TestV1ZeroPageReleasesLongDerivedKey(t *testing.T) {
-	o := LoadAffinityOptions(map[string]any{"affinity_max_messages": 1, "affinity_page_size": 0})
+	o := LoadAffinityOptions(map[string]any{"affinity_max_messages": 1, "affinity_page_size": 0, "affinity_long_strategy": "partition"})
 	r := ResolveAffinity(ChatRequest{Messages: sessionRaw(t, map[string]any{"role": "user", "content": "hi"}, map[string]any{"role": "assistant", "content": "ok"})}, o)
 	if r.Key != "" || r.Mode != "rotation" {
 		t.Fatalf("zero page did not release affinity: %+v", r)
@@ -115,7 +115,7 @@ func TestV1ZeroPageReleasesLongDerivedKey(t *testing.T) {
 
 func TestV1PageCursorSharedAcrossAllowedSubsets(t *testing.T) {
 	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
-	o := LoadAffinityOptions(nil)
+	o := LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"})
 	p := r.Policy([]string{"a", "b"}, "intl", "m", o, 40)
 	q := r.Policy([]string{"a", "c"}, "intl", "n", o, 40)
 	var rotation AffinityRotation

@@ -38,10 +38,40 @@ func TestChat1017ToolChoiceNoneKeepsDeclarations(t *testing.T) {
 	}
 }
 
+func TestChatLongPrefixDefaultCohortRotatesThreeAccounts(t *testing.T) {
+	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
+	fake, _ := newT5Fake(t, nil)
+	p, _ := newT5Provider(t, "u0", "u1", "u2", "u3", "u4", "u5")
+	for i := 0; i < 6; i++ {
+		req := t5Request(t, map[string]any{"model": "GLM-5.2", "messages": t5Messages(t5UserMessage("first"), map[string]any{"role": "assistant", "content": fmt.Sprint(i)})}, "")
+		s, err := p.OpenChat(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t5CollectFrames(t, s)
+		_ = s.Close()
+	}
+	counts := map[string]int{}
+	for _, call := range fake.snapshot() {
+		counts[call.Header.Get("X-Auth-Token")]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("default cohort used wrong membership: %v", counts)
+	}
+	for _, n := range counts {
+		if n != 2 {
+			t.Fatalf("default cohort not round robin: %v", counts)
+		}
+	}
+}
+
 func TestChatLongPrefixRotatesWithinV1Partition(t *testing.T) {
 	t.Setenv("WB_AFFINITY_MAX_MSGS", "1")
 	fake, _ := newT5Fake(t, nil)
 	p, _ := newT5Provider(t, "u0", "u1", "u2", "u3", "u4", "u5")
+	if _, err := p.store.Merge(map[string]any{"affinity_provider_strategies": map[string]any{"codearts": "partition"}}); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 6; i++ {
 		req := t5Request(t, map[string]any{"model": "GLM-5.2", "messages": t5Messages(t5UserMessage("first"), map[string]any{"role": "assistant", "content": fmt.Sprint(i)})}, "")
 		s, err := p.OpenChat(context.Background(), req)

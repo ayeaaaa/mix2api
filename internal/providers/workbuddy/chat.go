@@ -207,7 +207,7 @@ func (p *Provider) openChat(
 	if err != nil {
 		return nil, err
 	}
-	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot())
+	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot()).ForProvider("workbuddy")
 	route := providers.ResolveAffinityForBody(req, baseBody, affinityOptions)
 	req.SessionKey = route.Key
 	turnRequestID := newTurnRequestID()

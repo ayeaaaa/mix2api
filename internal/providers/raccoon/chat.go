@@ -87,7 +87,7 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	if p.store != nil {
 		settings, _ = p.store.Load()
 	}
-	options := providers.LoadAffinityOptions(settings)
+	options := providers.LoadAffinityOptions(settings).ForProvider("raccoon")
 	route := providers.ResolveAffinity(req, options)
 	req.SessionKey = route.Key
 

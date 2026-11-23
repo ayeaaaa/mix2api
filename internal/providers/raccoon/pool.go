@@ -656,14 +656,25 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 			uids = append(uids, item.uid)
 			byUID[item.uid] = item
 		}
-		if policy.HasEligibleMember(uids) {
-			filter := policy
-			filter.Rotate = false
+		// V1 runs priorities before its cursor. Page=false with Rotate=true is
+		// the page_size=0 boundary with a model cohort; keep the same ordering.
+		if policy.Partition && (policy.Page || policy.Rotate) {
+			if policy.HasEligibleMember(uids) {
+				filter := policy
+				filter.Rotate = false
+				selected = nil
+				for _, uid := range p.affinityRotation.Candidates(uids, filter) {
+					selected = append(selected, byUID[uid])
+				}
+				pageReady = policy.Rotate
+			}
+		} else {
+			// v2.8.16 cohort behavior, including the long-page cursor winning
+			// before the least-busy ordering below.
 			selected = nil
-			for _, uid := range p.affinityRotation.Candidates(uids, filter) {
+			for _, uid := range p.affinityRotation.Candidates(uids, policy) {
 				selected = append(selected, byUID[uid])
 			}
-			pageReady = policy.Rotate
 		}
 	}
 	sort.SliceStable(selected, func(i, j int) bool {

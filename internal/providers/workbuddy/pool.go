@@ -606,15 +606,34 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 		for _, a := range eligible {
 			uids = append(uids, accountUID(a))
 		}
-		if policy.HasEligibleMember(uids) {
-			filter := policy
-			filter.Rotate = false
-			preferred := p.affinityRotation.Candidates(uids, filter)
+		// V1 runs priorities before its cursor. Page=false with Rotate=true is
+		// the page_size=0 boundary with a model cohort; keep the same ordering.
+		if policy.Partition && (policy.Page || policy.Rotate) {
+			if policy.HasEligibleMember(uids) {
+				filter := policy
+				filter.Rotate = false
+				preferred := p.affinityRotation.Candidates(uids, filter)
+				eligible = nil
+				for _, uid := range preferred {
+					eligible = append(eligible, byUID[uid])
+				}
+				scope = policy.Scope
+				pageReady = policy.Rotate
+			}
+		} else {
+			// v2.8.16 cohort behavior: a page cursor wins before manual or
+			// expiring priorities. Model cohorts and partition pages use the
+			// normal priority layers below.
+			preferred := p.affinityRotation.Candidates(uids, policy)
+			if policy.Rotate && len(preferred) == 1 {
+				if account := byUID[preferred[0]]; account != nil {
+					return account, nil
+				}
+			}
 			eligible = nil
 			for _, uid := range preferred {
 				eligible = append(eligible, byUID[uid])
 			}
-			pageReady = policy.Rotate
 			scope = policy.Scope
 		}
 	}

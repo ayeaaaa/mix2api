@@ -7809,7 +7809,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
             <div class="help-detail" id="affinityStableKeyHelp" hidden>
               WorkBuddy / CodeArts / 小浣熊在客户端没有提供会话 ID 时，默认用「前置 system/developer + 首条 user」派生会话键。开启后再包含首条 assistant，分开相同开场白的对话。默认关闭；显式会话 ID 始终优先。
               <br><br>
-              切换此项会让已有对话重新绑定一次，可能出现一次冷缓存。长会话会按下方账号组轮转；缓存命中仍取决于上游、前缀和缓存存活时间。
+              切换此项会让已有对话重新绑定一次，可能出现一次冷缓存。长会话会按下方策略轮转；缓存命中仍取决于上游、前缀和缓存存活时间。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -7827,9 +7827,50 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:10px 0">
           <label><input id="setAffinityPrefix" type="checkbox" style="width:16px;height:16px"> 无会话 ID 时自动亲和</label>
           <label>长会话阈值 <input id="setAffinityMaxMessages" type="number" min="0" max="100000" step="1" style="width:90px"> 条</label>
-          <label>长会话分区数量 <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> 组</label>
+          <label>全局策略
+            <select id="setAffinityLongStrategy">
+              <option value="cohort">固定账号数（默认）</option>
+              <option value="partition">V1 分区</option>
+            </select>
+          </label>
+          <label><span id="setAffinityPageSizeLabel">固定账号数</span>
+            <input id="setAffinityPageSize" type="number" min="0" max="64" step="1" style="width:70px"> <span id="setAffinityPageSizeUnit">个</span>
+          </label>
         </div>
-        <p style="font-size:12px;color:var(--dim)">跟随 V1：默认超过 400 条上游消息后，按 UID 排序分成 3 个分区；会话固定落入一组，区内保留原有优先级与轮询。40 个账号时每组约 13–14 个。阈值 0 = 不切换；分区数 0 = 全池轮转，1 = 保持粘滞。分区数已覆盖整个 realm 池时恢复粘滞；区内不可用时安全回退。</p>
+        <p id="setAffinityLongHint" style="font-size:12px;color:var(--dim)">超过阈值后在最多 3 个固定账号内轮转；保留现有优先级与轮询。阈值 0 = 不切换；数量 0 = 全池轮转，1 = 保持粘滞。</p>
+        <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:12px 0;max-width:780px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">按提供商覆盖（未选择或留空 = 跟随全局）</div>
+          <div style="display:grid;gap:8px">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span style="min-width:90px;font-size:13px">WorkBuddy</span>
+              <select id="setAffinityStrategyWorkbuddy">
+                <option value="">跟随全局</option>
+                <option value="cohort">固定账号数</option>
+                <option value="partition">V1 分区</option>
+              </select>
+              <label style="font-size:13px">数量 <input id="setAffinityPageWorkbuddy" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span style="min-width:90px;font-size:13px">CodeArts</span>
+              <select id="setAffinityStrategyCodearts">
+                <option value="">跟随全局</option>
+                <option value="cohort">固定账号数</option>
+                <option value="partition">V1 分区</option>
+              </select>
+              <label style="font-size:13px">数量 <input id="setAffinityPageCodearts" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span style="min-width:90px;font-size:13px">小浣熊</span>
+              <select id="setAffinityStrategyRaccoon">
+                <option value="">跟随全局</option>
+                <option value="cohort">固定账号数</option>
+                <option value="partition">V1 分区</option>
+              </select>
+              <label style="font-size:13px">数量 <input id="setAffinityPageRaccoon" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+            </div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--dim)">固定账号数：长会话只在 N 个固定账号内轮转，缓存更稳。V1 分区：按 UID 排序取模分成 N 个分区，40 个账号时每组约 13–14 个，区内保留原有优先级与轮询。未设置提供商覆盖时使用全局策略；数量 0 = 全池轮转，1 = 保持粘滞。缓存命中仍取决于上游、前缀和缓存存活时间。</p>
         <label for="setAffinityModelPools" style="display:block;font-size:13px;margin:12px 0 6px">低流量模型优先账号数（JSON，可选）</label>
         <textarea id="setAffinityModelPools" class="mono" rows="3" style="width:100%;max-width:640px" placeholder='{"intl/deepseek-v4.1-flash-sg":3}'></textarea>
         <p style="font-size:12px;color:var(--dim)">按 realm/model 配置 1–64 个优先账号，0 或删除条目关闭。只影响无显式会话 ID 的请求，不改变账号开关、权限或限额；默认不收敛账号池。</p>
@@ -18842,12 +18883,58 @@ async function saveAffinityStableKey(btn){
 
 let AFFINITY_MODEL_POOL_SIZES = {};
 let REMAINING_PRIORITY_SUPPORTED = false;
+function updateAffinityLongStrategyHelp(){
+  const strategyEl=document.getElementById('setAffinityLongStrategy');
+  const pageEl=document.getElementById('setAffinityPageSize');
+  const strategy=strategyEl?strategyEl.value:'cohort';
+  const page=pageEl?pageEl.value.trim():'3';
+  const n=Number(page);
+  const label=document.getElementById('setAffinityPageSizeLabel');
+  const unit=document.getElementById('setAffinityPageSizeUnit');
+  const hint=document.getElementById('setAffinityLongHint');
+  if(label) label.textContent=strategy==='partition'?'分区数量':'固定账号数';
+  if(unit) unit.textContent=strategy==='partition'?'个分区':'个账号';
+  if(hint){
+    if(strategy==='partition'){
+      hint.textContent='超过阈值后按 UID 排序取模分成 '+(page||'0')+' 个分区；未设置的提供商跟随全局。数量 0 = 全池轮转，1 = 保持粘滞；分区覆盖整个 realm 时恢复粘滞。';
+    } else {
+      hint.textContent='超过阈值后在最多 '+(page||'0')+' 个固定账号内轮转；未设置的提供商跟随全局。数量 0 = 全池轮转，1 = 保持粘滞。';
+    }
+  }
+}
 function renderAffinitySettings(data){
   const set = (id,value) => { const el=document.getElementById(id); if(el) el.value=String(value); };
   const prefix=document.getElementById('setAffinityPrefix');
   if(prefix) prefix.checked=data.affinity_by_prefix !== false;
   set('setAffinityMaxMessages',data.affinity_max_messages ?? 400);
   set('setAffinityPageSize',data.affinity_page_size ?? 3);
+  const strategy=document.getElementById('setAffinityLongStrategy');
+  if(strategy){
+    const saved=data.affinity_long_strategy==='partition'?'partition':'cohort';
+    strategy.value=saved;
+    strategy.onchange=updateAffinityLongStrategyHelp;
+  }
+  const globalPage=document.getElementById('setAffinityPageSize');
+  if(globalPage) globalPage.oninput=updateAffinityLongStrategyHelp;
+  const strategies=data.affinity_provider_strategies||{};
+  const providerPages=data.affinity_provider_page_sizes||{};
+  const setProvider=(key,suffix)=>{
+    const select=document.getElementById('setAffinityStrategy'+suffix);
+    if(select){
+      const value=typeof strategies[key]==='string'?strategies[key]:'';
+      select.value=(value==='cohort'||value==='partition')?value:'';
+    }
+    const input=document.getElementById('setAffinityPage'+suffix);
+    if(input){
+      const n=providerPages[key];
+      input.value=Number.isInteger(n)&&n>=0?String(n):'';
+      input.placeholder='跟随全局（'+(data.affinity_page_size ?? 3)+'）';
+    }
+  };
+  setProvider('workbuddy','Workbuddy');
+  setProvider('codearts','Codearts');
+  setProvider('raccoon','Raccoon');
+  updateAffinityLongStrategyHelp();
   AFFINITY_MODEL_POOL_SIZES=data.affinity_model_pool_sizes || {};
   set('setAffinityModelPools',JSON.stringify(AFFINITY_MODEL_POOL_SIZES,null,2));
   REMAINING_PRIORITY_SUPPORTED=data.remaining_priority_supported === true;
@@ -18862,7 +18949,9 @@ async function saveAffinityRouting(btn){
   if(btn) btn.disabled=true;
   try {
     const val=id=>document.getElementById(id).value.trim();
-    const integer=(id,max)=>{const raw=val(id),n=Number(raw);if(raw==='' || !Number.isInteger(n) || n<0 || n>max) throw new Error('账号数/阈值必须是范围内的整数');return n;};
+    const integer=(id,max)=>{const raw=val(id),n=Number(raw);if(raw==='' || !Number.isInteger(n) || n<0 || n>max) throw new Error('账号数/分区数/阈值必须是范围内的整数');return n;};
+    const strategy=id=>{const raw=val(id);if(raw!==''&&raw!=='cohort'&&raw!=='partition') throw new Error('长会话策略必须是跟随全局、固定账号数或 V1 分区');return raw;};
+    const providerPage=id=>{const raw=val(id);if(raw==='') return -1;const n=Number(raw);if(!Number.isInteger(n)||n<0||n>64) throw new Error('提供商数量必须是 0–64 的整数，留空跟随全局');return n;};
     const parsedSizes=JSON.parse(val('setAffinityModelPools') || '{}');
     if(!parsedSizes || typeof parsedSizes!=='object' || Array.isArray(parsedSizes)) throw new Error('模型账号数必须是 JSON 对象');
     const sizes={};
@@ -18877,7 +18966,19 @@ async function saveAffinityRouting(btn){
     await postJSON('/settings/save',{
       affinity_by_prefix:!!document.getElementById('setAffinityPrefix').checked,
       affinity_max_messages:integer('setAffinityMaxMessages',100000),
-      affinity_page_size:integer('setAffinityPageSize',64),affinity_model_pool_sizes:sizes
+      affinity_page_size:integer('setAffinityPageSize',64),
+      affinity_long_strategy:strategy('setAffinityLongStrategy'),
+      affinity_provider_strategies:{
+        workbuddy:strategy('setAffinityStrategyWorkbuddy'),
+        codearts:strategy('setAffinityStrategyCodearts'),
+        raccoon:strategy('setAffinityStrategyRaccoon')
+      },
+      affinity_provider_page_sizes:{
+        workbuddy:providerPage('setAffinityPageWorkbuddy'),
+        codearts:providerPage('setAffinityPageCodearts'),
+        raccoon:providerPage('setAffinityPageRaccoon')
+      },
+      affinity_model_pool_sizes:sizes
     });
     toast('缓存调度已保存','ok');await loadSettings();
   } catch(e){toast('保存失败: '+e.message,'bad');}
