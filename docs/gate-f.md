@@ -319,6 +319,16 @@ race`, and the 16/16 dashboard JS harness pass. Published as `v2.8.16` at
 `07401b4`; evidence: `docs/smoke/2026-11-23-release-2.8.16.md`. No media or
 Windows SCM gate changed.
 
+**v2.8.17 addendum:** long-conversation routing is now selectable. The default
+`cohort` strategy keeps the v2.8.16 fixed-account rotation, while the optional
+`partition` strategy enables V1 UID-sorted rank-modulo partitions globally or
+per WorkBuddy/CodeArts/Raccoon, with shared page cursors, in-page priorities,
+the small-realm sticky guard, and safe group-external fallback. `page_size`
+meaning follows the resolved strategy, and the dashboard exposes the new
+controls. `make check`, `make race`, and the 16/16 dashboard JS harness pass.
+Published as `v2.8.17` at `1c1ee4e`; evidence:
+`docs/smoke/2026-11-23-release-2.8.17.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
