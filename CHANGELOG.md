@@ -3,19 +3,50 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.16] - 2026-11-23
 
-### 修复 / Fixed
+### 中文
 
-- WorkBuddy / CodeArts / Raccoon 为无会话 ID 的请求派生前缀亲和，覆盖 Chat、
-  Responses 和 Messages。稳定键开关现已接入；多条 system 与 user-only 对话
-  不再误绑定或跨轮改变键。
-- 超过 400 条消息的派生会话默认在实际 3 个账号中轮转；新增可选的 realm/model
-  优先账号数，保留权限、限额和安全换号规则。提供前缀哈希、路由模式和组外回退诊断。
-- 明确显示剩余用量优先未接入运行时，禁用面板控件但保留原配置。
-- Prefix affinity now works across protocols, with bounded long-conversation
-  cohorts, optional per-model preferred pools, and privacy-safe diagnostics.
-  Cache reuse remains subject to upstream behavior; no hit-rate guarantee.
+#### 变更
+
+- 客户端没有显式会话 ID 时，WorkBuddy / CodeArts / 小浣熊现在按「前置
+  system/developer + 首条 user」派生前缀亲和，覆盖 Chat、Responses 和
+  Messages；开启稳定键后再纳入首条 assistant。显式会话 ID 始终优先。
+- 超过 400 条消息的派生会话默认在最多 3 个账号内轮转；新增可选
+  `affinity_model_pool_sizes`，按 `realm/model` 收窄低流量模型的新会话账号组。
+  账号授权、模型/套餐过滤、并发限额、11140 与安全换号规则均未放松。
+- 模型设置新增前缀缓存调度控件（开关、阈值、账号组、cohort JSON）；
+  「剩余用量优先」标注为当前未支持并禁用控件，原配置保留。
+- usage 行新增 `affinity_mode`、`n_msgs`、`prefix_sha`、`affinity_pool_size`、
+  `affinity_fallback` 诊断字段，不记录 prompt 或原始会话 ID。缓存命中仍取决于
+  上游行为，本次不承诺命中率。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Changed
+
+- When a client supplies no explicit session ID, WorkBuddy, CodeArts, and
+  Raccoon now derive prefix affinity from leading system/developer messages
+  plus the first user message across Chat, Responses, and Messages; stable-key
+  mode also includes the first assistant reply. Explicit session IDs still win.
+- Derived conversations above 400 messages rotate within at most 3 accounts.
+  Optional `affinity_model_pool_sizes` narrows new conversations for low-traffic
+  models per `realm/model`. Authorization, model/tier filtering, concurrency
+  limits, 11140, and safe failover are unchanged.
+- Models settings expose the new prefix-routing controls (enable, threshold,
+  account count, cohort JSON). "Remaining usage priority" is labeled unsupported
+  and disabled while its stored value is retained.
+- Usage rows add `affinity_mode`, `n_msgs`, `prefix_sha`, `affinity_pool_size`,
+  and `affinity_fallback`; prompt text and raw session identifiers are never
+  logged. Cache reuse still depends on upstream behavior; no hit-rate guarantee.
+
+#### Verification
+
+- `make check` and `make race` pass.
 
 ## [2.8.15] - 2026-11-23
 
