@@ -76,6 +76,9 @@ HTTPS 目标走 bridge 时，代理 URL 通过 loopback CONNECT 的
 
 不支持的代理 scheme 会直接失败，不会静默回退到普通 TLS。
 
+Panel slot probe/discovery, supported URL forms and the Docker loopback caveat
+are documented in [`proxy-slots.md`](proxy-slots.md).
+
 ## 限制
 
 - 固定无 ALPN，因此只使用 HTTP/1.1；这与官方 Node 客户端和现有 SSE 路径一致。

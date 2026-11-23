@@ -115,3 +115,108 @@ func TestProxySlotsAPI(t *testing.T) {
 		t.Fatalf("test without probe status=%d body=%s", rec.Code, rec.Body)
 	}
 }
+
+func TestProxyProbeAndDiscoverInjected(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	slots := platformproxy.New(store, nil)
+	saved, err := slots.Replace([]platformproxy.Slot{{URL: "http://127.0.0.1:7890"}})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("seed slots = %#v, %v", saved, err)
+	}
+	slotID := saved[0].ID
+
+	server := New(ServerOptions{
+		ProxySlots: slots,
+		PanelAuth:  passThroughAuth,
+		ProxyProbe: func(_ context.Context, url string) (map[string]any, error) {
+			if url != "http://127.0.0.1:7890" {
+				t.Fatalf("probe url = %q", url)
+			}
+			return map[string]any{
+				"ok": true, "exit_ip": "203.0.113.10", "latency_ms": int64(17),
+				"intel_ok": true, "country": "美国", "country_code": "US",
+				"ip_type": "residential", "isp": "Test ISP", "asn": "AS64501",
+			}, nil
+		},
+		ProxyDiscover: func(context.Context) []map[string]any {
+			return []map[string]any{{
+				"url": "http://127.0.0.1:17901", "reachable": true,
+				"exit_ip": "203.0.113.11", "latency_ms": 8,
+				"country": "美国", "ip_type": "residential",
+			}}
+		},
+	})
+
+	rec := doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+slotID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if ok, _ := body["ok"].(bool); !ok || body["exit_ip"] != "203.0.113.10" {
+		t.Fatalf("probe body = %#v", body)
+	}
+	slot, _ := body["slot"].(map[string]any)
+	if slot == nil || slot["ip"] != "203.0.113.10" || slot["country"] != "美国" || slot["ip_type"] != "residential" {
+		t.Fatalf("updated slot = %#v", slot)
+	}
+
+	rec = doRequest(server, http.MethodPost, "/proxy/discover", `{}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", rec.Code, rec.Body)
+	}
+	candidates, _ := decodeBody(t, rec)["candidates"].([]any)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	candidate, _ := candidates[0].(map[string]any)
+	if candidate["url"] != "http://127.0.0.1:17901" || candidate["reachable"] != true {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+func TestProxyProbeFailurePreservesSlot(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	slots := platformproxy.New(store, nil)
+	saved, err := slots.Replace([]platformproxy.Slot{{
+		URL: "http://127.0.0.1:7890", IP: "198.51.100.1",
+		Country: "美国", CountryCode: "US", IPType: "residential", ISP: "Old ISP", ASN: "AS64502",
+	}})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("seed slots = %#v, %v", saved, err)
+	}
+	mode := "fail"
+	server := New(ServerOptions{
+		ProxySlots: slots,
+		PanelAuth:  passThroughAuth,
+		ProxyProbe: func(context.Context, string) (map[string]any, error) {
+			if mode == "fail" {
+				return map[string]any{"ok": false, "exit_ip": "", "error": "proxy unreachable"}, nil
+			}
+			return map[string]any{"ok": true, "exit_ip": "203.0.113.12", "latency_ms": int64(9), "intel_ok": false}, nil
+		},
+	})
+
+	rec := doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+saved[0].ID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("failure status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if ok, _ := body["ok"].(bool); ok || body["error"] != "proxy unreachable" || body["slot"] != nil {
+		t.Fatalf("failure body = %#v", body)
+	}
+	current, _ := slots.List()
+	if len(current) != 1 || current[0].IP != "198.51.100.1" || current[0].Country != "美国" || current[0].CountryCode != "US" || current[0].IPType != "residential" || current[0].ISP != "Old ISP" || current[0].ASN != "AS64502" {
+		t.Fatalf("failed probe erased slot data: %#v", current)
+	}
+
+	mode = "success"
+	rec = doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+saved[0].ID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("success status=%d body=%s", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	slot, _ := body["slot"].(map[string]any)
+	if slot == nil || slot["ip"] != "203.0.113.12" || slot["country"] != "美国" || slot["country_code"] != "US" || slot["ip_type"] != "residential" || slot["isp"] != "Old ISP" || slot["asn"] != "AS64502" {
+		t.Fatalf("success without intel did not preserve old intel: %#v", slot)
+	}
+}

@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Added / 新增
+
+- 账号代理槽补齐真实出口探测与 mihomo 端口发现；面板新增协议/服务器/端口/认证
+  的分步添加表单，探测成功后回填出口 IP、国家、住宅/机房、ISP/ASN，并可用于
+  自动命名。Docker 部署增加 `127.0.0.1` 仅指容器自身的提示。
+- Proxy slots now have real exit probing and mihomo port discovery. The panel
+  adds a protocol/server/port/credentials form, stores the probed exit IP plus
+  country/ISP/ASN/type, and can auto-name slots from the exit. The panel also
+  warns that `127.0.0.1` inside a container is not the host proxy.
+
+### Fixed / 修复
+
+- `/proxy/slots/test` and `/proxy/discover` no longer return
+  `proxy probe unavailable`/an empty result in the production composition;
+  `cmd/mix2api` wires the probe and discovery seams, with sanitized errors and
+  local fake-proxy coverage.
+- The two routes now fail per slot/candidate instead of blocking saving or
+  account binding.
+
 ## [2.8.17] - 2026-11-23
 
 ### 中文
