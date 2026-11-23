@@ -7848,7 +7848,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px"><span id="setAffinityPageLabelWorkbuddy">数量（个账号）</span> <input id="setAffinityPageWorkbuddy" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelWorkbuddy">数量</span> <input id="setAffinityPageWorkbuddy" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <span style="min-width:90px;font-size:13px">CodeArts</span>
@@ -7857,7 +7857,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px"><span id="setAffinityPageLabelCodearts">数量（个账号）</span> <input id="setAffinityPageCodearts" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelCodearts">数量</span> <input id="setAffinityPageCodearts" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <span style="min-width:90px;font-size:13px">小浣熊</span>
@@ -7866,7 +7866,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
                 <option value="cohort">固定账号数</option>
                 <option value="partition">V1 分区</option>
               </select>
-              <label style="font-size:13px"><span id="setAffinityPageLabelRaccoon">数量（个账号）</span> <input id="setAffinityPageRaccoon" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
+              <label style="font-size:13px"><span id="setAffinityPageLabelRaccoon">数量</span> <input id="setAffinityPageRaccoon" type="number" min="0" max="64" step="1" placeholder="跟随全局" style="width:110px"></label>
             </div>
           </div>
         </div>
@@ -18882,7 +18882,6 @@ async function saveAffinityStableKey(btn){
 }
 
 let AFFINITY_MODEL_POOL_SIZES = {};
-let AFFINITY_PROVIDER_PAGE_SIZES = {};
 let REMAINING_PRIORITY_SUPPORTED = false;
 const AFFINITY_PROVIDER_ROWS=[['workbuddy','Workbuddy'],['codearts','Codearts'],['raccoon','Raccoon']];
 function updateAffinityLongStrategyHelp(){
@@ -18909,7 +18908,7 @@ function updateAffinityProviderHelp(){
   const globalPageEl=document.getElementById('setAffinityPageSize');
   const globalRaw=globalPageEl?globalPageEl.value.trim():'3';
   const globalPage=Number(globalRaw);
-  for(const [key,suffix] of AFFINITY_PROVIDER_ROWS){
+  for(const [,suffix] of AFFINITY_PROVIDER_ROWS){
     const select=document.getElementById('setAffinityStrategy'+suffix);
     const selected=select?select.value:'';
     const strategy=(selected==='cohort'||selected==='partition')?selected:globalStrategy;
@@ -18918,9 +18917,10 @@ function updateAffinityProviderHelp(){
     if(label) label.textContent='数量（'+unit+'）';
     const input=document.getElementById('setAffinityPage'+suffix);
     if(input){
-      const override=AFFINITY_PROVIDER_PAGE_SIZES[key];
-      const hasOverride=Number.isInteger(override)&&override>=0;
-      const resolved=hasOverride?override:(Number.isInteger(globalPage)&&globalPage>=0?globalPage:0);
+      const raw=input.value.trim();
+      const current=Number(raw);
+      const hasOverride=raw!==''&&Number.isInteger(current)&&current>=0&&current<=64;
+      const resolved=hasOverride?current:(Number.isInteger(globalPage)&&globalPage>=0?globalPage:0);
       input.placeholder=(hasOverride?'本提供商':'跟随全局')+'：'+resolved+' '+unit;
     }
   }
@@ -18945,7 +18945,6 @@ function renderAffinitySettings(data){
   if(globalPage) globalPage.oninput=updateAffinityHelp;
   const strategies=data.affinity_provider_strategies||{};
   const providerPages=data.affinity_provider_page_sizes||{};
-  AFFINITY_PROVIDER_PAGE_SIZES=providerPages;
   const setProvider=(key,suffix)=>{
     const select=document.getElementById('setAffinityStrategy'+suffix);
     if(select){
@@ -18957,6 +18956,7 @@ function renderAffinitySettings(data){
     if(input){
       const n=providerPages[key];
       input.value=Number.isInteger(n)&&n>=0?String(n):'';
+      input.oninput=updateAffinityProviderHelp;
     }
   };
   setProvider('workbuddy','Workbuddy');
