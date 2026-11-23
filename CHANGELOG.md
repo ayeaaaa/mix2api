@@ -3,26 +3,62 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.18] - 2026-11-23
 
-### Added / 新增
+### 中文
 
-- 账号代理槽补齐真实出口探测与 mihomo 端口发现；面板新增协议/服务器/端口/认证
-  的分步添加表单，探测成功后回填出口 IP、国家、住宅/机房、ISP/ASN，并可用于
-  自动命名。Docker 部署增加 `127.0.0.1` 仅指容器自身的提示。
-- Proxy slots now have real exit probing and mihomo port discovery. The panel
-  adds a protocol/server/port/credentials form, stores the probed exit IP plus
-  country/ISP/ASN/type, and can auto-name slots from the exit. The panel also
-  warns that `127.0.0.1` inside a container is not the host proxy.
+#### 新增
 
-### Fixed / 修复
+- 账号代理槽补齐真实出口探测：通过 HTTP / HTTPS(CONNECT) / SOCKS5 代理请求
+  出口 IP，成功后回填国家、住宅/机房、ISP/ASN，并可用于自动命名。
+- 面板新增「添加代理槽」分步表单（协议 / 服务器 / 端口 / 可选 `user:pass`），
+  同时保留完整 URL 行作为高级用法；新增 IPv6 括号处理、URL 去重和 Docker
+  `127.0.0.1` 仅指容器自身的提示。
+- 自动发现 mihomo 端口恢复可用：`WB_PROXY_DISCOVER_HOST` /
+  `WB_PROXY_DISCOVER_PORTS`（默认 `cli-proxy-mihomo`、`17901-17910`，支持
+  范围或逗号列表，最多 64 个）。
+- 探测与地理查询地址可通过 `WB_PROXY_PROBE_URL` / `WB_PROXY_GEO_URL` 覆盖；
+  使用说明见 `docs/proxy-slots.md`。
 
-- `/proxy/slots/test` and `/proxy/discover` no longer return
-  `proxy probe unavailable`/an empty result in the production composition;
-  `cmd/mix2api` wires the probe and discovery seams, with sanitized errors and
-  local fake-proxy coverage.
-- The two routes now fail per slot/candidate instead of blocking saving or
-  account binding.
+#### 修复
+
+- 生产入口注入 `ProxyProbe` / `ProxyDiscover`，`/proxy/slots/test` 不再返回
+  `proxy probe unavailable`，`/proxy/discover` 不再返回空列表。
+- 探测/发现失败按槽位或候选返回，不阻止保存和账号绑定；探测错误会剥离代理 URL
+  中的用户名密码；geo 查询失败不否定代理连通性，也不清除上次成功的地理信息。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 17/17。
+
+### English
+
+#### Added
+
+- Proxy slots now perform real exit probing through HTTP / HTTPS(CONNECT) /
+  SOCKS5 proxies, storing the exit IP plus country, residential/datacenter kind,
+  ISP/ASN, and enabling automatic slot naming.
+- The panel adds a structured "Add proxy slot" form (protocol / server / port /
+  optional `user:pass`) while keeping the full-URL row for advanced use, with
+  IPv6 bracket handling, URL de-duplication, and a Docker `127.0.0.1` caveat.
+- Mihomo port discovery works again via `WB_PROXY_DISCOVER_HOST` /
+  `WB_PROXY_DISCOVER_PORTS` (defaults `cli-proxy-mihomo`, `17901-17910`; ranges
+  or comma lists, up to 64 ports).
+- Probe and geo endpoints can be overridden with `WB_PROXY_PROBE_URL` /
+  `WB_PROXY_GEO_URL`; see `docs/proxy-slots.md`.
+
+#### Fixed
+
+- The production composition now injects `ProxyProbe` / `ProxyDiscover`, so
+  `/proxy/slots/test` no longer returns `proxy probe unavailable` and
+  `/proxy/discover` no longer returns an empty list.
+- Probe/discovery failures are reported per slot or candidate and never block
+  saving or account binding. Probe errors strip proxy URL credentials; a failed
+  geo lookup does not fail reachability or erase the last successful geo data.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 17/17.
 
 ## [2.8.17] - 2026-11-23
 
