@@ -122,6 +122,7 @@ func New(store *config.Store) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	pool.store = store
 
 	provider := &Provider{
 		store:         store,

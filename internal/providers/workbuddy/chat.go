@@ -202,14 +202,14 @@ func (p *Provider) openChat(
 		return nil, newAPIError(KindUnavailable, http.StatusServiceUnavailable, "WorkBuddy account pool is unavailable")
 	}
 
-	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot())
-	route := providers.ResolveAffinity(req, affinityOptions)
-	req.SessionKey = route.Key
-
+	originalRequest := req
 	baseBody, model, err := p.buildChatBody(req)
 	if err != nil {
 		return nil, err
 	}
+	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot())
+	route := providers.ResolveAffinityForBody(req, baseBody, affinityOptions)
+	req.SessionKey = route.Key
 	turnRequestID := newTurnRequestID()
 	vscodeConversationID := newMessageID()
 
@@ -365,7 +365,7 @@ func (p *Provider) openChat(
 		if !peerCfg.Enabled {
 			return nil, primaryErr
 		}
-		return peer.openChat(ctx, req, peerCfg, false)
+		return peer.openChat(ctx, originalRequest, peerCfg, false)
 	}
 	return nil, primaryErr
 }

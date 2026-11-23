@@ -18831,7 +18831,7 @@ async function saveAffinityStableKey(btn){
   if(btn) btn.disabled = true;
   try {
     await postJSON('/settings/save', {affinity_stable_key_enabled: value});
-    toast(value ? '已启用：会话键包含首条回复' : '已关闭：会话键只用前两条消息', 'ok');
+    toast(value ? '已启用：会话键包含首条回复' : '已关闭：会话键使用 system/developer + 首条 user', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -18863,10 +18863,14 @@ async function saveAffinityRouting(btn){
   try {
     const val=id=>document.getElementById(id).value.trim();
     const integer=(id,max)=>{const raw=val(id),n=Number(raw);if(raw==='' || !Number.isInteger(n) || n<0 || n>max) throw new Error('账号数/阈值必须是范围内的整数');return n;};
-    const sizes=JSON.parse(val('setAffinityModelPools') || '{}');
-    if(!sizes || typeof sizes!=='object' || Array.isArray(sizes)) throw new Error('模型账号数必须是 JSON 对象');
-    for(const [key,n] of Object.entries(sizes)) {
+    const parsedSizes=JSON.parse(val('setAffinityModelPools') || '{}');
+    if(!parsedSizes || typeof parsedSizes!=='object' || Array.isArray(parsedSizes)) throw new Error('模型账号数必须是 JSON 对象');
+    const sizes={};
+    for(const [rawKey,n] of Object.entries(parsedSizes)) {
+      const key=rawKey.trim().toLowerCase();
       if(!/^(intl|cn|codearts|raccoon)\/.+$/i.test(key) || !Number.isInteger(n) || n<0 || n>64) throw new Error('使用 realm/model: 0–64 的整数');
+      if(Object.hasOwn(sizes,key)) throw new Error('模型账号配置包含重复键');
+      sizes[key]=n;
     }
     // Deep-merge settings need explicit zeros to disable removed entries.
     for(const key of Object.keys(AFFINITY_MODEL_POOL_SIZES)) if(!Object.hasOwn(sizes,key)) sizes[key]=0;

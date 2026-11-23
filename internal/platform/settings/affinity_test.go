@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"path/filepath"
 	"testing"
@@ -42,5 +43,44 @@ func TestAffinitySettingsSaveAndDefaults(t *testing.T) {
 		if _, err := s.Save(context.Background(), bad); err == nil {
 			t.Fatalf("invalid affinity setting accepted: %v", bad)
 		}
+	}
+}
+
+func TestAffinityMergedRulesCapAndDeleteAreAtomic(t *testing.T) {
+	s := New(Service{Store: config.New(filepath.Join(t.TempDir(), "settings.json"))})
+	rules := map[string]any{}
+	for i := 0; i < 256; i++ {
+		rules[fmt.Sprintf("intl/m%d", i)] = 3
+	}
+	if _, err := s.Save(context.Background(), map[string]any{"affinity_model_pool_sizes": rules}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save(context.Background(), map[string]any{"affinity_model_pool_sizes": map[string]any{"intl/new": 3}, "pricing_enabled": false}); err == nil {
+		t.Fatal("merged cap was not enforced")
+	}
+	v, _ := s.View(context.Background())
+	if v["pricing_enabled"] != true {
+		t.Fatal("rejected save partially changed settings")
+	}
+	if _, err := s.Save(context.Background(), map[string]any{"affinity_model_pool_sizes": map[string]any{"intl/m0": 0, "intl/new": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = s.View(context.Background())
+	r := v["affinity_model_pool_sizes"].(map[string]any)
+	if len(r) != 256 || r["intl/m0"] != nil || r["intl/new"] != 3 {
+		t.Fatalf("deleted rule was not pruned: %v", r)
+	}
+	if _, err := s.Save(context.Background(), map[string]any{"affinity_model_pool_sizes": map[string]any{"intl/X": 3, "INTL/x": 2}}); err == nil {
+		t.Fatal("ambiguous normalized keys accepted")
+	}
+	// Full UI forms may carry 256 active rules plus explicit zero removals.
+	full := map[string]any{}
+	for i := 1; i < 256; i++ {
+		full[fmt.Sprintf("intl/m%d", i)] = 3
+	}
+	full["intl/new"] = 0
+	full["intl/replacement"] = 3
+	if _, err := s.Save(context.Background(), map[string]any{"affinity_model_pool_sizes": full}); err != nil {
+		t.Fatalf("full form with removal rejected: %v", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // ChatRequestMessages returns the request's decoded message list. Callers that
@@ -44,12 +45,22 @@ func DerivePrefixSessionKey(messages []json.RawMessage, stable bool) string {
 			return ""
 		}
 		role, _ := value["role"].(string)
+		role = strings.ToLower(role)
+		if role == "developer" {
+			role = "system"
+		}
+		projected := map[string]any{"role": role, "content": affinityContent(value["content"])}
+		for _, key := range []string{"name", "tool_calls", "function_call"} {
+			if v, ok := value[key]; ok {
+				projected[key] = v
+			}
+		}
 		if !haveUser {
 			switch role {
 			case "system", "developer":
-				head = append(head, value)
+				head = append(head, projected)
 			case "user":
-				head = append(head, value)
+				head = append(head, projected)
 				haveUser = true
 				if !stable {
 					return prefixHeadKey(head)
@@ -58,7 +69,7 @@ func DerivePrefixSessionKey(messages []json.RawMessage, stable bool) string {
 				return ""
 			}
 		} else if role == "assistant" {
-			head = append(head, value)
+			head = append(head, projected)
 			return prefixHeadKey(head)
 		}
 	}
@@ -66,6 +77,72 @@ func DerivePrefixSessionKey(messages []json.RawMessage, stable bool) string {
 		return ""
 	}
 	return prefixHeadKey(head)
+}
+
+// Normalize equivalent text-block/string representations without mutating the
+// wire request. Cache-control and transport metadata are not semantic text.
+func affinityContent(value any) any {
+	if value == nil {
+		return ""
+	}
+	parts, ok := value.([]any)
+	if !ok {
+		return value
+	}
+	texts := []string{}
+	normalized := []any{}
+	textOnly := true
+	for _, raw := range parts {
+		if text, ok := raw.(string); ok {
+			if text != "" {
+				texts = append(texts, text)
+			}
+			normalized = append(normalized, map[string]any{"type": "text", "text": text})
+			continue
+		}
+		part, ok := raw.(map[string]any)
+		if !ok {
+			textOnly = false
+			normalized = append(normalized, raw)
+			continue
+		}
+		typ, _ := part["type"].(string)
+		switch typ {
+		case "text", "input_text", "output_text", "summary_text":
+			text, _ := part["text"].(string)
+			if text != "" {
+				texts = append(texts, text)
+			}
+			normalized = append(normalized, map[string]any{"type": "text", "text": text})
+		case "image_url", "input_image", "image":
+			textOnly = false
+			url := part["image_url"]
+			if url == nil {
+				url = part["url"]
+			}
+			if obj, ok := url.(map[string]any); ok {
+				url = obj["url"]
+			}
+			if url != nil {
+				normalized = append(normalized, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+			} else {
+				normalized = append(normalized, part)
+			}
+		default:
+			textOnly = false
+			copy := map[string]any{}
+			for key, v := range part {
+				if key != "cache_control" {
+					copy[key] = v
+				}
+			}
+			normalized = append(normalized, copy)
+		}
+	}
+	if textOnly {
+		return strings.Join(texts, "\n")
+	}
+	return normalized
 }
 
 func prefixHeadKey(head []any) string {

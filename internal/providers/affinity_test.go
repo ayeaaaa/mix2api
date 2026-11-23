@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,38 @@ func TestAffinityOptionsAndRoute(t *testing.T) {
 	opts.MaxMessages = 0
 	if r := ResolveAffinity(ChatRequest{Messages: long}, opts); r.Rotate {
 		t.Fatalf("zero threshold: %+v", r)
+	}
+}
+
+func TestAffinityCursorChurnKeepsRecentlyUsedPage(t *testing.T) {
+	var rot AffinityRotation
+	p := AffinityPolicy{Scope: "active", Cohort: []string{"a", "b", "c"}, Rotate: true}
+	rot.Candidates(p.Cohort, p)
+	for i := 0; i < 4095; i++ {
+		rot.Candidates(p.Cohort, AffinityPolicy{Scope: fmt.Sprint(i), Cohort: p.Cohort, Rotate: true})
+	}
+	if got := rot.Candidates(p.Cohort, p); got[0] != "b" {
+		t.Fatal(got)
+	}
+	rot.Candidates(p.Cohort, AffinityPolicy{Scope: "new", Cohort: p.Cohort, Rotate: true})
+	if got := rot.Candidates(p.Cohort, p); got[0] != "c" {
+		t.Fatalf("just-used page reset: %v", got)
+	}
+	if len(rot.cursors) > 4096 {
+		t.Fatal("cursor map exceeded cap")
+	}
+}
+
+func TestAffinityPolicyCaseAndScopeBound(t *testing.T) {
+	uids := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	o := LoadAffinityOptions(map[string]any{"affinity_model_pool_sizes": map[string]any{"codearts/glm-5.2": 3}})
+	r := AffinityRoute{Mode: "prefix", Key: "pfx-key"}
+	a, b := r.Policy(uids, "codearts", "GLM-5.2", o), r.Policy(uids, "codearts", "glm-5.2", o)
+	if !reflect.DeepEqual(a.Cohort, b.Cohort) {
+		t.Fatalf("equivalent model cohorts differ: %v %v", a, b)
+	}
+	if got := r.Policy(uids, "intl", strings.Repeat("m", 100000), o); len(got.Scope) > MaxSessionKeyBytes {
+		t.Fatalf("unbounded routing key: %d", len(got.Scope))
 	}
 }
 

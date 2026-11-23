@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
@@ -71,6 +73,39 @@ type chatFake struct {
 	balance   map[string]any
 	billItems []map[string]any
 	billCalls int
+}
+
+func TestAffinityUsesInjectedSettingsStore(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"u0", "u1"} {
+		writePoolAuth(t, dir, uid, "", time.Now().Add(time.Hour), nil)
+	}
+	store := config.New(filepath.Join(dir, "custom.json"))
+	if _, err := store.Merge(map[string]any{"raccoon": map[string]any{"enabled": true}, "affinity_by_prefix": false}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.pool.SetCreditLookbackEnabled(false)
+	fake := &chatFake{}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	configureChatPool(t, p.pool, server.URL)
+	for i := 0; i < 2; i++ {
+		r := chatRequest(chatRaw(t, map[string]any{"model": "raccoon-090dd3", "messages": []map[string]any{{"role": "user", "content": "same"}}}), "")
+		s, err := p.OpenChat(context.Background(), r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainChat(t, s)
+		_ = s.Close()
+	}
+	_, _, _, _, auths := fake.snapshot()
+	if auths[0] == auths[1] {
+		t.Fatal("ignored prefix=false in injected settings store")
+	}
 }
 
 func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {

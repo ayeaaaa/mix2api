@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ayeaaaa/mix2api-v2/internal/core/accountstate"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/secrets"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
@@ -62,6 +63,7 @@ type Pool struct {
 	dir       string
 	folder    string
 	statePath string
+	store     *config.Store
 
 	mu               sync.RWMutex
 	cfg              Config
@@ -151,6 +153,7 @@ func NewPool(dir string, cfg Config) (*Pool, error) {
 	p := &Pool{
 		dir:       dir,
 		folder:    filepath.Join(dir, "raccoon"),
+		store:     config.New(filepath.Join(dir, "settings.json")),
 		statePath: filepath.Join(dir, "raccoon", "state.json"),
 		cfg:       cfg,
 		affinity:  make(map[string]string),

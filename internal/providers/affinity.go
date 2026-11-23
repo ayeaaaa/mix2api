@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"container/list"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -51,7 +52,7 @@ func LoadAffinityOptions(settings map[string]any) AffinityOptions {
 	o.StableKey, _ = settings["affinity_stable_key_enabled"].(bool)
 	if sizes, ok := settings["affinity_model_pool_sizes"].(map[string]any); ok {
 		for key, raw := range sizes {
-			if n, ok := affinityInteger(raw); ok {
+			if n, ok := affinityInteger(raw); ok && n > 0 {
 				o.ModelPoolSizes[strings.ToLower(strings.TrimSpace(key))] = affinityBound(n, 64)
 			}
 		}
@@ -94,12 +95,15 @@ func ValidateAffinityPatch(patch map[string]any) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("affinity_model_pool_sizes must be an object")
 		}
-		if len(sizes) > 256 {
-			return nil, fmt.Errorf("affinity_model_pool_sizes supports at most 256 entries")
+		if len(sizes) > 1024 {
+			return nil, fmt.Errorf("affinity_model_pool_sizes patch supports at most 1024 entries including removals")
 		}
 		out := map[string]any{}
 		for key, value := range sizes {
 			key = strings.ToLower(strings.TrimSpace(key))
+			if _, duplicate := out[key]; duplicate {
+				return nil, fmt.Errorf("duplicate affinity model key: %s", key)
+			}
 			realm, model, _ := strings.Cut(key, "/")
 			if (realm != "intl" && realm != "cn" && realm != "codearts" && realm != "raccoon") || strings.TrimSpace(model) == "" || len(key) > 256 {
 				return nil, fmt.Errorf("affinity model key must be realm/model")
@@ -187,6 +191,17 @@ func ResolveAffinity(req ChatRequest, o AffinityOptions) AffinityRoute {
 	return r
 }
 
+// ResolveAffinityForBody hashes provider-normalized/sanitized messages, not
+// volatile client representations. Explicit IDs still come only from req.
+func ResolveAffinityForBody(req ChatRequest, body map[string]any, o AffinityOptions) AffinityRoute {
+	if msgs, ok := body["messages"]; ok {
+		if raw, err := json.Marshal(msgs); err == nil {
+			req.Raw = map[string]json.RawMessage{"messages": raw}
+		}
+	}
+	return ResolveAffinity(req, o)
+}
+
 // AffinityCohort uses rendezvous ranking: stable under load-order changes and
 // temporary account state, and selecting exactly size members (not size groups).
 func AffinityCohort(uids []string, seed string, size int) []string {
@@ -248,7 +263,7 @@ func (r AffinityRoute) Diagnostics(p AffinityPolicy, uid string) AffinityDiagnos
 }
 
 func (r AffinityRoute) Policy(authorized []string, realm, model string, o AffinityOptions) AffinityPolicy {
-	p := AffinityPolicy{Rotate: r.Rotate, Scope: realm + "/" + model}
+	p := AffinityPolicy{Rotate: r.Rotate, Scope: NormalizeSessionKey(strings.ToLower(strings.TrimSpace(realm) + "/" + strings.TrimSpace(model)))}
 	if r.Mode == "explicit" {
 		return p
 	}
@@ -269,6 +284,8 @@ func (r AffinityRoute) Policy(authorized []string, realm, model string, o Affini
 type AffinityRotation struct {
 	mu      sync.Mutex
 	cursors map[string]int
+	recent  map[string]*list.Element
+	order   list.List
 }
 
 func (r *AffinityRotation) Candidates(eligible []string, p AffinityPolicy) []string {
@@ -295,15 +312,25 @@ func (r *AffinityRotation) Candidates(eligible []string, p AffinityPolicy) []str
 	defer r.mu.Unlock()
 	if r.cursors == nil {
 		r.cursors = map[string]int{}
+		r.recent = map[string]*list.Element{}
 	}
-	key := p.Scope + "\x00" + strings.Join(p.Cohort, "\x00")
+	key := NormalizeSessionKey(p.Scope + "\x00" + strings.Join(p.Cohort, "\x00"))
 	start := r.cursors[key] % len(p.Cohort)
 	for i := 0; i < len(p.Cohort); i++ {
 		idx := (start + i) % len(p.Cohort)
 		uid := p.Cohort[idx]
 		if allowed[uid] {
 			if _, ok := r.cursors[key]; !ok && len(r.cursors) >= 4096 {
-				r.cursors = map[string]int{}
+				oldest := r.order.Front()
+				oldKey := oldest.Value.(string)
+				delete(r.cursors, oldKey)
+				delete(r.recent, oldKey)
+				r.order.Remove(oldest)
+			}
+			if entry := r.recent[key]; entry != nil {
+				r.order.MoveToBack(entry)
+			} else {
+				r.recent[key] = r.order.PushBack(key)
 			}
 			r.cursors[key] = (idx + 1) % len(p.Cohort)
 			return []string{uid}

@@ -675,7 +675,29 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 	}
 
 	if len(platformPatch) > 0 {
-		if _, err := s.Store.Merge(platformPatch); err != nil {
+		var err error
+		if _, touched := platformPatch["affinity_model_pool_sizes"]; touched {
+			_, err = s.Store.Update(func(current map[string]any) error {
+				merged := mergeMaps(current, platformPatch)
+				active := map[string]any{}
+				for key, size := range providers.LoadAffinityOptions(merged).ModelPoolSizes {
+					if size > 0 {
+						active[key] = size
+					}
+				}
+				if len(active) > 256 {
+					return errors.New("affinity_model_pool_sizes supports at most 256 active entries")
+				}
+				merged["affinity_model_pool_sizes"] = active
+				for key, value := range merged {
+					current[key] = value
+				}
+				return nil
+			})
+		} else {
+			_, err = s.Store.Merge(platformPatch)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("settings: save: %w", err)
 		}
 	}

@@ -37,8 +37,8 @@ func TestDerivePrefixSessionKey(t *testing.T) {
 		t.Fatal("different first user produced the same key")
 	}
 
-	// The default (v1-compatible) head is the first two messages; a third
-	// assistant turn only joins with stable=true.
+	// The default semantic head excludes the assistant; its first reply joins
+	// only with stable=true.
 	grown := sessionRaw(t, system, firstUser, assistant)
 	if got := DerivePrefixSessionKey(grown, false); got != key {
 		t.Fatalf("default key changed with a third message: %q vs %q", got, key)
@@ -90,6 +90,14 @@ func TestPrefixKeyRejectsUnusableHeads(t *testing.T) {
 		if key := DerivePrefixSessionKey(head, false); key != "" {
 			t.Fatalf("invalid or system-only head produced %q", key)
 		}
+	}
+}
+
+func TestPrefixKeyNormalizesSemanticBlocks(t *testing.T) {
+	a := sessionRaw(t, map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": "first", "cache_control": map[string]any{"type": "ephemeral"}}, map[string]any{"type": "input_image", "image_url": "https://example.com/a.png"}}})
+	b := sessionRaw(t, map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "first"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/a.png"}}}})
+	if DerivePrefixSessionKey(a, false) != DerivePrefixSessionKey(b, false) {
+		t.Fatal("equivalent image/text blocks have different heads")
 	}
 }
 

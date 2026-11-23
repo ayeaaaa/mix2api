@@ -54,6 +54,35 @@ func TestPrefixAffinityAcrossProtocols(t *testing.T) {
 	}
 }
 
+func TestAffinityEquivalentProtocolHeadsShareAccount(t *testing.T) {
+	for _, tc := range []struct{ name, chat, responses string }{
+		{"developer", `[{"role":"developer","content":"rules"},{"role":"user","content":"first"}]`, `[{"type":"message","role":"developer","content":"rules"},{"type":"message","role":"user","content":"first"}]`},
+		{"text-parts", `[{"role":"user","content":[{"type":"text","text":"first"}]}]`, `[{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, uid := range []string{"a", "b"} {
+				writeChatAccount(t, dir, uid, realmIntl, nil)
+			}
+			p := setupChatProvider(t, realmIntl, dir, nil)
+			fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+			p.chatBaseURL = newChatTestServer(t, fake).URL
+			var records []usage.RecordInput
+			s := api.New(api.ServerOptions{Providers: []providers.Provider{p}, APIKeyAuth: func(h http.Handler) http.Handler { return h }, RecordUsage: func(_ context.Context, in usage.RecordInput) error { records = append(records, in); return nil }})
+			for _, req := range []struct{ path, body string }{{"/v1/chat/completions", `{"model":"intl/deepseek-v4.1-flash","messages":` + tc.chat + `}`}, {"/v1/responses", `{"model":"intl/deepseek-v4.1-flash","input":` + tc.responses + `}`}} {
+				rec := httptest.NewRecorder()
+				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", req.path, strings.NewReader(req.body)))
+				if rec.Code != 200 {
+					t.Fatalf("%d %s", rec.Code, rec.Body)
+				}
+			}
+			if len(records) != 2 || records[0].Account != records[1].Account || records[0].PrefixSHA != records[1].PrefixSHA {
+				t.Fatalf("equivalent protocol heads rebound: %+v", records)
+			}
+		})
+	}
+}
+
 func TestAffinityPolicyPreservesAccountRestrictions(t *testing.T) {
 	dir := t.TempDir()
 	for _, uid := range []string{"a", "b", "c", "d"} {

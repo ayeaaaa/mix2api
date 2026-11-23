@@ -115,7 +115,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 	// prefix key so one conversation does not rotate accounts each turn.
 	settings, _ := p.store.Load()
 	options := providers.LoadAffinityOptions(settings)
-	route := providers.ResolveAffinity(req, options)
+	route := providers.ResolveAffinityForBody(req, build.Body, options)
 	affinityKey := route.Key
 
 	accounts := p.pool.Accounts()

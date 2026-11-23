@@ -9,12 +9,10 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -85,7 +83,10 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 		}
 	}
 
-	settings, _ := config.New(filepath.Join(p.dir, "settings.json")).Load()
+	var settings map[string]any
+	if p.store != nil {
+		settings, _ = p.store.Load()
+	}
 	options := providers.LoadAffinityOptions(settings)
 	route := providers.ResolveAffinity(req, options)
 	req.SessionKey = route.Key

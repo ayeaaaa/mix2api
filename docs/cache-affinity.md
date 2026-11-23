@@ -24,13 +24,13 @@ The existing Models settings section exposes these controls. `WB_AFFINITY_BY_PRE
 }
 ```
 
-Submit through `POST /settings/save` with panel authentication, or the JSON field in the panel. Partial JSON saves preserve other realm/model entries. Set an entry to `0` to disable it; removing it in the panel submits an explicit zero. Use the upstream model ID (not a new-api display alias). No existing production configuration is changed by this PR.
+Submit through `POST /settings/save` with panel authentication, or the JSON field in the panel. Partial JSON saves preserve other realm/model entries. Set an entry to `0` to disable it; removing it in the panel submits an explicit zero. Disabled rules are pruned and the combined map is atomically limited to 256 active entries. Use the upstream model ID (not a new-api display alias). No existing production configuration is changed by this PR.
 
 ## Selection
 
 1. Explicit `X-Conversation-Id`, `X-Session-Id`, body `conversation_id`/`session_id`, or supported metadata always wins; prefix fallback does not override it or force it into a model cohort.
-2. Otherwise hash canonical leading system/developer messages and the first user. Later history does not change the key. System-only or malformed heads have no derived binding. Stable mode also hashes the first assistant, so the first reply can cause one deliberate rebinding.
-3. Ordinary conversations use existing affinity. New conversations may prefer a model's configured cohort. Long derived conversations rotate within a deterministic cohort of up to the configured account count; they do not bind to the last selected account.
+2. Otherwise hash canonical leading system/developer messages and the first user. Equivalent developer/system roles and text-block/string forms share a key; WorkBuddy hashes its sanitized messages so volatile billing metadata cannot move a conversation. Later history does not change the key. System-only or malformed heads have no derived binding. Stable mode also hashes the first assistant, so the first reply can cause one deliberate rebinding.
+3. Ordinary conversations use existing affinity. New conversations may prefer a model's configured cohort. Long derived conversations rotate within a deterministic cohort of up to the configured account count; they do not bind to the last selected account. Cohort scheduling state is model-scoped, page cursors use bounded LRU eviction, and realm fallback preserves whether a key was actually client-supplied.
 4. Membership uses authorized realm accounts, not the temporarily ready subset, so busy/cooldown changes do not reshuffle it. Existing model eligibility, account enablement, guards, concurrency and account allow-lists still filter every candidate. When the cohort has no eligible member, the normal allowed pool can serve the request. Consequently cohort size is a **soft preference**, not a hard concurrency limit or authorization boundary.
 
 CodeArts's upstream `chat_id` and `prompt_cache_key` behavior is unchanged. WorkBuddy's effective key also feeds its upstream conversation/cache IDs. Protocol translation happens before provider-side affinity, so Chat, Responses and Messages all participate.
