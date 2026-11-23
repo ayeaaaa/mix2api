@@ -24,3 +24,7 @@ The original reviewer's Go-overlay reproductions also pass after the fix. Extra 
 - Short-prefix experiments do not establish Hy4 long-context support or upstream cache TTL. No real cache-rate guarantee, live config edits, account changes, or production deployment was performed.
 
 No review findings are deferred. After the fix pass, `make check` and `make race` pass (42 test packages, dashboard harness 16/16). Linux builds are verified separately; all tests here use local fixtures, not private production prompts.
+
+## Subsequent user-directed V1 parity
+
+The user originally asked for V1's actual rank-modulo partition behavior instead of the earlier real-size-three cohort design. They then chose to keep the v2.8.16 account-count cohort as the default and expose V1 as an optional global/per-provider strategy. Verification now covers both branches: a 48-account default cohort uses 3 accounts; a V1 partition override with 3 partitions uses 16 accounts in one partition; a 6-account cohort uses 3 accounts, while a V1 partition override uses 2. Tests also cover small-realm sticky behavior versus small allow-lists, V1 zero/one controls, shared page cursors, cohort cursor-before-priority ordering, per-provider settings and priorities before ordinary partition round robin. The original findings about semantic heads, policy filters, bounded state and fallback provenance remain fixed.

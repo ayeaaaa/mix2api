@@ -13,18 +13,38 @@ import (
 	"sync"
 )
 
+const (
+	AffinityStrategyCohort    = "cohort"
+	AffinityStrategyPartition = "partition"
+)
+
+// AffinityProviders is the fixed set of provider families that accept
+// per-provider strategy/page-size overrides.
+var AffinityProviders = []string{"workbuddy", "codearts", "raccoon"}
+
 // AffinityOptions are shared by the panel and all prefix-aware providers.
 // Model cohorts are opt-in preferences, never account authorization rules.
 type AffinityOptions struct {
-	PrefixEnabled  bool
-	StableKey      bool
-	MaxMessages    int
-	PageSize       int
-	ModelPoolSizes map[string]int
+	PrefixEnabled      bool
+	StableKey          bool
+	MaxMessages        int
+	PageSize           int
+	LongStrategy       string
+	ModelPoolSizes     map[string]int
+	ProviderStrategies map[string]string
+	ProviderPageSizes  map[string]int
 }
 
 func LoadAffinityOptions(settings map[string]any) AffinityOptions {
-	o := AffinityOptions{PrefixEnabled: true, MaxMessages: 400, PageSize: 3, ModelPoolSizes: map[string]int{}}
+	o := AffinityOptions{
+		PrefixEnabled:      true,
+		MaxMessages:        400,
+		PageSize:           3,
+		LongStrategy:       AffinityStrategyCohort,
+		ModelPoolSizes:     map[string]int{},
+		ProviderStrategies: map[string]string{},
+		ProviderPageSizes:  map[string]int{},
+	}
 	if raw := strings.TrimSpace(os.Getenv("WB_AFFINITY_BY_PREFIX")); raw != "" {
 		switch strings.ToLower(raw) {
 		case "0", "false", "no", "off":
@@ -50,6 +70,36 @@ func LoadAffinityOptions(settings map[string]any) AffinityOptions {
 		o.PrefixEnabled = b
 	}
 	o.StableKey, _ = settings["affinity_stable_key_enabled"].(bool)
+	if strategy, ok := settings["affinity_long_strategy"].(string); ok {
+		strategy = strings.ToLower(strings.TrimSpace(strategy))
+		if strategy == AffinityStrategyCohort || strategy == AffinityStrategyPartition {
+			o.LongStrategy = strategy
+		}
+	}
+	if strategies, ok := settings["affinity_provider_strategies"].(map[string]any); ok {
+		for provider, raw := range strategies {
+			provider = normalizeAffinityProvider(provider)
+			if !affinityProviderKnown(provider) {
+				continue
+			}
+			strategy, _ := raw.(string)
+			strategy = strings.ToLower(strings.TrimSpace(strategy))
+			if strategy == "" || strategy == AffinityStrategyCohort || strategy == AffinityStrategyPartition {
+				o.ProviderStrategies[provider] = strategy
+			}
+		}
+	}
+	if sizes, ok := settings["affinity_provider_page_sizes"].(map[string]any); ok {
+		for provider, raw := range sizes {
+			provider = normalizeAffinityProvider(provider)
+			if !affinityProviderKnown(provider) {
+				continue
+			}
+			if n, ok := affinityProviderPageSize(raw); ok {
+				o.ProviderPageSizes[provider] = n
+			}
+		}
+	}
 	if sizes, ok := settings["affinity_model_pool_sizes"].(map[string]any); ok {
 		for key, raw := range sizes {
 			if n, ok := affinityInteger(raw); ok && n > 0 {
@@ -60,13 +110,59 @@ func LoadAffinityOptions(settings map[string]any) AffinityOptions {
 	return o
 }
 
+func normalizeAffinityProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func affinityProviderKnown(provider string) bool {
+	for _, known := range AffinityProviders {
+		if provider == known {
+			return true
+		}
+	}
+	return false
+}
+
+// ForProvider resolves optional per-provider strategy and page-size overrides.
+// Missing or empty values inherit the global setting. A page-size override of
+// -1 also inherits; 0 remains a meaningful V1/cohort value.
+func (o AffinityOptions) ForProvider(provider string) AffinityOptions {
+	provider = normalizeAffinityProvider(provider)
+	out := o
+	if strategy := out.ProviderStrategies[provider]; strategy != "" {
+		out.LongStrategy = strategy
+	}
+	if n, ok := out.ProviderPageSizes[provider]; ok && n >= 0 {
+		out.PageSize = n
+	}
+	return out
+}
+
 func AffinitySettingsView(settings map[string]any) map[string]any {
 	o := LoadAffinityOptions(settings)
 	sizes := map[string]any{}
 	for key, n := range o.ModelPoolSizes {
 		sizes[key] = n
 	}
-	return map[string]any{"affinity_by_prefix": o.PrefixEnabled, "affinity_stable_key_enabled": o.StableKey, "affinity_max_messages": o.MaxMessages, "affinity_page_size": o.PageSize, "affinity_model_pool_sizes": sizes, "remaining_priority_supported": false}
+	strategies := map[string]any{}
+	for key, strategy := range o.ProviderStrategies {
+		strategies[key] = strategy
+	}
+	providerPages := map[string]any{}
+	for key, n := range o.ProviderPageSizes {
+		providerPages[key] = n
+	}
+	return map[string]any{
+		"affinity_by_prefix":           o.PrefixEnabled,
+		"affinity_stable_key_enabled":  o.StableKey,
+		"affinity_max_messages":        o.MaxMessages,
+		"affinity_page_size":           o.PageSize,
+		"affinity_long_strategy":       o.LongStrategy,
+		"affinity_provider_strategies": strategies,
+		"affinity_provider_page_sizes": providerPages,
+		"affinity_model_pool_sizes":    sizes,
+		"remaining_priority_supported": false,
+	}
 }
 
 // ValidateAffinityPatch validates only keys present so saves remain merge-safe.
@@ -89,6 +185,65 @@ func ValidateAffinityPatch(patch map[string]any) (map[string]any, error) {
 			}
 			clean[key] = n
 		}
+	}
+	if raw, exists := patch["affinity_long_strategy"]; exists {
+		strategy, ok := raw.(string)
+		strategy = normalizeAffinityProvider(strategy)
+		if !ok || (strategy != AffinityStrategyCohort && strategy != AffinityStrategyPartition) {
+			return nil, fmt.Errorf("affinity_long_strategy must be cohort or partition")
+		}
+		clean["affinity_long_strategy"] = strategy
+	}
+	if raw, exists := patch["affinity_provider_strategies"]; exists {
+		strategies, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("affinity_provider_strategies must be an object")
+		}
+		if len(strategies) > 8 {
+			return nil, fmt.Errorf("affinity_provider_strategies supports at most 8 entries")
+		}
+		out := map[string]any{}
+		for key, value := range strategies {
+			provider := normalizeAffinityProvider(key)
+			if !affinityProviderKnown(provider) {
+				return nil, fmt.Errorf("unknown affinity provider: %s", key)
+			}
+			if _, duplicate := out[provider]; duplicate {
+				return nil, fmt.Errorf("duplicate affinity provider: %s", provider)
+			}
+			strategy, ok := value.(string)
+			strategy = normalizeAffinityProvider(strategy)
+			if !ok || (strategy != "" && strategy != AffinityStrategyCohort && strategy != AffinityStrategyPartition) {
+				return nil, fmt.Errorf("affinity provider strategy must be empty, cohort, or partition")
+			}
+			out[provider] = strategy
+		}
+		clean["affinity_provider_strategies"] = out
+	}
+	if raw, exists := patch["affinity_provider_page_sizes"]; exists {
+		sizes, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("affinity_provider_page_sizes must be an object")
+		}
+		if len(sizes) > 8 {
+			return nil, fmt.Errorf("affinity_provider_page_sizes supports at most 8 entries")
+		}
+		out := map[string]any{}
+		for key, value := range sizes {
+			provider := normalizeAffinityProvider(key)
+			if !affinityProviderKnown(provider) {
+				return nil, fmt.Errorf("unknown affinity provider: %s", key)
+			}
+			if _, duplicate := out[provider]; duplicate {
+				return nil, fmt.Errorf("duplicate affinity provider: %s", provider)
+			}
+			n, ok := affinityProviderPageSize(value)
+			if !ok {
+				return nil, fmt.Errorf("affinity provider page size must be -1 (inherit) or an integer 0-64")
+			}
+			out[provider] = n
+		}
+		clean["affinity_provider_page_sizes"] = out
 	}
 	if raw, exists := patch["affinity_model_pool_sizes"]; exists {
 		sizes, ok := raw.(map[string]any)
@@ -134,6 +289,35 @@ func affinityInteger(raw any) (int, bool) {
 	case json.Number:
 		i, err := n.Int64()
 		if err == nil && i >= 0 && i <= 100000 {
+			return int(i), true
+		}
+	}
+	return 0, false
+}
+
+// affinityProviderPageSize accepts -1 as the explicit "inherit global" value.
+// A real 0 is still meaningful (whole-pool rotation / V1 release).
+func affinityProviderPageSize(raw any) (int, bool) {
+	valid := func(n int64) bool { return n >= -1 && n <= 64 }
+	switch n := raw.(type) {
+	case int:
+		if valid(int64(n)) {
+			return n, true
+		}
+	case int64:
+		if valid(n) {
+			return int(n), true
+		}
+	case float64:
+		if n != n || n < -1 || n > 64 {
+			break
+		}
+		if n == float64(int64(n)) {
+			return int(n), true
+		}
+	case json.Number:
+		i, err := n.Int64()
+		if err == nil && valid(i) {
 			return int(i), true
 		}
 	}
@@ -186,6 +370,9 @@ func ResolveAffinity(req ChatRequest, o AffinityOptions) AffinityRoute {
 		r.Mode = "page"
 		if o.PageSize == 0 {
 			r.Mode = "rotation"
+			if o.LongStrategy == AffinityStrategyPartition {
+				r.Key = ""
+			}
 		}
 	}
 	return r
@@ -235,9 +422,12 @@ func AffinityCohort(uids []string, seed string, size int) []string {
 }
 
 type AffinityPolicy struct {
-	Cohort []string
-	Scope  string
-	Rotate bool
+	Cohort    []string
+	Scope     string
+	Rotate    bool
+	Sticky    bool
+	Page      bool
+	Partition bool
 }
 
 type AffinityDiagnostics struct {
@@ -262,8 +452,13 @@ func (r AffinityRoute) Diagnostics(p AffinityPolicy, uid string) AffinityDiagnos
 	return d
 }
 
-func (r AffinityRoute) Policy(authorized []string, realm, model string, o AffinityOptions) AffinityPolicy {
-	p := AffinityPolicy{Rotate: r.Rotate, Scope: NormalizeSessionKey(strings.ToLower(strings.TrimSpace(realm) + "/" + strings.TrimSpace(model)))}
+func (r AffinityRoute) Policy(authorized []string, realm, model string, o AffinityOptions, realmCounts ...int) AffinityPolicy {
+	p := AffinityPolicy{
+		Rotate:    r.Rotate,
+		Scope:     NormalizeSessionKey(strings.ToLower(strings.TrimSpace(realm) + "/" + strings.TrimSpace(model))),
+		Page:      r.Mode == "page",
+		Partition: o.LongStrategy == AffinityStrategyPartition,
+	}
 	if r.Mode == "explicit" {
 		return p
 	}
@@ -273,10 +468,84 @@ func (r AffinityRoute) Policy(authorized []string, realm, model string, o Affini
 		uids = p.Cohort
 	}
 	if r.Mode == "page" {
+		if o.LongStrategy == AffinityStrategyPartition {
+			realmCount := len(authorized)
+			if len(realmCounts) > 0 {
+				realmCount = realmCounts[0]
+			}
+			// V1 restores normal affinity when the partition parameter covers
+			// the full realm. A small key allow-list in a larger realm is
+			// different: _page_slice returns that whole allowed subset, still
+			// without pinning.
+			if o.PageSize >= realmCount {
+				p.Rotate = false
+				p.Sticky = true
+				p.Page = false
+				return p
+			}
+			index := 0
+			digest := strings.TrimPrefix(r.PrefixHash, "pfx-")
+			if len(digest) >= 8 && o.PageSize > 1 {
+				if seed, err := strconv.ParseUint(digest[:8], 16, 32); err == nil {
+					index = int(seed % uint64(o.PageSize))
+				}
+			}
+			p.Cohort = AffinityPartition(uids, index, o.PageSize)
+			// V1's page cursor is shared by conversations/models on the same page.
+			p.Scope = NormalizeSessionKey(fmt.Sprintf("page/%s/%d/%d", strings.ToLower(realm), index, o.PageSize))
+			return p
+		}
+		// Default cohort strategy keeps the v2.8.16 behavior: the conversation
+		// is bounded to accountCount, not V1's partition count.
 		p.Scope += "/" + r.PrefixHash
 		p.Cohort = AffinityCohort(uids, p.Scope, o.PageSize)
 	}
 	return p
+}
+
+// AffinityPartition matches V1 rank-modulo membership. Rank over the static
+// authorized snapshot, before temporary readiness/exclusions are applied.
+func AffinityPartition(uids []string, index, count int) []string {
+	ordered := []string{}
+	seen := map[string]bool{}
+	for _, uid := range uids {
+		if uid != "" && !seen[uid] {
+			ordered = append(ordered, uid)
+			seen[uid] = true
+		}
+	}
+	sort.Strings(ordered)
+	if count <= 1 || count >= len(ordered) {
+		return ordered
+	}
+	out := []string{}
+	for rank, uid := range ordered {
+		if rank%count == index%count {
+			out = append(out, uid)
+		}
+	}
+	return out
+}
+
+func (p AffinityPolicy) HasEligibleMember(eligible []string) bool {
+	members := map[string]bool{}
+	for _, uid := range p.Cohort {
+		members[uid] = true
+	}
+	for _, uid := range eligible {
+		if members[uid] {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesV1PriorityOrder reports whether provider pools should run their normal
+// priorities before the partition cursor. Partition pages and the partition
+// zero-page rotation with a model cohort use V1 ordering; the default cohort
+// branch keeps the v2.8.16 cursor-first behavior.
+func (p AffinityPolicy) UsesV1PriorityOrder() bool {
+	return p.Partition && (p.Page || p.Rotate)
 }
 
 // AffinityRotation is a bounded, per-pool set of cohort cursors. Readiness
@@ -314,7 +583,11 @@ func (r *AffinityRotation) Candidates(eligible []string, p AffinityPolicy) []str
 		r.cursors = map[string]int{}
 		r.recent = map[string]*list.Element{}
 	}
-	key := NormalizeSessionKey(p.Scope + "\x00" + strings.Join(p.Cohort, "\x00"))
+	keySource := p.Scope
+	if !strings.HasPrefix(p.Scope, "page/") {
+		keySource += "\x00" + strings.Join(p.Cohort, "\x00")
+	}
+	key := NormalizeSessionKey(keySource)
 	start := r.cursors[key] % len(p.Cohort)
 	for i := 0; i < len(p.Cohort); i++ {
 		idx := (start + i) % len(p.Cohort)

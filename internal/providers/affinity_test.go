@@ -73,6 +73,60 @@ func TestAffinityPolicyCaseAndScopeBound(t *testing.T) {
 	}
 }
 
+func TestV1LongPageUsesRankModuloPartition(t *testing.T) {
+	uids := []string{}
+	for i := 39; i >= 0; i-- {
+		uids = append(uids, fmt.Sprintf("u%02d", i))
+	}
+	o := LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"})
+	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
+	p := r.Policy(uids, "intl", "deepseek", o)
+	want := []string{"u01", "u04", "u07", "u10", "u13", "u16", "u19", "u22", "u25", "u28", "u31", "u34", "u37"}
+	if !reflect.DeepEqual(p.Cohort, want) {
+		t.Fatalf("V1 partition 1/3: %v want %v", p.Cohort, want)
+	}
+	r.Key = "pfx-0000000400000000"
+	r.PrefixHash = r.Key
+	second := r.Policy(uids, "intl", "glm", o)
+	if p.Scope != second.Scope || !reflect.DeepEqual(p.Cohort, second.Cohort) {
+		t.Fatalf("same partition did not share cursor scope: %v %v", p, second)
+	}
+}
+
+func TestV1SmallRealmRestoresStickySelection(t *testing.T) {
+	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
+	p := r.Policy([]string{"a", "b", "c"}, "intl", "m", LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"}))
+	if p.Rotate {
+		t.Fatalf("small realm should stay sticky: %+v", p)
+	}
+	limited := r.Policy([]string{"a", "b"}, "intl", "m", LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"}), 40)
+	if !limited.Rotate || !reflect.DeepEqual(limited.Cohort, []string{"a", "b"}) {
+		t.Fatalf("small allow-list in large realm is still a page: %+v", limited)
+	}
+}
+
+func TestV1ZeroPageReleasesLongDerivedKey(t *testing.T) {
+	o := LoadAffinityOptions(map[string]any{"affinity_max_messages": 1, "affinity_page_size": 0, "affinity_long_strategy": "partition"})
+	r := ResolveAffinity(ChatRequest{Messages: sessionRaw(t, map[string]any{"role": "user", "content": "hi"}, map[string]any{"role": "assistant", "content": "ok"})}, o)
+	if r.Key != "" || r.Mode != "rotation" {
+		t.Fatalf("zero page did not release affinity: %+v", r)
+	}
+}
+
+func TestV1PageCursorSharedAcrossAllowedSubsets(t *testing.T) {
+	r := AffinityRoute{Key: "pfx-0000000100000000", PrefixHash: "pfx-0000000100000000", Mode: "page", Rotate: true}
+	o := LoadAffinityOptions(map[string]any{"affinity_long_strategy": "partition"})
+	p := r.Policy([]string{"a", "b"}, "intl", "m", o, 40)
+	q := r.Policy([]string{"a", "c"}, "intl", "n", o, 40)
+	var rotation AffinityRotation
+	if got := rotation.Candidates([]string{"a", "b"}, p); got[0] != "a" {
+		t.Fatal(got)
+	}
+	if got := rotation.Candidates([]string{"a", "c"}, q); got[0] != "c" {
+		t.Fatalf("same V1 page acquired a second cursor: %v", got)
+	}
+}
+
 func TestAffinityCohortIsExactlyThreeAndStable(t *testing.T) {
 	uids := []string{}
 	for i := 0; i < 40; i++ {

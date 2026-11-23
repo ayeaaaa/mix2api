@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed / 变更
+
+- 长会话调度改为可选策略：默认保持 v2.8.16 的「固定账号数」，
+  可全局或按 WorkBuddy / CodeArts / 小浣熊切换为 V1 分区；未设置的提供商
+  跟随全局。V1 分区保留 UID 取模、共享页游标、区内优先级、全 realm 小池
+  粘滞与合法组外回退；`affinity_page_size` 的含义随解析后的策略变化。
+- Long-conversation scheduling is now selectable. The default remains the
+  v2.8.16 account-count cohort; V1 rank-modulo partitions can be enabled
+  globally or per provider, with unset providers inheriting the global choice.
+  V1 keeps its shared page cursors, in-page priorities, small-realm sticky
+  guard and safe group-external fallback. `affinity_page_size` means an account
+  count under `cohort` and a partition count under `partition`.
+- PR #53 was revised from a default-behavior replacement into this opt-in
+  strategy. It is not included in the already-published v2.8.16 release.
+
 ## [2.8.16] - 2026-11-23
 
 ### 中文

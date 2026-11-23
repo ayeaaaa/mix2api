@@ -87,7 +87,7 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	if p.store != nil {
 		settings, _ = p.store.Load()
 	}
-	options := providers.LoadAffinityOptions(settings)
+	options := providers.LoadAffinityOptions(settings).ForProvider("raccoon")
 	route := providers.ResolveAffinity(req, options)
 	req.SessionKey = route.Key
 
@@ -116,7 +116,11 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 			authorized = append(authorized, uid)
 		}
 	}
-	policy := route.Policy(authorized, ProviderRealm, model, options)
+	policy := route.Policy(authorized, ProviderRealm, model, options, len(accounts))
+	if policy.Sticky {
+		route.Rotate = false
+		route.Mode = "prefix"
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {

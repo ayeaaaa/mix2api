@@ -2677,24 +2677,24 @@ func TestChatPrefixSessionAffinityStableKey(t *testing.T) {
 	}
 }
 
-func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
+func TestChatGlobalPartitionLongPrefix(t *testing.T) {
 	dir := t.TempDir()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 48; i++ {
 		writeChatAccount(t, dir, fmt.Sprintf("u%d", i), realmIntl, map[string]any{"product": productDesktop})
 	}
-	p := setupChatProvider(t, realmIntl, dir, map[string]any{})
+	p := setupChatProvider(t, realmIntl, dir, map[string]any{"affinity_long_strategy": "partition"})
 	fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
 	p.chatBaseURL = newChatTestServer(t, fake).URL
 	msgs := []any{map[string]any{"role": "system", "content": "sys"}, map[string]any{"role": "user", "content": "first"}}
 	for len(msgs) < 401 {
 		msgs = append(msgs, map[string]any{"role": "assistant", "content": "history"})
 	}
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 32; i++ {
 		stream, err := p.OpenChat(context.Background(), chatRequest(t, "deepseek-v4.1-flash", map[string]any{"model": "deepseek-v4.1-flash", "messages": msgs}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 3 || snapshot.Affinity.MessageCount != 401 {
+		if snapshot := stream.(providers.UsageSnapshotReporter).UsageSnapshot(); snapshot.Affinity.Mode != "page" || snapshot.Affinity.PoolSize != 16 || snapshot.Affinity.MessageCount != 401 {
 			t.Fatalf("missing routing diagnostics: %+v", snapshot.Affinity)
 		}
 		drainChatFrames(t, stream)
@@ -2704,11 +2704,11 @@ func TestChatLongPrefixRotatesOnlyThreeAccounts(t *testing.T) {
 	for _, call := range fake.snapshot() {
 		counts[call.Header.Get("Authorization")]++
 	}
-	if len(counts) != 3 {
+	if len(counts) != 16 {
 		t.Fatalf("long conversation pinned or sprayed: %v", counts)
 	}
 	for _, count := range counts {
-		if count != 3 {
+		if count != 2 {
 			t.Fatalf("not page round robin: %v", counts)
 		}
 	}
