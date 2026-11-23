@@ -42,6 +42,9 @@ func TestProductionServerOptionsBootstrapPanelAuth(t *testing.T) {
 	if options.PanelAuth != nil {
 		t.Fatal("production options installed a static PanelAuth path")
 	}
+	if options.ProxyProbe == nil || options.ProxyDiscover == nil {
+		t.Fatal("production options did not wire proxy probe/discover")
+	}
 	server := api.New(options)
 
 	request := func(method, path, body string, headers map[string]string) *httptest.ResponseRecorder {

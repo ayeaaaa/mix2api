@@ -4,6 +4,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/api"
 	"github.com/ayeaaaa/mix2api-v2/internal/app"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/version"
+	platformproxy "github.com/ayeaaaa/mix2api-v2/internal/platform/proxy"
 )
 
 // buildServerOptions is the command's single production composition point.
@@ -22,5 +23,7 @@ func buildServerOptions(cfg commandConfig, setup *app.Setup, platform *app.Platf
 		APIKeyRealm:              apiKeyRealmResolver(cfg.APIKeyRealm),
 		AnthropicMessagesEnabled: platform.AnthropicMessagesEnabled,
 		PreserveRequestContract:  envBool("WB_PRESERVE_REQUEST_CONTRACT"),
+		ProxyProbe:               platformproxy.Probe,
+		ProxyDiscover:            platformproxy.Discover,
 	}
 }

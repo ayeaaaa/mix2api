@@ -115,3 +115,61 @@ func TestProxySlotsAPI(t *testing.T) {
 		t.Fatalf("test without probe status=%d body=%s", rec.Code, rec.Body)
 	}
 }
+
+func TestProxyProbeAndDiscoverInjected(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	slots := platformproxy.New(store, nil)
+	saved, err := slots.Replace([]platformproxy.Slot{{URL: "http://127.0.0.1:7890"}})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("seed slots = %#v, %v", saved, err)
+	}
+	slotID := saved[0].ID
+
+	server := New(ServerOptions{
+		ProxySlots: slots,
+		PanelAuth:  passThroughAuth,
+		ProxyProbe: func(_ context.Context, url string) (map[string]any, error) {
+			if url != "http://127.0.0.1:7890" {
+				t.Fatalf("probe url = %q", url)
+			}
+			return map[string]any{
+				"ok": true, "exit_ip": "203.0.113.10", "latency_ms": int64(17),
+				"intel_ok": true, "country": "美国", "country_code": "US",
+				"ip_type": "residential", "isp": "Test ISP", "asn": "AS64501",
+			}, nil
+		},
+		ProxyDiscover: func(context.Context) []map[string]any {
+			return []map[string]any{{
+				"url": "http://127.0.0.1:17901", "reachable": true,
+				"exit_ip": "203.0.113.11", "latency_ms": 8,
+				"country": "美国", "ip_type": "residential",
+			}}
+		},
+	})
+
+	rec := doRequest(server, http.MethodPost, "/proxy/slots/test", `{"id":"`+slotID+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("probe status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	if ok, _ := body["ok"].(bool); !ok || body["exit_ip"] != "203.0.113.10" {
+		t.Fatalf("probe body = %#v", body)
+	}
+	slot, _ := body["slot"].(map[string]any)
+	if slot == nil || slot["ip"] != "203.0.113.10" || slot["country"] != "美国" || slot["ip_type"] != "residential" {
+		t.Fatalf("updated slot = %#v", slot)
+	}
+
+	rec = doRequest(server, http.MethodPost, "/proxy/discover", `{}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", rec.Code, rec.Body)
+	}
+	candidates, _ := decodeBody(t, rec)["candidates"].([]any)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	candidate, _ := candidates[0].(map[string]any)
+	if candidate["url"] != "http://127.0.0.1:17901" || candidate["reachable"] != true {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+}

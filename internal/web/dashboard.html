@@ -7048,9 +7048,24 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="sec" onclick="discoverProxySlots(this)">自动发现 mihomo 端口</button>
-          <button class="sec" onclick="addProxySlotRow()">+ 添加槽位</button>
+          <button class="sec" onclick="addProxySlotRow()" title="高级：添加一行后直接填写完整代理 URL">+ 添加空槽位</button>
           <button onclick="saveProxySlots(this)">保存槽位</button>
         </div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--surface-2,transparent)">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">添加代理槽</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="slotAddProtocol" style="width:110px">
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+          <input id="slotAddHost" placeholder="代理服务器，如 127.0.0.1" style="width:230px">
+          <input id="slotAddPort" type="number" min="1" max="65535" step="1" placeholder="端口" style="width:110px">
+          <input id="slotAddAuth" placeholder="认证 user:pass（可选）" style="width:190px">
+          <button class="sec" onclick="addProxySlotFromForm(this)">添加</button>
+        </div>
+        <div style="font-size:12px;color:var(--dim);margin-top:7px">支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 <span class="mono">host.docker.internal</span>；添加后记得点「保存槽位」，再在账号表绑定出口。</div>
       </div>
       <div id="slotList"></div>
       <div id="slotDiscover"></div>
@@ -20655,6 +20670,47 @@ function addProxySlotRow(){
   // 名称留空：探测到出口后按「国家 类型」自动命名，填过就按填的显示。
   PROXY_SLOTS.push({id: '', name: '', url: '', enabled: true, bound: 0});
   renderProxySlots();
+}
+
+function proxyURLFromParts(protocol, host, port, auth){
+  const scheme = String(protocol || 'http').trim().toLowerCase();
+  if(!['http','https','socks5'].includes(scheme)) throw new Error('不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）');
+  let server = String(host || '').trim();
+  if(!server) throw new Error('请填写代理服务器');
+  if(/\s/.test(server) || server.includes('://') || server.includes('/')) throw new Error('代理服务器只填主机名或 IP，不要带协议、端口或路径');
+  server = server.replace(/^\[|\]$/g, '');
+  if(server.includes(':') && !/^[0-9a-f:]+$/i.test(server)) throw new Error('代理服务器格式无效');
+  const portNumber = Number(port);
+  if(!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) throw new Error('代理端口必须是 1–65535');
+  let userinfo = '';
+  const authText = String(auth || '').trim();
+  if(authText){
+    const split = authText.indexOf(':');
+    const user = split >= 0 ? authText.slice(0, split) : authText;
+    const pass = split >= 0 ? authText.slice(split + 1) : '';
+    if(!user) throw new Error('认证用户名不能为空');
+    userinfo = encodeURIComponent(user) + (split >= 0 ? ':' + encodeURIComponent(pass) : '') + '@';
+  }
+  const authority = server.includes(':') ? '[' + server + ']' : server;
+  return scheme + '://' + userinfo + authority + ':' + portNumber;
+}
+
+function addProxySlotFromForm(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const val = id => document.getElementById(id).value.trim();
+    const url = proxyURLFromParts(val('slotAddProtocol'), val('slotAddHost'), val('slotAddPort'), val('slotAddAuth'));
+    if(PROXY_SLOTS.some(s => s.url === url)){ toast('该代理地址已在槽位中', 'warn'); return; }
+    PROXY_SLOTS.push({id: '', name: '', url: url, enabled: true, bound: 0});
+    SLOTS_DIRTY = true;
+    renderProxySlots();
+    ['slotAddHost','slotAddPort','slotAddAuth'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+    toast('已加入代理槽，记得点「保存槽位」', 'ok');
+  }catch(e){
+    toast('添加失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
 }
 
 function removeProxySlot(index){
