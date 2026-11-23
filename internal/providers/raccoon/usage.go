@@ -30,7 +30,7 @@ func (s *chatStream) UsageSnapshot() providers.UsageSnapshot {
 		PromptTokens:     raccoonUsageInt(usage, "prompt_tokens"),
 		CompletionTokens: raccoonUsageInt(usage, "completion_tokens"),
 		TotalTokens:      raccoonUsageInt(usage, "total_tokens"),
-		CachedTokens:     raccoonUsageInt(usage, "cached_tokens"),
+		CachedTokens:     providers.BestCachedTokens(usage),
 		ReasoningTokens:  raccoonUsageInt(usage, "reasoning_tokens"),
 		Credit:           credit,
 		CreditKnown:      creditKnown,
