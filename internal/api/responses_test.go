@@ -262,10 +262,17 @@ func TestResponsesToolsCustomAndNamespace(t *testing.T) {
 	byName := map[string]map[string]any{}
 	for _, rawTool := range tools {
 		tool := rawTool.(map[string]any)
-		byName[stringValue(tool["name"])] = tool
+		if stringValue(tool["type"]) != "function" {
+			t.Fatalf("tool type = %#v", tool["type"])
+		}
+		function, _ := tool["function"].(map[string]any)
+		if function == nil {
+			t.Fatalf("tool is missing the function wrapper: %#v", tool)
+		}
+		byName[stringValue(function["name"])] = function
 	}
 	custom := byName["apply_patch"]
-	if custom == nil || custom["type"] != "function" {
+	if custom == nil {
 		t.Fatalf("custom tool = %#v", custom)
 	}
 	properties := custom["parameters"].(map[string]any)["properties"].(map[string]any)
@@ -1045,5 +1052,138 @@ func TestResponsesGatewayKeyQualifiedExit(t *testing.T) {
 	}
 	if body := decodeBody(t, rec); body["model"] != "codearts/shared" {
 		t.Fatalf("response model = %#v, want codearts/shared", body["model"])
+	}
+}
+
+// Responses API declares function tools in the flat shape
+// {"type":"function","name":...,"parameters":...}. Chat Completions requires
+// the nested {"type":"function","function":{"name":...,...}} shape, and strict
+// upstreams (Raccoon/litellm) reject the flat form with
+// "tools[0].function.name is invalid or missing".
+func TestResponsesToolsUseChatCompletionsShape(t *testing.T) {
+	payload := rawPayload(t, map[string]any{
+		"model": "m1", "input": "hi",
+		"tools": []any{
+			map[string]any{
+				"type": "function", "name": "weather", "description": "Get weather",
+				"parameters": map[string]any{"type": "object", "properties": map[string]any{
+					"city": map[string]any{"type": "string"},
+				}},
+			},
+			map[string]any{"type": "custom", "name": "apply_patch"},
+			map[string]any{"type": "namespace", "name": "codex_apps", "tools": []any{
+				map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}},
+			}},
+		},
+	})
+	chat, err := responsesToChat(payload)
+	if err != nil {
+		t.Fatalf("responsesToChat: %v", err)
+	}
+	tools, ok := chat["tools"].([]any)
+	if !ok || len(tools) != 3 {
+		t.Fatalf("tools = %#v", chat["tools"])
+	}
+	want := map[string]bool{"weather": false, "apply_patch": false, "lookup": false}
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("tool is not an object: %#v", raw)
+		}
+		if _, flat := tool["name"]; flat {
+			t.Fatalf("flat name leaked to chat tools: %#v", tool)
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool is missing the function wrapper: %#v", tool)
+		}
+		name := strings.TrimSpace(stringValue(function["name"]))
+		if name == "" {
+			t.Fatalf("function.name is empty: %#v", tool)
+		}
+		if _, exists := want[name]; !exists {
+			t.Fatalf("unexpected tool %q: %#v", name, tool)
+		}
+		want[name] = true
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Fatalf("tool %q missing from chat tools: %#v", name, tools)
+		}
+	}
+
+	// The nested form must preserve the original schema so the upstream can
+	// validate arguments.
+	var weather map[string]any
+	for _, raw := range tools {
+		if stringValue(raw.(map[string]any)["function"].(map[string]any)["name"]) == "weather" {
+			weather = raw.(map[string]any)["function"].(map[string]any)
+		}
+	}
+	if weather == nil {
+		t.Fatal("weather tool not found")
+	}
+	properties, _ := weather["parameters"].(map[string]any)["properties"].(map[string]any)
+	if properties == nil || properties["city"] == nil {
+		t.Fatalf("weather parameters were not preserved: %#v", weather)
+	}
+}
+
+// The chat request the provider receives must carry the nested Chat
+// Completions tool shape even when the client used the flat Responses shape.
+func TestResponsesForwardsChatShapedTools(t *testing.T) {
+	stream := newStubStream(chatSSE(textChunks("u", "ok")...)...)
+	server, provider := responseTestServer(t, stream, ServerOptions{})
+	rec := serveRequest(server.Handler(), http.MethodPost, "/v1/responses",
+		`{"model":"m1","input":"hi","tools":[{"type":"function","name":"run","parameters":{"type":"object"}}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	opened := provider.opened()
+	if len(opened) != 1 {
+		t.Fatalf("OpenChat calls = %d, want 1", len(opened))
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(opened[0].Raw["tools"], &tools); err != nil {
+		t.Fatalf("tools JSON: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", tools)
+	}
+	if _, flat := tools[0]["name"]; flat {
+		t.Fatalf("flat name forwarded upstream: %#v", tools[0])
+	}
+	function, _ := tools[0]["function"].(map[string]any)
+	if function == nil || stringValue(function["name"]) != "run" {
+		t.Fatalf("function = %#v", function)
+	}
+}
+
+// Flat Responses tool_choice ({"type":"function","name":...}) must become the
+// nested Chat shape too, otherwise strict upstreams reject the choice even
+// when the tools themselves are valid.
+func TestResponsesFlatToolChoiceUsesChatShape(t *testing.T) {
+	payload := rawPayload(t, map[string]any{
+		"model": "m1", "input": "hi",
+		"tools": []any{map[string]any{
+			"type": "function", "name": "weather",
+			"parameters": map[string]any{"type": "object"},
+		}},
+		"tool_choice": map[string]any{"type": "function", "name": "weather"},
+	})
+	chat, err := responsesToChat(payload)
+	if err != nil {
+		t.Fatalf("responsesToChat: %v", err)
+	}
+	choice, ok := chat["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_choice = %#v", chat["tool_choice"])
+	}
+	if _, flat := choice["name"]; flat {
+		t.Fatalf("flat tool_choice leaked to chat: %#v", choice)
+	}
+	function, _ := choice["function"].(map[string]any)
+	if function == nil || stringValue(function["name"]) != "weather" {
+		t.Fatalf("tool_choice function = %#v", function)
 	}
 }
