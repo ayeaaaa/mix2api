@@ -6178,8 +6178,13 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <span style="font-size:11px;color:var(--dim)">国内签到时间</span>
           <input id="setWorkbuddyCheckinTime" type="time" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
           <span id="setWorkbuddyCheckinEffective" style="font-size:11px;color:var(--dim)"></span>
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim)">
+            失败重试
+            <input id="setWorkbuddyCheckinRetry" type="number" min="0" max="120" step="1" placeholder="30" title="0 = 关闭自动重试" style="width:64px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 6px;font:inherit;color:var(--fg)">
+            分钟
+          </label>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 09:00 / 21:00；国际版每日活跃时段仍在「设置 → 自动化」。</div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 09:00 / 21:00；失败重试 0 = 关闭。国际版每日活跃时段仍在「设置 → 自动化」。</div>
         <button class="sec mini" onclick="saveDailyChatModule(this)">保存 WorkBuddy 调度</button>
       </div>
       <div class="card schedule-provider-card" id="scheduleCardCodearts">
@@ -6191,8 +6196,13 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;flex-wrap:wrap">
           <span style="font-size:11px;color:var(--dim)">签到时间</span>
           <input id="setCodeartsCheckinTime" type="time" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim)">
+            失败重试
+            <input id="setCodeartsCheckinRetry" type="number" min="0" max="120" step="1" placeholder="30" title="0 = 关闭自动重试" style="width:64px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 6px;font:inherit;color:var(--fg)">
+            分钟
+          </label>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 跟随 WorkBuddy；只对已启用账号执行。</div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">留空 = 跟随 WorkBuddy；失败重试 0 = 关闭；只对已启用账号执行。</div>
         <button class="sec mini" onclick="saveCodeartsSettings(this)">保存 CodeArts 调度</button>
       </div>
       <div class="card schedule-provider-card" id="scheduleCardRaccoon">
@@ -6214,10 +6224,16 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <input id="setDoubaoCheckinEnabled" type="checkbox" style="width:16px;height:16px">
           每天自动签到
         </label>
-        <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px">
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0 10px;flex-wrap:wrap">
           <span style="font-size:11px;color:var(--dim)">签到时间（东八区）</span>
           <input id="setDoubaoCheckinTime" type="time" value="09:15" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;color:var(--fg)">
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim)">
+            失败重试
+            <input id="setDoubaoCheckinRetry" type="number" min="0" max="120" step="1" placeholder="30" title="0 = 关闭自动重试" style="width:64px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 6px;font:inherit;color:var(--fg)">
+            分钟
+          </label>
         </div>
+        <div style="font-size:11px;color:var(--dim);margin:4px 0 10px">失败重试 0 = 关闭；重试截止当天 23:59。</div>
         <button class="sec mini" onclick="saveDoubaoSettings(this)">保存豆包调度</button>
       </div>
     </div>
@@ -10226,6 +10242,11 @@ function renderDoubaoSettings(cfg){
   if(checkinInput) checkinInput.checked = cfg.checkin_enabled === true;
   const checkinTime = document.getElementById("setDoubaoCheckinTime");
   if(checkinTime) checkinTime.value = cfg.checkin_time || "09:15";
+  const checkinRetry = document.getElementById("setDoubaoCheckinRetry");
+  if(checkinRetry){
+    const retryMinutes = Number(cfg.checkin_retry_minutes);
+    checkinRetry.value = String(Number.isFinite(retryMinutes) ? retryMinutes : 30);
+  }
   const base = document.getElementById("setDoubaoBaseUrl");
   if(base) base.value = cfg.base_url || "https://www.doubao.com";
   const aid = document.getElementById("setDoubaoAID");
@@ -10252,10 +10273,13 @@ function renderDoubaoSettings(cfg){
 
 async function saveDoubaoSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  const retryRaw = String(val("setDoubaoCheckinRetry")).trim();
+  const retryMinutes = retryRaw === "" ? 30 : Math.max(0, Math.min(120, Number(retryRaw) || 0));
   const payload = {
     enabled: !!(document.getElementById("setDoubaoEnabled") || {}).checked,
     checkin_enabled: !!(document.getElementById("setDoubaoCheckinEnabled") || {}).checked,
     checkin_time: String(val("setDoubaoCheckinTime") || "09:15").trim(),
+    checkin_retry_minutes: retryMinutes,
     base_url: String(val("setDoubaoBaseUrl") || "").trim(),
     aid: String(val("setDoubaoAID") || "").trim(),
     max_concurrent: parseInt(val("setDoubaoMaxConcurrent"), 10) || 1,
@@ -10684,6 +10708,11 @@ function renderCodeartsSettings(cfg){
   if(auto) auto.checked = cfg.credits_auto_claim === true;
   const checkinTime = document.getElementById("setCodeartsCheckinTime");
   if(checkinTime) checkinTime.value = typeof cfg.checkin_time === "string" ? cfg.checkin_time : "";
+  const checkinRetry = document.getElementById("setCodeartsCheckinRetry");
+  if(checkinRetry){
+    const retryMinutes = Number(cfg.checkin_retry_minutes);
+    checkinRetry.value = String(Number.isFinite(retryMinutes) ? retryMinutes : 30);
+  }
   const expiring = document.getElementById("setCodeartsExpiringPriority");
   if(expiring) expiring.checked = cfg.credits_expiring_priority !== false;
   const conc = document.getElementById("setCodeartsMaxConcurrent");
@@ -10708,10 +10737,13 @@ function renderCodeartsSettings(cfg){
 
 async function saveCodeartsSettings(btn){
   const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  const retryRaw = String(val("setCodeartsCheckinRetry")).trim();
+  const retryMinutes = retryRaw === "" ? 30 : Math.max(0, Math.min(120, Number(retryRaw) || 0));
   const payload = {
     enabled: !!(document.getElementById("setCodeartsEnabled") || {}).checked,
     credits_auto_claim: !!(document.getElementById("setCodeartsAutoCheckin") || {}).checked,
     checkin_time: String(val("setCodeartsCheckinTime") || "").trim(),
+    checkin_retry_minutes: retryMinutes,
     credits_expiring_priority: !!(document.getElementById("setCodeartsExpiringPriority") || {}).checked,
     max_concurrent: parseInt(val("setCodeartsMaxConcurrent"), 10) || 1,
     timeout_seconds: parseFloat(val("setCodeartsTimeout")) || 30,
@@ -17400,6 +17432,11 @@ async function loadSettings(showToast){
         workbuddyCheckinEffective.textContent = scheduleCfg.checkin_effective
           ? ('生效: ' + scheduleCfg.checkin_effective) : '';
       }
+      const workbuddyCheckinRetry = document.getElementById('setWorkbuddyCheckinRetry');
+      if(workbuddyCheckinRetry){
+        const retryMinutes = Number(scheduleCfg.checkin_retry_minutes);
+        workbuddyCheckinRetry.value = String(Number.isFinite(retryMinutes) ? retryMinutes : 30);
+      }
       const dailyChatTimes = Array.isArray(scheduleCfg.daily_chat) ? scheduleCfg.daily_chat : [];
       renderDailyChatTimes(dailyChatTimes);
       const dailyChatEffective = Array.isArray(scheduleCfg.daily_chat_effective)
@@ -18571,6 +18608,9 @@ async function saveDailyChatModule(btn){
   const catchupEl = document.getElementById('setDailyChatStartupCatchup');
   const fallbackEl = document.getElementById('setDailyChatActivityFallback');
   const workbuddyCheckinEl = document.getElementById('setWorkbuddyCheckinTime');
+  const workbuddyRetryEl = document.getElementById('setWorkbuddyCheckinRetry');
+  const retryRaw = workbuddyRetryEl ? String(workbuddyRetryEl.value).trim() : '';
+  const retryMinutes = retryRaw === '' ? 30 : Math.max(0, Math.min(120, Number(retryRaw) || 0));
   const payload = {
     daily_chat_web: !!(webEl && webEl.checked),
     daily_chat_models: DAILY_CHAT_MODEL_SELECTED.slice(),
@@ -18582,7 +18622,8 @@ async function saveDailyChatModule(btn){
     daily_chat_web_fallback_activity: !!(fallbackEl && fallbackEl.checked),
     schedule: {
       daily_chat: DAILY_CHAT_TIMES_SELECTED.slice(),
-      checkin_time: String((workbuddyCheckinEl && workbuddyCheckinEl.value) || '').trim()
+      checkin_time: String((workbuddyCheckinEl && workbuddyCheckinEl.value) || '').trim(),
+      checkin_retry_minutes: retryMinutes
     }
   };
   // 总开关只在勾选框已按 /settings 回填过时才提交：设置没读到（或页面上没有

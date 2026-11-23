@@ -788,3 +788,95 @@ func TestJobsCheckinRetriesAfterFailure(t *testing.T) {
 		t.Fatal("next day's checkin slot is not due")
 	}
 }
+
+func TestJobsCheckinRetryIntervalSetting(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-retry-interval", true, true, false)
+	if _, err := f.store.Merge(map[string]any{
+		"schedule": map[string]any{
+			"checkin_time":          "08:45",
+			"checkin_retry_minutes": 45,
+		},
+	}); err != nil {
+		t.Fatalf("save retry interval: %v", err)
+	}
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 9, hour, minute, 0, 0, time.Local)
+	}
+	job.state.mu.Lock()
+	job.state.lastSlotKey = "2026-11-09 08:45"
+	job.state.mu.Unlock()
+
+	job.updateCheckinRetry(at(8, 45), JobRunResult{Failed: 1})
+	if job.Due(at(9, 29)) {
+		t.Fatal("retry ran before the 45-minute interval")
+	}
+	if !job.Due(at(9, 30)) {
+		t.Fatal("retry not due at 08:45 + 45m")
+	}
+	if got := f.intl.checkinRetryMinutes(); got != 45 {
+		t.Fatalf("checkinRetryMinutes() = %d, want 45", got)
+	}
+
+	if _, err := f.store.Merge(map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": 0},
+	}); err != nil {
+		t.Fatalf("disable retry: %v", err)
+	}
+	job.updateCheckinRetry(at(9, 30), JobRunResult{Failed: 1})
+	if job.Due(at(9, 31)) {
+		t.Fatal("retry ran with checkin_retry_minutes=0")
+	}
+
+	if _, err := f.store.Merge(map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": 999},
+	}); err != nil {
+		t.Fatalf("clamp retry: %v", err)
+	}
+	if got := f.intl.checkinRetryMinutes(); got != maxCheckinRetryMinutes {
+		t.Fatalf("clamped retry = %d, want %d", got, maxCheckinRetryMinutes)
+	}
+}
+
+func TestRoutesCheckinRetrySetting(t *testing.T) {
+	f := newWBRoutesFixture(t)
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": 45},
+	}); err != nil {
+		t.Fatalf("save retry interval: %v", err)
+	}
+	view, _ := f.intl.SettingsView(context.Background())
+	schedule, _ := view["schedule"].(map[string]any)
+	if schedule["checkin_retry_minutes"] != 45 {
+		t.Fatalf("saved retry = %#v, want 45", schedule["checkin_retry_minutes"])
+	}
+
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": 999},
+	}); err != nil {
+		t.Fatalf("clamp retry: %v", err)
+	}
+	view, _ = f.intl.SettingsView(context.Background())
+	schedule, _ = view["schedule"].(map[string]any)
+	if schedule["checkin_retry_minutes"] != maxCheckinRetryMinutes {
+		t.Fatalf("clamped retry = %#v, want %d", schedule["checkin_retry_minutes"], maxCheckinRetryMinutes)
+	}
+
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": -1},
+	}); err != nil {
+		t.Fatalf("zero retry: %v", err)
+	}
+	view, _ = f.intl.SettingsView(context.Background())
+	schedule, _ = view["schedule"].(map[string]any)
+	if schedule["checkin_retry_minutes"] != 0 {
+		t.Fatalf("negative retry = %#v, want 0", schedule["checkin_retry_minutes"])
+	}
+
+	if err := f.intl.SaveSettings(context.Background(), map[string]any{
+		"schedule": map[string]any{"checkin_retry_minutes": "bad"},
+	}); err == nil {
+		t.Fatal("invalid retry interval was accepted")
+	}
+}

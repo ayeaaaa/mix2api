@@ -14,11 +14,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 )
 
-const (
-	codeartsCheckinJobName = "codearts-checkin"
-	// checkinRetryInterval is the same-day retry spacing after a failed batch.
-	checkinRetryInterval = 30 * time.Minute
-)
+const codeartsCheckinJobName = "codearts-checkin"
 
 // checkinJobSlots is the WorkBuddy-compatible fallback: the same 09:00/21:00
 // slots used by the domestic WorkBuddy check-in. The live setting is read from
@@ -151,8 +147,14 @@ func (j *codeartsCheckinJob) updateRetry(now time.Time, result CheckinResult, er
 		j.retryUntil = time.Time{}
 		return
 	}
+	minutes := j.provider.Config().CheckinRetryMinutes
+	if minutes <= 0 {
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return
+	}
 	until := endOfLocalDay(now)
-	next := now.Add(checkinRetryInterval)
+	next := now.Add(time.Duration(minutes) * time.Minute)
 	if !next.Before(until) {
 		j.retryAt = time.Time{}
 		j.retryUntil = time.Time{}

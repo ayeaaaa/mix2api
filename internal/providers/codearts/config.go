@@ -38,6 +38,8 @@ const (
 	defaultMaxConcurrent        = 1
 	minMaxConcurrent            = 1
 	maxMaxConcurrent            = 20
+	defaultCheckinRetryMinutes  = 30
+	maxCheckinRetryMinutes      = 120
 )
 
 // Config is the CodeArts provider settings stored under the "codearts" key of
@@ -52,6 +54,7 @@ type Config struct {
 	CreditsAutoClaim        bool    `json:"credits_auto_claim"`
 	CreditsExpiringPriority bool    `json:"credits_expiring_priority"`
 	CheckinTime             string  `json:"checkin_time"`
+	CheckinRetryMinutes     int     `json:"checkin_retry_minutes"`
 }
 
 func defaultConfig() Config {
@@ -64,6 +67,7 @@ func defaultConfig() Config {
 		BenefitAutoClaim:        true,
 		CreditsAutoClaim:        true,
 		CreditsExpiringPriority: true,
+		CheckinRetryMinutes:     defaultCheckinRetryMinutes,
 	}
 }
 
@@ -102,7 +106,8 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 		switch key {
 		case "enabled", "timeout_seconds", "stream_timeout_seconds",
 			"models_ttl_seconds", "max_concurrent", "benefit_auto_claim",
-			"credits_auto_claim", "credits_expiring_priority", "checkin_time":
+			"credits_auto_claim", "credits_expiring_priority", "checkin_time",
+			"checkin_retry_minutes":
 			raw[key] = value
 		}
 	}
@@ -125,6 +130,7 @@ func configValues(cfg Config) map[string]any {
 		"credits_auto_claim":        cfg.CreditsAutoClaim,
 		"credits_expiring_priority": cfg.CreditsExpiringPriority,
 		"checkin_time":              cfg.CheckinTime,
+		"checkin_retry_minutes":     cfg.CheckinRetryMinutes,
 	}
 }
 
@@ -152,6 +158,8 @@ func normalizeConfig(raw map[string]any) Config {
 	cfg.CreditsAutoClaim = defaultOn(raw["credits_auto_claim"])
 	cfg.CreditsExpiringPriority = defaultOn(raw["credits_expiring_priority"])
 	cfg.CheckinTime = normalizeClockTime(raw["checkin_time"])
+	cfg.CheckinRetryMinutes = boundedInt(raw["checkin_retry_minutes"],
+		defaultCheckinRetryMinutes, 0, maxCheckinRetryMinutes)
 	return cfg
 }
 

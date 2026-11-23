@@ -18,6 +18,8 @@ const (
 	defaultModelsTTLSeconds     = 300.0
 	defaultMaxConcurrent        = 1
 	defaultCheckinTime          = "09:15"
+	defaultCheckinRetryMinutes  = 30
+	maxCheckinRetryMinutes      = 120
 )
 
 // Config is the persisted doubao settings section.
@@ -31,6 +33,7 @@ type Config struct {
 	MaxConcurrent        int     `json:"max_concurrent"`
 	CheckinEnabled       bool    `json:"checkin_enabled"`
 	CheckinTime          string  `json:"checkin_time"`
+	CheckinRetryMinutes  int     `json:"checkin_retry_minutes"`
 }
 
 func defaultConfig() Config {
@@ -44,6 +47,7 @@ func defaultConfig() Config {
 		MaxConcurrent:        defaultMaxConcurrent,
 		CheckinEnabled:       false,
 		CheckinTime:          defaultCheckinTime,
+		CheckinRetryMinutes:  defaultCheckinRetryMinutes,
 	}
 }
 
@@ -72,7 +76,7 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 		switch key {
 		case "enabled", "base_url", "aid", "timeout_seconds",
 			"stream_timeout_seconds", "models_ttl_seconds", "max_concurrent",
-			"checkin_enabled", "checkin_time":
+			"checkin_enabled", "checkin_time", "checkin_retry_minutes":
 			raw[key] = value
 		}
 	}
@@ -94,6 +98,7 @@ func configValues(cfg Config) map[string]any {
 		"max_concurrent":         cfg.MaxConcurrent,
 		"checkin_enabled":        cfg.CheckinEnabled,
 		"checkin_time":           cfg.CheckinTime,
+		"checkin_retry_minutes":  cfg.CheckinRetryMinutes,
 	}
 }
 
@@ -117,6 +122,8 @@ func normalizeConfig(raw map[string]any) Config {
 	if value := textValue(raw["checkin_time"]); validClock(value) {
 		cfg.CheckinTime = value
 	}
+	cfg.CheckinRetryMinutes = boundedInt(raw["checkin_retry_minutes"],
+		defaultCheckinRetryMinutes, 0, maxCheckinRetryMinutes)
 	return cfg
 }
 

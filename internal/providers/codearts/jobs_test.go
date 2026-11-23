@@ -267,3 +267,46 @@ func TestCodeArtsCheckinRetryState(t *testing.T) {
 		t.Fatal("retry was scheduled past local midnight")
 	}
 }
+
+func TestCodeArtsCheckinRetryIntervalSetting(t *testing.T) {
+	fake := newCreditFake()
+	provider, job, _ := newCheckinJobFixture(t, fake)
+	enableCodeArtsAutoCheckin(t, provider, true)
+	if _, err := SaveConfig(provider.store, map[string]any{
+		"checkin_time": "09:15", "checkin_retry_minutes": 45,
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if _, err := provider.applySettings(); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 12, hour, minute, 0, 0, time.Local)
+	}
+	job.markSlot(at(9, 15))
+	job.updateRetry(at(9, 15), CheckinResult{OK: false}, nil)
+	if job.Due(at(9, 59)) {
+		t.Fatal("retry ran before the 45-minute interval")
+	}
+	if !job.Due(at(10, 0)) {
+		t.Fatal("retry not due at 09:15 + 45m")
+	}
+
+	if _, err := SaveConfig(provider.store, map[string]any{"checkin_retry_minutes": 0}); err != nil {
+		t.Fatalf("disable retry: %v", err)
+	}
+	if _, err := provider.applySettings(); err != nil {
+		t.Fatalf("applySettings: %v", err)
+	}
+	job.updateRetry(at(10, 0), CheckinResult{OK: false}, nil)
+	if job.Due(at(10, 1)) {
+		t.Fatal("retry ran with checkin_retry_minutes=0")
+	}
+
+	if _, err := SaveConfig(provider.store, map[string]any{"checkin_retry_minutes": 999}); err != nil {
+		t.Fatalf("clamp retry: %v", err)
+	}
+	if got := LoadConfig(provider.store).CheckinRetryMinutes; got != maxCheckinRetryMinutes {
+		t.Fatalf("clamped retry = %d, want %d", got, maxCheckinRetryMinutes)
+	}
+}

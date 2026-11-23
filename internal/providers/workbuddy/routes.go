@@ -3271,6 +3271,14 @@ func (p *Provider) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 				normalized["checkin_time"] = times[0]
 			}
 		}
+		if value, exists := schedule["checkin_retry_minutes"]; exists {
+			minutes, ok := wbAdminInt(value)
+			if !ok {
+				writeWBAdminError(w, wbBadRequest("schedule.checkin_retry_minutes must be a whole number"))
+				return
+			}
+			normalized["checkin_retry_minutes"] = clampCheckinRetryMinutes(minutes)
+		}
 		if len(normalized) > 0 {
 			patch["schedule"] = normalized
 			recognized = true
