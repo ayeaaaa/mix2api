@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.14] - 2026-11-23
 
 ### 中文
 
@@ -13,6 +13,17 @@ Keep a Changelog and the project uses semantic versioning.
   「失败重试（分钟）」：默认 30，范围 0–120，0 表示关闭当日自动重试；
   仍只重试失败账号，截止当天结束。
 
+#### 修复
+
+- `/v1/responses` 的扁平 function tools 与 `tool_choice` 现在转换为 Chat
+  Completions 的嵌套形状，修复小浣熊等严格上游返回
+  `tools[0].function.name is invalid or missing` 的 400；已是嵌套形状的声明
+  保持不变。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
 ### English
 
 #### Changed
@@ -21,6 +32,17 @@ Keep a Changelog and the project uses semantic versioning.
   "retry failed check-in every N minutes" setting: default 30, range 0–120,
   with 0 disabling same-day retries. Only failed accounts are retried, and
   retries still stop at local midnight.
+
+#### Fixed
+
+- `/v1/responses` now converts flat function tools and `tool_choice` into the
+  nested Chat Completions shape, fixing strict upstreams such as Raccoon
+  rejecting requests with `tools[0].function.name is invalid or missing`;
+  already-nested declarations pass through unchanged.
+
+#### Verification
+
+- `make check` and `make race` pass.
 
 ## [2.8.13] - 2026-11-22
 
