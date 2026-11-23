@@ -27,7 +27,7 @@
 ### Task 2: UI, documentation, delivery
 - [x] Update labels/hints, operator guide and PR amendment; synchronize embedded digest.
 - [x] Run make check/make race and focused independent review; correct findings. Final full check/race passed after the fixes.
-- [ ] Commit owned files, push/create follow-up PR; preserve worktree and official endpoints.
+- [x] Commit owned files, push/create follow-up PR #53; preserve worktree and official endpoints. Rebased by cherry-picking only this adjustment onto v2.8.16; historical release notes retained unchanged.
 
 ## Review fix record
 
