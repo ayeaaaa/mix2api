@@ -699,3 +699,25 @@ func TestCheckinZeroSnapshotClearedOnlyWhenCreditsArrive(t *testing.T) {
 		t.Fatalf("post-checkin overview credits = %+v", loaded.Credits.Total)
 	}
 }
+
+func TestCheckinAllIncludesAutoDisabled(t *testing.T) {
+	fake := newCreditFake()
+	provider, serverURL := newCreditsProvider(t, fake)
+	setCatalogNow(t, provider, time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local))
+	account := addCreditsAccount(t, provider, "u-auto-disabled")
+	account.mu.Lock()
+	account.proxy = serverURL
+	account.Auth.Expiration = time.Now().Add(48 * time.Hour)
+	account.State.Disabled = true
+	account.State.ManualDisabled = false
+	account.mu.Unlock()
+	fake.setDelivery("u-auto-disabled", []any{})
+
+	result, err := provider.CheckinAll(context.Background())
+	if err != nil {
+		t.Fatalf("CheckinAll: %v", err)
+	}
+	if !result.OK || len(result.Results) != 1 || !result.Results[0].OK {
+		t.Fatalf("auto-disabled account was skipped: %+v", result)
+	}
+}

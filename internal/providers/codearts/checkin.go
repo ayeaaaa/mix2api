@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // CheckinCampaignResult is one v1 campaign row from a check-in run. CampaignID
@@ -190,11 +191,23 @@ func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, erro
 	return p.runCheckin(ctx, account)
 }
 
-// CheckinAll checks in every live, enabled account. Disabled/manual-disabled
-// accounts are skipped, matching v1; per-account errors are redacted rows and
-// never abort the remaining accounts. A canceled context is returned to the
-// caller with the rows completed so far.
+// CheckinAll checks in every live account that is not manually disabled.
+// Automatically disabled accounts are still attempted: a successful token
+// refresh may recover them, and the panel's all-accounts action should not
+// silently leave them out.
 func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
+	return p.checkinAccounts(ctx, false)
+}
+
+// CheckinPending checks in only accounts that are not marked checked today.
+// It is the hourly catch-up path: already signed accounts are skipped locally,
+// while auto-disabled and cooling accounts are still attempted so a recovered
+// credential can catch up the same day.
+func (p *Provider) CheckinPending(ctx context.Context) (CheckinResult, error) {
+	return p.checkinAccounts(ctx, true)
+}
+
+func (p *Provider) checkinAccounts(ctx context.Context, pendingOnly bool) (CheckinResult, error) {
 	if p == nil {
 		return CheckinResult{}, errors.New("codearts: provider is nil")
 	}
@@ -211,6 +224,7 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 		batch:   true,
 	}
 	total := float64(0)
+	now := p.nowTime()
 	for _, account := range p.pool.Accounts() {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, ctxErr
@@ -219,8 +233,17 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 		if !live {
 			continue
 		}
-		_, disabled := creditsAccountLabels(account)
-		if disabled {
+		account.mu.Lock()
+		manualDisabled := account.State.ManualDisabled
+		var prior CheckinState
+		if pendingOnly {
+			prior = cloneCheckin(account.checkinLocked())
+		}
+		account.mu.Unlock()
+		if manualDisabled {
+			continue
+		}
+		if pendingOnly && checkinIsToday(prior, now) {
 			continue
 		}
 
@@ -252,6 +275,30 @@ func (p *Provider) CheckinAll(ctx context.Context) (CheckinResult, error) {
 	result.Credits = total
 	result.Message = fmt.Sprintf("已处理 %d 个账号，共领取 %g 积分", len(result.Results), total)
 	return result, nil
+}
+
+// hasPendingCheckins reports whether any live, non-manual account has not
+// completed a successful check-in for the provider's local day. It is used by
+// the hourly catch-up gate and does not call upstream.
+func (p *Provider) hasPendingCheckins(now time.Time) bool {
+	if p == nil || p.pool == nil {
+		return false
+	}
+	for _, account := range p.pool.Accounts() {
+		_, live := account.currentUID()
+		if !live {
+			continue
+		}
+		account.mu.Lock()
+		manualDisabled := account.State.ManualDisabled
+		checkin := cloneCheckin(account.checkinLocked())
+		account.mu.Unlock()
+		if manualDisabled || checkinIsToday(checkin, now) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // runCheckin serializes one account's check-in. The per-account lock is
