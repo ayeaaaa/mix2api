@@ -2765,3 +2765,64 @@ func TestChatExplicitKeyWinsPrefixAndPageSettings(t *testing.T) {
 		t.Fatal("explicit session rotated")
 	}
 }
+
+func TestChatReasoningEffortMapDisabled(t *testing.T) {
+	dir := t.TempDir()
+	writeChatAccount(t, dir, "intl-effort", realmIntl, map[string]any{"product": productDesktop})
+	for _, tc := range []struct {
+		name     string
+		settings map[string]any
+		want     string
+	}{
+		{"default", map[string]any{}, "high"},
+		{"off", map[string]any{"reasoning_effort_map": false}, "extreme"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := setupChatProvider(t, realmIntl, dir, tc.settings)
+			fake := &chatTestFake{body: ssePayload(chatChunk("ok", "stop"), "[DONE]")}
+			provider.chatBaseURL = newChatTestServer(t, fake).URL
+			payload := map[string]any{
+				"model": "deepseek-v4.1-flash",
+				"messages": []any{
+					map[string]any{"role": "user", "content": "hi"},
+				},
+				"reasoning_effort": "extreme",
+			}
+			stream, err := provider.OpenChat(context.Background(), providers.ChatRequest{
+				Raw: chatRaw(t, payload), Model: "deepseek-v4.1-flash",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainChatFrames(t, stream)
+			_ = stream.Close()
+			body := decodeChatBody(t, fake.snapshot()[0])
+			if body["reasoning_effort"] != tc.want {
+				t.Fatalf("reasoning_effort = %#v, want %s", body["reasoning_effort"], tc.want)
+			}
+		})
+	}
+}
+
+func TestFreeModelFallbackExcludesFreeAccounts(t *testing.T) {
+	free := func(uid string) *Account {
+		return &Account{Auth: Auth{UID: uid, Enabled: true}, FreeModels: map[string]bool{"m": true}}
+	}
+	paid := func(uid string) *Account {
+		return &Account{Auth: Auth{UID: uid, Enabled: true}, FreeModels: map[string]bool{"m": true}, paidUser: true, paidKnown: true}
+	}
+	accounts := []*Account{free("a"), free("b"), paid("c")}
+	exclude := map[string]bool{}
+	if !applyFreeModelFallback(accounts, "m", exclude) {
+		t.Fatal("fallback should be available with a paid account")
+	}
+	if !exclude["a"] || !exclude["b"] || exclude["c"] {
+		t.Fatalf("exclude = %#v", exclude)
+	}
+	if applyFreeModelFallback([]*Account{free("a")}, "m", map[string]bool{}) {
+		t.Fatal("fallback must fail open without a paid account")
+	}
+	if applyFreeModelFallback(accounts, "other", map[string]bool{}) {
+		t.Fatal("fallback must not trigger for a non-free model")
+	}
+}

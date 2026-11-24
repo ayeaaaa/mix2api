@@ -19,7 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/settingflags"
 )
 
 const (
@@ -191,6 +193,51 @@ func (p *Provider) refreshChatConfig() Config {
 	return cfg
 }
 
+// applyFreeModelFallback is the "free quota exhausted, same model, paid
+// account" fallback. It excludes every free account only when the model is
+// free for those accounts and at least one paid account can serve it. It
+// returns false (fail-open, no exclusion) when no paid account exists.
+func applyFreeModelFallback(accounts []*Account, model string, exclude map[string]bool) bool {
+	paidAvailable := false
+	for _, account := range accounts {
+		if account == nil || !account.IsPaidUser() {
+			continue
+		}
+		if exclude[accountUID(account)] {
+			continue
+		}
+		account.mu.RLock()
+		disabled := account.removed || !account.Auth.Enabled || account.State.Disabled
+		account.mu.RUnlock()
+		if !disabled {
+			paidAvailable = true
+			break
+		}
+	}
+	if !paidAvailable {
+		return false
+	}
+	freeModel := false
+	for _, account := range accounts {
+		if account != nil && account.ModelIsFree(model) {
+			freeModel = true
+			break
+		}
+	}
+	if !freeModel {
+		return false
+	}
+	for _, account := range accounts {
+		if account == nil || account.IsPaidUser() {
+			continue
+		}
+		if uid := accountUID(account); uid != "" {
+			exclude[uid] = true
+		}
+	}
+	return true
+}
+
 func (p *Provider) openChat(
 	ctx context.Context,
 	req providers.ChatRequest,
@@ -207,7 +254,11 @@ func (p *Provider) openChat(
 	if err != nil {
 		return nil, err
 	}
-	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot()).ForProvider("workbuddy")
+	settings := p.settingsSnapshot()
+	egressBackoff := settingflags.DefaultFalse(settings, "egress_backoff_enabled")
+	freeModelCreditFallback := settingflags.DefaultFalse(settings, "free_model_credit_fallback")
+	affinityOptions := providers.LoadAffinityOptions(settings).ForProvider("workbuddy")
+	pool.SetEgressBackoff(egressBackoff)
 	route := providers.ResolveAffinityForBody(req, baseBody, affinityOptions)
 	req.SessionKey = route.Key
 	turnRequestID := newTurnRequestID()
@@ -296,6 +347,9 @@ func (p *Provider) openChat(
 			ctx, account, baseBody, model, req, cfg, turnRequestID, vscodeConversationID, refreshed,
 		)
 		if attemptErr == nil {
+			if egressBackoff {
+				transport.NoteEgressSuccess(account.ProxyURL())
+			}
 			stream.affinity = route.Diagnostics(policy, account.UID())
 			_ = pool.NoteSuccess(account, model)
 			if !route.Rotate {
@@ -317,6 +371,9 @@ func (p *Provider) openChat(
 
 		var apiErr *APIError
 		if errors.As(attemptErr, &apiErr) {
+			if egressBackoff && (apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport || apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+				transport.NoteEgressTransient(account.ProxyURL())
+			}
 			if apiErr.Kind == KindUpstream || apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport {
 				sawTransient = true
 			}
@@ -337,6 +394,9 @@ func (p *Provider) openChat(
 					_ = pool.NoteError(account, apiErr.SafeMessage(), false, false)
 				}
 			case KindRateLimited:
+				if freeModelCreditFallback {
+					applyFreeModelFallback(accounts, model, exclude)
+				}
 				if apiErr.ModelScoped {
 					_ = pool.NoteModelError(account, model, apiErr.SafeMessage(), apiErr.RetryAfter)
 				} else {
@@ -1504,7 +1564,9 @@ func (p *Provider) normalizeChatBody(body map[string]any, model string) error {
 		return newAPIError(KindInvalid, http.StatusBadRequest, "invalid chat body")
 	}
 	reasoning := p.reasoningMetaForModel(model)
-	mapChatReasoningEffort(body, reasoning)
+	if settingflags.DefaultTrue(p.settingsSnapshot(), "reasoning_effort_map") {
+		mapChatReasoningEffort(body, reasoning)
+	}
 	translateChatMaxTokens(body)
 	clampGPTMaxTokens(body, model)
 	normalizeChatToolChoice(body)

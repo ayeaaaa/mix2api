@@ -500,6 +500,17 @@ func (a *Account) TokenRemaining(now time.Time) time.Duration {
 	return expiry.Sub(now)
 }
 
+// ProxyURL returns the resolved raw outbound proxy URL. It is never exported
+// through View.
+func (a *Account) ProxyURL() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return strings.TrimSpace(a.proxy)
+}
+
 // ProxySlot returns the persisted proxy slot id.
 func (a *Account) ProxySlot() string {
 	if a == nil {

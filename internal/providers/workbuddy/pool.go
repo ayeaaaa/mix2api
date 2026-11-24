@@ -85,6 +85,7 @@ type Pool struct {
 	limitValues        map[string]any
 	usageValues        map[string]any
 	expiringWindowDays int
+	egressBackoff      bool
 	loadErr            error
 
 	// writeMu serializes mutations and credential-file writes.
@@ -331,6 +332,25 @@ func (p *Pool) Config() Config {
 func clonePoolConfig(cfg Config) Config {
 	cfg.AutoSwitchProducts = append([]string(nil), cfg.AutoSwitchProducts...)
 	return cfg
+}
+
+// SetEgressBackoff toggles the per-egress transient-failure gate.
+func (p *Pool) SetEgressBackoff(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.egressBackoff = enabled
+	p.mu.Unlock()
+}
+
+func (p *Pool) egressBackoffEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.egressBackoff
 }
 
 // SetConfig replaces the scheduling configuration and applies the account
@@ -582,6 +602,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(eligible) == 0 {
 		return nil, ErrNoAccount
+	}
+	if p.egressBackoffEnabled() {
+		filtered := make([]*Account, 0, len(eligible))
+		for _, account := range eligible {
+			if transport.EgressAllowed(account.ProxyURL()) {
+				filtered = append(filtered, account)
+			}
+		}
+		if len(filtered) > 0 {
+			eligible = filtered
+		}
 	}
 	policy := providers.AffinityPolicy{}
 	if len(routing) > 0 {

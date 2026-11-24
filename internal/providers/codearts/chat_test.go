@@ -2342,3 +2342,34 @@ func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
 		t.Fatalf("chat_id not stable: %#v vs %#v", firstChat, secondChat)
 	}
 }
+
+func TestChatReasoningEffortMapDisabled(t *testing.T) {
+	values := map[string]any{
+		"model": "GLM-5.2", "messages": t5Messages(t5UserMessage("hi")),
+		"reasoning_effort": "auto",
+	}
+	// Default: invalid effort is rejected before any upstream call.
+	_, _, err := t5OpenBody(t, values)
+	if err == nil {
+		t.Fatal("invalid effort accepted by default")
+	}
+
+	// With the mapping off, the value passes through and reaches upstream.
+	fake, _ := newT5Fake(t, nil)
+	provider, _ := newT5Provider(t, "u1")
+	if _, err := provider.store.Merge(map[string]any{"reasoning_effort_map": false}); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, values, ""))
+	if err != nil {
+		t.Fatalf("OpenChat with map off: %v", err)
+	}
+	_ = stream.Close()
+	captures := fake.snapshot()
+	if len(captures) == 0 {
+		t.Fatal("no upstream call")
+	}
+	if got, _ := captures[0].Body["reasoning_effort"].(string); got != "auto" {
+		t.Fatalf("reasoning_effort = %q, want auto", got)
+	}
+}

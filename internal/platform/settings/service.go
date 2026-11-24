@@ -217,6 +217,7 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"quota_scan_interval_hours":   6,
 		"quota_scans":                 []any{},
 		"remaining_priority_enabled":  boolTrue(data["remaining_priority_enabled"]),
+		"restriction_hold_supported":  false,
 		"egress_backoff_enabled":      boolTrue(data["egress_backoff_enabled"]),
 		"account_max_concurrent":      accountMaxConcurrent(data),
 		"account_max_concurrent_max":  maxAccountMaxConcurrent,

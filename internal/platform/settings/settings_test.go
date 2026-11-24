@@ -495,6 +495,9 @@ func TestRuntimeSettingsDefaultsAndValidation(t *testing.T) {
 	if view["reasoning_effort_map"] != true {
 		t.Fatalf("reasoning_effort_map default = %#v, want true", view["reasoning_effort_map"])
 	}
+	if view["restriction_hold_supported"] != false {
+		t.Fatalf("restriction_hold_supported = %#v, want false", view["restriction_hold_supported"])
+	}
 	if got := view["proxySlots"].([]map[string]any); len(got) != 1 || got[0]["id"] != "slot-1" {
 		t.Fatalf("proxy slot fallback = %#v", got)
 	}

@@ -3004,9 +3004,17 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '已关闭跨出口回退': 'Cross-exit fallback disabled',
     '国际版出口把某个模型限流、当日额度用满、或整池都在冷却时，允许改用同名的国内版出口再试一次。默认关闭——两个出口是两套上游、两套额度、两套积分口径，混用会让「这个 Key 只花国际额度」的部署失去保证。': 'When the Global exit throttles a model, spends its daily quota, or has every account cooling down, the same model may be retried on the China exit. Off by default: the two exits are separate upstreams with separate quota and separate credit ledgers, so mixing them breaks deployments that spend Global credit only.',
     '只对两个出口都提供的模型生效（gpt-* / gemini-* 等国际版独占模型不回退）；方向是单向的，国内版永远不会回退到国际版。出口被显式指定的请求（Key 绑定了出口，或客户端带了 X-Realm / ?realm=）不受影响。': 'Only for models both exits serve (Global-only models such as gpt-* / gemini-* never fall back). The direction is one-way: the China exit never falls back to Global. Requests that name an exit explicitly (a key bound to one, or an X-Realm / ?realm= header) are left alone.',
-    '传输类失败与 502/503/504 改记在「出口」而不是账号上：同一个出口的账号共用一个计数器，退避是秒级（1 秒起、翻倍、封顶 15 秒、带抖动），任一次成功即清零；账号级熔断（30 分钟起、翻倍到 6 小时）不再被一次链路抖动触发。500 与 401/403/429 仍走原路径。默认关闭。': 'Transport failures and 502/503/504 are charged to the egress instead of the account: accounts sharing one egress share one counter, the backoff is seconds-scale (1s, doubling, capped at 15s, jittered) and any success clears it; the account breaker (30 minutes, doubling to 6h) is no longer tripped by a link hiccup. 500 and 401/403/429 keep their old paths. Off by default.',
+    '传输类失败与 502/503/504 按代理出口记录：同一个出口的账号共用一个计数器，退避 1 秒起、翻倍、封顶 15 秒，任一次成功即清零。退避期间该出口的账号会被跳过；所有出口都在退避时 fail-open。账号级熔断规则不变。默认关闭。': 'Transport failures and 502/503/504 are tracked per proxy egress: accounts sharing an egress share one counter. Backoff starts at 1s, doubles, caps at 15s, and any success clears it. Accounts on a backing-off egress are skipped; when every egress is backing off, selection fails open. Account-level breaker rules are unchanged. Off by default.',
     '已启用：出口级瞬时失败退避': 'On: egress-level transient backoff',
     '已关闭出口级瞬时失败退避': 'Egress-level transient backoff off',
+    '免费模型耗尽改走付费账号': 'Switch to a paid account when free-model quota runs out',
+    'v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。': 'v2 does not implement the v1 realm-wide restriction hold. 403 / code 11140 still follows the existing account-level and model-level cooldowns and never pauses dispatch for an entire realm. The value below is kept only for compatibility and has no effect in this version.',
+    '兼容值（秒，当前不生效）': 'Compatibility value (seconds, currently inactive)',
+    '国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。': 'When a Global free model is throttled or its quota is exhausted (for example 429/6004) on a free account, later attempts switch to a paid account for the same model. The model ID is never substituted. Off by default.',
+    '注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。': 'Note: fallback spends real credits from the account. Confirm the credit cost before enabling it.',
+    '启用付费账号回退': 'Enable paid-account fallback',
+    '已启用：免费模型耗尽后同模型改走付费账号': 'On: free-model exhaustion switches to a paid account for the same model',
+    '已关闭免费模型付费账号回退': 'Free-model paid-account fallback off',
 '账号级并发上限': 'Per-account concurrency cap',
 '一个上游账号同时最多接几个请求。0 = 不限（默认，跟没这个功能一样）；1 = 一个账号同时只接一个；N = 一个账号最多同时接 N 个。': 'How many requests one upstream account may serve at once. 0 = unlimited (the default, same as having no such feature); 1 = one request per account at a time; N = up to N at once per account.',
 '整个池子能同时接多少 = 账号数 × N（本机 24 个账号：1 → 24 个，3 → 72 个，10 → 240 个）。超出这个数的请求不排队，直接回「每个账号都在忙」，客户端自己重试。': 'Total capacity = accounts x N (24 accounts here: 1 -> 24, 3 -> 72, 10 -> 240 simultaneous requests). Requests beyond that are not queued: they are answered straight away with "every account is busy" and the client retries.',
@@ -4274,9 +4282,17 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "已关闭跨出口回退": "已關閉跨出口回退",
     "国际版出口把某个模型限流、当日额度用满、或整池都在冷却时，允许改用同名的国内版出口再试一次。默认关闭——两个出口是两套上游、两套额度、两套积分口径，混用会让「这个 Key 只花国际额度」的部署失去保证。": "國際版出口把某個模型限流、當日額度用滿、或整池都在冷卻時，允許改用同名的國內版出口再試一次。預設關閉——兩個出口是兩套上游、兩套額度、兩套積分口徑，混用會讓「這個 Key 只花國際額度」的部署失去保證。",
     "只对两个出口都提供的模型生效（gpt-* / gemini-* 等国际版独占模型不回退）；方向是单向的，国内版永远不会回退到国际版。出口被显式指定的请求（Key 绑定了出口，或客户端带了 X-Realm / ?realm=）不受影响。": "只對兩個出口都提供的模型生效（gpt-* / gemini-* 等國際版獨佔模型不回退）；方向是單向的，國內版永遠不會回退到國際版。出口被明確指定的請求（Key 綁定了出口，或客戶端帶了 X-Realm / ?realm=）不受影響。",
-    "传输类失败与 502/503/504 改记在「出口」而不是账号上：同一个出口的账号共用一个计数器，退避是秒级（1 秒起、翻倍、封顶 15 秒、带抖动），任一次成功即清零；账号级熔断（30 分钟起、翻倍到 6 小时）不再被一次链路抖动触发。500 与 401/403/429 仍走原路径。默认关闭。": "傳輸類失敗與 502/503/504 改記在「出口」而不是帳號上：同一個出口的帳號共用一個計數器，退避是秒級（1 秒起、翻倍、封頂 15 秒、帶抖動），任一次成功即清零；帳號級熔斷（30 分鐘起、翻倍到 6 小時）不再被一次鏈路抖動觸發。500 與 401/403/429 仍走原路徑。預設關閉。",
+    "传输类失败与 502/503/504 按代理出口记录：同一个出口的账号共用一个计数器，退避 1 秒起、翻倍、封顶 15 秒，任一次成功即清零。退避期间该出口的账号会被跳过；所有出口都在退避时 fail-open。账号级熔断规则不变。默认关闭。": "傳輸類失敗與 502/503/504 按代理出口記錄：同一個出口的帳號共用一個計數器，退避 1 秒起、翻倍、封頂 15 秒，任一次成功即清零。退避期間該出口的帳號會被跳過；所有出口都在退避時 fail-open。帳號級熔斷規則不變。預設關閉。",
     "已启用：出口级瞬时失败退避": "已啟用：出口級瞬時失敗退避",
     "已关闭出口级瞬时失败退避": "已關閉出口級瞬時失敗退避",
+    "免费模型耗尽改走付费账号": "免費模型耗盡改走付費帳號",
+    "v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。": "v2 不實作 v1 的「整區連坐暫停」：403 / code 11140 仍按現有的帳號級、模型級冷卻處理，不會暫停整個區域的派發。下面的數值僅為相容舊配置而保留，目前版本不會生效。",
+    "兼容值（秒，当前不生效）": "相容值（秒，目前不生效）",
+    "国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。": "國際版免費模型遇到限流或額度耗盡（如 429/6004）且目前是免費帳號時，後續嘗試改為同一模型的付費帳號；不會替換模型 ID。預設關閉。",
+    "注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。": "注意：回退後會消耗帳號中的真實積分，請確認知曉積分成本後再開啟。",
+    "启用付费账号回退": "啟用付費帳號回退",
+    "已启用：免费模型耗尽后同模型改走付费账号": "已啟用：免費模型耗盡後同模型改走付費帳號",
+    "已关闭免费模型付费账号回退": "已關閉免費模型付費帳號回退",
     "上游响应头超时": "上游回應標頭逾時",
     "单请求体上限": "單請求體上限",
     "单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。": "單次嘗試等上游回傳回應標頭的上限（秒）。拿到回應標頭之前閘道不會向客戶端發出任何位元組，所以這個值就是客戶端要空等的時長：設得比客戶端首位元組預算還大時，客戶端會先斷開（表現為 499 / 首位元組遲遲不返回），而閘道仍會按這個上限繼續換帳號重試。預設 120。",
@@ -7370,18 +7386,18 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <section data-cat="models">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">免费额度耗尽回退积分版 <em id="setCreditFallbackState"></em></h2>
+            <h2 style="margin:0">免费模型耗尽改走付费账号 <em id="setCreditFallbackState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              国际版 deepseek-v4.1-flash 免费额度在所有账号均耗尽（6004 撞线）后，自动回退到 deepseek-v4.1-flash-sg 付费通道。默认关闭。
+              国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：回退后将消耗账户中的真实积分（x0.03 倍率），请确认知晓积分成本后再开启。
+              注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
               <input id="setCreditFallback" type="checkbox" style="width:16px;height:16px">
-              启用积分回退
+              启用付费账号回退
             </label>
             <button onclick="saveCreditFallback(this)">保存</button>
           </div>
@@ -7751,7 +7767,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <div>
             <h2 style="margin:0">出口级瞬时失败退避 <em id="setEgressBackoffState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              传输类失败与 502/503/504 改记在「出口」而不是账号上：同一个出口的账号共用一个计数器，退避是秒级（1 秒起、翻倍、封顶 15 秒、带抖动），任一次成功即清零；账号级熔断（30 分钟起、翻倍到 6 小时）不再被一次链路抖动触发。500 与 401/403/429 仍走原路径。默认关闭。
+              传输类失败与 502/503/504 按代理出口记录：同一个出口的账号共用一个计数器，退避 1 秒起、翻倍、封顶 15 秒，任一次成功即清零。退避期间该出口的账号会被跳过；所有出口都在退避时 fail-open。账号级熔断规则不变。默认关闭。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -7768,16 +7784,16 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <div>
             <h2 style="margin:0">风控连坐暂停保护 <em id="setRestrictionHoldState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              当上游检测到异常行为（403 / code 11140）时，为防同一设备或 IP 下其他账号连坐封禁，网关自动对该区域暂停派发。默认 1800 秒（30 分钟），填 0 可彻底关闭该熔断。
+              v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
             <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)">
-              暂停时长（秒，0 为关闭）
+              兼容值（秒，当前不生效）
               <input id="setRestrictionHoldSeconds" type="number" min="0" max="604800" step="1" style="width:130px" placeholder="1800">
             </label>
-            <button onclick="saveRestrictionHold(this)">保存时长</button>
-            <button class="btn-warn" onclick="resetRestrictionHold(this)" title="立即清除正在生效的暂停倒计时">立即解除暂停</button>
+            <button id="setRestrictionHoldSave" onclick="saveRestrictionHold(this)">保存时长</button>
+            <button id="setRestrictionHoldReset" class="btn-warn" onclick="resetRestrictionHold(this)" title="立即清除正在生效的暂停倒计时">立即解除暂停</button>
           </div>
         </div>
         <div id="restrictionHoldAlert" style="display:none;padding:10px 14px;background:var(--card-bg, #1e1e24);border:1px solid var(--accent, #e5a00d);border-radius:6px;font-size:13px;color:var(--accent, #e5a00d);margin-top:8px">
@@ -17712,12 +17728,21 @@ async function loadSettings(showToast){
         egressBackoffState.textContent = egressBackoff ? '(已启用)' : '(未启用)';
         egressBackoffState.style.color = egressBackoff ? 'var(--accent2)' : 'var(--dim)';
       }
+      const holdSupported = data.restriction_hold_supported === true;
+      holdSupportedFlag = holdSupported;
       const holdSec = typeof data.restriction_hold_seconds === 'number' ? data.restriction_hold_seconds : 1800;
       const holdInput = document.getElementById('setRestrictionHoldSeconds');
-      if(holdInput) holdInput.value = holdSec;
+      if(holdInput){ holdInput.value = holdSec; holdInput.disabled = !holdSupported; }
+      const holdSave = document.getElementById('setRestrictionHoldSave');
+      if(holdSave) holdSave.disabled = !holdSupported;
+      const holdReset = document.getElementById('setRestrictionHoldReset');
+      if(holdReset) holdReset.disabled = !holdSupported;
       const holdState = document.getElementById('setRestrictionHoldState');
       if(holdState){
-        if(holdSec <= 0){
+        if(!holdSupported){
+          holdState.textContent = '(当前未支持，配置保留)';
+          holdState.style.color = 'var(--dim)';
+        } else if(holdSec <= 0){
           holdState.textContent = '(已关闭熔断)';
           holdState.style.color = 'var(--dim)';
         } else {
@@ -17730,7 +17755,9 @@ async function loadSettings(showToast){
       const holdDetails = document.getElementById('restrictionHoldDetails');
       const activeRealms = Object.keys(activeHolds).filter(function(k){ return activeHolds[k] > 0; });
       if(holdAlert && holdDetails){
-        if(activeRealms.length > 0){
+        if(!holdSupported){
+          holdAlert.style.display = 'none';
+        } else if(activeRealms.length > 0){
           const desc = activeRealms.map(function(r){
             const name = r === 'international' ? '国际版' : (r === 'domestic' ? '国内版' : r);
             return name + ' 剩余 ' + activeHolds[r] + ' 秒';
@@ -18386,7 +18413,7 @@ async function saveCreditFallback(btn){
   if(btn) btn.disabled = true;
   try {
     await postJSON('/settings/save', {free_model_credit_fallback: value});
-    toast(value ? '已启用：免费额度耗尽自动回退付费积分版' : '已关闭自动回退付费积分版', 'ok');
+    toast(value ? '已启用：免费模型耗尽后同模型改走付费账号' : '已关闭免费模型付费账号回退', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -18972,6 +18999,7 @@ async function saveAffinityStableKey(btn){
 
 let AFFINITY_MODEL_POOL_SIZES = {};
 let REMAINING_PRIORITY_SUPPORTED = false;
+let holdSupportedFlag = false;
 const AFFINITY_PROVIDER_ROWS=[['workbuddy','Workbuddy'],['codearts','Codearts'],['raccoon','Raccoon']];
 function updateAffinityLongStrategyHelp(){
   const strategyEl=document.getElementById('setAffinityLongStrategy');
@@ -19139,6 +19167,7 @@ async function saveEgressBackoff(btn){
   }
 }
 async function saveRestrictionHold(btn){
+  if(holdSupportedFlag === false){ toast('当前版本未接入风控连坐暂停；原配置已保留', 'bad'); return; }
   const el = document.getElementById('setRestrictionHoldSeconds');
   const val = parseInt(el ? el.value : '1800', 10);
   if(isNaN(val) || val < 0){
@@ -19158,6 +19187,7 @@ async function saveRestrictionHold(btn){
 }
 
 async function resetRestrictionHold(btn){
+  if(holdSupportedFlag === false){ toast('当前版本未接入风控连坐暂停；原配置已保留', 'bad'); return; }
   if(btn) btn.disabled = true;
   try {
     const res = await postJSON('/settings/restriction/reset', {});
@@ -25046,7 +25076,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     models: {
       title: '模型与定价',
       desc: '价格估算、Claude 接口、思考档位和模型过滤。',
-      items: ['模型价格估算', '启用 Anthropic Messages', '思考等级挡位映射', '按 API Key 过滤模型列表', '只列出可用模型', '免费额度耗尽回退积分版']
+      items: ['模型价格估算', '启用 Anthropic Messages', '思考等级挡位映射', '按 API Key 过滤模型列表', '只列出可用模型', '免费模型耗尽改走付费账号']
     },
     routing: {
       title: '路由与限额',

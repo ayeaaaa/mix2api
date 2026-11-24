@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed / 变更
+
+- 设置页六个此前“只保存不生效”的开关完成接线：按 API Key 过滤模型列表、
+  思考档位映射、全局系统提示词、出口级瞬时失败退避、免费模型耗尽后同模型
+  换付费账号；风控连坐暂停保留 v2 现有的单账号 11140 策略，面板改为明确
+  标注“当前未支持，配置保留”并禁用。
+- `/v1/models` 在 `filter_models_by_key` 开启时按 Key 的模型白名单过滤；
+  Chat/Messages/Responses 的 Key 白名单仍无条件生效。
+- 全局提示词支持 passthrough / append / custom，在协议翻译前改写 system/
+  developer 消息；不实现 v1 的 403 降级重试。
+- 出口级退避按代理 URL 记录传输错误与 502/503/504，1s 起翻倍、封顶 15s，
+  成功清零；全部出口都在退避时 fail-open。
+- 免费模型额度耗尽时，在同模型下把后续尝试切到付费账号；没有可用付费
+  账号时 fail-open。
+
 ## [2.8.19] - 2026-11-24
 
 ### 中文

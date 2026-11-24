@@ -68,6 +68,7 @@ type Pool struct {
 	mu               sync.RWMutex
 	cfg              Config
 	accounts         []*Account
+	egressBackoff    bool
 	slots            transport.Slots
 	affinity         map[string]string
 	order            []string
@@ -572,6 +573,24 @@ func (p *Pool) Stats() PoolStats {
 	return stats
 }
 
+func (p *Pool) SetEgressBackoff(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.egressBackoff = enabled
+	p.mu.Unlock()
+}
+
+func (p *Pool) egressBackoffEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.egressBackoff
+}
+
 // Pick chooses a ready account under its concurrency limit: session affinity
 // first, then model-capable candidates, then least busy and least recently
 // used with UID as the deterministic tie breaker.
@@ -636,6 +655,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(candidates) == 0 {
 		return nil, ErrNoAccount
+	}
+	if p.egressBackoffEnabled() {
+		filtered := make([]candidate, 0, len(candidates))
+		for _, item := range candidates {
+			if transport.EgressAllowed(item.account.ProxyURL()) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			candidates = filtered
+		}
 	}
 
 	selected := candidates

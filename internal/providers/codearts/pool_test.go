@@ -1262,3 +1262,32 @@ func TestPoolCohortCursorPrecedesLeastBusy(t *testing.T) {
 		t.Fatalf("cohort cursor lost to least-busy ordering: %q", poolUID(t, got))
 	}
 }
+
+func TestPoolSkipsBackingOffEgress(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"a", "b"} {
+		writeTestAuth(t, dir, uid, "")
+	}
+	p := newTestPool(t, dir, Config{MaxConcurrent: 1})
+	a, b := p.Get("a"), p.Get("b")
+	a.mu.Lock()
+	a.proxy = "http://proxy-a:1"
+	a.mu.Unlock()
+	b.mu.Lock()
+	b.proxy = "http://proxy-b:1"
+	b.mu.Unlock()
+	old := transport.DefaultEgress
+	transport.DefaultEgress = transport.NewEgressTracker()
+	t.Cleanup(func() { transport.DefaultEgress = old })
+
+	p.SetEgressBackoff(true)
+	transport.NoteEgressTransient("http://proxy-a:1")
+	got, err := p.Pick("", "", nil)
+	if err != nil || poolUID(t, got) != "b" {
+		t.Fatalf("backing-off egress picked: %v %v", got, err)
+	}
+	transport.NoteEgressTransient("http://proxy-b:1")
+	if _, err := p.Pick("", "", nil); err != nil {
+		t.Fatalf("all egresses backing off should fail open: %v", err)
+	}
+}

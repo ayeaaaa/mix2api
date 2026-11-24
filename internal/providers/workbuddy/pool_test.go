@@ -1614,3 +1614,38 @@ func TestAdmissionWaitUsesSchedulingGuardHook(t *testing.T) {
 		t.Fatalf("guard hook admission wait = %v/%q, want a wait", wait, reason)
 	}
 }
+
+func TestPickSkipsBackingOffEgress(t *testing.T) {
+	dir := t.TempDir()
+	for _, uid := range []string{"a", "b"} {
+		writeChatAccount(t, dir, uid, realmIntl, nil)
+	}
+	p := setupChatProvider(t, realmIntl, dir, nil).Pool()
+	a, b := p.Get("a"), p.Get("b")
+	if a == nil || b == nil {
+		t.Fatal("accounts missing")
+	}
+	a.Auth.ProxyURL = "http://proxy-a:1"
+	b.Auth.ProxyURL = "http://proxy-b:2"
+	old := transport.DefaultEgress
+	transport.DefaultEgress = transport.NewEgressTracker()
+	t.Cleanup(func() { transport.DefaultEgress = old })
+
+	p.SetEgressBackoff(true)
+	transport.NoteEgressTransient(a.Auth.ProxyURL)
+	got, err := p.Pick("m", "", nil)
+	if err != nil || got.UID() != "b" {
+		t.Fatalf("backing-off egress picked: %v %v", got, err)
+	}
+	transport.NoteEgressTransient(b.Auth.ProxyURL)
+	got, err = p.Pick("m", "", nil)
+	if err != nil {
+		t.Fatalf("all egresses backing off should fail open: %v", err)
+	}
+	p.SetEgressBackoff(false)
+	transport.NoteEgressTransient(a.Auth.ProxyURL)
+	transport.NoteEgressTransient(b.Auth.ProxyURL)
+	if _, err := p.Pick("m", "", nil); err != nil {
+		t.Fatalf("disabled backoff should ignore tracker: %v", err)
+	}
+}

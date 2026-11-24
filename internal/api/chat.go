@@ -127,6 +127,17 @@ func (s *Server) HandleChat(w http.ResponseWriter, r *http.Request, provider pro
 		provider = resolved
 	}
 
+	if mode, text := s.gatewayPromptConfig(r.Context()); mode != "passthrough" && len(request.messages) > 0 {
+		// A malformed message shape is left for the provider/upstream to
+		// reject; prompt rewriting is fail-open.
+		if rewritten, err := applyGatewayPromptModeRaw(request.messages, mode, text); err == nil {
+			request.messages = rewritten
+			if raw, err := json.Marshal(rewritten); err == nil {
+				request.payload["messages"] = raw
+			}
+		}
+	}
+
 	var allowRealmFallback *bool
 	suppressRealmFallback := request.exit != "" || request.explicitRealm || boundRealm != ""
 	if suppressRealmFallback {

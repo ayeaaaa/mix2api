@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/settingflags"
 )
 
 const (
@@ -106,14 +108,16 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 		streamTimeout = p.streamIdleTimeout
 	}
 
-	build, buildErr := buildChatBody(req)
+	settings, _ := p.store.Load()
+	egressBackoff := settingflags.DefaultFalse(settings, "egress_backoff_enabled")
+	p.pool.SetEgressBackoff(egressBackoff)
+	build, buildErr := buildChatBodyWithOptions(req, settingflags.DefaultTrue(settings, "reasoning_effort_map"))
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	// Keep the upstream chat_id/prompt_cache_key derivation unchanged for
 	// clients without a session header, but give the account pool a stable
 	// prefix key so one conversation does not rotate accounts each turn.
-	settings, _ := p.store.Load()
 	options := providers.LoadAffinityOptions(settings).ForProvider("codearts")
 	route := providers.ResolveAffinityForBody(req, build.Body, options)
 	affinityKey := route.Key
@@ -163,6 +167,9 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 
 		stream, attemptErr := p.openChatAccount(ctx, account, build, streamTimeout)
 		if attemptErr == nil {
+			if egressBackoff {
+				transport.NoteEgressSuccess(account.ProxyURL())
+			}
 			_ = p.pool.NoteSuccess(account)
 			boundUID, _ := account.currentUID()
 			if s, ok := stream.(*CodeArtsStream); ok {
@@ -187,6 +194,9 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			// Local failures are not upstream failures and must not fail over.
 			p.pool.Release(account)
 			return nil, attemptErr
+		}
+		if egressBackoff && (apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+			transport.NoteEgressTransient(account.ProxyURL())
 		}
 
 		lastErr = attemptErr
@@ -653,6 +663,10 @@ func isCreditExhaustedMessage(message string) bool {
 
 // buildChatBody normalizes the payload into the v1 CodeArts wire body.
 func buildChatBody(req providers.ChatRequest) (*chatBuild, *APIError) {
+	return buildChatBodyWithOptions(req, true)
+}
+
+func buildChatBodyWithOptions(req providers.ChatRequest, mapReasoningEffort bool) (*chatBuild, *APIError) {
 	if req.Raw == nil {
 		req.Raw = make(map[string]json.RawMessage, 2)
 		if strings.TrimSpace(req.Model) != "" {
@@ -713,7 +727,7 @@ func buildChatBody(req providers.ChatRequest) (*chatBuild, *APIError) {
 	effort := requestedChatEffort(payload)
 	if effort != "" {
 		allowed := reasoningEfforts[strings.ToLower(model)]
-		if len(allowed) > 0 && !chatContainsString(allowed, effort) {
+		if mapReasoningEffort && len(allowed) > 0 && !chatContainsString(allowed, effort) {
 			if effort == "none" && !chatContainsString(allowed, "none") {
 				// Always-thinking models cannot disable reasoning; use their
 				// first accepted level instead of failing the whole request.

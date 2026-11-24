@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/settingflags"
 )
 
 const (
@@ -87,6 +89,8 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	if p.store != nil {
 		settings, _ = p.store.Load()
 	}
+	egressBackoff := settingflags.DefaultFalse(settings, "egress_backoff_enabled")
+	p.SetEgressBackoff(egressBackoff)
 	options := providers.LoadAffinityOptions(settings).ForProvider("raccoon")
 	route := providers.ResolveAffinity(req, options)
 	req.SessionKey = route.Key
@@ -94,6 +98,9 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 	body, model, err := buildChatBody(req)
 	if err != nil {
 		return nil, err
+	}
+	if settingflags.DefaultTrue(settings, "reasoning_effort_map") {
+		applyReasoningEffortMap(body, model)
 	}
 	client := p.HTTPClient()
 	tokens := p.TokenManager()
@@ -150,6 +157,9 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 
 		stream, attemptErr := p.openChatAccount(ctx, account, body, model, client, tokens, cfg)
 		if attemptErr == nil {
+			if egressBackoff {
+				transport.NoteEgressSuccess(account.ProxyURL())
+			}
 			_ = p.NoteSuccess(account)
 			// A refresh may have rotated the JWT subject while the request
 			// was in flight; bind the session to the live UID.
@@ -179,6 +189,9 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 			// failures and must not trigger failover, matching v1's generic
 			// exception branch.
 			return nil, attemptErr
+		}
+		if egressBackoff && (apiErr.Kind == KindTransient || apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+			transport.NoteEgressTransient(account.ProxyURL())
 		}
 
 		switch apiErr.Kind {
@@ -651,6 +664,34 @@ func float64PointerText(value *float64) string {
 		return "0"
 	}
 	return strconv.FormatFloat(*value, 'f', -1, 64)
+}
+
+// applyReasoningEffortMap replaces an unsupported reasoning_effort with the
+// model's first catalog effort, matching v1's fallback order. The key and all
+// other fields are left untouched.
+func applyReasoningEffortMap(body map[string]json.RawMessage, model string) {
+	raw, ok := body["reasoning_effort"]
+	if !ok {
+		return
+	}
+	var effort string
+	if json.Unmarshal(raw, &effort) != nil {
+		return
+	}
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return
+	}
+	allowed := raccoonReasoningEfforts[strings.ToLower(strings.TrimSpace(model))]
+	if len(allowed) == 0 {
+		return
+	}
+	for _, candidate := range allowed {
+		if candidate == effort {
+			return
+		}
+	}
+	body["reasoning_effort"] = mustRawJSON(allowed[0])
 }
 
 // buildChatBody reduces an OpenAI chat payload to the v1 allowlist. When Raw
