@@ -185,14 +185,6 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 	}
 	defer account.taskMu.Unlock()
 
-	if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
-		if err := p.EnsureToken(ctx, account); err != nil {
-			result.Error = p.taskRedactError(account, err)
-			result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
-			return result, nil
-		}
-	}
-
 	now := p.taskNowTime()
 	if last := strings.TrimSpace(auth.LastCheckin); last != "" && strings.HasPrefix(last, now.Format(tasksDayLayout)) {
 		result.OK = true
@@ -200,6 +192,14 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 		result.State = "checked"
 		result.Msg = "今日已签到，跳过本轮"
 		return result, nil
+	}
+
+	if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
+		if err := p.EnsureToken(ctx, account); err != nil {
+			result.Error = p.taskRedactError(account, err)
+			result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
+			return result, nil
+		}
 	}
 
 	// A concurrent process may have signed in without writing the local
