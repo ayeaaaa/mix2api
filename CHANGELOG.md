@@ -3,18 +3,47 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.19] - 2026-11-24
 
-### Changed / 变更
+### 中文
+
+#### 变更
 
 - 账号代理槽表格改为逐行结构化编辑：协议 / 服务器 / 端口 / 用户名 / 密码，
-  密码使用密码框；原始 URL 放在可展开的「高级」行，兼容路径、查询和历史格式。
-- 保留名称、启用、出口、绑定账号、测试、删除、IPv6、URL 去重和 Docker
-  `127.0.0.1` 提示；不引入浏览器式的网址协议、直连、Proxy DNS 或 SOCKS4。
-- Proxy-slot rows now edit protocol / server / port / username / password
-  inline, with a masked password and an expandable raw-URL advanced row for
-  paths, queries, legacy formats and special credentials. Existing row actions,
-  IPv6 handling, de-duplication and the Docker caveat remain.
+  密码使用密码框；原始 URL 放在可展开的「高级」行，兼容路径、查询、历史
+  `host:port:user:pass` 和特殊凭据。
+- 结构化编辑会即时合成并校验 URL，支持 IPv6、省略默认端口、`socks5h` 和
+  密码-only 认证；带路径/查询的地址会自动锁定结构化字段并打开原始 URL 编辑。
+- 保存和测试前统一校验并拒绝重复地址（路径/查询参与去重）；测试脏行时先保存
+  当前槽位列表再探测，避免测到旧地址。
+- 保留名称、启用、出口、绑定账号、测试、删除和 Docker `127.0.0.1` 提示；
+  不引入浏览器式的网址协议、直连、Proxy DNS 或 SOCKS4。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 17/17。
+
+### English
+
+#### Changed
+
+- Proxy-slot rows are now edited inline as structured fields: protocol, server,
+  port, username, and password, with the password masked. The raw URL lives in
+  an expandable Advanced row covering paths, queries, legacy
+  `host:port:user:pass`, and special credentials.
+- Structured edits compose and validate the URL immediately; IPv6, omitted
+  default ports, `socks5h`, and password-only auth are supported. URLs with
+  paths or queries lock the structured fields and open the raw editor.
+- Save and test validate all rows and reject duplicate normalized URLs (path
+  and query included). Testing a dirty row saves the current slot list before
+  probing so it cannot probe a stale address.
+- Existing row actions, exit metadata, enabled/bound state, delete, and the
+  Docker `127.0.0.1` caveat remain. Browser-style protocol/direct/Proxy DNS/
+  SOCKS4 controls are deliberately not added.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 17/17.
 
 ## [2.8.18] - 2026-11-23
 
