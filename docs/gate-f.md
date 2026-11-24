@@ -358,6 +358,16 @@ and the 17/17 dashboard JS harness pass. Published as `v2.8.20` at `d20c217`;
 evidence: `docs/smoke/2026-11-24-release-2.8.20.md`. No media or Windows SCM
 gate changed.
 
+**v2.8.21 addendum:** after the daily check-in slot, each provider sweeps once
+per clock hour and only processes accounts without a successful check-in
+stamped for the local day. Auto-disabled or token-expired CodeArts and
+WorkBuddy accounts refresh credentials first and can recover; manually
+disabled, removed, banned, and task-disabled accounts stay skipped. Retry-zero
+cancels queued retries and the hourly sweep, and Raccoon keeps its four-hour
+window. `make check`, `make race`, and the 17/17 dashboard JS harness pass.
+Published as `v2.8.21` at `74ba686`; evidence:
+`docs/smoke/2026-11-24-release-2.8.21.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
