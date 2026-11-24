@@ -12192,8 +12192,8 @@ const SORT_COL_KINDS = {
   perfMatrix:       ['text', 'text', 'text', 'num', 'num', 'num', 'num', 'num',
                      'num', 'num', 'num', 'num', 'num'],
   accounts:         ['text', 'text', 'text', null, 'num', 'num', 'num', 'num', null],
-  // 名称 / 代理地址是 <input>（textContent 恒为空串，按它排等于没排）、启用是复选框、
-  // 操作是按钮列——登记成 null，别让表头挂上一个点了没反应的箭头。
+  // 名称 / 协议 / 服务器 / 端口 / 认证是输入控件（textContent 恒为空串，按它排
+  // 等于没排）、启用是复选框、操作是按钮列——登记成 null，别让表头挂上没反应的箭头。
   slotList:         [null, null, null, null, null, 'text', null, 'num', null],
   disabledList:     ['text', 'text', 'text', 'text', 'text', 'text'],
 };
@@ -20948,7 +20948,7 @@ function updateProxyStructured(index, field, value){
   if(!slot) return;
   if(!slot._parts) slot._parts = parseProxySlotURL(slot.url);
   if(slot._parts.advanced) return;
-  slot._parts[field] = value;
+  slot._parts[field] = field === 'username' ? String(value || '').trim() : value;
   slot.url = composeProxyURL(slot._parts);
   markSlotsDirty();
   const raw = document.getElementById('slotRaw' + index);

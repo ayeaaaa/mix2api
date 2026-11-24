@@ -140,6 +140,8 @@ const byId = id => page.document.getElementById(id);
   page.toggleProxyAdvanced(0);
   assert.ok(dom.byId('slotList').innerHTML.includes('slotRaw0'),'advanced raw URL editor opens on demand');
   assert.equal(byId('slotAddHost').value,'');
+  page.updateProxyStructured(0,'username',' user ');
+  assert.equal(page.slotPayload()[0].url,'socks5://user:p%40ss@127.0.0.1:10808');
   page.updateProxyStructured(0,'port','10809');
   assert.equal(page.slotPayload()[0].url,'socks5://user:p%40ss@127.0.0.1:10809');
   page.updateProxyStructured(0,'port','10808');
