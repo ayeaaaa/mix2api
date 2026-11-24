@@ -338,6 +338,15 @@ or account binding. `make check`, `make race`, and the 17/17 dashboard JS harnes
 pass. Published as `v2.8.18` at `de86865`; evidence:
 `docs/smoke/2026-11-23-release-2.8.18.md`. No media or Windows SCM gate changed.
 
+**v2.8.19 addendum:** proxy slots are now edited as inline structured rows for
+protocol, server, port, username, and password, with a masked password and an
+expandable raw-URL editor for paths, queries, legacy forms, and special
+credentials. Save/test validate all rows, reject duplicate normalized URLs, and
+save dirty state before probing. No API, storage, transport, or account-binding
+changes. `make check`, `make race`, and the 17/17 dashboard JS harness pass.
+Published as `v2.8.19` at `49a4fb6`; evidence:
+`docs/smoke/2026-11-24-release-2.8.19.md`. No media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
