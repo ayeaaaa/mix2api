@@ -19,7 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
+	"github.com/ayeaaaa/mix2api-v2/internal/providers/settingflags"
 )
 
 const (
@@ -191,6 +193,26 @@ func (p *Provider) refreshChatConfig() Config {
 	return cfg
 }
 
+// excludeFreeAccounts returns a copy of exclude with every free account added.
+// It is used for one paid-first selection attempt; if that attempt has no
+// candidate, the caller retries with the original exclude set, so a request is
+// never stranded when the only paid account is unusable.
+func excludeFreeAccounts(accounts []*Account, exclude map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(exclude)+len(accounts))
+	for uid, value := range exclude {
+		out[uid] = value
+	}
+	for _, account := range accounts {
+		if account == nil || account.IsPaidUser() {
+			continue
+		}
+		if uid := accountUID(account); uid != "" {
+			out[uid] = true
+		}
+	}
+	return out
+}
+
 func (p *Provider) openChat(
 	ctx context.Context,
 	req providers.ChatRequest,
@@ -207,7 +229,11 @@ func (p *Provider) openChat(
 	if err != nil {
 		return nil, err
 	}
-	affinityOptions := providers.LoadAffinityOptions(p.settingsSnapshot()).ForProvider("workbuddy")
+	settings := p.settingsSnapshot()
+	egressBackoff := settingflags.DefaultFalse(settings, "egress_backoff_enabled")
+	freeModelCreditFallback := settingflags.DefaultFalse(settings, "free_model_credit_fallback")
+	affinityOptions := providers.LoadAffinityOptions(settings).ForProvider("workbuddy")
+	pool.SetEgressBackoff(egressBackoff)
 	route := providers.ResolveAffinityForBody(req, baseBody, affinityOptions)
 	req.SessionKey = route.Key
 	turnRequestID := newTurnRequestID()
@@ -236,6 +262,7 @@ func (p *Provider) openChat(
 	var bestRate *APIError
 	sawTransient := false
 	retriedTransient := false
+	preferPaid := false
 	restrictedRotations := 0
 
 	for attempt := 0; attempt < attemptLimit; attempt++ {
@@ -243,7 +270,15 @@ func (p *Provider) openChat(
 			return nil, ctxErr
 		}
 
-		account, pickErr := pool.Pick(model, req.SessionKey, exclude, policy)
+		pickExclude := exclude
+		if preferPaid {
+			pickExclude = excludeFreeAccounts(accounts, exclude)
+		}
+		account, pickErr := pool.Pick(model, req.SessionKey, pickExclude, policy)
+		if pickErr != nil && preferPaid {
+			// No usable paid account: fail open to the normal candidate set.
+			account, pickErr = pool.Pick(model, req.SessionKey, exclude, policy)
+		}
 		if pickErr != nil {
 			// v1 clears the tried set once after a transient/network failure so
 			// a one-account pool gets a real second upstream attempt instead of
@@ -296,6 +331,9 @@ func (p *Provider) openChat(
 			ctx, account, baseBody, model, req, cfg, turnRequestID, vscodeConversationID, refreshed,
 		)
 		if attemptErr == nil {
+			if egressBackoff {
+				transport.NoteEgressSuccess(account.ProxyURL())
+			}
 			stream.affinity = route.Diagnostics(policy, account.UID())
 			_ = pool.NoteSuccess(account, model)
 			if !route.Rotate {
@@ -317,6 +355,10 @@ func (p *Provider) openChat(
 
 		var apiErr *APIError
 		if errors.As(attemptErr, &apiErr) {
+			if egressBackoff && (apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport ||
+				(apiErr.Kind == KindUpstream && (apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout))) {
+				transport.NoteEgressTransient(account.ProxyURL())
+			}
 			if apiErr.Kind == KindUpstream || apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport {
 				sawTransient = true
 			}
@@ -337,6 +379,9 @@ func (p *Provider) openChat(
 					_ = pool.NoteError(account, apiErr.SafeMessage(), false, false)
 				}
 			case KindRateLimited:
+				if freeModelCreditFallback && !account.IsPaidUser() && account.ModelIsFree(model) {
+					preferPaid = true
+				}
 				if apiErr.ModelScoped {
 					_ = pool.NoteModelError(account, model, apiErr.SafeMessage(), apiErr.RetryAfter)
 				} else {
@@ -1504,7 +1549,9 @@ func (p *Provider) normalizeChatBody(body map[string]any, model string) error {
 		return newAPIError(KindInvalid, http.StatusBadRequest, "invalid chat body")
 	}
 	reasoning := p.reasoningMetaForModel(model)
-	mapChatReasoningEffort(body, reasoning)
+	if settingflags.DefaultTrue(p.settingsSnapshot(), "reasoning_effort_map") {
+		mapChatReasoningEffort(body, reasoning)
+	}
 	translateChatMaxTokens(body)
 	clampGPTMaxTokens(body, model)
 	normalizeChatToolChoice(body)

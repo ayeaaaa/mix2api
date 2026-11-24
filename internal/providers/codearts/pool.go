@@ -78,6 +78,7 @@ type Pool struct {
 	mu               sync.RWMutex
 	cfg              Config
 	accounts         []*Account
+	egressBackoff    bool
 	slots            transport.Slots
 	affinity         map[string]string
 	order            []string
@@ -450,6 +451,24 @@ func (p *Pool) Stats() PoolStats {
 	return stats
 }
 
+func (p *Pool) SetEgressBackoff(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.egressBackoff = enabled
+	p.mu.Unlock()
+}
+
+func (p *Pool) egressBackoffEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.egressBackoff
+}
+
 // Pick chooses a healthy account under its concurrency limit: session affinity
 // first, then model capability, then v1's rank
 // (active_concurrent, urgent, last_used, uid).
@@ -482,11 +501,15 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 
 	accounts := p.Accounts()
+	egressEnabled := p.egressBackoffEnabled()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
 			selection := account.selectionSnapshot(now, model)
 			if selection.removed || selection.uid != affinityUID ||
 				!selection.healthy || selection.guard != "" || selection.active >= selection.max {
+				continue
+			}
+			if egressEnabled && !transport.EgressAllowed(account.ProxyURL()) {
 				continue
 			}
 			if account.HasModel(model) {
@@ -524,7 +547,6 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(candidates) == 0 {
 		return nil, ErrNoAccount
 	}
-
 	// v1 uses `capable or candidates`: capability narrows the set only when at
 	// least one eligible candidate claims the model. Otherwise every candidate is
 	// eligible, keeping an unknown or stale catalog from taking the pool offline.
@@ -537,6 +559,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if egressEnabled {
+		filtered := make([]candidate, 0, len(selected))
+		for _, item := range selected {
+			if transport.EgressAllowed(item.account.ProxyURL()) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			selected = filtered
+		}
 	}
 	pageReady := false
 	if len(policy.Cohort) > 0 {

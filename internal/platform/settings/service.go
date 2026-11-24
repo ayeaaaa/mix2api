@@ -217,6 +217,8 @@ func (s *Service) baseView(data map[string]any) map[string]any {
 		"quota_scan_interval_hours":   6,
 		"quota_scans":                 []any{},
 		"remaining_priority_enabled":  boolTrue(data["remaining_priority_enabled"]),
+		"restriction_hold_supported":  false,
+		"restriction_hold_seconds":    restrictionHoldSeconds(data),
 		"egress_backoff_enabled":      boolTrue(data["egress_backoff_enabled"]),
 		"account_max_concurrent":      accountMaxConcurrent(data),
 		"account_max_concurrent_max":  maxAccountMaxConcurrent,
@@ -805,6 +807,18 @@ func mergeMaps(base, patch map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+// restrictionHoldSeconds exposes the legacy v1 value read-only. v2 does not
+// enforce a realm-wide hold, but the panel should show what is stored (or the
+// v1 default) instead of silently displaying a made-up 1800.
+func restrictionHoldSeconds(data map[string]any) int {
+	if raw, ok := data["restriction_hold_seconds"]; ok {
+		if value := intValue(raw); value >= 0 {
+			return value
+		}
+	}
+	return 1800
 }
 
 func boolTrue(value any) bool {

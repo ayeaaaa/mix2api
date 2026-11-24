@@ -68,6 +68,7 @@ type Pool struct {
 	mu               sync.RWMutex
 	cfg              Config
 	accounts         []*Account
+	egressBackoff    bool
 	slots            transport.Slots
 	affinity         map[string]string
 	order            []string
@@ -572,6 +573,24 @@ func (p *Pool) Stats() PoolStats {
 	return stats
 }
 
+func (p *Pool) SetEgressBackoff(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.egressBackoff = enabled
+	p.mu.Unlock()
+}
+
+func (p *Pool) egressBackoffEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.egressBackoff
+}
+
 // Pick chooses a ready account under its concurrency limit: session affinity
 // first, then model-capable candidates, then least busy and least recently
 // used with UID as the deterministic tie breaker.
@@ -598,10 +617,14 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 
 	accounts := p.Accounts()
+	egressEnabled := p.egressBackoffEnabled()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
 			uid, active, max, _, live := account.hasSelectionState()
 			if !live || uid != affinityUID || active >= max {
+				continue
+			}
+			if egressEnabled && !transport.EgressAllowed(account.ProxyURL()) {
 				continue
 			}
 			if account.Ready(now, model) && account.HasModel(model) {
@@ -637,7 +660,6 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(candidates) == 0 {
 		return nil, ErrNoAccount
 	}
-
 	selected := candidates
 	capable := make([]candidate, 0, len(candidates))
 	for _, item := range candidates {
@@ -647,6 +669,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if egressEnabled {
+		filtered := make([]candidate, 0, len(selected))
+		for _, item := range selected {
+			if transport.EgressAllowed(item.account.ProxyURL()) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			selected = filtered
+		}
 	}
 	pageReady := false
 	if len(policy.Cohort) > 0 {
