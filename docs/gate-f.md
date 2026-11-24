@@ -347,6 +347,17 @@ changes. `make check`, `make race`, and the 17/17 dashboard JS harness pass.
 Published as `v2.8.19` at `49a4fb6`; evidence:
 `docs/smoke/2026-11-24-release-2.8.19.md`. No media or Windows SCM gate changed.
 
+**v2.8.20 addendum:** previously persisted-but-inactive panel settings are now
+wired into runtime: per-key model-list filtering, reasoning-effort mapping
+(WorkBuddy/CodeArts/Raccoon), global prompt modes applied once after protocol
+translation, per-egress transient backoff with fail-open, and WorkBuddy
+same-model paid-account fallback after a free-model 429. The v1 realm-wide
+restriction hold remains deliberately unsupported and read-only in the panel;
+account/model-level 11140 cooldowns are unchanged. `make check`, `make race`,
+and the 17/17 dashboard JS harness pass. Published as `v2.8.20` at `d20c217`;
+evidence: `docs/smoke/2026-11-24-release-2.8.20.md`. No media or Windows SCM
+gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |

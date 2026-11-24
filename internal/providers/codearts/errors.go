@@ -53,6 +53,10 @@ type APIError struct {
 	Message    string
 	RetryAfter time.Duration
 	ResetAt    time.Time
+
+	// Egress marks a failure charged to the proxy egress rather than the
+	// account: a transport error from the shared HTTP client or a 502/503/504.
+	Egress bool
 }
 
 // Error is the internal logging form. The API layer uses SafeMessage for the

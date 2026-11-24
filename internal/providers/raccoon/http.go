@@ -61,6 +61,10 @@ type APIError struct {
 	Kind    ErrorKind
 	Status  int
 	Message string
+
+	// Egress marks a failure charged to the proxy egress rather than the
+	// account: a transport error or a 502/503/504.
+	Egress bool
 }
 
 func (e *APIError) Error() string {
@@ -264,6 +268,7 @@ func (c *HTTPClient) DoJSON(
 		return nil, &APIError{
 			Kind:    KindTransient,
 			Message: redactText("raccoon: cannot reach upstream: "+err.Error(), redactValues...),
+			Egress:  true,
 		}
 	}
 	defer response.Body.Close()
@@ -322,6 +327,7 @@ func newAPIError(status int, body []byte, redactValues ...string) *APIError {
 		Kind:    kind,
 		Status:  status,
 		Message: errorMessage(body, redactValues...),
+		Egress:  status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout,
 	}
 }
 

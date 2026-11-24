@@ -89,6 +89,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data = s.filterAvailableModelsForCandidates(r.Context(), candidates, "gateway", data)
+		data = filterModelsForKeyListing(r.Context(), s, r, data)
 		writeGatewayModelsResponse(w, data, catalogs)
 		return
 	}
@@ -115,6 +116,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		data = s.filterAvailableModelsForCandidates(r.Context(), candidates, "all", data)
+		data = filterModelsForKeyListing(r.Context(), s, r, data)
 		writeModelsResponse(w, "all", data, catalog)
 		return
 	}
@@ -141,6 +143,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		data = append(data, entry)
 	}
 	data = s.filterAvailableModels(r.Context(), provider, providerRealm(provider), data)
+	data = filterModelsForKeyListing(r.Context(), s, r, data)
 	writeModelsResponse(w, providerRealm(provider), data, catalogProvenance(provider))
 }
 

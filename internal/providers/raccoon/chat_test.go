@@ -2457,3 +2457,45 @@ func TestChatPrefixSessionAffinityWithoutHeader(t *testing.T) {
 		t.Fatalf("conversation rotated accounts: %q vs %q", auths[0], auths[1])
 	}
 }
+
+func TestChatReasoningEffortMapDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		disable bool
+		want    string
+	}{
+		{"default maps unsupported", false, "none"},
+		{"off passes through", true, "ultra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newChatPool(t, Config{Enabled: true, MaxConcurrent: 1}, "u-effort")
+			if tc.disable {
+				if _, err := p.store.Merge(map[string]any{"reasoning_effort_map": false}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fake := &chatFake{}
+			server := httptest.NewServer(fake)
+			defer server.Close()
+			configureChatPool(t, p, server.URL)
+			payload := chatRaw(t, map[string]any{
+				"model":            "sn-deepseek-v4-1-flash-1017",
+				"messages":         []map[string]any{{"role": "user", "content": "hi"}},
+				"reasoning_effort": "ultra",
+			})
+			stream, err := p.OpenChat(context.Background(), chatRequest(payload, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			drainChat(t, stream)
+			_ = stream.Close()
+			_, _, bodies, _, _ := fake.snapshot()
+			if len(bodies) != 1 {
+				t.Fatalf("calls = %d", len(bodies))
+			}
+			if got, _ := bodies[0]["reasoning_effort"].(string); got != tc.want {
+				t.Fatalf("reasoning_effort = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

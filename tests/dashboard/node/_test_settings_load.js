@@ -51,6 +51,8 @@ const SETTINGS = {
   daily_chat_web_attempts_default: 3,
   local_web_tools: true,
   remaining_priority_enabled: true,
+  restriction_hold_supported: false,
+  restriction_hold_seconds: 900,
   version: 'v1.6.14',
   accounts_dir: '/data/accounts',
   usage_dir: '/data/usage',
@@ -168,6 +170,16 @@ global.__toasts = toasts;
     '剩余用量优先调度的复选框没写回');
   assert.equal(element('setRemainingPriorityState').textContent, '(当前未支持，配置保留)');
   assert.equal(element('setRemainingPriority').disabled, true, '未接入运行时的控件应禁用，但保留原值');
+  assert.equal(element('setRestrictionHoldSeconds').value, '900',
+    '未支持的连坐暂停应显示旧配置值，而不是编造 1800');
+  assert.equal(element('setRestrictionHoldSeconds').disabled, true,
+    '连坐暂停输入框应禁用');
+  assert.equal(element('setRestrictionHoldSave').disabled, true,
+    '连坐暂停保存按钮应禁用');
+  assert.equal(element('setRestrictionHoldReset').disabled, true,
+    '连坐暂停解除按钮应禁用');
+  assert.equal(element('setRestrictionHoldState').textContent, '(当前未支持，配置保留)',
+    '连坐暂停状态应明确标注未支持');
   assert.equal(element('setLimitsPerRealm').checked, true, '有分版本覆盖时应勾上');
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',

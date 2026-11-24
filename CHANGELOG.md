@@ -10,8 +10,63 @@ Keep a Changelog and the project uses semantic versioning.
 - 签到任务在每日首签后按小时补扫：已签账号本地跳过，未签账号继续签；
   自动禁用/凭证过期的 CodeArts、WorkBuddy 账号会先刷新凭证再尝试恢复；
   手动禁用、封禁、已删除和关闭任务的账号仍跳过。失败继续沿用原有
-  30/120 分钟重试，`checkin_retry_minutes=0` 同时关闭补扫。
+  30/120 分钟重试，`checkin_retry_minutes=0` 同时关闭已排队重试和补扫。
 - Raccoon 继续使用现有四小时窗口作为补扫节奏，没有改成小时级。
+
+## [2.8.20] - 2026-11-24
+
+### 中文
+
+#### 变更
+
+- 设置页此前「只保存不生效」的运行时开关完成接线：
+  - `filter_models_by_key`：`/v1/models` 按 API Key 的模型白名单过滤；
+    Chat / Messages / Responses 的白名单仍无条件生效。
+  - `reasoning_effort_map`：默认开；WorkBuddy / CodeArts / Raccoon 将不支持的
+    思考档位映射到模型目录；关闭时原样透传。
+  - `prompt`：支持 `passthrough` / `append` / `custom`，在协议翻译后、调用
+    上游前改写一次 system/developer 消息；留空使用内置默认提示词；不实现
+    v1 的 403 降级重试。
+  - `egress_backoff_enabled`：按代理 URL 记录传输错误与 502/503/504，1 秒起
+    翻倍、封顶 15 秒、成功清零；退避出口的账号会被跳过，全部出口都在退避时
+    fail-open。
+  - `free_model_credit_fallback`：WorkBuddy 免费模型 429 后，同模型优先使用
+    付费账号；没有可用付费账号时 fail-open，不替换模型 ID。
+- 风控连坐暂停明确标注「当前未支持，配置保留」并禁用控件；v2 继续使用账号级
+  和模型级 11140 冷却，不实现 v1 的整区连坐暂停。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 17/17。
+
+### English
+
+#### Changed
+
+- Previously persisted-but-inactive panel settings are now wired into runtime:
+  - `filter_models_by_key` filters `/v1/models` by the API key's model
+    allow-list; Chat / Messages / Responses enforcement remains unconditional.
+  - `reasoning_effort_map` (default on) maps unsupported reasoning levels to
+    each model catalog for WorkBuddy, CodeArts, and Raccoon; off passes the
+    requested value through unchanged.
+  - `prompt` supports `passthrough` / `append` / `custom`, rewriting
+    system/developer messages once after protocol translation and before the
+    upstream call; blank text uses the built-in default prompt. The v1 403
+    degrade/retry path is not implemented.
+  - `egress_backoff_enabled` tracks transport errors and 502/503/504 per proxy
+    URL, backing off from 1s and doubling to a 15s cap, clearing on success;
+    accounts on a backing-off egress are skipped, and selection fails open when
+    every egress is backing off.
+  - `free_model_credit_fallback` makes WorkBuddy prefer a paid account for the
+    same model after a free-model 429 on a free account; it fails open when no
+    paid account is usable and never substitutes the model ID.
+- The restriction-hold setting is explicitly labeled unsupported and disabled
+  while its stored value is retained; v2 keeps account- and model-level 11140
+  cooldowns and does not implement the v1 realm-wide hold.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 17/17.
 
 ## [2.8.19] - 2026-11-24
 

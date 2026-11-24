@@ -694,6 +694,11 @@ func (s *Server) serveMessagesRequest(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
+	if mode, text := s.gatewayPromptConfig(r.Context()); mode != "passthrough" {
+		if messages, ok := chat["messages"].([]any); ok {
+			chat["messages"] = applyGatewayPromptMode(messages, mode, text)
+		}
+	}
 	rawChat, err := chatMapToRaw(chat)
 	if err != nil {
 		failure := localFailure(http.StatusBadRequest, "invalid request")
