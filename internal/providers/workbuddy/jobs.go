@@ -418,7 +418,7 @@ func (p *Provider) checkinHasPending(now time.Time) bool {
 		if auth.Realm != realmCN || taskIsAPIKey(auth) || taskEnterpriseID(auth) != "" {
 			continue
 		}
-		if !jobAccountActive(account, now) {
+		if !jobCheckinActive(account, now) {
 			continue
 		}
 		last := strings.TrimSpace(auth.LastCheckin)
@@ -459,7 +459,12 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 			continue
 		}
 		result.Checked++
-		if !jobAccountActive(account, provider.jobsNowTime()) {
+		if j.kind == jobKindCheckin {
+			if !jobCheckinActive(account, provider.jobsNowTime()) {
+				result.Skipped++
+				continue
+			}
+		} else if !jobAccountActive(account, provider.jobsNowTime()) {
 			result.Skipped++
 			continue
 		}
@@ -692,6 +697,25 @@ func jobAccountActive(account *Account, now time.Time) bool {
 		return false
 	}
 	return taskRestrictedUntil(account.Auth) <= float64(now.Unix())
+}
+
+// jobCheckinActive is the check-in eligibility rule. Unlike the general job
+// gate it permits token-expired auto-disabled and cooling accounts: the
+// check-in path refreshes the token first and a success can recover them.
+func jobCheckinActive(account *Account, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	account.mu.RLock()
+	defer account.mu.RUnlock()
+	if account.removed || taskBanned(account.Auth) || !account.Auth.Enabled ||
+		account.State.ManualDisabled || !account.Auth.TasksEnabled {
+		return false
+	}
+	if taskRestrictedUntil(account.Auth) > float64(now.Unix()) {
+		return false
+	}
+	return true
 }
 
 func safeJobCall[T any](call func() (T, error)) (result T, err error) {

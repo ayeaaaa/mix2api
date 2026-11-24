@@ -185,6 +185,14 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 	}
 	defer account.taskMu.Unlock()
 
+	if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
+		if err := p.EnsureToken(ctx, account); err != nil {
+			result.Error = p.taskRedactError(account, err)
+			result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
+			return result, nil
+		}
+	}
+
 	now := p.taskNowTime()
 	if last := strings.TrimSpace(auth.LastCheckin); last != "" && strings.HasPrefix(last, now.Format(tasksDayLayout)) {
 		result.OK = true

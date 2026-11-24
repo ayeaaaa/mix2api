@@ -893,7 +893,9 @@ func TestJobsCheckinHourlyCatchUp(t *testing.T) {
 		t.Fatalf("initial checkin: %v", err)
 	}
 
-	f.addTaskAccount(t, "cn-late", true, true, false)
+	late := f.addTaskAccount(t, "cn-late", true, true, false)
+	late.State.Disabled = true
+	late.State.DisabledBy = "auth"
 	f.setNow(at(9, 30))
 	if job.Due(at(9, 30)) {
 		t.Fatal("same-hour catch-up must not run twice")
