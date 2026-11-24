@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed / 变更
+
+- 签到任务在每日首签后按小时补扫：已签账号本地跳过，未签账号继续签；
+  自动禁用/凭证过期的 CodeArts、WorkBuddy 账号会先刷新凭证再尝试恢复；
+  手动禁用、封禁、已删除和关闭任务的账号仍跳过。失败继续沿用原有
+  30/120 分钟重试，`checkin_retry_minutes=0` 同时关闭补扫。
+- Raccoon 继续使用现有四小时窗口作为补扫节奏，没有改成小时级。
+
 ## [2.8.19] - 2026-11-24
 
 ### 中文
