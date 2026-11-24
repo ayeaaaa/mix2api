@@ -42,13 +42,17 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	}
 	key := slot.Format("2006-01-02")
 	hourKey := now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02T15")
-	if cfg.CheckinRetryMinutes <= 0 {
-		j.mu.Lock()
+	j.mu.Lock()
+	if cfg.CheckinRetryMinutes <= 0 && (!j.retryAt.IsZero() || !j.retryUntil.IsZero()) {
+		// Cancelling automatic retries must also cancel the pending retry
+		// rather than immediately running it on this tick.
 		j.retryAt = time.Time{}
 		j.retryUntil = time.Time{}
+		j.lastKey = key
+		j.lastCatchupKey = hourKey
 		j.mu.Unlock()
+		return nil
 	}
-	j.mu.Lock()
 	if j.lastKey == key {
 		if !j.retryAt.IsZero() {
 			if now.Before(j.retryAt) {

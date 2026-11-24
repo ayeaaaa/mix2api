@@ -928,3 +928,51 @@ func TestJobsCheckinHourlyCatchUp(t *testing.T) {
 		t.Fatal("checked accounts were still pending on the next hourly sweep")
 	}
 }
+
+func TestCheckinForceRefreshAuthDisabled(t *testing.T) {
+	f := newJobsFixture(t)
+	account := f.addTaskAccount(t, "cn-auth-disabled", true, true, false)
+	f.cn.tokenBaseURL = f.cn.tasksWebBaseURL
+	token := makeJWT(t, map[string]any{
+		"sub": "cn-auth-disabled", "iss": "https://www.workbuddy.cn/auth/realms/copilot",
+		"exp": 4102444800, "jti": "rotated-auth-disabled",
+	})
+	refreshCalls := 0
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case tokenRefreshPath:
+			refreshCalls++
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"accessToken": token, "refreshToken": "rotated", "expiresAt": 4102444800000,
+			}}
+		case tasksCheckinStatusPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"today_checked_in": false,
+			}}
+		case tasksCheckinPath:
+			return http.StatusOK, map[string]any{"code": 0, "msg": "签到成功", "data": map[string]any{}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+	account.mu.Lock()
+	account.State.Disabled = true
+	account.State.DisabledBy = "auth"
+	account.tokenExpired = true
+	account.Auth.ExpiresAt = time.Now().Add(time.Hour)
+	account.mu.Unlock()
+
+	result, err := f.cn.runCheckin(context.Background(), account, taskTriggerScheduler)
+	if err != nil || !result.OK {
+		t.Fatalf("runCheckin = %+v, err=%v", result, err)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	account.mu.RLock()
+	disabled := account.State.Disabled
+	account.mu.RUnlock()
+	if disabled {
+		t.Fatal("successful refresh did not clear auth auto-disable")
+	}
+}

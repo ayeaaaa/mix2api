@@ -378,14 +378,14 @@ func TestCheckinJobRetryIntervalSetting(t *testing.T) {
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("disabled retry: %v", err)
 	}
-	if checkinCalls != 3 || !job.retryAt.IsZero() || job.lastKey == "" {
-		t.Fatalf("disabled retry calls=%d retryAt=%v lastKey=%q, want exhausted day", checkinCalls, job.retryAt, job.lastKey)
+	if checkinCalls != 2 || !job.retryAt.IsZero() || job.lastKey == "" {
+		t.Fatalf("disabled retry calls=%d retryAt=%v lastKey=%q, want cancelled retry and exhausted day", checkinCalls, job.retryAt, job.lastKey)
 	}
 	now = time.Date(2026, 11, 12, 10, 46, 0, 0, zone)
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("post-disabled tick: %v", err)
 	}
-	if checkinCalls != 3 {
+	if checkinCalls != 2 {
 		t.Fatalf("disabled retry repeated: calls=%d", checkinCalls)
 	}
 }
