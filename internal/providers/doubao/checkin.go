@@ -495,10 +495,32 @@ func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, erro
 
 // CheckinAll performs a sequential daily check-in across enabled accounts.
 func (p *Provider) CheckinAll(ctx context.Context) ([]CheckinResult, error) {
+	return p.checkinAccounts(ctx, false)
+}
+
+// CheckinPending performs the hourly catch-up pass: accounts already stamped
+// for the provider's CST day are skipped locally, while unchecked accounts are
+// processed through the normal status/claim path.
+func (p *Provider) CheckinPending(ctx context.Context) ([]CheckinResult, error) {
+	return p.checkinAccounts(ctx, true)
+}
+
+func (p *Provider) checkinAccounts(ctx context.Context, pendingOnly bool) ([]CheckinResult, error) {
 	accounts := p.pool.Accounts()
 	out := make([]CheckinResult, 0, len(accounts))
+	day := p.nowTime().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
 	for _, account := range accounts {
-		if account == nil || !account.Enabled {
+		if account == nil {
+			continue
+		}
+		account.mu.Lock()
+		enabled := account.Enabled
+		last := strings.TrimSpace(account.LastCheckin)
+		account.mu.Unlock()
+		if !enabled {
+			continue
+		}
+		if pendingOnly && last != "" && strings.HasPrefix(last, day) {
 			continue
 		}
 		result, err := p.Checkin(ctx, account.UID)

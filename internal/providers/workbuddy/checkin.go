@@ -194,6 +194,24 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 		return result, nil
 	}
 
+	if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
+		account.mu.RLock()
+		forceRefresh := account.tokenExpired ||
+			(account.State.Disabled && account.State.DisabledBy == "auth")
+		account.mu.RUnlock()
+		var tokenErr error
+		if forceRefresh {
+			tokenErr = p.ForceRefresh(ctx, account)
+		} else {
+			tokenErr = p.EnsureToken(ctx, account)
+		}
+		if tokenErr != nil {
+			result.Error = p.taskRedactError(account, tokenErr)
+			result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
+			return result, nil
+		}
+	}
+
 	// A concurrent process may have signed in without writing the local
 	// timestamp (or the file was restored from an older backup). The status
 	// endpoint is an authoritative, read-only guard.

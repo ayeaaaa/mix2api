@@ -88,11 +88,12 @@ const (
 )
 
 type scheduledJobState struct {
-	mu          sync.Mutex
-	lastRun     time.Time
-	lastSlotKey string
-	retryAt     time.Time
-	retryUntil  time.Time
+	mu             sync.Mutex
+	lastRun        time.Time
+	lastSlotKey    string
+	lastCatchupKey string
+	retryAt        time.Time
+	retryUntil     time.Time
 }
 
 type scheduledJob struct {
@@ -156,9 +157,26 @@ func (j *scheduledJob) Due(now time.Time) bool {
 	}
 	// The slot already ran, but a failed check-in may have a same-day retry
 	// pending. Retries stop at local midnight.
-	return !j.state.retryAt.IsZero() &&
-		!now.Before(j.state.retryAt) &&
-		now.Before(j.state.retryUntil)
+	if j.kind == jobKindCheckin && j.provider.checkinRetryMinutes() <= 0 {
+		// 0 disables automatic retries, including an already scheduled one.
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return false
+	}
+	if !j.state.retryAt.IsZero() {
+		return !now.Before(j.state.retryAt) && now.Before(j.state.retryUntil)
+	}
+	if j.kind != jobKindCheckin {
+		return false
+	}
+	if !j.provider.checkinHasPending(now) {
+		return false
+	}
+	return j.state.lastCatchupKey != hourlyJobKey(now)
+}
+
+func hourlyJobKey(now time.Time) string {
+	return now.In(time.Local).Format("2006-01-02T15")
 }
 
 func (j *scheduledJob) NextRun(now time.Time) time.Time {
@@ -322,6 +340,9 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if latest, ok := latestJobSlot(slots, now); ok {
 		j.state.mu.Lock()
 		j.state.lastSlotKey = latest.key(now)
+		if j.kind == jobKindCheckin {
+			j.state.lastCatchupKey = hourlyJobKey(now)
+		}
 		j.state.lastRun = now
 		j.state.mu.Unlock()
 	} else if force {
@@ -387,6 +408,34 @@ func endOfLocalDay(now time.Time) time.Time {
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
 }
 
+// checkinHasPending reports whether an active CN account has no successful
+// check-in stamped for the provider's local day. It is a local-only check used
+// by the hourly catch-up gate.
+func (p *Provider) checkinHasPending(now time.Time) bool {
+	if p == nil {
+		return false
+	}
+	provider := p.providerForRealm(realmCN)
+	if provider == nil {
+		return false
+	}
+	for _, account := range provider.jobTaskAccounts() {
+		auth := taskAuthSnapshot(account)
+		if auth.Realm != realmCN || taskIsAPIKey(auth) || taskEnterpriseID(auth) != "" {
+			continue
+		}
+		if !jobCheckinActive(account, now) {
+			continue
+		}
+		last := strings.TrimSpace(auth.LastCheckin)
+		if last != "" && strings.HasPrefix(last, now.Format(tasksDayLayout)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (j *scheduledJob) realmProviders() []*Provider {
 	switch j.realm {
 	case jobRealmIntl:
@@ -416,7 +465,12 @@ func (j *scheduledJob) runAccounts(ctx context.Context, provider *Provider, resu
 			continue
 		}
 		result.Checked++
-		if !jobAccountActive(account, provider.jobsNowTime()) {
+		if j.kind == jobKindCheckin {
+			if !jobCheckinActive(account, provider.jobsNowTime()) {
+				result.Skipped++
+				continue
+			}
+		} else if !jobAccountActive(account, provider.jobsNowTime()) {
 			result.Skipped++
 			continue
 		}
@@ -649,6 +703,25 @@ func jobAccountActive(account *Account, now time.Time) bool {
 		return false
 	}
 	return taskRestrictedUntil(account.Auth) <= float64(now.Unix())
+}
+
+// jobCheckinActive is the check-in eligibility rule. Unlike the general job
+// gate it permits token-expired auto-disabled and cooling accounts: the
+// check-in path refreshes the token first and a success can recover them.
+func jobCheckinActive(account *Account, now time.Time) bool {
+	if account == nil {
+		return false
+	}
+	account.mu.RLock()
+	defer account.mu.RUnlock()
+	if account.removed || taskBanned(account.Auth) || !account.Auth.Enabled ||
+		account.State.ManualDisabled || !account.Auth.TasksEnabled {
+		return false
+	}
+	if taskRestrictedUntil(account.Auth) > float64(now.Unix()) {
+		return false
+	}
+	return true
 }
 
 func safeJobCall[T any](call func() (T, error)) (result T, err error) {

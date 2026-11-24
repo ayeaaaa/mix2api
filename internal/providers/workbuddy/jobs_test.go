@@ -880,3 +880,99 @@ func TestRoutesCheckinRetrySetting(t *testing.T) {
 		t.Fatal("invalid retry interval was accepted")
 	}
 }
+
+func TestJobsCheckinHourlyCatchUp(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-first", true, true, false)
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+	f.intl.tasksNow = func() time.Time { return f.now }
+	f.cn.tasksNow = func() time.Time { return f.now }
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 9, hour, minute, 0, 0, time.Local)
+	}
+	f.setNow(at(9, 0))
+	if _, err := job.run(context.Background(), false); err != nil {
+		t.Fatalf("initial checkin: %v", err)
+	}
+	first := f.cn.Pool().Get("cn-first")
+	first.mu.Lock()
+	first.Auth.LastCheckin = at(9, 0).Format(tasksDayLayout)
+	first.mu.Unlock()
+
+	late := f.addTaskAccount(t, "cn-late", true, true, false)
+	late.mu.Lock()
+	late.State.Disabled = true
+	late.mu.Unlock()
+	f.setNow(at(9, 30))
+	if job.Due(at(9, 30)) {
+		t.Fatal("same-hour catch-up must not run twice")
+	}
+	f.setNow(at(10, 0))
+	if !job.Due(at(10, 0)) {
+		t.Fatal("next clock hour should catch up the unchecked account")
+	}
+	if _, err := job.run(context.Background(), false); err != nil {
+		t.Fatalf("catch-up checkin: %v", err)
+	}
+	late.mu.Lock()
+	checked := strings.TrimSpace(late.Auth.LastCheckin)
+	late.mu.Unlock()
+	if checked == "" {
+		t.Fatal("late auto-disabled account was not checked in")
+	}
+	if job.Due(at(10, 5)) {
+		t.Fatal("checked accounts must not be retried in the same hour")
+	}
+	f.setNow(at(11, 0))
+	if job.Due(at(11, 0)) {
+		t.Fatal("checked accounts were still pending on the next hourly sweep")
+	}
+}
+
+func TestCheckinForceRefreshAuthDisabled(t *testing.T) {
+	f := newJobsFixture(t)
+	account := f.addTaskAccount(t, "cn-auth-disabled", true, true, false)
+	f.cn.tokenBaseURL = f.cn.tasksWebBaseURL
+	token := makeJWT(t, map[string]any{
+		"sub": "cn-auth-disabled", "iss": "https://www.workbuddy.cn/auth/realms/copilot",
+		"exp": 4102444800, "jti": "rotated-auth-disabled",
+	})
+	refreshCalls := 0
+	f.fake.handler = func(_ *taskTestUpstream, r *http.Request, _ []byte) (int, any) {
+		switch r.URL.Path {
+		case tokenRefreshPath:
+			refreshCalls++
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"accessToken": token, "refreshToken": "rotated", "expiresAt": 4102444800000,
+			}}
+		case tasksCheckinStatusPath:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{
+				"today_checked_in": false,
+			}}
+		case tasksCheckinPath:
+			return http.StatusOK, map[string]any{"code": 0, "msg": "签到成功", "data": map[string]any{}}
+		default:
+			return http.StatusOK, map[string]any{"code": 0, "data": map[string]any{}}
+		}
+	}
+	account.mu.Lock()
+	account.State.Disabled = true
+	account.State.DisabledBy = "auth"
+	account.tokenExpired = true
+	account.Auth.ExpiresAt = time.Now().Add(time.Hour)
+	account.mu.Unlock()
+
+	result, err := f.cn.runCheckin(context.Background(), account, taskTriggerScheduler)
+	if err != nil || !result.OK {
+		t.Fatalf("runCheckin = %+v, err=%v", result, err)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	account.mu.RLock()
+	disabled := account.State.Disabled
+	account.mu.RUnlock()
+	if disabled {
+		t.Fatal("successful refresh did not clear auth auto-disable")
+	}
+}

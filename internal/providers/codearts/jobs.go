@@ -24,11 +24,12 @@ var checkinJobSlots = []int{9, 21}
 type codeartsCheckinJob struct {
 	provider *Provider
 
-	mu          sync.Mutex
-	lastRun     time.Time
-	lastSlotKey string
-	retryAt     time.Time
-	retryUntil  time.Time
+	mu             sync.Mutex
+	lastRun        time.Time
+	lastSlotKey    string
+	lastCatchupKey string
+	retryAt        time.Time
+	retryUntil     time.Time
 }
 
 var _ scheduler.Job = (*codeartsCheckinJob)(nil)
@@ -61,7 +62,7 @@ func (j *codeartsCheckinJob) Run(ctx context.Context) error {
 		return nil
 	}
 	j.markSlot(now)
-	result, err := j.provider.CheckinAll(ctx)
+	result, err := j.provider.CheckinPending(ctx)
 	j.updateRetry(now, result, err)
 	if err != nil {
 		return err
@@ -104,9 +105,27 @@ func (j *codeartsCheckinJob) due(now time.Time) bool {
 	if j.lastSlotKey != latest.key(now) {
 		return true
 	}
-	return !j.retryAt.IsZero() &&
-		!now.Before(j.retryAt) &&
-		now.Before(j.retryUntil)
+	if j.provider.Config().CheckinRetryMinutes <= 0 {
+		// 0 disables automatic retries, including an already scheduled one.
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return false
+	}
+	if !j.retryAt.IsZero() {
+		// A failed batch owns the retry clock; do not let the hourly catch-up
+		// bypass its backoff.
+		return !now.Before(j.retryAt) && now.Before(j.retryUntil)
+	}
+	if !j.provider.hasPendingCheckins(now) {
+		return false
+	}
+	// The daily slot has run, but accounts can be added, enabled, or recover
+	// later. Sweep once per clock hour until every eligible account is signed.
+	return j.lastCatchupKey != hourlyCheckinKey(now)
+}
+
+func hourlyCheckinKey(now time.Time) string {
+	return now.In(time.Local).Format("2006-01-02T15")
 }
 
 // NextRun returns the next configured hour strictly after now.
@@ -187,6 +206,7 @@ func (j *codeartsCheckinJob) markSlot(now time.Time) {
 	j.mu.Lock()
 	j.lastRun = now
 	j.lastSlotKey = latest.key(now)
+	j.lastCatchupKey = hourlyCheckinKey(now)
 	j.mu.Unlock()
 }
 

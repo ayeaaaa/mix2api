@@ -378,14 +378,91 @@ func TestCheckinJobRetryIntervalSetting(t *testing.T) {
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("disabled retry: %v", err)
 	}
-	if checkinCalls != 3 || !job.retryAt.IsZero() || job.lastKey == "" {
-		t.Fatalf("disabled retry calls=%d retryAt=%v lastKey=%q, want exhausted day", checkinCalls, job.retryAt, job.lastKey)
+	if checkinCalls != 2 || !job.retryAt.IsZero() || job.lastKey == "" {
+		t.Fatalf("disabled retry calls=%d retryAt=%v lastKey=%q, want cancelled retry and exhausted day", checkinCalls, job.retryAt, job.lastKey)
 	}
 	now = time.Date(2026, 11, 12, 10, 46, 0, 0, zone)
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("post-disabled tick: %v", err)
 	}
-	if checkinCalls != 3 {
+	if checkinCalls != 2 {
 		t.Fatalf("disabled retry repeated: calls=%d", checkinCalls)
+	}
+}
+
+func TestCheckinJobHourlyCatchUp(t *testing.T) {
+	checkinCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case campaignDetailPath:
+			_, _ = w.Write([]byte(`{"code":0,"data":{"progress":{"total_amount":0},"tasks":[{"task_kind":"daily_signin","daily_checkin":{"checked_in_today":false}}]}}`))
+		case campaignCheckinPath:
+			checkinCalls++
+			_, _ = w.Write([]byte(`{"code":0,"data":{"checked_in":true,"checkin_date":"2026-11-12","reward_amount":10}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := SaveConfig(store, map[string]any{
+		"enabled": true, "checkin_enabled": true, "checkin_time": "09:15", "base_url": server.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-first", "first", true); err != nil {
+		t.Fatal(err)
+	}
+	zone := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 11, 12, 9, 15, 0, 0, zone)
+	provider.SetNow(func() time.Time { return now })
+	job := &checkinJob{provider: provider}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("initial checkin: %v", err)
+	}
+	if checkinCalls != 1 {
+		t.Fatalf("initial checkin calls=%d, want 1", checkinCalls)
+	}
+	first := provider.pool.account("uid-first")
+	first.mu.Lock()
+	first.LastCheckin = now.Format("2006-01-02")
+	first.mu.Unlock()
+	job.mu.Lock()
+	job.lastKey = now.Format("2006-01-02")
+	job.lastCatchupKey = now.Format("2006-01-02T15")
+	job.retryAt = time.Time{}
+	job.retryUntil = time.Time{}
+	job.mu.Unlock()
+
+	if _, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-late", "late", true); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 11, 12, 9, 30, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("same-hour tick: %v", err)
+	}
+	if checkinCalls != 1 {
+		t.Fatalf("same-hour catch-up ran: calls=%d", checkinCalls)
+	}
+	now = time.Date(2026, 11, 12, 10, 0, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("catch-up checkin: %v", err)
+	}
+	if checkinCalls != 2 {
+		t.Fatalf("catch-up calls=%d, want 2", checkinCalls)
+	}
+	now = time.Date(2026, 11, 12, 11, 0, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("next-hour tick: %v", err)
+	}
+	if checkinCalls != 2 {
+		t.Fatalf("checked accounts repeated: calls=%d", checkinCalls)
 	}
 }

@@ -97,8 +97,57 @@ func TestCodeArtsCheckinJobFollowsSharedCheckinSlots(t *testing.T) {
 	if got := job.NextRun(at(12, 5)); !got.Equal(at(0, 0).AddDate(0, 0, 1)) {
 		t.Fatalf("NextRun(12:05) = %v, want tomorrow 00:00", got)
 	}
-	if got := fake.callCountFor("u1", creditDeliveryPath); got != 2 {
-		t.Fatalf("delivery calls = %d, want 2 (one per slot)", got)
+	if got := fake.callCountFor("u1", creditDeliveryPath); got != 1 {
+		t.Fatalf("delivery calls = %d, want 1 (already checked today)", got)
+	}
+}
+
+func TestCodeArtsCheckinJobHourlyCatchUp(t *testing.T) {
+	fake := newCreditFake()
+	provider, job, first := newCheckinJobFixture(t, fake)
+	enableCodeArtsAutoCheckin(t, provider, true)
+	if _, err := SaveConfig(provider.store, map[string]any{"checkin_time": "00:02"}); err != nil {
+		t.Fatalf("SaveConfig checkin_time: %v", err)
+	}
+	if _, err := provider.applySettings(); err != nil {
+		t.Fatalf("applySettings checkin_time: %v", err)
+	}
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 12, hour, minute, 0, 0, time.Local)
+	}
+
+	setCatalogNow(t, provider, at(0, 2))
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("initial Run: %v", err)
+	}
+	if got := fake.callCountFor("u1", creditDeliveryPath); got != 1 {
+		t.Fatalf("initial delivery calls = %d, want 1", got)
+	}
+
+	second := addCreditsAccount(t, provider, "u2")
+	second.mu.Lock()
+	second.proxy = first.proxy
+	second.Auth.Expiration = time.Now().Add(48 * time.Hour)
+	second.State.Disabled = true // auto-disabled, not manual
+	second.mu.Unlock()
+	fake.setDelivery("u2", []any{})
+
+	setCatalogNow(t, provider, at(0, 30))
+	if job.Due(at(0, 30)) {
+		t.Fatal("same-hour catch-up must not run twice")
+	}
+	setCatalogNow(t, provider, at(1, 0))
+	if !job.Due(at(1, 0)) {
+		t.Fatal("next clock hour should catch up the unchecked account")
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("catch-up Run: %v", err)
+	}
+	if got := fake.callCountFor("u2", creditDeliveryPath); got != 1 {
+		t.Fatalf("catch-up delivery calls = %d, want 1", got)
+	}
+	if job.Due(at(1, 5)) {
+		t.Fatal("checked account must not be retried in the same hour")
 	}
 }
 
@@ -232,7 +281,7 @@ func TestNormalizeCheckinTime(t *testing.T) {
 
 func TestCodeArtsCheckinRetryState(t *testing.T) {
 	fake := newCreditFake()
-	provider, job, _ := newCheckinJobFixture(t, fake)
+	provider, job, account := newCheckinJobFixture(t, fake)
 	enableCodeArtsAutoCheckin(t, provider, true)
 	if _, err := SaveConfig(provider.store, map[string]any{"checkin_time": "09:15"}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
@@ -244,6 +293,7 @@ func TestCodeArtsCheckinRetryState(t *testing.T) {
 		return time.Date(2026, 11, 12, hour, minute, 0, 0, time.Local)
 	}
 
+	account.Checkin = CheckinState{"ok": true, "checked_at": at(9, 15).Format("2006-01-02T15:04:05")}
 	job.markSlot(at(9, 15))
 	job.updateRetry(at(9, 15), CheckinResult{OK: false}, nil)
 	if job.Due(at(9, 44)) {
@@ -270,7 +320,7 @@ func TestCodeArtsCheckinRetryState(t *testing.T) {
 
 func TestCodeArtsCheckinRetryIntervalSetting(t *testing.T) {
 	fake := newCreditFake()
-	provider, job, _ := newCheckinJobFixture(t, fake)
+	provider, job, account := newCheckinJobFixture(t, fake)
 	enableCodeArtsAutoCheckin(t, provider, true)
 	if _, err := SaveConfig(provider.store, map[string]any{
 		"checkin_time": "09:15", "checkin_retry_minutes": 45,
@@ -283,6 +333,7 @@ func TestCodeArtsCheckinRetryIntervalSetting(t *testing.T) {
 	at := func(hour, minute int) time.Time {
 		return time.Date(2026, 11, 12, hour, minute, 0, 0, time.Local)
 	}
+	account.Checkin = CheckinState{"ok": true, "checked_at": at(9, 15).Format("2006-01-02T15:04:05")}
 	job.markSlot(at(9, 15))
 	job.updateRetry(at(9, 15), CheckinResult{OK: false}, nil)
 	if job.Due(at(9, 59)) {

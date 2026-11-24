@@ -3,6 +3,7 @@ package doubao
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,10 +13,11 @@ import (
 type checkinJob struct {
 	provider *Provider
 
-	mu         sync.Mutex
-	lastKey    string
-	retryAt    time.Time
-	retryUntil time.Time
+	mu             sync.Mutex
+	lastKey        string
+	lastCatchupKey string
+	retryAt        time.Time
+	retryUntil     time.Time
 }
 
 var _ scheduler.Job = (*checkinJob)(nil)
@@ -39,18 +41,42 @@ func (j *checkinJob) Run(ctx context.Context) error {
 		return nil
 	}
 	key := slot.Format("2006-01-02")
+	hourKey := now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02T15")
 	j.mu.Lock()
-	if j.lastKey == key {
+	if cfg.CheckinRetryMinutes <= 0 && (!j.retryAt.IsZero() || !j.retryUntil.IsZero()) {
+		// Cancelling automatic retries must also cancel the pending retry
+		// rather than immediately running it on this tick.
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		j.lastKey = key
+		j.lastCatchupKey = hourKey
 		j.mu.Unlock()
 		return nil
 	}
-	if !j.retryAt.IsZero() && now.Before(j.retryAt) {
-		j.mu.Unlock()
-		return nil
+	if j.lastKey == key {
+		if !j.retryAt.IsZero() {
+			if now.Before(j.retryAt) {
+				j.mu.Unlock()
+				return nil
+			}
+		} else {
+			if cfg.CheckinRetryMinutes <= 0 || j.lastCatchupKey == hourKey ||
+				!j.provider.hasPendingCheckins(now) {
+				j.mu.Unlock()
+				return nil
+			}
+		}
+		j.lastCatchupKey = hourKey
+	} else {
+		if !j.retryAt.IsZero() && now.Before(j.retryAt) {
+			j.mu.Unlock()
+			return nil
+		}
+		j.lastCatchupKey = hourKey
 	}
 	j.mu.Unlock()
 
-	results, runErr := j.provider.CheckinAll(ctx)
+	results, runErr := j.provider.CheckinPending(ctx)
 	success, alreadyCount, failed := 0, 0, 0
 	for _, result := range results {
 		switch result.Status {
@@ -69,6 +95,7 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	defer j.mu.Unlock()
 	if runErr == nil && failed == 0 {
 		j.lastKey = key
+		j.lastCatchupKey = hourKey
 		j.retryAt = time.Time{}
 		j.retryUntil = time.Time{}
 		return nil
@@ -77,6 +104,7 @@ func (j *checkinJob) Run(ctx context.Context) error {
 		// Retries disabled: mark the day exhausted so the next tick does not
 		// loop on the same failed batch.
 		j.lastKey = key
+		j.lastCatchupKey = hourKey
 		j.retryAt = time.Time{}
 		j.retryUntil = time.Time{}
 		return runErr
@@ -94,6 +122,33 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	j.retryAt = next
 	j.retryUntil = until
 	return runErr
+}
+
+// hasPendingCheckins reports whether any enabled account has no successful
+// check-in stamped for the provider's local day. It is a local-only gate for
+// the hourly catch-up.
+func (p *Provider) hasPendingCheckins(now time.Time) bool {
+	if p == nil || p.pool == nil {
+		return false
+	}
+	day := now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+	for _, account := range p.pool.Accounts() {
+		if account == nil {
+			continue
+		}
+		account.mu.Lock()
+		enabled := account.Enabled
+		last := strings.TrimSpace(account.LastCheckin)
+		account.mu.Unlock()
+		if !enabled {
+			continue
+		}
+		if last != "" && strings.HasPrefix(last, day) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func endOfZoneDay(now time.Time, loc *time.Location) time.Time {
