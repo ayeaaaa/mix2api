@@ -603,7 +603,8 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(eligible) == 0 {
 		return nil, ErrNoAccount
 	}
-	if p.egressBackoffEnabled() {
+	egressEnabled := p.egressBackoffEnabled()
+	if egressEnabled {
 		filtered := make([]*Account, 0, len(eligible))
 		for _, account := range eligible {
 			if transport.EgressAllowed(account.ProxyURL()) {
@@ -625,6 +626,9 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 				continue
 			}
 			if account := byUID[uid]; account != nil {
+				if egressEnabled && !transport.EgressAllowed(account.ProxyURL()) {
+					continue
+				}
 				p.affinity.bind(sessionKey, uid)
 				return account, nil
 			}

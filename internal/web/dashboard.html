@@ -3010,7 +3010,9 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '免费模型耗尽改走付费账号': 'Switch to a paid account when free-model quota runs out',
     'v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。': 'v2 does not implement the v1 realm-wide restriction hold. 403 / code 11140 still follows the existing account-level and model-level cooldowns and never pauses dispatch for an entire realm. The value below is kept only for compatibility and has no effect in this version.',
     '兼容值（秒，当前不生效）': 'Compatibility value (seconds, currently inactive)',
-    '国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。': 'When a Global free model is throttled or its quota is exhausted (for example 429/6004) on a free account, later attempts switch to a paid account for the same model. The model ID is never substituted. Off by default.',
+    '风控连坐暂停（未支持）': 'Restriction hold (unsupported)',
+    '探针、退避、超时、并发、粘滞键和风控兼容项。': 'Probes, backoff, timeouts, concurrency, sticky keys, and restriction compatibility.',
+    'WorkBuddy 免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。': 'When a WorkBuddy free model is throttled or its quota is exhausted (for example 429/6004) on a free account, later attempts switch to a paid account for the same model. The model ID is never substituted. Off by default.',
     '注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。': 'Note: fallback spends real credits from the account. Confirm the credit cost before enabling it.',
     '启用付费账号回退': 'Enable paid-account fallback',
     '已启用：免费模型耗尽后同模型改走付费账号': 'On: free-model exhaustion switches to a paid account for the same model',
@@ -4288,7 +4290,9 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "免费模型耗尽改走付费账号": "免費模型耗盡改走付費帳號",
     "v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。": "v2 不實作 v1 的「整區連坐暫停」：403 / code 11140 仍按現有的帳號級、模型級冷卻處理，不會暫停整個區域的派發。下面的數值僅為相容舊配置而保留，目前版本不會生效。",
     "兼容值（秒，当前不生效）": "相容值（秒，目前不生效）",
-    "国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。": "國際版免費模型遇到限流或額度耗盡（如 429/6004）且目前是免費帳號時，後續嘗試改為同一模型的付費帳號；不會替換模型 ID。預設關閉。",
+    "风控连坐暂停（未支持）": "風控連坐暫停（未支援）",
+    "探针、退避、超时、并发、粘滞键和风控兼容项。": "探針、退避、逾時、並發、黏滯鍵和風控相容項。",
+    "WorkBuddy 免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。": "WorkBuddy 免費模型遇到限流或額度耗盡（如 429/6004）且目前是免費帳號時，後續嘗試改為同一模型的付費帳號；不會替換模型 ID。預設關閉。",
     "注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。": "注意：回退後會消耗帳號中的真實積分，請確認知曉積分成本後再開啟。",
     "启用付费账号回退": "啟用付費帳號回退",
     "已启用：免费模型耗尽后同模型改走付费账号": "已啟用：免費模型耗盡後同模型改走付費帳號",
@@ -7388,7 +7392,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           <div>
             <h2 style="margin:0">免费模型耗尽改走付费账号 <em id="setCreditFallbackState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              国际版免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。
+              WorkBuddy 免费模型遇到限流或额度耗尽（如 429/6004）且当前是免费账号时，后续尝试改为同一模型的付费账号；不会替换模型 ID。默认关闭。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
               注意：回退后会消耗账户中的真实积分，请确认知晓积分成本后再开启。
@@ -7782,7 +7786,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <section data-cat="stability">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">风控连坐暂停保护 <em id="setRestrictionHoldState"></em></h2>
+            <h2 style="margin:0">风控连坐暂停（未支持） <em id="setRestrictionHoldState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               v2 不实现 v1 的「整区连坐暂停」：403 / code 11140 仍按现有的账号级、模型级冷却处理，不会暂停整个区域的派发。下面的数值仅为兼容旧配置而保留，当前版本不会生效。
             </div>
@@ -25090,8 +25094,8 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     },
     stability: {
       title: '稳定性',
-      desc: '探针、退避、超时、并发、粘滞键和风控保护。',
-      items: ['风控连坐暂停保护', '模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '单请求体上限', '上游响应头超时', '账号级并发上限', '更稳的会话粘滞键']
+      desc: '探针、退避、超时、并发、粘滞键和风控兼容项。',
+      items: ['风控连坐暂停（未支持）', '模型额度窗口探针', '出口级瞬时失败退避', '模型额度定时主动查询', '单请求体上限', '上游响应头超时', '账号级并发上限', '更稳的会话粘滞键']
     },
     system: {
       title: '系统',

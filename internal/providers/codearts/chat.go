@@ -195,7 +195,7 @@ func (p *Provider) OpenChat(ctx context.Context, req providers.ChatRequest) (pro
 			p.pool.Release(account)
 			return nil, attemptErr
 		}
-		if egressBackoff && (apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+		if egressBackoff && apiErr.Egress {
 			transport.NoteEgressTransient(account.ProxyURL())
 		}
 
@@ -449,8 +449,10 @@ func (p *Provider) sendChatAttempt(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, newChatError(KindUnavailable, http.StatusBadGateway,
+		apiErr := newChatError(KindUnavailable, http.StatusBadGateway,
 			"连不上 CodeArts 聊天接口："+err.Error(), currentAccountAuth(account))
+		apiErr.Egress = true
+		return nil, apiErr
 	}
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -460,7 +462,11 @@ func (p *Provider) sendChatAttempt(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, classifyChatHTTP(response.StatusCode, body, currentAccountAuth(account))
+		apiErr := classifyChatHTTP(response.StatusCode, body, currentAccountAuth(account))
+		if response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusGatewayTimeout {
+			apiErr.Egress = true
+		}
+		return nil, apiErr
 	}
 
 	// v1 does not gzip request bodies. Go's transport may negotiate gzip for

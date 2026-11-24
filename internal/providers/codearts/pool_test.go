@@ -1282,9 +1282,10 @@ func TestPoolSkipsBackingOffEgress(t *testing.T) {
 
 	p.SetEgressBackoff(true)
 	transport.NoteEgressTransient("http://proxy-a:1")
-	got, err := p.Pick("", "", nil)
+	p.BindSession("sess", "a")
+	got, err := p.Pick("", "sess", nil, providers.AffinityPolicy{})
 	if err != nil || poolUID(t, got) != "b" {
-		t.Fatalf("backing-off egress picked: %v %v", got, err)
+		t.Fatalf("affinity bypassed backing-off egress: %v %v", got, err)
 	}
 	transport.NoteEgressTransient("http://proxy-b:1")
 	if _, err := p.Pick("", "", nil); err != nil {

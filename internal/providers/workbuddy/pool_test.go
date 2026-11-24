@@ -1633,9 +1633,10 @@ func TestPickSkipsBackingOffEgress(t *testing.T) {
 
 	p.SetEgressBackoff(true)
 	transport.NoteEgressTransient(a.Auth.ProxyURL)
-	got, err := p.Pick("m", "", nil)
+	p.BindSession("sess", "a")
+	got, err := p.Pick("m", "sess", nil, providers.AffinityPolicy{})
 	if err != nil || got.UID() != "b" {
-		t.Fatalf("backing-off egress picked: %v %v", got, err)
+		t.Fatalf("affinity bypassed backing-off egress: %v %v", got, err)
 	}
 	transport.NoteEgressTransient(b.Auth.ProxyURL)
 	got, err = p.Pick("m", "", nil)

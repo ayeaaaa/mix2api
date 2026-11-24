@@ -501,11 +501,15 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 
 	accounts := p.Accounts()
+	egressEnabled := p.egressBackoffEnabled()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
 			selection := account.selectionSnapshot(now, model)
 			if selection.removed || selection.uid != affinityUID ||
 				!selection.healthy || selection.guard != "" || selection.active >= selection.max {
+				continue
+			}
+			if egressEnabled && !transport.EgressAllowed(account.ProxyURL()) {
 				continue
 			}
 			if account.HasModel(model) {
@@ -543,18 +547,6 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(candidates) == 0 {
 		return nil, ErrNoAccount
 	}
-	if p.egressBackoffEnabled() {
-		filtered := make([]candidate, 0, len(candidates))
-		for _, item := range candidates {
-			if transport.EgressAllowed(item.account.ProxyURL()) {
-				filtered = append(filtered, item)
-			}
-		}
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
-	}
-
 	// v1 uses `capable or candidates`: capability narrows the set only when at
 	// least one eligible candidate claims the model. Otherwise every candidate is
 	// eligible, keeping an unknown or stale catalog from taking the pool offline.
@@ -567,6 +559,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if egressEnabled {
+		filtered := make([]candidate, 0, len(selected))
+		for _, item := range selected {
+			if transport.EgressAllowed(item.account.ProxyURL()) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			selected = filtered
+		}
 	}
 	pageReady := false
 	if len(policy.Cohort) > 0 {

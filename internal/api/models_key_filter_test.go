@@ -85,3 +85,37 @@ func TestFilterModelsByKeyGatewayAndAll(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterModelsByKeyAllMatchesQualifiedAllowList(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	if _, err := store.Merge(map[string]any{"filter_models_by_key": true}); err != nil {
+		t.Fatal(err)
+	}
+	keyStore := keys.New(store)
+	if _, err := keyStore.Save([]keys.Entry{{
+		ID: "qualified", Name: "qualified", Key: "rk-qualified", Realm: "intl",
+		Models: []string{"intl/allowed-model"}, Enabled: true,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	service := settings.New(settings.Service{Store: store, Keys: keyStore})
+	provider := &stubProvider{id: "stub", realm: "intl", models: []providers.Model{
+		{"id": "allowed-model"}, {"id": "blocked-model"},
+	}}
+	server := New(ServerOptions{Settings: service, KeyStore: keyStore, Providers: []providers.Provider{provider}, PanelAuth: passThroughAuth})
+	rec := serveRequest(server.Handler(), http.MethodGet, "/v1/models?realm=all", "", map[string]string{
+		"Authorization": "Bearer rk-qualified",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	data, _ := body["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("qualified allow-list returned %#v", data)
+	}
+	if object, _ := data[0].(map[string]any); object["id"] != "allowed-model" {
+		t.Fatalf("model = %#v", data[0])
+	}
+}

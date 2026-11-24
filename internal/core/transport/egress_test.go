@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -37,20 +38,25 @@ func TestEgressTrackerBackoffAndReset(t *testing.T) {
 
 func TestEgressTrackerCapAndSweep(t *testing.T) {
 	tracker := NewEgressTracker()
+	tracker.maxItems = 8
 	now := time.Unix(2000, 0)
 	tracker.now = func() time.Time { return now }
-	for i := 0; i < 600; i++ {
-		tracker.Transient("http://proxy:" + string(rune('a'+i%26)) + string(rune('a'+i/26)))
+	for i := 0; i < 20; i++ {
+		tracker.Transient("http://proxy:" + strconv.Itoa(i))
 	}
 	tracker.mu.Lock()
-	steps := len(tracker.step)
+	size := len(tracker.until)
 	tracker.mu.Unlock()
-	if steps > tracker.maxItems {
-		t.Fatalf("tracker state unbounded: %d", steps)
+	if size > tracker.maxItems {
+		t.Fatalf("tracker state unbounded: %d", size)
 	}
 	now = now.Add(16 * time.Second)
-	if !tracker.Allowed("http://proxy:aa") {
-		t.Fatal("expired entry not swept by Allowed")
+	tracker.mu.Lock()
+	tracker.sweepLocked()
+	remaining := len(tracker.until)
+	tracker.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expired entries not swept: %d", remaining)
 	}
 }
 

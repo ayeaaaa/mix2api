@@ -498,6 +498,19 @@ func TestRuntimeSettingsDefaultsAndValidation(t *testing.T) {
 	if view["restriction_hold_supported"] != false {
 		t.Fatalf("restriction_hold_supported = %#v, want false", view["restriction_hold_supported"])
 	}
+	if view["restriction_hold_seconds"] != 1800 {
+		t.Fatalf("restriction_hold_seconds default = %#v, want 1800", view["restriction_hold_seconds"])
+	}
+	if _, err := store.Merge(map[string]any{"restriction_hold_seconds": 900}); err != nil {
+		t.Fatal(err)
+	}
+	view, err = service.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["restriction_hold_seconds"] != 900 {
+		t.Fatalf("restriction_hold_seconds stored = %#v, want 900", view["restriction_hold_seconds"])
+	}
 	if got := view["proxySlots"].([]map[string]any); len(got) != 1 || got[0]["id"] != "slot-1" {
 		t.Fatalf("proxy slot fallback = %#v", got)
 	}

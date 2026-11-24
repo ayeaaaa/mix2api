@@ -617,10 +617,14 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 
 	accounts := p.Accounts()
+	egressEnabled := p.egressBackoffEnabled()
 	if affinityUID != "" && !exclude[affinityUID] {
 		for _, account := range accounts {
 			uid, active, max, _, live := account.hasSelectionState()
 			if !live || uid != affinityUID || active >= max {
+				continue
+			}
+			if egressEnabled && !transport.EgressAllowed(account.ProxyURL()) {
 				continue
 			}
 			if account.Ready(now, model) && account.HasModel(model) {
@@ -656,18 +660,6 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	if len(candidates) == 0 {
 		return nil, ErrNoAccount
 	}
-	if p.egressBackoffEnabled() {
-		filtered := make([]candidate, 0, len(candidates))
-		for _, item := range candidates {
-			if transport.EgressAllowed(item.account.ProxyURL()) {
-				filtered = append(filtered, item)
-			}
-		}
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
-	}
-
 	selected := candidates
 	capable := make([]candidate, 0, len(candidates))
 	for _, item := range candidates {
@@ -677,6 +669,17 @@ func (p *Pool) Pick(model, sessionKey string, exclude map[string]bool, routing .
 	}
 	if len(capable) > 0 {
 		selected = capable
+	}
+	if egressEnabled {
+		filtered := make([]candidate, 0, len(selected))
+		for _, item := range selected {
+			if transport.EgressAllowed(item.account.ProxyURL()) {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			selected = filtered
+		}
 	}
 	pageReady := false
 	if len(policy.Cohort) > 0 {

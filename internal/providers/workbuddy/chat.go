@@ -193,49 +193,24 @@ func (p *Provider) refreshChatConfig() Config {
 	return cfg
 }
 
-// applyFreeModelFallback is the "free quota exhausted, same model, paid
-// account" fallback. It excludes every free account only when the model is
-// free for those accounts and at least one paid account can serve it. It
-// returns false (fail-open, no exclusion) when no paid account exists.
-func applyFreeModelFallback(accounts []*Account, model string, exclude map[string]bool) bool {
-	paidAvailable := false
-	for _, account := range accounts {
-		if account == nil || !account.IsPaidUser() {
-			continue
-		}
-		if exclude[accountUID(account)] {
-			continue
-		}
-		account.mu.RLock()
-		disabled := account.removed || !account.Auth.Enabled || account.State.Disabled
-		account.mu.RUnlock()
-		if !disabled {
-			paidAvailable = true
-			break
-		}
-	}
-	if !paidAvailable {
-		return false
-	}
-	freeModel := false
-	for _, account := range accounts {
-		if account != nil && account.ModelIsFree(model) {
-			freeModel = true
-			break
-		}
-	}
-	if !freeModel {
-		return false
+// excludeFreeAccounts returns a copy of exclude with every free account added.
+// It is used for one paid-first selection attempt; if that attempt has no
+// candidate, the caller retries with the original exclude set, so a request is
+// never stranded when the only paid account is unusable.
+func excludeFreeAccounts(accounts []*Account, exclude map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(exclude)+len(accounts))
+	for uid, value := range exclude {
+		out[uid] = value
 	}
 	for _, account := range accounts {
 		if account == nil || account.IsPaidUser() {
 			continue
 		}
 		if uid := accountUID(account); uid != "" {
-			exclude[uid] = true
+			out[uid] = true
 		}
 	}
-	return true
+	return out
 }
 
 func (p *Provider) openChat(
@@ -287,6 +262,7 @@ func (p *Provider) openChat(
 	var bestRate *APIError
 	sawTransient := false
 	retriedTransient := false
+	preferPaid := false
 	restrictedRotations := 0
 
 	for attempt := 0; attempt < attemptLimit; attempt++ {
@@ -294,7 +270,15 @@ func (p *Provider) openChat(
 			return nil, ctxErr
 		}
 
-		account, pickErr := pool.Pick(model, req.SessionKey, exclude, policy)
+		pickExclude := exclude
+		if preferPaid {
+			pickExclude = excludeFreeAccounts(accounts, exclude)
+		}
+		account, pickErr := pool.Pick(model, req.SessionKey, pickExclude, policy)
+		if pickErr != nil && preferPaid {
+			// No usable paid account: fail open to the normal candidate set.
+			account, pickErr = pool.Pick(model, req.SessionKey, exclude, policy)
+		}
 		if pickErr != nil {
 			// v1 clears the tried set once after a transient/network failure so
 			// a one-account pool gets a real second upstream attempt instead of
@@ -371,7 +355,8 @@ func (p *Provider) openChat(
 
 		var apiErr *APIError
 		if errors.As(attemptErr, &apiErr) {
-			if egressBackoff && (apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport || apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+			if egressBackoff && (apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport ||
+				(apiErr.Kind == KindUpstream && (apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout))) {
 				transport.NoteEgressTransient(account.ProxyURL())
 			}
 			if apiErr.Kind == KindUpstream || apiErr.Kind == KindNetwork || apiErr.Kind == KindTransport {
@@ -394,8 +379,8 @@ func (p *Provider) openChat(
 					_ = pool.NoteError(account, apiErr.SafeMessage(), false, false)
 				}
 			case KindRateLimited:
-				if freeModelCreditFallback {
-					applyFreeModelFallback(accounts, model, exclude)
+				if freeModelCreditFallback && !account.IsPaidUser() && account.ModelIsFree(model) {
+					preferPaid = true
 				}
 				if apiErr.ModelScoped {
 					_ = pool.NoteModelError(account, model, apiErr.SafeMessage(), apiErr.RetryAfter)

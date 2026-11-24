@@ -2804,25 +2804,73 @@ func TestChatReasoningEffortMapDisabled(t *testing.T) {
 	}
 }
 
-func TestFreeModelFallbackExcludesFreeAccounts(t *testing.T) {
+func TestExcludeFreeAccounts(t *testing.T) {
 	free := func(uid string) *Account {
 		return &Account{Auth: Auth{UID: uid, Enabled: true}, FreeModels: map[string]bool{"m": true}}
 	}
 	paid := func(uid string) *Account {
 		return &Account{Auth: Auth{UID: uid, Enabled: true}, FreeModels: map[string]bool{"m": true}, paidUser: true, paidKnown: true}
 	}
-	accounts := []*Account{free("a"), free("b"), paid("c")}
-	exclude := map[string]bool{}
-	if !applyFreeModelFallback(accounts, "m", exclude) {
-		t.Fatal("fallback should be available with a paid account")
+	got := excludeFreeAccounts([]*Account{free("a"), free("b"), paid("c")}, map[string]bool{"x": true})
+	if !got["a"] || !got["b"] || !got["x"] || got["c"] {
+		t.Fatalf("excludeFreeAccounts = %#v", got)
 	}
-	if !exclude["a"] || !exclude["b"] || exclude["c"] {
-		t.Fatalf("exclude = %#v", exclude)
-	}
-	if applyFreeModelFallback([]*Account{free("a")}, "m", map[string]bool{}) {
-		t.Fatal("fallback must fail open without a paid account")
-	}
-	if applyFreeModelFallback(accounts, "other", map[string]bool{}) {
-		t.Fatal("fallback must not trigger for a non-free model")
+}
+
+func TestChatFreeModelFallbackUsesPaidAccount(t *testing.T) {
+	model := "deepseek-v4.1-flash"
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "off", true: "on"}[enabled], func(t *testing.T) {
+			dir := t.TempDir()
+			for _, uid := range []string{"0-free-a", "1-free-b", "z-paid"} {
+				writeChatAccount(t, dir, uid, realmIntl, map[string]any{"product": productDesktop})
+			}
+			provider := setupChatProvider(t, realmIntl, dir, map[string]any{"free_model_credit_fallback": enabled})
+			pool := provider.Pool()
+			for _, uid := range []string{"0-free-a", "1-free-b"} {
+				account := accountByUID(t, pool, uid)
+				account.mu.Lock()
+				account.FreeModels = map[string]bool{model: true}
+				account.mu.Unlock()
+			}
+			paid := accountByUID(t, pool, "z-paid")
+			paid.mu.Lock()
+			paid.paidUser = true
+			paid.paidKnown = true
+			paid.FreeModels = map[string]bool{model: true}
+			paid.mu.Unlock()
+
+			fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+				if strings.Contains(r.Header.Get("Authorization"), "free") {
+					return http.StatusTooManyRequests, http.Header{"Content-Type": []string{"application/json"}},
+						[]byte(`{"code":6004,"msg":"usage exceeds frequency limit"}`)
+				}
+				return http.StatusOK, http.Header{"Content-Type": []string{"text/event-stream"}},
+					[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+			}}
+			provider.chatBaseURL = newChatTestServer(t, fake).URL
+			stream, err := provider.OpenChat(context.Background(), chatRequest(t, model, map[string]any{
+				"model":    model,
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}))
+			if err != nil {
+				t.Fatalf("OpenChat: %v", err)
+			}
+			_ = stream.Close()
+			calls := fake.snapshot()
+			if len(calls) == 0 || !strings.Contains(calls[0].Header.Get("Authorization"), "free") {
+				t.Fatalf("first call was not a free account: %#v", calls)
+			}
+			if len(calls) < 2 {
+				t.Fatalf("calls = %d, want a retry", len(calls))
+			}
+			secondPaid := strings.Contains(calls[1].Header.Get("Authorization"), "z-paid")
+			if enabled && !secondPaid {
+				t.Fatalf("fallback on: second call was not the paid account: %#v", calls)
+			}
+			if !enabled && secondPaid {
+				t.Fatalf("fallback off: second call unexpectedly skipped the other free account: %#v", calls)
+			}
+		})
 	}
 }

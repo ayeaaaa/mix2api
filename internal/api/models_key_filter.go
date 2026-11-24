@@ -28,6 +28,10 @@ func filterModelsForKeyListing(ctx context.Context, s *Server, r *http.Request, 
 	if !enabled {
 		return data
 	}
+	realm := ""
+	if r.URL != nil {
+		realm = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("realm")))
+	}
 	out := make([]providers.Model, 0, len(data))
 	for _, model := range data {
 		id := strings.TrimSpace(modelString(model, "id"))
@@ -36,7 +40,13 @@ func filterModelsForKeyListing(ctx context.Context, s *Server, r *http.Request, 
 			id = upstream
 		}
 		qualified := strings.TrimSpace(modelString(model, "qualified_id"))
-		if keys.AllowsModelAny(*entry, id, upstream, qualified) {
+		candidates := []string{id, upstream, qualified}
+		if realm == "all" && upstream != "" {
+			// realm=all unions bare WorkBuddy ids, so a key allow-list written
+			// as intl/<id> or cn/<id> must still match the bare entry.
+			candidates = append(candidates, "intl/"+upstream, "cn/"+upstream)
+		}
+		if keys.AllowsModelAny(*entry, candidates...) {
 			out = append(out, model)
 		}
 	}

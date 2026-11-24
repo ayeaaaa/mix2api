@@ -190,7 +190,7 @@ func (p *Pool) OpenChat(ctx context.Context, req providers.ChatRequest) (provide
 			// exception branch.
 			return nil, attemptErr
 		}
-		if egressBackoff && (apiErr.Kind == KindTransient || apiErr.Status == http.StatusBadGateway || apiErr.Status == http.StatusServiceUnavailable || apiErr.Status == http.StatusGatewayTimeout) {
+		if egressBackoff && apiErr.Egress {
 			transport.NoteEgressTransient(account.ProxyURL())
 		}
 
@@ -497,6 +497,7 @@ func (p *Pool) sendChatRequest(
 		return nil, &APIError{
 			Kind:    KindTransient,
 			Message: redactText("raccoon: cannot reach upstream: "+err.Error(), secrets...),
+			Egress:  true,
 		}
 	}
 
