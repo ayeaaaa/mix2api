@@ -22,6 +22,18 @@ const byId = id => page.document.getElementById(id);
     '代理服务器格式无效':'Invalid proxy server',
     '代理端口必须是 1–65535':'Proxy port must be 1–65535',
     '认证用户名不能为空':'Auth username cannot be empty',
+    '用户名（可选）':'Username (optional)',
+    '密码（可选）':'Password (optional)',
+    '协议':'Protocol',
+    '服务器':'Server',
+    '认证':'Authentication',
+    '用户名':'Username',
+    '密码':'Password',
+    '高级':'Advanced',
+    '收起高级':'Hide advanced',
+    '原始 URL':'Raw URL',
+    '包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据':'Contains a path/query or special format; structured fields are read-only. The raw URL may show credentials in plain text.',
+    '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据':'Use this for a full address with auth or a special format. The raw URL may show credentials in plain text.',
     '支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。':'Supports HTTP / HTTPS / SOCKS5. Inside Docker, 127.0.0.1 is the container itself; use the host address, a container name, or host.docker.internal. After adding, click Save slots, then bind the exit in the account table.'
   };
   for(const [src,want] of Object.entries(en)) assert.equal(page.WB_I18N.translate(src),want,src);
@@ -41,9 +53,46 @@ const byId = id => page.document.getElementById(id);
     '代理服务器只填主机名或 IP，不要带协议、端口或路径':'代理伺服器只填主機名稱或 IP，不要帶協定、埠或路徑',
     '代理服务器格式无效':'代理伺服器格式無效',
     '认证用户名不能为空':'認證使用者名稱不能為空',
+    '用户名（可选）':'使用者名稱（可選）',
+    '密码（可选）':'密碼（可選）',
+    '协议':'協定',
+    '服务器':'伺服器',
+    '认证':'認證',
+    '用户名':'使用者名稱',
+    '密码':'密碼',
+    '高级':'進階',
+    '收起高级':'收起進階',
+    '原始 URL':'原始 URL',
     '支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。':'支援 HTTP / HTTPS / SOCKS5。Docker 部署時 127.0.0.1 指容器自身，請填主機位址、容器名稱或 host.docker.internal；新增後記得點「儲存槽位」，再在帳號表綁定出口。'
   };
   for(const [src,want] of Object.entries(hant)) assert.equal(page.WB_I18N.translateHant(src),want,src);
+
+  const parsed = page.parseProxySlotURL('socks5://user:p%40ss@127.0.0.1:10808');
+  assert.equal(parsed.protocol,'socks5');
+  assert.equal(parsed.host,'127.0.0.1');
+  assert.equal(parsed.port,'10808');
+  assert.equal(parsed.username,'user');
+  assert.equal(parsed.password,'p@ss');
+  assert.equal(parsed.advanced,false);
+  assert.equal(page.composeProxyURL(parsed),'socks5://user:p%40ss@127.0.0.1:10808');
+  const v6 = page.parseProxySlotURL('http://[::1]:7890');
+  assert.equal(v6.host,'::1');
+  assert.equal(page.composeProxyURL(v6),'http://[::1]:7890');
+  const raw = page.parseProxySlotURL('127.0.0.1:10808');
+  assert.equal(raw.protocol,'http');
+  assert.equal(page.composeProxyURL(raw),'http://127.0.0.1:10808');
+  const complex = page.parseProxySlotURL('http://host:8080/path?x=1');
+  assert.equal(complex.advanced,true);
+  assert.equal(page.composeProxyURL(complex),'http://host:8080/path?x=1');
+  assert.equal(page.validateProxyParts({protocol:'socks5',host:'',port:'1080',username:'',password:''}),'请填写代理服务器');
+  assert.equal(page.validateProxyParts({protocol:'socks5',host:'127.0.0.1',port:'70000',username:'',password:''}),'代理端口必须是 1–65535');
+  assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'1080',username:'',password:'p'}),'认证密码需要用户名');
+  assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'',username:'',password:''}),null);
+  assert.equal(page.parseProxySlotURL('ftp://host:1080').supported,false);
+  assert.equal(page.proxySlotValidationError({url:'ftp://host:1080'}),'代理地址格式无效');
+  assert.equal(page.proxySlotValidationError({url:'http://host:8080/path?x=1'}),null);
+  assert.equal(page.proxySlotValidationError({url:'http://host:1080',_parts:{protocol:'http',host:'host',port:'1080',username:'',password:'p',advanced:false,supported:true}}),'认证密码需要用户名');
+
   assert.equal(page.proxyURLFromParts('socks5','127.0.0.1','10808',''), 'socks5://127.0.0.1:10808');
   assert.equal(page.proxyURLFromParts('http','[::1]','7890','user:p@ss'), 'http://user:p%40ss@[::1]:7890');
   assert.throws(()=>page.proxyURLFromParts('socks4','127.0.0.1','1080',''), /不支持的代理协议/);
@@ -56,18 +105,31 @@ const byId = id => page.document.getElementById(id);
   byId('slotAddProtocol').value='socks5';
   byId('slotAddHost').value='127.0.0.1';
   byId('slotAddPort').value='10808';
-  byId('slotAddAuth').value='user:p@ss';
+  byId('slotAddUser').value='user';
+  byId('slotAddPassword').value='p@ss';
   page.addProxySlotFromForm(null);
   let payload=page.slotPayload();
   assert.equal(payload.length,1);
   assert.equal(payload[0].url,'socks5://user:p%40ss@127.0.0.1:10808');
+  const tableHtml=dom.byId('slotList').innerHTML;
+  assert.ok(tableHtml.includes('data-label="协议"'),'table renders protocol column');
+  assert.ok(tableHtml.includes('type="password"'),'auth password is masked');
+  assert.ok(tableHtml.includes('slotRaw0'),'advanced raw URL editor exists');
   assert.equal(byId('slotAddHost').value,'');
+  page.updateProxyStructured(0,'port','10809');
+  assert.equal(page.slotPayload()[0].url,'socks5://user:p%40ss@127.0.0.1:10809');
+  page.updateProxyStructured(0,'port','10808');
 
   byId('slotAddHost').value='127.0.0.1';
   byId('slotAddPort').value='10808';
-  byId('slotAddAuth').value='user:p@ss';
+  byId('slotAddUser').value='user';
+  byId('slotAddPassword').value='p@ss';
   page.addProxySlotFromForm(null);
   payload=page.slotPayload();
   assert.equal(payload.length,1,'duplicate proxy URL must not add a second slot');
+  page.updateProxyRaw(0,'http://host:9999/path?x=1');
+  page.refreshProxySlotRow(0);
+  assert.equal(page.slotPayload()[0].url,'http://host:9999/path?x=1');
+  assert.ok(dom.byId('slotList').innerHTML.includes('结构化字段只读'),'complex URL locks structured fields');
   console.log('proxy slot add form tests passed');
 })().catch(e=>{console.error(e);process.exit(1);});
