@@ -880,3 +880,32 @@ func TestRoutesCheckinRetrySetting(t *testing.T) {
 		t.Fatal("invalid retry interval was accepted")
 	}
 }
+
+func TestJobsCheckinHourlyCatchUp(t *testing.T) {
+	f := newJobsFixture(t)
+	f.addTaskAccount(t, "cn-first", true, true, false)
+	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+	at := func(hour, minute int) time.Time {
+		return time.Date(2026, 11, 9, hour, minute, 0, 0, time.Local)
+	}
+	f.setNow(at(9, 0))
+	if _, err := job.run(context.Background(), false); err != nil {
+		t.Fatalf("initial checkin: %v", err)
+	}
+
+	f.addTaskAccount(t, "cn-late", true, true, false)
+	f.setNow(at(9, 30))
+	if job.Due(at(9, 30)) {
+		t.Fatal("same-hour catch-up must not run twice")
+	}
+	f.setNow(at(10, 0))
+	if !job.Due(at(10, 0)) {
+		t.Fatal("next clock hour should catch up the unchecked account")
+	}
+	if _, err := job.run(context.Background(), false); err != nil {
+		t.Fatalf("catch-up checkin: %v", err)
+	}
+	if job.Due(at(10, 5)) {
+		t.Fatal("checked accounts must not be retried in the same hour")
+	}
+}

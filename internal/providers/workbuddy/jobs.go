@@ -88,11 +88,12 @@ const (
 )
 
 type scheduledJobState struct {
-	mu          sync.Mutex
-	lastRun     time.Time
-	lastSlotKey string
-	retryAt     time.Time
-	retryUntil  time.Time
+	mu             sync.Mutex
+	lastRun        time.Time
+	lastSlotKey    string
+	lastCatchupKey string
+	retryAt        time.Time
+	retryUntil     time.Time
 }
 
 type scheduledJob struct {
@@ -156,9 +157,20 @@ func (j *scheduledJob) Due(now time.Time) bool {
 	}
 	// The slot already ran, but a failed check-in may have a same-day retry
 	// pending. Retries stop at local midnight.
-	return !j.state.retryAt.IsZero() &&
-		!now.Before(j.state.retryAt) &&
-		now.Before(j.state.retryUntil)
+	if !j.state.retryAt.IsZero() {
+		return !now.Before(j.state.retryAt) && now.Before(j.state.retryUntil)
+	}
+	if j.kind != jobKindCheckin || j.provider.checkinRetryMinutes() <= 0 {
+		return false
+	}
+	if !j.provider.checkinHasPending(now) {
+		return false
+	}
+	return j.state.lastCatchupKey != hourlyJobKey(now)
+}
+
+func hourlyJobKey(now time.Time) string {
+	return now.In(time.Local).Format("2006-01-02T15")
 }
 
 func (j *scheduledJob) NextRun(now time.Time) time.Time {
@@ -322,6 +334,9 @@ func (j *scheduledJob) run(ctx context.Context, force bool) (result JobRunResult
 	if latest, ok := latestJobSlot(slots, now); ok {
 		j.state.mu.Lock()
 		j.state.lastSlotKey = latest.key(now)
+		if j.kind == jobKindCheckin {
+			j.state.lastCatchupKey = hourlyJobKey(now)
+		}
 		j.state.lastRun = now
 		j.state.mu.Unlock()
 	} else if force {
@@ -385,6 +400,34 @@ func (j *scheduledJob) updateCheckinRetry(now time.Time, result JobRunResult) {
 func endOfLocalDay(now time.Time) time.Time {
 	local := now.Local()
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location())
+}
+
+// checkinHasPending reports whether an active CN account has no successful
+// check-in stamped for the provider's local day. It is a local-only check used
+// by the hourly catch-up gate.
+func (p *Provider) checkinHasPending(now time.Time) bool {
+	if p == nil {
+		return false
+	}
+	provider := p.providerForRealm(realmCN)
+	if provider == nil {
+		return false
+	}
+	for _, account := range provider.jobTaskAccounts() {
+		auth := taskAuthSnapshot(account)
+		if auth.Realm != realmCN || taskIsAPIKey(auth) || taskEnterpriseID(auth) != "" {
+			continue
+		}
+		if !jobAccountActive(account, now) {
+			continue
+		}
+		last := strings.TrimSpace(auth.LastCheckin)
+		if last != "" && strings.HasPrefix(last, now.Format(tasksDayLayout)) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (j *scheduledJob) realmProviders() []*Provider {
