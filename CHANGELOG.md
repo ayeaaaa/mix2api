@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed / 变更
+
+- 账号代理槽表格改为逐行结构化编辑：协议 / 服务器 / 端口 / 用户名 / 密码，
+  密码使用密码框；原始 URL 放在可展开的「高级」行，兼容路径、查询和历史格式。
+- 保留名称、启用、出口、绑定账号、测试、删除、IPv6、URL 去重和 Docker
+  `127.0.0.1` 提示；不引入浏览器式的网址协议、直连、Proxy DNS 或 SOCKS4。
+- Proxy-slot rows now edit protocol / server / port / username / password
+  inline, with a masked password and an expandable raw-URL advanced row for
+  paths, queries, legacy formats and special credentials. Existing row actions,
+  IPv6 handling, de-duplication and the Docker caveat remain.
+
 ## [2.8.18] - 2026-11-23
 
 ### 中文

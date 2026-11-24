@@ -824,6 +824,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   table.data-cards{min-width:0!important;display:block}
   table.data-cards thead{display:none}
   table.data-cards tbody{display:block}
+  table.data-cards tr[hidden]{display:none!important}
   table.data-cards tr{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));
     gap:5px 8px;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:var(--shadow-sm)}
@@ -2188,6 +2189,26 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '代理服务器格式无效': 'Invalid proxy server',
     '代理端口必须是 1–65535': 'Proxy port must be 1–65535',
     '认证用户名不能为空': 'Auth username cannot be empty',
+    '用户名（可选）': 'Username (optional)',
+    '密码（可选）': 'Password (optional)',
+    '协议': 'Protocol',
+    '服务器': 'Server',
+    '认证': 'Authentication',
+    '用户名': 'Username',
+    '密码': 'Password',
+    '高级': 'Advanced',
+    '收起高级': 'Hide advanced',
+    '原始 URL': 'Raw URL',
+    '包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据': 'Contains a path/query or special format; structured fields are read-only. The raw URL may show credentials in plain text.',
+    '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据': 'Use this for a full address with auth or a special format. The raw URL may show credentials in plain text.',
+    '认证密码需要用户名': 'A password requires a username',
+    '代理地址格式无效': 'Invalid proxy address',
+    '代理地址重复': 'Duplicate proxy address',
+    '包含路径/查询或特殊格式，请编辑原始 URL': 'Contains a path/query or special format; edit the raw URL',
+    '该地址包含路径或特殊格式，只能编辑原始 URL': 'This address contains a path or special format; edit the raw URL',
+    '保存后未找到该代理槽，请检查地址是否为空或重复': 'The proxy slot was not found after saving; check for an empty or duplicate address',
+    '代理槽没有保存成功，请重试': 'The proxy slot did not save; try again',
+    '带路径/查询或特殊格式的地址请展开「高级」编辑原始 URL。': 'For addresses with a path/query or special format, expand Advanced and edit the raw URL.',
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
     '「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。': 'Settings is where this switch lives, so it cannot be unticked - there would be no way back.',
     '取消勾选可隐藏对应功能入口，勾选后恢复；偏好保存在本网关。「设置」入口固定保留。': 'Untick a feature to hide its navigation entry; tick it again to restore it. Preferences are stored on this gateway. Settings always remains available.',
@@ -3765,6 +3786,26 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "代理服务器格式无效": "代理伺服器格式無效",
     "代理端口必须是 1–65535": "代理埠必須是 1–65535",
     "认证用户名不能为空": "認證使用者名稱不能為空",
+    "用户名（可选）": "使用者名稱（可選）",
+    "密码（可选）": "密碼（可選）",
+    "协议": "協定",
+    "服务器": "伺服器",
+    "认证": "認證",
+    "用户名": "使用者名稱",
+    "密码": "密碼",
+    "高级": "進階",
+    "收起高级": "收起進階",
+    "原始 URL": "原始 URL",
+    "包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据": "包含路徑/查詢或特殊格式，結構化欄位唯讀；原始 URL 可能明文顯示憑證",
+    "可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据": "可填寫帶認證或特殊格式的完整位址；原始 URL 可能明文顯示憑證",
+    "认证密码需要用户名": "認證密碼需要使用者名稱",
+    "代理地址格式无效": "代理位址格式無效",
+    "代理地址重复": "代理位址重複",
+    "包含路径/查询或特殊格式，请编辑原始 URL": "包含路徑/查詢或特殊格式，請編輯原始 URL",
+    "该地址包含路径或特殊格式，只能编辑原始 URL": "此位址包含路徑或特殊格式，只能編輯原始 URL",
+    "保存后未找到该代理槽，请检查地址是否为空或重复": "儲存後找不到該代理槽，請檢查位址是否為空或重複",
+    "代理槽没有保存成功，请重试": "代理槽沒有儲存成功，請重試",
+    "带路径/查询或特殊格式的地址请展开「高级」编辑原始 URL。": "帶路徑/查詢或特殊格式的位址請展開「進階」編輯原始 URL。",
     "+ 添加账号 (OAuth)": "+ 新增帳號 (OAuth)",
     "「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。": "「設定」是頁面顯示開關自己的入口，收起來就放不回去了，固定保留。",
     "取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。": "取消勾選就把該頁籤從頂部收起來，勾回來即恢復；清單按頂部現有的頁籤現場生成，上游增刪頁面這裡自動跟上；偏好存在本閘道，換瀏覽器、重啟服務都記得。「設定」是這一頁自己的入口，固定保留。",
@@ -7094,7 +7135,8 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
           </select>
           <input id="slotAddHost" placeholder="代理服务器，如 127.0.0.1" style="width:230px">
           <input id="slotAddPort" type="number" min="1" max="65535" step="1" placeholder="端口" style="width:110px">
-          <input id="slotAddAuth" placeholder="认证 user:pass（可选）" style="width:190px">
+          <input id="slotAddUser" placeholder="用户名（可选）" autocomplete="off" style="width:140px">
+          <input id="slotAddPassword" type="password" placeholder="密码（可选）" autocomplete="new-password" style="width:150px">
           <button class="sec" onclick="addProxySlotFromForm(this)">添加</button>
         </div>
         <div style="font-size:12px;color:var(--dim);margin-top:7px">支持 HTTP / HTTPS / SOCKS5。Docker 部署时 127.0.0.1 指容器自身，请填宿主机地址、容器名或 host.docker.internal；添加后记得点「保存槽位」，再在账号表绑定出口。</div>
@@ -12150,9 +12192,9 @@ const SORT_COL_KINDS = {
   perfMatrix:       ['text', 'text', 'text', 'num', 'num', 'num', 'num', 'num',
                      'num', 'num', 'num', 'num', 'num'],
   accounts:         ['text', 'text', 'text', null, 'num', 'num', 'num', 'num', null],
-  // 名称 / 代理地址是 <input>（textContent 恒为空串，按它排等于没排）、启用是复选框、
-  // 操作是按钮列——登记成 null，别让表头挂上一个点了没反应的箭头。
-  slotList:         [null, null, 'text', null, 'num', null],
+  // 名称 / 协议 / 服务器 / 端口 / 认证是输入控件（textContent 恒为空串，按它排
+  // 等于没排）、启用是复选框、操作是按钮列——登记成 null，别让表头挂上没反应的箭头。
+  slotList:         [null, null, null, null, null, 'text', null, 'num', null],
   disabledList:     ['text', 'text', 'text', 'text', 'text', 'text'],
 };
 /* 表体开头有几行是汇总行、不是数据行：矩阵面板的「全部模型合计」钉在表体第一行，
@@ -12278,7 +12320,7 @@ function applyTableSort(id, rootEl){
   /* 续行（账号表里 cool-row 的冷却 / 达限胶囊）是上一行的附注，不是独立数据行：
      只排 accountRow 会把胶囊留在原地，排完就是「账号 账号 胶囊 胶囊」——胶囊跟
      的不是它自己那行账号。按「行 + 它的续行」成组排，整块一起走。 */
-  const isCont = r => !!(r.classList && r.classList.contains('cool-row'));
+  const isCont = r => !!(r.classList && (r.classList.contains('cool-row') || r.classList.contains('slot-advanced-row')));
   const units = [];
   for(const r of rows){
     if(units.length && isCont(r)) units[units.length - 1].extras.push(r);
@@ -20671,29 +20713,60 @@ function renderProxySlots(){
     box.innerHTML = '<div class="hint" style="color:var(--dim)">还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加空槽位」。</div>';
     return;
   }
+  const rows = PROXY_SLOTS.map((s, i) => {
+    const parts = parseProxySlotURL(s.url);
+    s._parts = parts;
+    if(parts.advanced) s._advanced = true;
+    const disabled = parts.advanced ? ' disabled' : '';
+    const advancedOpen = !!s._advanced || parts.advanced;
+    const protocols = [['http','HTTP'],['https','HTTPS'],['socks5','SOCKS5']].map(pair =>
+      '<option value="' + pair[0] + '"' + (parts.protocol === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'
+    ).join('');
+    const advancedButton = parts.advanced
+      ? '<button class="sec mini" type="button" disabled title="包含路径/查询或特殊格式，请编辑原始 URL">原始 URL</button>'
+      : '<button class="sec mini" type="button" onclick="toggleProxyAdvanced(' + i + ')">' + (s._advanced ? '收起高级' : '高级') + '</button>';
+    return '<tr>'
+      + '<td data-label="名称"><input value="' + esc(s.name || '') + '" placeholder="' + esc(s.label || '') + '" oninput="PROXY_SLOTS[' + i + '].name=this.value; markSlotsDirty()" class="slot-input"></td>'
+      + '<td data-label="协议"><select class="slot-input" onchange="updateProxyStructured(' + i + ', \'protocol\', this.value)"' + disabled + '>' + protocols + '</select></td>'
+      + '<td data-label="服务器"><input value="' + esc(parts.host) + '" placeholder="127.0.0.1 / ::1" oninput="updateProxyStructured(' + i + ', \'host\', this.value)" class="slot-input mono"' + disabled + '></td>'
+      + '<td data-label="端口"><input type="number" min="1" max="65535" step="1" value="' + esc(parts.port) + '" placeholder="10808" oninput="updateProxyStructured(' + i + ', \'port\', this.value)" class="slot-input"' + disabled + '></td>'
+      + '<td data-label="认证"><div style="display:flex;gap:4px;flex-wrap:wrap;width:100%">'
+      +   '<input value="' + esc(parts.username) + '" placeholder="用户名" autocomplete="off" oninput="updateProxyStructured(' + i + ', \'username\', this.value)" class="slot-input" style="flex:1;min-width:68px"' + disabled + '>'
+      +   '<input type="password" value="' + esc(parts.password) + '" placeholder="密码" autocomplete="new-password" oninput="updateProxyStructured(' + i + ', \'password\', this.value)" class="slot-input" style="flex:1;min-width:68px"' + disabled + '>'
+      + '</div></td>'
+      + '<td data-label="出口">' + slotExitHtml(s) + '</td>'
+      + '<td style="text-align:center" data-label="启用"><input type="checkbox" ' + (s.enabled === false ? '' : 'checked')
+      +   ' onchange="PROXY_SLOTS[' + i + '].enabled=this.checked; markSlotsDirty()"></td>'
+      + '<td style="text-align:center" data-label="绑定账号">' + (s.bound || 0) + '</td>'
+      + '<td style="text-align:center;white-space:nowrap" data-label="操作">'
+      +   '<button class="sec mini" onclick="testProxySlot(' + i + ', this)">测试</button> '
+      +   advancedButton + ' '
+      +   '<button class="danger mini" onclick="removeProxySlot(' + i + ')">删除</button>'
+      + '</td></tr>'
+      + (advancedOpen
+        ? '<tr class="slot-advanced-row"><td colspan="9" data-label="">'
+          + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          +   '<span style="font-size:12px;color:var(--dim);white-space:nowrap">原始 URL</span>'
+          +   '<input id="slotRaw' + i + '" value="' + esc(s.url || '') + '" oninput="updateProxyRaw(' + i + ', this.value)" onchange="scheduleProxySlotRefresh(' + i + ')" class="slot-input mono" style="flex:1;min-width:0">'
+          +   '<span style="font-size:12px;color:var(--dim)">' + (parts.advanced ? '包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据' : '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据') + '</span>'
+          + '</div>'
+          + '</td></tr>'
+        : '');
+  }).join('');
   box.innerHTML = '<div class="table-wrap"><table class="data-cards"><thead><tr>'
-    + '<th style="width:150px">名称</th>'
-    + '<th>代理地址</th>'
+    + '<th style="width:130px">名称</th>'
+    + '<th style="width:100px">协议</th>'
+    + '<th style="width:190px">服务器</th>'
+    + '<th style="width:90px">端口</th>'
+    + '<th style="width:210px">认证</th>'
     + '<th style="width:150px">出口</th>'
-    + '<th style="width:90px;text-align:center">启用</th>'
-    + '<th style="width:90px;text-align:center">绑定账号</th>'
+    + '<th style="width:70px;text-align:center">启用</th>'
+    + '<th style="width:80px;text-align:center">绑定账号</th>'
     + '<th style="width:190px;text-align:center">操作</th>'
     + '</tr></thead><tbody>'
-    + PROXY_SLOTS.map((s, i) =>
-        '<tr>'
-        + '<td data-label="名称"><input value="' + esc(s.name || '') + '" placeholder="' + esc(s.label || '') + '" oninput="PROXY_SLOTS[' + i + '].name=this.value; markSlotsDirty()" class="slot-input"></td>'
-        + '<td data-label="代理地址"><input value="' + esc(s.url || '') + '" oninput="PROXY_SLOTS[' + i + '].url=this.value; markSlotsDirty()" class="slot-input mono"></td>'
-        + '<td data-label="出口">' + slotExitHtml(s) + '</td>'
-        + '<td style="text-align:center" data-label="启用"><input type="checkbox" ' + (s.enabled === false ? '' : 'checked')
-        +   ' onchange="PROXY_SLOTS[' + i + '].enabled=this.checked; markSlotsDirty()"></td>'
-        + '<td style="text-align:center" data-label="绑定账号">' + (s.bound || 0) + '</td>'
-        + '<td style="text-align:center;white-space:nowrap" data-label="">'
-        +   '<button class="sec mini" onclick="testProxySlot(' + i + ', this)">测试</button> '
-        +   '<button class="danger mini" onclick="removeProxySlot(' + i + ')">删除</button>'
-        + '</td></tr>'
-      ).join('')
+    + rows
     + '</tbody></table></div>'
-    + '<div class="legend"><span>「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。</span></div>';
+    + '<div class="legend"><span>「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。带路径/查询或特殊格式的地址请展开「高级」编辑原始 URL。</span></div>';
   applyTableSort('slotList');
 }
 
@@ -20704,64 +20777,232 @@ function addProxySlotRow(){
   renderProxySlots();
 }
 
-function proxyURLFromParts(protocol, host, port, auth){
-  const scheme = String(protocol || 'http').trim().toLowerCase();
-  if(!['http','https','socks5'].includes(scheme)) throw new Error('不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）');
-  let server = String(host || '').trim();
-  if(!server) throw new Error('请填写代理服务器');
-  if(/[\s?#@]/.test(server) || server.includes('://') || server.includes('/')) throw new Error('代理服务器只填主机名或 IP，不要带协议、端口或路径');
-  let bracketed = false;
-  if(server.startsWith('[')){
-    if(!server.endsWith(']')) throw new Error('代理服务器格式无效');
-    bracketed = true;
-    server = server.slice(1, -1);
-  } else if(server.endsWith(']')){
-    throw new Error('代理服务器格式无效');
+function normalizeLegacyProxyURL(raw){
+  let text = String(raw || '').trim();
+  if(!text) return '';
+  let scheme = 'http';
+  let rest = text;
+  const match = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if(match){
+    scheme = match[1].toLowerCase();
+    rest = match[2];
   }
-  if(bracketed && !server.includes(':')) throw new Error('代理服务器格式无效');
-  if(server.includes(':') && (!/^[0-9a-f:]+$/i.test(server) || server.includes(':::') || (server.match(/::/g) || []).length > 1)) throw new Error('代理服务器格式无效');
-  if(server.includes(':') && !server.includes('::') && server.split(':').length !== 8) throw new Error('代理服务器格式无效');
-  const portNumber = Number(port);
-  if(!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) throw new Error('代理端口必须是 1–65535');
-  let userinfo = '';
+  const parts = rest.split(':');
+  if(parts.length === 4 && /^\d+$/.test(parts[1])){
+    return scheme + '://' + parts[2] + ':' + parts[3] + '@' + parts[0] + ':' + parts[1];
+  }
+  return text;
+}
+
+function proxyScheme(value){
+  const scheme = String(value || 'http').trim().toLowerCase();
+  return ['http','https','socks5'].includes(scheme) ? scheme : '';
+}
+
+function proxyHostForEdit(host){
+  let server = String(host || '').trim();
+  if(server.startsWith('[') && server.endsWith(']')) server = server.slice(1, -1);
+  return server;
+}
+
+function proxyHostError(host){
+  let server = String(host || '').trim();
+  if(!server) return '请填写代理服务器';
+  if(/[\s?#@]/.test(server) || server.includes('://') || server.includes('/')) return '代理服务器只填主机名或 IP，不要带协议、端口或路径';
+  if(server.startsWith('[') || server.endsWith(']')){
+    if(!(server.startsWith('[') && server.endsWith(']'))) return '代理服务器格式无效';
+    server = server.slice(1, -1);
+    if(!server.includes(':')) return '代理服务器格式无效';
+  }
+  if(server.includes(':')){
+    try{ new URL('http://[' + server + ']'); }
+    catch(e){ return '代理服务器格式无效'; }
+  }
+  return '';
+}
+
+function validateProxyParts(parts, requirePort){
+  const scheme = proxyScheme(parts && parts.protocol);
+  if(!scheme) return '不支持的代理协议（请使用 HTTP / HTTPS / SOCKS5）';
+  const hostError = proxyHostError(parts.host);
+  if(hostError) return hostError;
+  const port = String(parts.port == null ? '' : parts.port).trim();
+  if(port !== ''){
+    if(!/^\d+$/.test(port)) return '代理端口必须是 1–65535';
+    const n = Number(port);
+    if(!Number.isInteger(n) || n < 1 || n > 65535) return '代理端口必须是 1–65535';
+  }else if(requirePort){
+    return '代理端口必须是 1–65535';
+  }
+  return null;
+}
+
+function composeProxyURL(parts){
+  if(parts && parts.advanced) return String(parts.raw || '').trim();
+  const scheme = proxyScheme(parts && parts.protocol);
+  if(!scheme) return '';
+  let host = proxyHostForEdit(parts.host);
+  if(!host) return '';
+  const authority = host.includes(':') ? '[' + host + ']' : host;
+  const username = String(parts.username || '');
+  const password = String(parts.password == null ? '' : parts.password);
+  const hasAuth = username !== '' || password !== '';
+  const userinfo = hasAuth
+    ? encodeURIComponent(username) + (password !== '' || username === '' ? ':' + encodeURIComponent(password) : '') + '@'
+    : '';
+  const portText = String(parts.port == null ? '' : parts.port).trim();
+  const port = /^\d+$/.test(portText) ? String(Number(portText)) : portText;
+  return scheme + '://' + userinfo + authority + (port ? ':' + port : '');
+}
+
+function parseProxySlotURL(raw){
+  const text = String(raw || '').trim();
+  const empty = {protocol:'http', host:'', port:'', username:'', password:'', advanced:false, simple:true, supported:true, raw:text};
+  if(!text) return empty;
+  let candidate = normalizeLegacyProxyURL(text);
+  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) candidate = 'http://' + candidate;
+  let u;
+  try{ u = new URL(candidate); }catch(e){ return Object.assign({}, empty, {advanced:true, simple:false, supported:false}); }
+  let protocol = String(u.protocol || '').replace(':','').toLowerCase();
+  if(protocol === 'socks5h') protocol = 'socks5';
+  if(!['http','https','socks5'].includes(protocol)) return Object.assign({}, empty, {advanced:true, simple:false, supported:false});
+  let host = String(u.hostname || '');
+  if(host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  const path = String(u.pathname || '').replace(/^\/+|\/+$/g, '');
+  const advanced = path !== '' || !!u.search || !!u.hash;
+  const decode = value => { try { return decodeURIComponent(value || ''); } catch(e) { return value || ''; } };
+  return {
+    protocol: protocol,
+    host: host,
+    port: u.port || '',
+    username: decode(u.username),
+    password: decode(u.password),
+    advanced: advanced,
+    simple: !advanced,
+    supported: true,
+    raw: text
+  };
+}
+
+function proxyURLFromParts(protocol, host, port, auth){
   const authText = String(auth || '').trim();
+  let username = '';
+  let password = '';
   if(authText){
     const split = authText.indexOf(':');
-    const user = split >= 0 ? authText.slice(0, split) : authText;
-    const pass = split >= 0 ? authText.slice(split + 1) : '';
-    if(!user) throw new Error('认证用户名不能为空');
-    userinfo = encodeURIComponent(user) + (split >= 0 ? ':' + encodeURIComponent(pass) : '') + '@';
+    username = split >= 0 ? authText.slice(0, split) : authText;
+    password = split >= 0 ? authText.slice(split + 1) : '';
   }
-  const authority = server.includes(':') ? '[' + server + ']' : server;
-  return scheme + '://' + userinfo + authority + ':' + portNumber;
+  const parts = {protocol, host, port, username, password, advanced:false};
+  const error = validateProxyParts(parts, true);
+  if(error) throw new Error(error);
+  return composeProxyURL(parts);
 }
 
 function proxyCompareKey(raw){
-  let text = String(raw || '').trim();
+  let text = normalizeLegacyProxyURL(String(raw || '').trim());
   if(!text) return '';
   if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'http://' + text;
   try{
     const u = new URL(text);
     let protocol = u.protocol.toLowerCase();
     if(protocol === 'socks5h:') protocol = 'socks5:';
-    const auth = u.username ? u.username + (u.password ? ':' + u.password : '') + '@' : '';
-    return protocol + '//' + auth + u.host.toLowerCase();
+    const auth = (u.username || u.password) ? u.username + (u.password ? ':' + u.password : '') + '@' : '';
+    const path = String(u.pathname || '').replace(/\/+$/,'');
+    return protocol + '//' + auth + u.host.toLowerCase() + path + (u.search || '') + (u.hash || '');
   }catch(e){
     return text.toLowerCase();
   }
+}
+
+function proxySlotValidationError(slot){
+  const raw = String((slot && slot.url) || '').trim();
+  if(!raw) return null;
+  const parts = (slot._parts && !slot._parts.advanced) ? slot._parts : parseProxySlotURL(raw);
+  if(!parts.supported) return '代理地址格式无效';
+  const error = validateProxyParts(parts, false);
+  if(error) return error;
+  return null;
+}
+
+function validateProxySlots(){
+  const seen = Object.create(null);
+  for(let i = 0; i < PROXY_SLOTS.length; i++){
+    const slot = PROXY_SLOTS[i];
+    const raw = String((slot && slot.url) || '').trim();
+    if(!raw){
+      if(slot && slot.id) return '请填写代理服务器';
+      continue;
+    }
+    const error = proxySlotValidationError(slot);
+    if(error) return error;
+    const key = proxyCompareKey(raw);
+    if(key in seen) return '代理地址重复';
+    seen[key] = i;
+  }
+  return null;
+}
+
+function updateProxyStructured(index, field, value){
+  const slot = PROXY_SLOTS[index];
+  if(!slot) return;
+  if(!slot._parts) slot._parts = parseProxySlotURL(slot.url);
+  if(slot._parts.advanced) return;
+  slot._parts[field] = field === 'username' ? String(value || '').trim() : value;
+  slot.url = composeProxyURL(slot._parts);
+  markSlotsDirty();
+  const raw = document.getElementById('slotRaw' + index);
+  if(raw) raw.value = slot.url;
+}
+
+function updateProxyRaw(index, value){
+  const slot = PROXY_SLOTS[index];
+  if(!slot) return;
+  slot.url = String(value || '').trim();
+  slot._parts = parseProxySlotURL(slot.url);
+  markSlotsDirty();
+}
+
+function refreshProxySlotRow(index){
+  const slot = PROXY_SLOTS[index];
+  if(slot) slot._parts = parseProxySlotURL(slot.url);
+  renderProxySlots();
+}
+
+function scheduleProxySlotRefresh(index){
+  setTimeout(function(){
+    if(PROXY_SLOTS[index]) refreshProxySlotRow(index);
+  }, 0);
+}
+
+function toggleProxyAdvanced(index){
+  const slot = PROXY_SLOTS[index];
+  if(!slot) return;
+  if(slot._parts && slot._parts.advanced){
+    toast('该地址包含路径或特殊格式，只能编辑原始 URL', 'warn');
+    return;
+  }
+  slot._advanced = !slot._advanced;
+  renderProxySlots();
 }
 
 function addProxySlotFromForm(btn){
   if(btn) btn.disabled = true;
   try{
     const val = id => document.getElementById(id).value.trim();
-    const url = proxyURLFromParts(val('slotAddProtocol'), val('slotAddHost'), val('slotAddPort'), val('slotAddAuth'));
+    const parts = {
+      protocol: val('slotAddProtocol'), host: val('slotAddHost'), port: val('slotAddPort'),
+      username: val('slotAddUser'), password: document.getElementById('slotAddPassword').value
+    };
+    const error = validateProxyParts(parts, true);
+    if(error) throw new Error(error);
+    const url = composeProxyURL(parts);
     const key = proxyCompareKey(url);
     if(PROXY_SLOTS.some(s => proxyCompareKey(s.url) === key)){ toast('该代理地址已在槽位中', 'warn'); return; }
     PROXY_SLOTS.push({id: '', name: '', url: url, enabled: true, bound: 0});
     SLOTS_DIRTY = true;
     renderProxySlots();
-    ['slotAddHost','slotAddPort','slotAddAuth'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+    ['slotAddHost','slotAddPort','slotAddUser','slotAddPassword'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
     toast('已加入代理槽，记得点「保存槽位」', 'ok');
   }catch(e){
     toast('添加失败: ' + e.message, 'bad');
@@ -20782,6 +21023,8 @@ function removeProxySlot(index){
 async function saveProxySlots(btn){
   if(btn) btn.disabled = true;
   try{
+    const error = validateProxySlots();
+    if(error){ toast(error, 'bad'); return; }
       const r = await postJSON('/proxy/slots/save', {slots: slotPayload()});
       PROXY_SLOTS = r.slots || [];
       SLOTS_DIRTY = false;
@@ -20796,18 +21039,24 @@ async function saveProxySlots(btn){
 }
 
 async function testProxySlot(index, btn){
-  const s = PROXY_SLOTS[index];
-  if(!s || !s.url){ toast('槽位还没有填写代理地址', 'warn'); return; }
+  let s = PROXY_SLOTS[index];
+  if(!s || !String(s.url || '').trim()){ toast('槽位还没有填写代理地址', 'warn'); return; }
   if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
   try{
-    let id = s.id;
-    if(!id){
-      const r = await postJSON('/proxy/slots/save', {slots: slotPayload()});
-      PROXY_SLOTS = r.slots || [];
+    const error = validateProxySlots();
+    if(error){ toast(error, 'bad'); return; }
+    const targetKey = proxyCompareKey(s.url);
+    if(!s.id || SLOTS_DIRTY){
+      const saved = await postJSON('/proxy/slots/save', {slots: slotPayload()});
+      PROXY_SLOTS = saved.slots || [];
       SLOTS_DIRTY = false;
       renderProxySlots();
-      id = (PROXY_SLOTS[index] || {}).id;
+      index = PROXY_SLOTS.findIndex(row => proxyCompareKey(row.url) === targetKey);
+      if(index < 0){ toast('保存后未找到该代理槽，请检查地址是否为空或重复', 'bad'); return; }
+      s = PROXY_SLOTS[index];
     }
+    const id = s.id;
+    if(!id){ toast('代理槽没有保存成功，请重试', 'bad'); return; }
     const r = await postJSON('/proxy/slots/test', {id: id});
     if(r.ok){
       // 服务端已把出口信息写进槽位，这里只把这一行同步过来，不整表重载——
