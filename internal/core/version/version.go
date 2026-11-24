@@ -3,7 +3,7 @@
 // Version, Commit, and Date are variables rather than constants so release
 // builds can inject them with:
 //
-//	go build -ldflags "-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Version=2.8.20 \
+//	go build -ldflags "-X github.com/ayeaaaa/mix2api-v2/internal/core/version.Version=2.8.21 \
 //	  -X github.com/ayeaaaa/mix2api-v2/internal/core/version.Commit=<sha> \
 //	  -X github.com/ayeaaaa/mix2api-v2/internal/core/version.Date=<RFC3339>"
 //
@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-// DefaultVersion is the v2.8.20 release identity for this tree.
-const DefaultVersion = "2.8.20"
+// DefaultVersion is the v2.8.21 release identity for this tree.
+const DefaultVersion = "2.8.21"
 
 // Version is the semantic version of this build, without a leading "v".
 var Version = DefaultVersion

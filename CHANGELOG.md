@@ -3,15 +3,45 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.8.21] - 2026-11-24
 
-### Changed / 变更
+### 中文
 
-- 签到任务在每日首签后按小时补扫：已签账号本地跳过，未签账号继续签；
-  自动禁用/凭证过期的 CodeArts、WorkBuddy 账号会先刷新凭证再尝试恢复；
-  手动禁用、封禁、已删除和关闭任务的账号仍跳过。失败继续沿用原有
-  30/120 分钟重试，`checkin_retry_minutes=0` 同时关闭已排队重试和补扫。
-- Raccoon 继续使用现有四小时窗口作为补扫节奏，没有改成小时级。
+#### 修复
+
+- 每日签到只在配置时间跑一次，且批次成功后会清空重试，导致当时处于自动禁用、
+  晚加载或晚恢复的账号整天不再签到。现在每日首签后每个时钟小时补扫一次，只处理
+  当天还没有成功签到记录的账号；已签账号本地跳过，不再请求上游。
+- CodeArts / WorkBuddy 的自动禁用或凭证过期账号在补扫时会先刷新令牌，刷新成功
+  可解除自动禁用并完成签到；手动禁用、已删除、封禁和关闭任务的账号仍跳过。
+- 失败继续沿用 `checkin_retry_minutes`（默认 30，最大 120）；设为 0 会取消已排队
+  的重试并关闭小时补扫。小浣熊保持原有 4 小时窗口。
+
+#### 验证
+
+- `make check`、`make race` 全量通过。
+
+### English
+
+#### Fixed
+
+- The daily check-in ran only once at the configured time and cleared retries
+  after a successful batch, so accounts that were auto-disabled, loaded late,
+  or recovered later could miss check-in for the whole day. After the daily
+  slot, each provider now sweeps once per clock hour and only processes
+  accounts without a successful check-in stamped for the local day;
+  already-checked accounts are skipped locally without an upstream request.
+- Auto-disabled or token-expired CodeArts and WorkBuddy accounts refresh their
+  token during the sweep; a successful refresh can clear the auto-disable and
+  complete check-in. Manually disabled, removed, banned, and task-disabled
+  accounts remain skipped.
+- Failures keep the existing `checkin_retry_minutes` backoff (default 30, max
+  120); setting it to 0 cancels queued retries and the hourly sweep. Raccoon
+  keeps its existing four-hour window.
+
+#### Verification
+
+- `make check` and `make race` pass.
 
 ## [2.8.20] - 2026-11-24
 
