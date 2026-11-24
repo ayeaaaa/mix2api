@@ -824,6 +824,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   table.data-cards{min-width:0!important;display:block}
   table.data-cards thead{display:none}
   table.data-cards tbody{display:block}
+  table.data-cards tr[hidden]{display:none!important}
   table.data-cards tr{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));
     gap:5px 8px;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;padding:12px;margin-bottom:10px;box-shadow:var(--shadow-sm)}
@@ -2202,6 +2203,8 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据': 'Use this for a full address with auth or a special format. The raw URL may show credentials in plain text.',
     '认证密码需要用户名': 'A password requires a username',
     '代理地址格式无效': 'Invalid proxy address',
+    '代理地址重复': 'Duplicate proxy address',
+    '包含路径/查询或特殊格式，请编辑原始 URL': 'Contains a path/query or special format; edit the raw URL',
     '该地址包含路径或特殊格式，只能编辑原始 URL': 'This address contains a path or special format; edit the raw URL',
     '保存后未找到该代理槽，请检查地址是否为空或重复': 'The proxy slot was not found after saving; check for an empty or duplicate address',
     '代理槽没有保存成功，请重试': 'The proxy slot did not save; try again',
@@ -3797,6 +3800,8 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据": "可填寫帶認證或特殊格式的完整位址；原始 URL 可能明文顯示憑證",
     "认证密码需要用户名": "認證密碼需要使用者名稱",
     "代理地址格式无效": "代理位址格式無效",
+    "代理地址重复": "代理位址重複",
+    "包含路径/查询或特殊格式，请编辑原始 URL": "包含路徑/查詢或特殊格式，請編輯原始 URL",
     "该地址包含路径或特殊格式，只能编辑原始 URL": "此位址包含路徑或特殊格式，只能編輯原始 URL",
     "保存后未找到该代理槽，请检查地址是否为空或重复": "儲存後找不到該代理槽，請檢查位址是否為空或重複",
     "代理槽没有保存成功，请重试": "代理槽沒有儲存成功，請重試",
@@ -12189,7 +12194,7 @@ const SORT_COL_KINDS = {
   accounts:         ['text', 'text', 'text', null, 'num', 'num', 'num', 'num', null],
   // 名称 / 代理地址是 <input>（textContent 恒为空串，按它排等于没排）、启用是复选框、
   // 操作是按钮列——登记成 null，别让表头挂上一个点了没反应的箭头。
-  slotList:         [null, null, 'text', null, 'num', null],
+  slotList:         [null, null, null, null, null, 'text', null, 'num', null],
   disabledList:     ['text', 'text', 'text', 'text', 'text', 'text'],
 };
 /* 表体开头有几行是汇总行、不是数据行：矩阵面板的「全部模型合计」钉在表体第一行，
@@ -20738,13 +20743,15 @@ function renderProxySlots(){
       +   advancedButton + ' '
       +   '<button class="danger mini" onclick="removeProxySlot(' + i + ')">删除</button>'
       + '</td></tr>'
-      + '<tr class="slot-advanced-row"' + (advancedOpen ? '' : ' hidden') + '><td colspan="9" data-label="">'
-      +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-      +     '<span style="font-size:12px;color:var(--dim);white-space:nowrap">原始 URL</span>'
-      +     '<input id="slotRaw' + i + '" value="' + esc(s.url || '') + '" oninput="updateProxyRaw(' + i + ', this.value)" onchange="scheduleProxySlotRefresh(' + i + ')" class="slot-input mono" style="flex:1;min-width:280px">'
-      +     '<span style="font-size:12px;color:var(--dim)">' + (parts.advanced ? '包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据' : '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据') + '</span>'
-      +   '</div>'
-      + '</td></tr>';
+      + (advancedOpen
+        ? '<tr class="slot-advanced-row"><td colspan="9" data-label="">'
+          + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          +   '<span style="font-size:12px;color:var(--dim);white-space:nowrap">原始 URL</span>'
+          +   '<input id="slotRaw' + i + '" value="' + esc(s.url || '') + '" oninput="updateProxyRaw(' + i + ', this.value)" onchange="scheduleProxySlotRefresh(' + i + ')" class="slot-input mono" style="flex:1;min-width:0">'
+          +   '<span style="font-size:12px;color:var(--dim)">' + (parts.advanced ? '包含路径/查询或特殊格式，结构化字段只读；原始 URL 可能明文显示凭据' : '可填写带认证或特殊格式的完整地址；原始 URL 可能明文显示凭据') + '</span>'
+          + '</div>'
+          + '</td></tr>'
+        : '');
   }).join('');
   box.innerHTML = '<div class="table-wrap"><table class="data-cards"><thead><tr>'
     + '<th style="width:130px">名称</th>'
@@ -20770,6 +20777,23 @@ function addProxySlotRow(){
   renderProxySlots();
 }
 
+function normalizeLegacyProxyURL(raw){
+  let text = String(raw || '').trim();
+  if(!text) return '';
+  let scheme = 'http';
+  let rest = text;
+  const match = text.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if(match){
+    scheme = match[1].toLowerCase();
+    rest = match[2];
+  }
+  const parts = rest.split(':');
+  if(parts.length === 4 && /^\d+$/.test(parts[1])){
+    return scheme + '://' + parts[2] + ':' + parts[3] + '@' + parts[0] + ':' + parts[1];
+  }
+  return text;
+}
+
 function proxyScheme(value){
   const scheme = String(value || 'http').trim().toLowerCase();
   return ['http','https','socks5'].includes(scheme) ? scheme : '';
@@ -20790,8 +20814,10 @@ function proxyHostError(host){
     server = server.slice(1, -1);
     if(!server.includes(':')) return '代理服务器格式无效';
   }
-  if(server.includes(':') && (!/^[0-9a-f:]+$/i.test(server) || server.includes(':::') || (server.match(/::/g) || []).length > 1)) return '代理服务器格式无效';
-  if(server.includes(':') && !server.includes('::') && server.split(':').length !== 8) return '代理服务器格式无效';
+  if(server.includes(':')){
+    try{ new URL('http://[' + server + ']'); }
+    catch(e){ return '代理服务器格式无效'; }
+  }
   return '';
 }
 
@@ -20802,14 +20828,12 @@ function validateProxyParts(parts, requirePort){
   if(hostError) return hostError;
   const port = String(parts.port == null ? '' : parts.port).trim();
   if(port !== ''){
+    if(!/^\d+$/.test(port)) return '代理端口必须是 1–65535';
     const n = Number(port);
     if(!Number.isInteger(n) || n < 1 || n > 65535) return '代理端口必须是 1–65535';
   }else if(requirePort){
     return '代理端口必须是 1–65535';
   }
-  const username = String(parts.username || '').trim();
-  const password = String(parts.password || '');
-  if(!username && password) return '认证密码需要用户名';
   return null;
 }
 
@@ -20822,10 +20846,12 @@ function composeProxyURL(parts){
   const authority = host.includes(':') ? '[' + host + ']' : host;
   const username = String(parts.username || '');
   const password = String(parts.password == null ? '' : parts.password);
-  const userinfo = username
-    ? encodeURIComponent(username) + (password !== '' ? ':' + encodeURIComponent(password) : '') + '@'
+  const hasAuth = username !== '' || password !== '';
+  const userinfo = hasAuth
+    ? encodeURIComponent(username) + (password !== '' || username === '' ? ':' + encodeURIComponent(password) : '') + '@'
     : '';
-  const port = String(parts.port == null ? '' : parts.port).trim();
+  const portText = String(parts.port == null ? '' : parts.port).trim();
+  const port = /^\d+$/.test(portText) ? String(Number(portText)) : portText;
   return scheme + '://' + userinfo + authority + (port ? ':' + port : '');
 }
 
@@ -20833,7 +20859,7 @@ function parseProxySlotURL(raw){
   const text = String(raw || '').trim();
   const empty = {protocol:'http', host:'', port:'', username:'', password:'', advanced:false, simple:true, supported:true, raw:text};
   if(!text) return empty;
-  let candidate = text;
+  let candidate = normalizeLegacyProxyURL(text);
   if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) candidate = 'http://' + candidate;
   let u;
   try{ u = new URL(candidate); }catch(e){ return Object.assign({}, empty, {advanced:true, simple:false, supported:false}); }
@@ -20874,15 +20900,16 @@ function proxyURLFromParts(protocol, host, port, auth){
 }
 
 function proxyCompareKey(raw){
-  let text = String(raw || '').trim();
+  let text = normalizeLegacyProxyURL(String(raw || '').trim());
   if(!text) return '';
   if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'http://' + text;
   try{
     const u = new URL(text);
     let protocol = u.protocol.toLowerCase();
     if(protocol === 'socks5h:') protocol = 'socks5:';
-    const auth = u.username ? u.username + (u.password ? ':' + u.password : '') + '@' : '';
-    return protocol + '//' + auth + u.host.toLowerCase();
+    const auth = (u.username || u.password) ? u.username + (u.password ? ':' + u.password : '') + '@' : '';
+    const path = String(u.pathname || '').replace(/\/+$/,'');
+    return protocol + '//' + auth + u.host.toLowerCase() + path + (u.search || '') + (u.hash || '');
   }catch(e){
     return text.toLowerCase();
   }
@@ -20901,12 +20928,16 @@ function proxySlotValidationError(slot){
 function validateProxySlots(){
   const seen = Object.create(null);
   for(let i = 0; i < PROXY_SLOTS.length; i++){
-    const raw = String((PROXY_SLOTS[i] && PROXY_SLOTS[i].url) || '').trim();
-    if(!raw) continue;
-    const error = proxySlotValidationError(PROXY_SLOTS[i]);
-    if(error) return '第 ' + (i + 1) + ' 个代理槽：' + error;
+    const slot = PROXY_SLOTS[i];
+    const raw = String((slot && slot.url) || '').trim();
+    if(!raw){
+      if(slot && slot.id) return '请填写代理服务器';
+      continue;
+    }
+    const error = proxySlotValidationError(slot);
+    if(error) return error;
     const key = proxyCompareKey(raw);
-    if(key in seen) return '代理地址重复：第 ' + (seen[key] + 1) + ' 和第 ' + (i + 1) + ' 个';
+    if(key in seen) return '代理地址重复';
     seen[key] = i;
   }
   return null;

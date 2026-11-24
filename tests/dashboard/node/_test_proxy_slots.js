@@ -22,6 +22,7 @@ const byId = id => page.document.getElementById(id);
     '代理服务器格式无效':'Invalid proxy server',
     '代理端口必须是 1–65535':'Proxy port must be 1–65535',
     '认证用户名不能为空':'Auth username cannot be empty',
+    '代理地址重复':'Duplicate proxy address',
     '用户名（可选）':'Username (optional)',
     '密码（可选）':'Password (optional)',
     '协议':'Protocol',
@@ -53,6 +54,8 @@ const byId = id => page.document.getElementById(id);
     '代理服务器只填主机名或 IP，不要带协议、端口或路径':'代理伺服器只填主機名稱或 IP，不要帶協定、埠或路徑',
     '代理服务器格式无效':'代理伺服器格式無效',
     '认证用户名不能为空':'認證使用者名稱不能為空',
+    '代理地址重复':'代理位址重複',
+    '包含路径/查询或特殊格式，请编辑原始 URL':'包含路徑/查詢或特殊格式，請編輯原始 URL',
     '用户名（可选）':'使用者名稱（可選）',
     '密码（可选）':'密碼（可選）',
     '协议':'協定',
@@ -86,12 +89,26 @@ const byId = id => page.document.getElementById(id);
   assert.equal(page.composeProxyURL(complex),'http://host:8080/path?x=1');
   assert.equal(page.validateProxyParts({protocol:'socks5',host:'',port:'1080',username:'',password:''}),'请填写代理服务器');
   assert.equal(page.validateProxyParts({protocol:'socks5',host:'127.0.0.1',port:'70000',username:'',password:''}),'代理端口必须是 1–65535');
-  assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'1080',username:'',password:'p'}),'认证密码需要用户名');
+  assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'1080',username:'',password:'p'}),null);
+  assert.equal(page.composeProxyURL({protocol:'http',host:'127.0.0.1',port:'1080',username:'',password:'p'}),'http://:p@127.0.0.1:1080');
+  assert.equal(page.composeProxyURL({protocol:'http',host:'127.0.0.1',port:'080',username:'',password:''}),'http://127.0.0.1:80');
+  assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'1e3',username:'',password:''}),'代理端口必须是 1–65535');
+  const legacy = page.parseProxySlotURL('127.0.0.1:1080:user:pass');
+  assert.equal(legacy.protocol,'http');
+  assert.equal(legacy.host,'127.0.0.1');
+  assert.equal(legacy.username,'user');
+  assert.equal(legacy.password,'pass');
+  assert.equal(page.composeProxyURL(legacy),'http://user:pass@127.0.0.1:1080');
+  assert.equal(page.proxyCompareKey('127.0.0.1:1080:user:pass'),page.proxyCompareKey('http://user:pass@127.0.0.1:1080'));
+  const legacyScheme=page.parseProxySlotURL('socks5://127.0.0.1:1080:user:pass');
+  assert.equal(legacyScheme.protocol,'socks5');
+  assert.equal(page.composeProxyURL(legacyScheme),'socks5://user:pass@127.0.0.1:1080');
+  assert.equal(page.validateProxyParts({protocol:'http',host:'::ffff:127.0.0.1',port:'1080',username:'',password:''}),null);
   assert.equal(page.validateProxyParts({protocol:'http',host:'127.0.0.1',port:'',username:'',password:''}),null);
   assert.equal(page.parseProxySlotURL('ftp://host:1080').supported,false);
   assert.equal(page.proxySlotValidationError({url:'ftp://host:1080'}),'代理地址格式无效');
   assert.equal(page.proxySlotValidationError({url:'http://host:8080/path?x=1'}),null);
-  assert.equal(page.proxySlotValidationError({url:'http://host:1080',_parts:{protocol:'http',host:'host',port:'1080',username:'',password:'p',advanced:false,supported:true}}),'认证密码需要用户名');
+  assert.equal(page.proxySlotValidationError({url:'http://host:1080',_parts:{protocol:'http',host:'host',port:'1080',username:'',password:'p',advanced:false,supported:true}}),null);
 
   assert.equal(page.proxyURLFromParts('socks5','127.0.0.1','10808',''), 'socks5://127.0.0.1:10808');
   assert.equal(page.proxyURLFromParts('http','[::1]','7890','user:p@ss'), 'http://user:p%40ss@[::1]:7890');
@@ -101,6 +118,11 @@ const byId = id => page.document.getElementById(id);
   assert.throws(()=>page.proxyURLFromParts('http','example.com?x=1','1080',''), /只填主机名/);
   assert.throws(()=>page.proxyURLFromParts('http','[::1','1080',''), /格式无效/);
   assert.equal(page.proxyCompareKey('socks5h://HOST:1080'),page.proxyCompareKey('socks5://host:1080'));
+  assert.notEqual(page.proxyCompareKey('http://host/path1'),page.proxyCompareKey('http://host/path2'));
+  assert.equal(page.proxySlotValidationError({url:'127.0.0.1:1080:user:pass'}),null);
+  const onlyPass=page.parseProxySlotURL('http://:p@host:1080');
+  assert.equal(onlyPass.password,'p');
+  assert.equal(page.composeProxyURL(onlyPass),'http://:p@host:1080');
 
   byId('slotAddProtocol').value='socks5';
   byId('slotAddHost').value='127.0.0.1';
@@ -114,7 +136,9 @@ const byId = id => page.document.getElementById(id);
   const tableHtml=dom.byId('slotList').innerHTML;
   assert.ok(tableHtml.includes('data-label="协议"'),'table renders protocol column');
   assert.ok(tableHtml.includes('type="password"'),'auth password is masked');
-  assert.ok(tableHtml.includes('slotRaw0'),'advanced raw URL editor exists');
+  assert.ok(!tableHtml.includes('slotRaw0'),'collapsed advanced row keeps raw URL out of the DOM');
+  page.toggleProxyAdvanced(0);
+  assert.ok(dom.byId('slotList').innerHTML.includes('slotRaw0'),'advanced raw URL editor opens on demand');
   assert.equal(byId('slotAddHost').value,'');
   page.updateProxyStructured(0,'port','10809');
   assert.equal(page.slotPayload()[0].url,'socks5://user:p%40ss@127.0.0.1:10809');
@@ -131,5 +155,37 @@ const byId = id => page.document.getElementById(id);
   page.refreshProxySlotRow(0);
   assert.equal(page.slotPayload()[0].url,'http://host:9999/path?x=1');
   assert.ok(dom.byId('slotList').innerHTML.includes('结构化字段只读'),'complex URL locks structured fields');
+
+  page.updateProxyRaw(0,'socks5://user:p%40ss@127.0.0.1:10808');
+  page.refreshProxySlotRow(0);
+  const calls=[];
+  const toasts=[];
+  page.toast=(msg)=>{toasts.push(String(msg));};
+  page.loadAccounts=async ()=>{};
+  page.postJSON=async (url,body)=>{
+    calls.push({url,body:JSON.parse(JSON.stringify(body))});
+    if(url==='/proxy/slots/save'){
+      return {slots:(body.slots||[]).map(s=>Object.assign({},s,{id:'slot-1'}))};
+    }
+    if(url==='/proxy/slots/test'){
+      return {ok:true,id:'slot-1',exit_ip:'203.0.113.20',latency_ms:12,country:'美国',ip_type:'residential',slot:{id:'slot-1'}};
+    }
+    throw new Error('unexpected '+url);
+  };
+  page.updateProxyStructured(0,'port','70000');
+  await page.saveProxySlots(null);
+  assert.equal(calls.length,0,'invalid port must not save');
+  assert.equal(toasts.pop(),'代理端口必须是 1–65535');
+  page.updateProxyStructured(0,'port','10808');
+  await page.saveProxySlots(null);
+  assert.equal(calls.length,1,'valid save posts');
+  assert.equal(calls[0].url,'/proxy/slots/save');
+  assert.equal(calls[0].body.slots[0].url,'socks5://user:p%40ss@127.0.0.1:10808');
+  page.updateProxyStructured(0,'port','10809');
+  await page.testProxySlot(0,null);
+  assert.deepEqual(calls.slice(1).map(c=>c.url),['/proxy/slots/save','/proxy/slots/test'],'dirty test saves current URL before probing');
+  assert.equal(calls[1].body.slots[0].url,'socks5://user:p%40ss@127.0.0.1:10809');
+  assert.equal(calls[2].body.id,'slot-1');
+  assert.ok(toasts.some(t=>t.includes('203.0.113.20')),'success toast uses probe result');
   console.log('proxy slot add form tests passed');
 })().catch(e=>{console.error(e);process.exit(1);});
