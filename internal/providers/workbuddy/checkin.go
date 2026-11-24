@@ -195,8 +195,18 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account, trigger str
 	}
 
 	if !taskIsAPIKey(auth) && strings.TrimSpace(auth.RefreshToken) != "" {
-		if err := p.EnsureToken(ctx, account); err != nil {
-			result.Error = p.taskRedactError(account, err)
+		account.mu.RLock()
+		forceRefresh := account.tokenExpired ||
+			(account.State.Disabled && account.State.DisabledBy == "auth")
+		account.mu.RUnlock()
+		var tokenErr error
+		if forceRefresh {
+			tokenErr = p.ForceRefresh(ctx, account)
+		} else {
+			tokenErr = p.EnsureToken(ctx, account)
+		}
+		if tokenErr != nil {
+			result.Error = p.taskRedactError(account, tokenErr)
 			result.Activity = p.newActivity(account, taskCheckinTask, trigger, false, result.Error)
 			return result, nil
 		}

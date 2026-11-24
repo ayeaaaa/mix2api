@@ -885,6 +885,8 @@ func TestJobsCheckinHourlyCatchUp(t *testing.T) {
 	f := newJobsFixture(t)
 	f.addTaskAccount(t, "cn-first", true, true, false)
 	job := jobsByName(t, f.intl)["workbuddy-checkin"]
+	f.intl.tasksNow = func() time.Time { return f.now }
+	f.cn.tasksNow = func() time.Time { return f.now }
 	at := func(hour, minute int) time.Time {
 		return time.Date(2026, 11, 9, hour, minute, 0, 0, time.Local)
 	}
@@ -892,10 +894,15 @@ func TestJobsCheckinHourlyCatchUp(t *testing.T) {
 	if _, err := job.run(context.Background(), false); err != nil {
 		t.Fatalf("initial checkin: %v", err)
 	}
+	first := f.cn.Pool().Get("cn-first")
+	first.mu.Lock()
+	first.Auth.LastCheckin = at(9, 0).Format(tasksDayLayout)
+	first.mu.Unlock()
 
 	late := f.addTaskAccount(t, "cn-late", true, true, false)
+	late.mu.Lock()
 	late.State.Disabled = true
-	late.State.DisabledBy = "auth"
+	late.mu.Unlock()
 	f.setNow(at(9, 30))
 	if job.Due(at(9, 30)) {
 		t.Fatal("same-hour catch-up must not run twice")
@@ -907,7 +914,17 @@ func TestJobsCheckinHourlyCatchUp(t *testing.T) {
 	if _, err := job.run(context.Background(), false); err != nil {
 		t.Fatalf("catch-up checkin: %v", err)
 	}
+	late.mu.Lock()
+	checked := strings.TrimSpace(late.Auth.LastCheckin)
+	late.mu.Unlock()
+	if checked == "" {
+		t.Fatal("late auto-disabled account was not checked in")
+	}
 	if job.Due(at(10, 5)) {
 		t.Fatal("checked accounts must not be retried in the same hour")
+	}
+	f.setNow(at(11, 0))
+	if job.Due(at(11, 0)) {
+		t.Fatal("checked accounts were still pending on the next hourly sweep")
 	}
 }

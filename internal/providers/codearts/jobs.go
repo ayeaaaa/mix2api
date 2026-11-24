@@ -105,14 +105,16 @@ func (j *codeartsCheckinJob) due(now time.Time) bool {
 	if j.lastSlotKey != latest.key(now) {
 		return true
 	}
+	if j.provider.Config().CheckinRetryMinutes <= 0 {
+		// 0 disables automatic retries, including an already scheduled one.
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		return false
+	}
 	if !j.retryAt.IsZero() {
 		// A failed batch owns the retry clock; do not let the hourly catch-up
 		// bypass its backoff.
 		return !now.Before(j.retryAt) && now.Before(j.retryUntil)
-	}
-	if j.provider.Config().CheckinRetryMinutes <= 0 {
-		// 0 disables automatic retries, including the hourly catch-up.
-		return false
 	}
 	if !j.provider.hasPendingCheckins(now) {
 		return false

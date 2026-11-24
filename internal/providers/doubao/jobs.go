@@ -41,7 +41,13 @@ func (j *checkinJob) Run(ctx context.Context) error {
 		return nil
 	}
 	key := slot.Format("2006-01-02")
-	hourKey := now.In(time.Local).Format("2006-01-02T15")
+	hourKey := now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02T15")
+	if cfg.CheckinRetryMinutes <= 0 {
+		j.mu.Lock()
+		j.retryAt = time.Time{}
+		j.retryUntil = time.Time{}
+		j.mu.Unlock()
+	}
 	j.mu.Lock()
 	if j.lastKey == key {
 		if !j.retryAt.IsZero() {
@@ -66,7 +72,7 @@ func (j *checkinJob) Run(ctx context.Context) error {
 	}
 	j.mu.Unlock()
 
-	results, runErr := j.provider.CheckinAll(ctx)
+	results, runErr := j.provider.CheckinPending(ctx)
 	success, alreadyCount, failed := 0, 0, 0
 	for _, result := range results {
 		switch result.Status {
@@ -121,14 +127,18 @@ func (p *Provider) hasPendingCheckins(now time.Time) bool {
 	if p == nil || p.pool == nil {
 		return false
 	}
-	day := now.In(time.Local).Format("2006-01-02")
+	day := now.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
 	for _, account := range p.pool.Accounts() {
-		if account == nil || !account.Enabled {
+		if account == nil {
 			continue
 		}
 		account.mu.Lock()
+		enabled := account.Enabled
 		last := strings.TrimSpace(account.LastCheckin)
 		account.mu.Unlock()
+		if !enabled {
+			continue
+		}
 		if last != "" && strings.HasPrefix(last, day) {
 			continue
 		}

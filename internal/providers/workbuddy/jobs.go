@@ -157,10 +157,16 @@ func (j *scheduledJob) Due(now time.Time) bool {
 	}
 	// The slot already ran, but a failed check-in may have a same-day retry
 	// pending. Retries stop at local midnight.
+	if j.kind == jobKindCheckin && j.provider.checkinRetryMinutes() <= 0 {
+		// 0 disables automatic retries, including an already scheduled one.
+		j.state.retryAt = time.Time{}
+		j.state.retryUntil = time.Time{}
+		return false
+	}
 	if !j.state.retryAt.IsZero() {
 		return !now.Before(j.state.retryAt) && now.Before(j.state.retryUntil)
 	}
-	if j.kind != jobKindCheckin || j.provider.checkinRetryMinutes() <= 0 {
+	if j.kind != jobKindCheckin {
 		return false
 	}
 	if !j.provider.checkinHasPending(now) {

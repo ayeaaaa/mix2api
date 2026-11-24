@@ -399,7 +399,7 @@ func TestCheckinJobHourlyCatchUp(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":0,"data":{"progress":{"total_amount":0},"tasks":[{"task_kind":"daily_signin","daily_checkin":{"checked_in_today":false}}]}}`))
 		case campaignCheckinPath:
 			checkinCalls++
-			_, _ = w.Write([]byte(`{"code":0,"data":{"checked_in":false}}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"checked_in":true,"checkin_date":"2026-11-12","reward_amount":10}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -427,10 +427,19 @@ func TestCheckinJobHourlyCatchUp(t *testing.T) {
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("initial checkin: %v", err)
 	}
+	if checkinCalls != 1 {
+		t.Fatalf("initial checkin calls=%d, want 1", checkinCalls)
+	}
 	first := provider.pool.account("uid-first")
 	first.mu.Lock()
 	first.LastCheckin = now.Format("2006-01-02")
 	first.mu.Unlock()
+	job.mu.Lock()
+	job.lastKey = now.Format("2006-01-02")
+	job.lastCatchupKey = now.Format("2006-01-02T15")
+	job.retryAt = time.Time{}
+	job.retryUntil = time.Time{}
+	job.mu.Unlock()
 
 	if _, err := provider.pool.Add(map[string]string{"sessionid": "s"}, nil, "uid-late", "late", true); err != nil {
 		t.Fatal(err)
@@ -448,5 +457,12 @@ func TestCheckinJobHourlyCatchUp(t *testing.T) {
 	}
 	if checkinCalls != 2 {
 		t.Fatalf("catch-up calls=%d, want 2", checkinCalls)
+	}
+	now = time.Date(2026, 11, 12, 11, 0, 0, 0, zone)
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("next-hour tick: %v", err)
+	}
+	if checkinCalls != 2 {
+		t.Fatalf("checked accounts repeated: calls=%d", checkinCalls)
 	}
 }

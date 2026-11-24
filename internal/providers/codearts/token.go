@@ -131,7 +131,7 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 		// account's one-time refresh token until Enable clears it.
 		return nil
 	}
-	if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
+	if !snapshot.disabled && !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
 		return nil
 	}
 
@@ -229,7 +229,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 	if snapshot.manualDisabled {
 		return nil
 	}
-	if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
+	if !snapshot.disabled && !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
 		return nil
 	}
 
@@ -258,7 +258,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 		if snapshot.manualDisabled {
 			return nil
 		}
-		if !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
+		if !snapshot.disabled && !tokenRefreshDue(snapshot.expiration, m.nowTime()) {
 			return nil
 		}
 		auth = snapshot.auth
