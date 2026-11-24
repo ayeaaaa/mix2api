@@ -497,8 +497,15 @@ func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, erro
 func (p *Provider) CheckinAll(ctx context.Context) ([]CheckinResult, error) {
 	accounts := p.pool.Accounts()
 	out := make([]CheckinResult, 0, len(accounts))
+	day := p.nowTime().In(time.Local).Format("2006-01-02")
 	for _, account := range accounts {
 		if account == nil || !account.Enabled {
+			continue
+		}
+		account.mu.Lock()
+		last := strings.TrimSpace(account.LastCheckin)
+		account.mu.Unlock()
+		if last != "" && strings.HasPrefix(last, day) {
 			continue
 		}
 		result, err := p.Checkin(ctx, account.UID)
