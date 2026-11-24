@@ -2811,9 +2811,53 @@ func TestExcludeFreeAccounts(t *testing.T) {
 	paid := func(uid string) *Account {
 		return &Account{Auth: Auth{UID: uid, Enabled: true}, FreeModels: map[string]bool{"m": true}, paidUser: true, paidKnown: true}
 	}
-	got := excludeFreeAccounts([]*Account{free("a"), free("b"), paid("c")}, map[string]bool{"x": true})
+	input := map[string]bool{"x": true}
+	got := excludeFreeAccounts([]*Account{free("a"), free("b"), paid("c")}, input)
 	if !got["a"] || !got["b"] || !got["x"] || got["c"] {
 		t.Fatalf("excludeFreeAccounts = %#v", got)
+	}
+	if len(input) != 1 || !input["x"] {
+		t.Fatalf("input exclude map was mutated: %#v", input)
+	}
+}
+
+func TestChatFreeModelFallbackWithoutPaidAccountUsesOtherFree(t *testing.T) {
+	model := "deepseek-v4.1-flash"
+	dir := t.TempDir()
+	for _, uid := range []string{"0-free-a", "1-free-b"} {
+		writeChatAccount(t, dir, uid, realmIntl, map[string]any{"product": productDesktop})
+	}
+	provider := setupChatProvider(t, realmIntl, dir, map[string]any{"free_model_credit_fallback": true})
+	for _, uid := range []string{"0-free-a", "1-free-b"} {
+		account := accountByUID(t, provider.Pool(), uid)
+		account.mu.Lock()
+		account.FreeModels = map[string]bool{model: true}
+		account.mu.Unlock()
+	}
+	fake := &chatTestFake{respond: func(r *http.Request, _ []byte) (int, http.Header, []byte) {
+		if strings.Contains(r.Header.Get("Authorization"), "0-free-a") {
+			return http.StatusTooManyRequests, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(`{"code":6004,"msg":"usage exceeds frequency limit"}`)
+		}
+		return http.StatusOK, http.Header{"Content-Type": []string{"text/event-stream"}},
+			[]byte(ssePayload(chatChunk("ok", "stop"), "[DONE]"))
+	}}
+	provider.chatBaseURL = newChatTestServer(t, fake).URL
+	stream, err := provider.OpenChat(context.Background(), chatRequest(t, model, map[string]any{
+		"model":    model,
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}))
+	if err != nil {
+		t.Fatalf("OpenChat should fail open to the other free account: %v", err)
+	}
+	_ = stream.Close()
+	calls := fake.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	if !strings.Contains(calls[0].Header.Get("Authorization"), "0-free-a") ||
+		!strings.Contains(calls[1].Header.Get("Authorization"), "1-free-b") {
+		t.Fatalf("unexpected retry path: %#v", calls)
 	}
 }
 
