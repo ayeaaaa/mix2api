@@ -66,3 +66,10 @@ var International = Station{
 func (s Station) SnapManagerBase() string {
 	return strings.TrimRight(s.SnapHost, "/") + "/snap-manager"
 }
+
+func stationOrDefault(station Station) Station {
+	if station.ID == "" {
+		return Mainland
+	}
+	return station
+}

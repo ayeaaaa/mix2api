@@ -71,33 +71,48 @@ func defaultConfig() Config {
 	}
 }
 
-// LoadConfig reads and clamps the CodeArts settings. Missing settings use v1
-// defaults; malformed or non-finite numeric values fall back to their defaults
-// while missing sections or unreadable files yield the full defaults.
+// LoadConfig reads the mainland CodeArts settings.
 func LoadConfig(store *config.Store) Config {
+	return LoadConfigForStation(store, Mainland)
+}
+
+// LoadConfigForStation reads and clamps one station's CodeArts settings.
+// Missing settings use v1 defaults; malformed or non-finite numeric values
+// fall back to their defaults while missing sections or unreadable files yield
+// the full defaults.
+func LoadConfigForStation(store *config.Store, station Station) Config {
 	if store == nil {
 		return defaultConfig()
 	}
+	station = stationOrDefault(station)
 	settings, err := store.Load()
 	if err != nil {
 		return defaultConfig()
 	}
-	raw, _ := settings["codearts"].(map[string]any)
+	raw, _ := settings[station.SettingsKey].(map[string]any)
 	return normalizeConfig(raw)
 }
 
-// SaveConfig merges the recognized keys in patch under the "codearts" key,
-// clamps the resulting values, and returns the stored configuration. Existing
-// unknown keys in the settings file and its "codearts" section are preserved.
+// SaveConfig merges the recognized keys in patch under the mainland
+// "codearts" key.
 func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
+	return SaveConfigForStation(store, Mainland, patch)
+}
+
+// SaveConfigForStation merges the recognized keys in patch under the station's
+// settings key, clamps the resulting values, and returns the stored
+// configuration. Existing unknown keys in the settings file and its station
+// section are preserved.
+func SaveConfigForStation(store *config.Store, station Station, patch map[string]any) (Config, error) {
 	if store == nil {
 		return Config{}, errors.New("codearts: config store is nil")
 	}
+	station = stationOrDefault(station)
 
 	saveConfigMu.Lock()
 	defer saveConfigMu.Unlock()
 
-	current := LoadConfig(store)
+	current := LoadConfigForStation(store, station)
 	if saveConfigReadHook != nil {
 		saveConfigReadHook()
 	}
@@ -113,10 +128,10 @@ func SaveConfig(store *config.Store, patch map[string]any) (Config, error) {
 	}
 	merged := normalizeConfig(raw)
 
-	if _, err := store.Merge(map[string]any{"codearts": configValues(merged)}); err != nil {
+	if _, err := store.Merge(map[string]any{station.SettingsKey: configValues(merged)}); err != nil {
 		return Config{}, fmt.Errorf("codearts: save config: %w", err)
 	}
-	return LoadConfig(store), nil
+	return LoadConfigForStation(store, station), nil
 }
 
 func configValues(cfg Config) map[string]any {

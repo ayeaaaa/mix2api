@@ -362,3 +362,28 @@ func TestSaveConfigReturnsStoreErrors(t *testing.T) {
 		t.Fatal("SaveConfig() error = nil, want store error")
 	}
 }
+
+func TestConfigUsesStationSettingsKey(t *testing.T) {
+	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	if _, err := SaveConfigForStation(store, International, map[string]any{"enabled": true, "max_concurrent": 2}); err != nil {
+		t.Fatal(err)
+	}
+	intl := LoadConfigForStation(store, International)
+	if !intl.Enabled || intl.MaxConcurrent != 2 {
+		t.Fatalf("intl = %#v", intl)
+	}
+	cn := LoadConfigForStation(store, Mainland)
+	if cn.Enabled {
+		t.Fatalf("mainland enabled = true, want false")
+	}
+	settings, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := settings["codearts"]; ok {
+		t.Fatalf("mainland section unexpectedly written: %#v", settings["codearts"])
+	}
+	if _, ok := settings["codearts-intl"]; !ok {
+		t.Fatalf("codearts-intl section missing: %#v", settings)
+	}
+}

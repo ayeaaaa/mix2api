@@ -113,7 +113,7 @@ func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 		station = Mainland
 	}
 
-	cfg := LoadConfig(store)
+	cfg := LoadConfigForStation(store, station)
 	pool, err := NewPool(accountsDir, cfg)
 	if err != nil {
 		return nil, err
@@ -215,7 +215,7 @@ func (p *Provider) applySettings() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("codearts: load settings: %w", err)
 	}
-	raw, _ := settings["codearts"].(map[string]any)
+	raw, _ := settings[p.station.SettingsKey].(map[string]any)
 	cfg := normalizeConfig(raw)
 	p.mu.Lock()
 	previousEnabled := p.cfg.Enabled

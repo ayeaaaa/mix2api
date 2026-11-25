@@ -435,7 +435,7 @@ func (p *Provider) saveAccountAndEnable(auth Auth) (*Account, error) {
 		return nil, err
 	}
 	if p.store != nil {
-		if _, err := SaveConfig(p.store, map[string]any{"enabled": true}); err != nil {
+		if _, err := SaveConfigForStation(p.store, p.station, map[string]any{"enabled": true}); err != nil {
 			return nil, err
 		}
 	}
