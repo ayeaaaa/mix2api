@@ -397,11 +397,17 @@ func SaveAuth(path string, auth Auth) error {
 	return nil
 }
 
-// AuthPath returns the v1 auth path for uid under accountsDir:
+// AuthPath returns the v1 mainland auth path for uid under accountsDir:
 // accountsDir/codearts/codearts-<safe-uid>.json. UID is untrusted, so path
 // separators and non [A-Za-z0-9._-] characters are replaced with underscores.
 // An empty UID keeps v1's "unknown" filename fallback.
 func AuthPath(accountsDir, uid string) (string, error) {
+	return AuthPathForStation(accountsDir, Mainland, uid)
+}
+
+// AuthPathForStation returns the auth path for uid under the station folder.
+func AuthPathForStation(accountsDir string, station Station, uid string) (string, error) {
+	station = stationOrDefault(station)
 	text := strings.TrimSpace(uid)
 	if text == "" {
 		text = "unknown"
@@ -410,5 +416,5 @@ func AuthPath(accountsDir, uid string) (string, error) {
 	if safe == "" {
 		safe = "unknown"
 	}
-	return filepath.Join(accountsDir, "codearts", "codearts-"+safe+".json"), nil
+	return filepath.Join(accountsDir, station.AccountsFolder, "codearts-"+safe+".json"), nil
 }

@@ -114,7 +114,7 @@ func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 	}
 
 	cfg := LoadConfigForStation(store, station)
-	pool, err := NewPool(accountsDir, cfg)
+	pool, err := NewPoolForStation(accountsDir, station, cfg)
 	if err != nil {
 		return nil, err
 	}

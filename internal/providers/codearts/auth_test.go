@@ -759,3 +759,21 @@ func entryNames(entries []os.DirEntry) []string {
 	}
 	return names
 }
+
+func TestAuthPathUsesStationFolder(t *testing.T) {
+	dir := t.TempDir()
+	cn, err := AuthPathForStation(dir, Mainland, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intl, err := AuthPathForStation(dir, International, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn != filepath.Join(dir, "codearts", "codearts-u1.json") {
+		t.Fatalf("cn path = %q", cn)
+	}
+	if intl != filepath.Join(dir, "codearts-intl", "codearts-u1.json") {
+		t.Fatalf("intl path = %q", intl)
+	}
+}

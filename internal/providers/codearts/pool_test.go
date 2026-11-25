@@ -1292,3 +1292,24 @@ func TestPoolSkipsBackingOffEgress(t *testing.T) {
 		t.Fatalf("all egresses backing off should fail open: %v", err)
 	}
 }
+
+func TestPoolUsesStationFolder(t *testing.T) {
+	dir := t.TempDir()
+	cn, err := NewPoolForStation(dir, Mainland, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	intl, err := NewPoolForStation(dir, International, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn.folder == intl.folder {
+		t.Fatalf("folders equal: %q", cn.folder)
+	}
+	if cn.folder != filepath.Join(dir, "codearts") {
+		t.Fatalf("cn folder = %q", cn.folder)
+	}
+	if intl.folder != filepath.Join(dir, "codearts-intl") {
+		t.Fatalf("intl folder = %q", intl.folder)
+	}
+}

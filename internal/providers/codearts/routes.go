@@ -690,7 +690,7 @@ func (p *Provider) syncOAuthAccount(uid string) error {
 	// may be a re-login of an existing UID, in which case the in-memory
 	// credentials are stale until this reimport. Running the same path again on
 	// a later poll also retries after a partial add/enable failure.
-	path, err := AuthPath(p.accountsDir, uid)
+	path, err := AuthPathForStation(p.accountsDir, p.station, uid)
 	if err != nil {
 		return err
 	}
