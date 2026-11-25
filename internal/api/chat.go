@@ -505,6 +505,12 @@ func (s *Server) rejectAmbiguousCodeArts(ctx context.Context, model string) erro
 	if mainland == nil || international == nil {
 		return nil
 	}
+	// A disabled international station cannot create ambiguity. Skip the
+	// probe entirely so the default (intl off) keeps mainland bare-model
+	// resolution on its original hot path.
+	if available, ok := international.(providers.RealmAvailableProvider); ok && !available.RealmAvailable() {
+		return nil
+	}
 	// Read mainland first and stop when it does not advertise the model:
 	// ambiguity requires both stations, so the international catalog only
 	// needs a read when mainland already matches. This keeps the extra cost

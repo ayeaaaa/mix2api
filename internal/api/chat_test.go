@@ -2166,7 +2166,7 @@ func TestChatGatewayKeyRealmAll(t *testing.T) {
 
 func TestChatBareCodeArtsAmbiguous(t *testing.T) {
 	cn := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
-	intl := &stubProvider{id: "codearts-intl", realm: "codearts-intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	intl := &stubProvider{id: "codearts-intl", realm: "codearts-intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream(), realmAvailable: true}
 	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn, intl}})
 	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
 		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
