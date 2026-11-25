@@ -369,6 +369,11 @@ func (p *Provider) sendModelChatAttempt(
 	for index, spelling := range spellings {
 		attemptBody := cloneChatBody(body)
 		attemptBody["model"] = spelling
+		if p.Station().Region == "intl" {
+			// The real IDE body has no gateway-only cache fields.
+			delete(attemptBody, "chat_id")
+			delete(attemptBody, "prompt_cache_key")
+		}
 		raw, err := json.Marshal(attemptBody)
 		if err != nil {
 			return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
@@ -541,44 +546,72 @@ func (p *Provider) newChatRequest(
 	uid := account.uidLocked()
 	account.mu.Unlock()
 
+	if p.Station().Region != "intl" {
+		return p.newLegacyChatRequest(request, auth, uid, model, chatID, raw, account.IsBenefit(model))
+	}
+
 	fingerprint, err := newIDEFingerprint(uid, model, chatID, messages)
 	if err != nil {
 		return nil, err
 	}
 
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("User-Agent", fingerprint.UserAgent)
-	if strings.TrimSpace(auth.CloudDragonToken) != "" {
-		request.Header.Set("x-auth-token", auth.CloudDragonToken)
-	}
-	request.Header.Set("X-Encrypt-Capable", fingerprint.EncryptCap)
-	request.Header.Set("x-session-affinity", fingerprint.SessionID)
-	request.Header.Set("x-ot-trace-id", fingerprint.TraceID)
-	request.Header.Set("x-ot-span-id", fingerprint.SpanID)
-	request.Header.Set("x-snap-traceid", fingerprint.TraceID+"_"+fingerprint.SpanID)
-	request.Header.Set("x-ot-session-id", fingerprint.SessionID)
-	request.Header.Set("x-ot-parent-session-id", "")
-	request.Header.Set("user-session-id", fingerprint.SessionID)
-	request.Header.Set("x-ot-function", fingerprint.Function)
-	request.Header.Set("X-Language", p.station.Locale)
-	request.Header.Set("user-msg-id", fingerprint.MessageID)
-	request.Header.Set("x-message-id", fingerprint.MessageID)
-	request.Header.Set("created-time", fingerprint.CreatedAt)
-	request.Header.Set("model-id", fingerprint.ModelID)
-	request.Header.Set("model-name", fingerprint.ModelName)
-	request.Header.Set("x-ot-client-type", fingerprint.ClientType)
-	request.Header.Set("x-ot-client-version", fingerprint.ClientVersion)
-	request.Header.Set("plugin-name", fingerprint.PluginName)
-	request.Header.Set("plugin-version", fingerprint.PluginVersion)
-	request.Header.Set("ide-name", fingerprint.IDEName)
-	request.Header.Set("ide-version", fingerprint.IDEVersion)
+	// Only these headers are signed by the real CodeArts Agent chat request.
+	// Content-Type, User-Agent, Accept, Accept-Encoding, Connection and
+	// Content-Length are merged by the AI SDK transport after signing.
 	if fingerprint.ClientIP != "" {
 		request.Header.Set("client-ip", fingerprint.ClientIP)
 	}
+	request.Header.Set("created-time", fingerprint.CreatedAt)
+	request.Header.Set("ide-name", fingerprint.IDEName)
+	request.Header.Set("ide-version", fingerprint.IDEVersion)
+	request.Header.Set("model-id", fingerprint.ModelID)
+	request.Header.Set("model-name", fingerprint.ModelName)
+	request.Header.Set("plugin-name", fingerprint.PluginName)
+	request.Header.Set("plugin-version", fingerprint.PluginVersion)
+	request.Header.Set("user-msg-id", fingerprint.MessageID)
+	request.Header.Set("user-session-id", fingerprint.SessionID)
+	request.Header.Set("x-language", p.station.Locale)
+	request.Header.Set("x-ot-client-type", fingerprint.ClientType)
+	request.Header.Set("x-ot-client-version", fingerprint.ClientVersion)
+	request.Header.Set("x-ot-function", fingerprint.Function)
+	request.Header.Set("x-ot-parent-session-id", "")
+	request.Header.Set("x-ot-session-id", fingerprint.SessionID)
+	request.Header.Set("x-ot-span-id", fingerprint.SpanID)
+	request.Header.Set("x-ot-trace-id", fingerprint.TraceID)
+	request.Header.Set("x-snap-traceid", fingerprint.TraceID+"_"+fingerprint.SpanID)
+
+	if err := SignRequestIDEFingerprint(request, raw, SignCredentials{
+		AccessKeyID:     auth.AccessKeyID,
+		SecretAccessKey: auth.SecretAccessKey,
+		SecurityToken:   auth.SigningSecurityToken(),
+	}, ""); err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", fingerprint.UserAgent)
+	request.Header.Set("Accept", "*/*")
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	request.Header.Set("Connection", "keep-alive")
+	return request, nil
+}
+
+func (p *Provider) newLegacyChatRequest(
+	request *http.Request, auth Auth, uid, model, chatID string, raw []byte, benefit bool,
+) (*http.Request, error) {
+	traceID, err := randomHex(16)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	if strings.TrimSpace(auth.CloudDragonToken) != "" {
+		request.Header.Set("x-auth-token", auth.CloudDragonToken)
+	}
+	request.Header.Set("x-snap-traceid", traceID)
+	request.Header.Set("X-Language", p.station.Locale)
 	request.Header.Set("app-id", "CodeAgent3.0")
 	request.Header.Set("is_confidential", "false")
-	if p.Station().SupportsBenefit && account.IsBenefit(model) {
+	if p.Station().SupportsBenefit && benefit {
 		request.Header.Set(headerMaasType, maasBenefit)
 	}
 
@@ -589,6 +622,17 @@ func (p *Provider) newChatRequest(
 	}); err != nil {
 		return nil, err
 	}
+
+	request.Header.Set("Chat-Id", chatID)
+	request.Header.Set("Session-Id", chatSHA256Hex32("codearts-session:"+chatID))
+	otSession := chatSHA256Hex32("codearts-ot-session:" + uid)
+	otTrace, traceErr := randomHex(16)
+	if traceErr != nil {
+		return nil, traceErr
+	}
+	request.Header.Set("x-ot-session-id", otSession)
+	request.Header.Set("user-session-id", otSession)
+	request.Header.Set("x-ot-trace-id", otTrace)
 	return request, nil
 }
 

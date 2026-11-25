@@ -9,15 +9,14 @@ import (
 )
 
 const (
-	defaultIDEUserAgent      = "opencode/126.11.3-20261124194420"
-	defaultIDEClientVersion  = "26.11.300"
-	defaultIDEPluginName     = "codemate_vscode"
-	defaultIDEPluginVersion  = "26.11.300"
-	defaultIDEIDEName        = "VSCode"
-	defaultIDEIDEVersion     = "26.11.300"
-	defaultIDEClientType     = "IDE"
-	defaultIDEFunction       = "agent-general"
-	defaultIDEEncryptCapable = "sm4-gcm"
+	defaultIDEUserAgent     = "ai-sdk/provider-utils/4.0.21 runtime/bun/1.4.4"
+	defaultIDEClientVersion = "26.11.300"
+	defaultIDEPluginName    = "codemate_vscode"
+	defaultIDEPluginVersion = "26.11.300"
+	defaultIDEIDEName       = "VSCode"
+	defaultIDEIDEVersion    = "26.11.300"
+	defaultIDEClientType    = "IDE"
+	defaultIDEFunction      = "agent-general"
 )
 
 const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -42,7 +41,6 @@ type ideFingerprint struct {
 	IDEName       string
 	IDEVersion    string
 	Function      string
-	EncryptCap    string
 }
 
 func newIDEFingerprint(uid, model, chatID string, messages []any) (ideFingerprint, error) {
@@ -72,7 +70,6 @@ func newIDEFingerprint(uid, model, chatID string, messages []any) (ideFingerprin
 		IDEName:       envString("WB_CODEARTS_IDE_NAME", defaultIDEIDEName),
 		IDEVersion:    envString("WB_CODEARTS_IDE_IDE_VERSION", defaultIDEIDEVersion),
 		Function:      envString("WB_CODEARTS_IDE_FUNCTION", defaultIDEFunction),
-		EncryptCap:    defaultIDEEncryptCapable,
 	}, nil
 }
 

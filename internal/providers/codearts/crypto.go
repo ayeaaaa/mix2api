@@ -371,6 +371,36 @@ func SignRequestAt(req *http.Request, body []byte, cred SignCredentials, xDate s
 	return nil
 }
 
+// SignRequestIDEFingerprint signs the exact header subset observed on the
+// CodeArts Agent wire: Content-Type, User-Agent, Accept, Accept-Encoding,
+// Connection and Content-Length are added after signing; the payload is
+// declared UNSIGNED-PAYLOAD and no X-Sdk-Content-Sha256 header is emitted.
+func SignRequestIDEFingerprint(req *http.Request, body []byte, cred SignCredentials, xDate string) error {
+	if req == nil || req.URL == nil {
+		return errors.New("codearts: sign request is missing a URL")
+	}
+	headers := make(map[string]string, len(req.Header)+4)
+	for key, values := range req.Header {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		} else {
+			headers[key] = ""
+		}
+	}
+	sum := sha256.Sum256(body)
+	signed, err := signHeadersWithPayload(
+		req.Method, req.URL.String(), headers, cred, xDate,
+		hex.EncodeToString(sum[:]), false,
+	)
+	if err != nil {
+		return err
+	}
+	for key, value := range signed {
+		req.Header.Set(key, value)
+	}
+	return nil
+}
+
 // signHeaders implements the v1/Python SDK-HMAC-SHA256 canonicalization:
 // every outgoing header participates in SignedHeaders, path segments are
 // percent-encoded with quote(safe="") semantics, query pairs are sorted and
@@ -378,6 +408,16 @@ func SignRequestAt(req *http.Request, body []byte, cred SignCredentials, xDate s
 func signHeaders(
 	method, rawURL string, headers map[string]string, body []byte,
 	cred SignCredentials, xDate string,
+) (map[string]string, error) {
+	sum := sha256.Sum256(body)
+	return signHeadersWithPayload(
+		method, rawURL, headers, cred, xDate, hex.EncodeToString(sum[:]), true,
+	)
+}
+
+func signHeadersWithPayload(
+	method, rawURL string, headers map[string]string,
+	cred SignCredentials, xDate, payloadHash string, includeContentSHA bool,
 ) (map[string]string, error) {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
@@ -400,9 +440,9 @@ func signHeaders(
 	if cred.SecurityToken != "" {
 		out["X-Security-Token"] = cred.SecurityToken
 	}
-	sum := sha256.Sum256(body)
-	payloadHash := hex.EncodeToString(sum[:])
-	out["X-Sdk-Content-Sha256"] = payloadHash
+	if includeContentSHA {
+		out["X-Sdk-Content-Sha256"] = payloadHash
+	}
 
 	lower := make(map[string]string, len(out))
 	for key, value := range out {
