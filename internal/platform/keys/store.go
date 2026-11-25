@@ -157,7 +157,7 @@ func cleanEntry(raw map[string]any, now time.Time) (Entry, bool) {
 	}
 	realm := strings.ToLower(strings.TrimSpace(stringValue(raw["realm"])))
 	switch realm {
-	case "", "gateway", "intl", "cn", "codearts", "raccoon", "doubao":
+	case "", "gateway", "intl", "cn", "codearts", "codearts-intl", "raccoon", "doubao":
 	default:
 		realm = ""
 	}

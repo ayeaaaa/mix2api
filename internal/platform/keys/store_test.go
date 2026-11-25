@@ -215,6 +215,23 @@ func TestKeyStoreDailyTokenLimit(t *testing.T) {
 	}
 }
 
+func TestKeyStoreAcceptsCodeartsIntlRealm(t *testing.T) {
+	store, _ := testStore(t)
+	if _, err := store.Save([]Entry{{
+		ID: "intl-codearts", Name: "intl-codearts", Key: "key-intl-codearts",
+		Realm: "codearts-intl",
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Realm != "codearts-intl" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestLimiterAcquireWait(t *testing.T) {
 	l := NewLimiter()
 	release, ok := l.Acquire("k", 1)
