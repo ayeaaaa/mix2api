@@ -109,6 +109,13 @@ func dashboardRoutes() []dashboardRoute {
 		post("/codearts/keepalive"),
 		post("/codearts/test"),
 
+		// International CodeArts station: the panel requests these per-realm
+		// literals (codearts-intl overview/credits/keepalive/models refresh);
+		// its account actions reuse the /codearts-intl/accounts/ subtree.
+		get("/codearts-intl/overview", false),
+		post("/codearts-intl/credits/refresh"),
+		post("/codearts-intl/keepalive"),
+
 		get("/doubao/overview", false),
 		action("/doubao/accounts/import", "/doubao/accounts/"),
 		action("/doubao/accounts/enable", "/doubao/accounts/"),
@@ -144,6 +151,7 @@ func dashboardRoutes() []dashboardRoute {
 		post("/raccoon/test"),
 		post("/raccoon/models/refresh"),
 		post("/codearts/models/refresh"),
+		post("/codearts-intl/models/refresh"),
 
 		get("/logs", false),
 		post("/logs/clear"),
