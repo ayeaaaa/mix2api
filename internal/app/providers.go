@@ -95,15 +95,22 @@ func Build(paths Paths) (*Setup, error) {
 		return nil, fmt.Errorf("app: register doubao provider: %w", err)
 	}
 
-	// Exactly one CodeArts Provider/Pool is created per accounts directory.
-	// Pool locks are instance-local, so a second Provider over the same
-	// state.json would race even though each Pool is internally consistent.
+	// CodeArts registers one Provider/Pool per station. The pools own separate
+	// accounts/codearts and accounts/codearts-intl folders, so neither instance
+	// shares a state.json with the other.
 	codeartsProvider, err := codearts.New(store)
 	if err != nil {
 		return nil, fmt.Errorf("app: initialize codearts provider: %w", err)
 	}
 	if err := registry.Register(codeartsProvider); err != nil {
 		return nil, fmt.Errorf("app: register codearts provider: %w", err)
+	}
+	codeartsIntlProvider, err := codearts.NewWithStation(store, codearts.International)
+	if err != nil {
+		return nil, fmt.Errorf("app: initialize codearts intl provider: %w", err)
+	}
+	if err := registry.Register(codeartsIntlProvider); err != nil {
+		return nil, fmt.Errorf("app: register codearts intl provider: %w", err)
 	}
 
 	// WorkBuddy registers one instance per realm. Both share the same code and
@@ -139,7 +146,7 @@ func Build(paths Paths) (*Setup, error) {
 	// WorkBuddy browser-login auto slot selection must not reuse a proxy slot
 	// already bound to a CodeArts account. The callback is evaluated lazily
 	// because CodeArts was constructed above but accounts can change later.
-	takenSlots := codeartsProxySlots(codeartsProvider)
+	takenSlots := codeartsProxySlots(codeartsProvider, codeartsIntlProvider)
 	intlProvider.SetLoginTakenSlots(takenSlots)
 	cnProvider.SetLoginTakenSlots(takenSlots)
 
@@ -161,22 +168,24 @@ func Build(paths Paths) (*Setup, error) {
 // codeartsProxySlots returns a lazy snapshot of proxy slot ids bound to
 // CodeArts accounts. WorkBuddy uses it only to exclude those slots from browser
 // login auto-selection; an empty or nil result means no exclusions.
-func codeartsProxySlots(provider *codearts.Provider) func() []string {
+func codeartsProxySlots(providers ...*codearts.Provider) func() []string {
 	return func() []string {
-		if provider == nil {
-			return nil
-		}
-		pool := provider.Pool()
-		if pool == nil {
-			return nil
-		}
-		slots := make([]string, 0)
-		for _, account := range pool.Accounts() {
-			if account == nil {
+		var slots []string
+		for _, provider := range providers {
+			if provider == nil {
 				continue
 			}
-			if slot := account.ProxySlot(); slot != "" {
-				slots = append(slots, slot)
+			pool := provider.Pool()
+			if pool == nil {
+				continue
+			}
+			for _, account := range pool.Accounts() {
+				if account == nil {
+					continue
+				}
+				if slot := account.ProxySlot(); slot != "" {
+					slots = append(slots, slot)
+				}
 			}
 		}
 		return slots

@@ -21,6 +21,7 @@ type Station struct {
 	SupportsCheckin bool
 	QuotaUnit       string // "credit" / "token"
 	RoutePrefix     string // "/codearts" / "/codearts-intl"
+	Region          string // "cn" / "intl"
 	ModelSeeds      []string
 }
 
@@ -40,6 +41,7 @@ var Mainland = Station{
 	SupportsCheckin: true,
 	QuotaUnit:       "credit",
 	RoutePrefix:     "/codearts",
+	Region:          "cn",
 	ModelSeeds:      nil,
 }
 
@@ -61,6 +63,7 @@ var International = Station{
 	SupportsCheckin: false,
 	QuotaUnit:       "token",
 	RoutePrefix:     "/codearts-intl",
+	Region:          "intl",
 	ModelSeeds:      []string{"glm-5.3", "GLM-5.2", "Qwen3-VL-235B"},
 }
 

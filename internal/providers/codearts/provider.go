@@ -416,8 +416,8 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"service":  ProviderID,
-		"region":   "cn",
+		"service":  p.ID(),
+		"region":   p.Station().Region,
 		"online":   health["ok"] == true,
 		"base_url": p.snapHost(),
 		"stats":    p.statsPayload(),
@@ -541,8 +541,14 @@ func (p *Provider) overviewModels() []map[string]any {
 		}
 	}
 	if len(out) == 0 {
-		for _, id := range seedModels {
-			add(id, "", "")
+		if p.Station().ID == Mainland.ID {
+			for _, id := range seedModels {
+				add(id, "", "")
+			}
+		} else {
+			for _, id := range p.Station().ModelSeeds {
+				add(id, "", "")
+			}
 		}
 	}
 	return out

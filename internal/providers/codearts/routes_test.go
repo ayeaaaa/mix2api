@@ -1406,3 +1406,36 @@ func TestCodeArtsAdminErrorsNeverExposeFilesystemDetail(t *testing.T) {
 		t.Fatalf("response leaked a filesystem path: %#v", body)
 	}
 }
+
+func TestCodeArtsIntlRoutesUsePrefix(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range p.Routes() {
+		if !strings.HasPrefix(route.Path, "/codearts-intl/") {
+			t.Fatalf("route %q does not use intl prefix", route.Path)
+		}
+		if route.Path == "/oauth/callback" || strings.Contains(route.Path, "/oauth/") {
+			t.Fatalf("intl oauth route %q should be deferred", route.Path)
+		}
+	}
+}
+
+func TestCodeArtsIntlOverviewIdentity(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveConfigForStation(p.store, International, map[string]any{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := p.Overview(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := overview.(map[string]any)
+	if body["service"] != "codearts-intl" || body["region"] != "intl" {
+		t.Fatalf("overview identity = %#v", body)
+	}
+}

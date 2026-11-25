@@ -311,29 +311,38 @@ func (p *Provider) RouteNotFoundMessage() string {
 // browser OAuth callback is public and validates its own state.
 func (p *Provider) Routes() []providers.Route {
 	panel := providers.AuthPanel
-	return []providers.Route{
-		{Method: http.MethodGet, Path: "/codearts/overview", Auth: panel, Handler: p.handleOverview},
-		{Method: http.MethodGet, Path: "/codearts/accounts", Auth: panel, Handler: p.handleAccounts},
-		{Method: http.MethodPost, Path: "/codearts/accounts/import", Auth: panel, Handler: p.handleImport},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
-		{Method: http.MethodPost, Path: "/codearts/accounts/enable", Auth: panel, Handler: p.handleAccountAction("enable")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/disable", Auth: panel, Handler: p.handleAccountAction("disable")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/clear-cooldown", Auth: panel, Handler: p.handleAccountAction("clear-cooldown")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/tasks", Auth: panel, Handler: p.handleAccountAction("tasks")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
-		{Method: http.MethodPost, Path: "/codearts/checkin", Auth: panel, Handler: p.handleCheckin},
-		{Method: http.MethodPost, Path: "/codearts/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
-		{Method: http.MethodPost, Path: "/codearts/keepalive", Auth: panel, Handler: p.handleKeepalive},
-		{Method: http.MethodPost, Path: "/codearts/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
-		{Method: http.MethodPost, Path: "/codearts/test", Auth: panel, Handler: p.handleConnectionTest},
-		{Method: http.MethodGet, Path: "/oauth/callback", Auth: providers.AuthNone, Handler: p.handleCallbackGET},
+	prefix := strings.TrimRight(p.Station().RoutePrefix, "/")
+	if prefix == "" {
+		prefix = "/codearts"
 	}
+	routes := []providers.Route{
+		{Method: http.MethodGet, Path: prefix + "/overview", Auth: panel, Handler: p.handleOverview},
+		{Method: http.MethodGet, Path: prefix + "/accounts", Auth: panel, Handler: p.handleAccounts},
+		{Method: http.MethodPost, Path: prefix + "/accounts/import", Auth: panel, Handler: p.handleImport},
+		{Method: http.MethodPost, Path: prefix + "/accounts/enable", Auth: panel, Handler: p.handleAccountAction("enable")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/disable", Auth: panel, Handler: p.handleAccountAction("disable")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/clear-cooldown", Auth: panel, Handler: p.handleAccountAction("clear-cooldown")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/tasks", Auth: panel, Handler: p.handleAccountAction("tasks")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
+		{Method: http.MethodPost, Path: prefix + "/checkin", Auth: panel, Handler: p.handleCheckin},
+		{Method: http.MethodPost, Path: prefix + "/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
+		{Method: http.MethodPost, Path: prefix + "/keepalive", Auth: panel, Handler: p.handleKeepalive},
+		{Method: http.MethodPost, Path: prefix + "/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
+		{Method: http.MethodPost, Path: prefix + "/test", Auth: panel, Handler: p.handleConnectionTest},
+	}
+	if p.Station().ID == Mainland.ID {
+		routes = append(routes,
+			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
+			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
+			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
+			providers.Route{Method: http.MethodGet, Path: "/oauth/callback", Auth: providers.AuthNone, Handler: p.handleCallbackGET},
+		)
+	}
+	return routes
 }
 
 func (p *Provider) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -353,7 +362,7 @@ func (p *Provider) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	overview, _ := value.(map[string]any)
 	writeAdminJSON(w, http.StatusOK, map[string]any{
-		"provider": ProviderID,
+		"provider": p.ID(),
 		"accounts": overview["accounts"],
 		"stats":    overview["stats"],
 		"models":   overview["models"],
