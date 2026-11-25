@@ -2,7 +2,7 @@
 
 - 日期：2026-11-25
 - 仓库：`mix2api-v2`
-- 状态：待批准
+- 状态：Phase 1–5 已实现（2026-11-25）；Phase 6（sidecar）可选，未实现
 - 目标：在现有 `codearts` provider 中增加国际站，共用已验证的代码，但不假设国际站与国内站行为相同。
 
 ## 1. Intent
@@ -454,14 +454,14 @@ SecurityToken string `json:"security_token,omitempty"` // 国际站 X-Security-T
 - `/v1/models`、chat、SSE
 - 产物：国际站可真实调用
 
-### Phase 4：国际站额度与面板
+### Phase 4：国际站额度与面板（已实现，2026-11-25）
 
 - token 额度解析
 - overview/health
 - 面板隐藏国内专属功能
 - 产物：可运营的国际站入口
 
-### Phase 5：国际站 OAuth（可选）
+### Phase 5：国际站 OAuth（可选，已实现，2026-11-25）
 
 - `site=intl` 登录入口
 - callback URL paste（现有 OAuth 已支持）
@@ -531,3 +531,35 @@ SecurityToken string `json:"security_token,omitempty"` // 国际站 X-Security-T
 - `go test ./...`, `go vet`, and `go test -race ./internal/providers/codearts` pass.
 - Live intl smoke passed on 2026-11-25: a fresh session was exported from `%APPDATA%\codearts-agent`, imported via `POST /codearts-intl/accounts/import`, and the running mix2api returned four intl models, a non-stream `GLM-5.2` answer, a streamed `glm-5.3` SSE response, and a `Qwen3-VL-235B` answer. `/codearts-intl/overview` reported the 5,000,000-token Free package with `unit: token`.
 - Review hardening: intl auth requires an explicit `station=international` (blank legacy docs remain mainland-only); refresh checks station before contacting STS; intl refresh rotates `SecurityToken` without manufacturing `x-auth-token`; session JSON preserves large numeric UIDs and object-valued DPoP aliases; intl check-in routes are omitted and the shared single-account check-in path is guarded; bare models advertised by both CodeArts stations now fail closed until `realm/model` or a key binding selects one.
+
+## 14. Phase 3–5 Verification (2026-11-25)
+
+### 14.1 Implemented behavior
+
+- **Phase 4 — token quota and panel.** The international overview parses the Free token package (`is_token_package`, `usageTokenChatMessages`) into an `AccountCredits` window with `unit: token`; `reserve_credits` stays credit-only. The dashboard renders `codearts-intl` as a first-class gateway card and account tab only when `REALM_OPTIONS` contains it. The shared account table drops check-in/tasks for the international station, labels the quota column `Token`, and relabels the credits refresh action as `刷新 Token`. A separate `CodeArts 国际接入` settings section in the panel exposes only `enabled`, `max_concurrent`, `timeout_seconds`, `stream_timeout_seconds`, and `models_ttl_seconds`. API-key and analytics/model views label the realm `CodeArts 国际` / `codearts-intl`.
+- **Phase 5 — international OAuth.** `POST /codearts-intl/accounts/oauth/start` builds the international portal authorize URL and wraps it in `https://auth.huaweicloud.com/authui/login?site=intl&locale=en-us&service=...`. The public `GET /oauth/callback` remains registered by the mainland provider only; on an exact no-matching-session result it dispatches to the international peer, while state mismatch, replay, exchange failure, and every other error stay terminal for the provider that received them. International OAuth persists the STS `security_token` to `Auth.SecurityToken` and leaves `Auth.CloudDragonToken` empty, writing the account under `accounts/codearts-intl`.
+- **Panel OAuth modal.** The modal captures the CodeArts realm when it opens and uses that immutable realm for start/poll/callback/session-import, so a view switch cannot import an international credential into the mainland station (or the reverse). The same modal accepts a pasted CodeArts Agent session JSON and posts it to the captured realm's `/accounts/import`.
+
+### 14.2 Test evidence (fake STS, no live consent)
+
+- `TestOAuthBeginInternationalUsesLoginWrapper` — outer URL host `auth.huaweicloud.com`, `site=intl`, inner service on `codearts.ap-southeast-1.huaweicloud.com`.
+- `TestOAuthSaveUsesStationAccountPath` — international OAuth writes `SecurityToken` and an empty `CloudDragonToken` under `codearts-intl/`.
+- `TestCodeArtsIntlOAuthBrowserCallbackViaMainlandPeer` — intl start through `/codearts-intl/...`, browser callback through the mainland-owned `/oauth/callback`, one fake token exchange, account persisted only under `accounts/codearts-intl`.
+- `TestCodeArtsIntlRoutesUsePrefix`, `TestIntlCheckinUnavailable` — intl prefix isolation and no check-in routes.
+- `TestRealmOptionsIncludeCodeartsIntl`, `TestAPIKeySaveAcceptsCodeartsIntlRealm` — `/realm` and API-key binding acceptance.
+- Dashboard Node suites `_test_codearts_intl_panel.js`, `_test_codearts_oauth_ui.js`, `_test_codearts_intl_settings.js` — realm card/token labels, realm-captured modal, session JSON import, and mainland isolation; the Go harness asserts all 19 suites pass.
+- Local binary smoke (2026-11-25) — built `cmd/mix2api`, started a temporary loopback server with `{"codearts-intl":{"enabled":true}}`, logged into the panel, and `POST /codearts-intl/accounts/oauth/start` returned `https://auth.huaweicloud.com/authui/login?site=intl&locale=en-us&service=https%3A%2F%2Fcodearts.ap-southeast-1.huaweicloud.com%2Fportal%2Fauthorize...`. `/realm` returned `["intl","cn","codearts-intl"]`; no account file was written because no consent was completed.
+
+These tests and the local start smoke prove routing, URL construction, credential persistence, and panel wiring. They do **not** prove a real Huawei Cloud browser consent or a live token exchange.
+
+### 14.3 Manual live-OAuth boundary
+
+Live browser OAuth was **not** performed in this session: it requires a human with a fresh Huawei Cloud login and cannot be automated or fabricated. No secrets or session data were requested or committed. The live session-import/chat smoke in §13 remains the only real-upstream evidence; the international OAuth start URL and callback persistence are covered by the fake-STS tests above. A human should still complete one real `site=intl` consent, confirm the account lands in `accounts/codearts-intl`, `/v1/models?realm=codearts-intl` returns the four models, and `/codearts-intl/overview` shows the 5M token package before treating international OAuth as live-verified.
+
+### 14.4 Regression
+
+- `go test ./internal/providers/codearts ./internal/platform/settings ./internal/platform/keys ./internal/api ./tests/dashboard -count=1` — pass.
+- `go test ./... -count=1` — pass.
+- `go vet ./...` — clean.
+- `go test -race ./internal/providers/codearts ./internal/platform/settings ./internal/platform/keys ./internal/api -count=1` — pass.
+- Dashboard Node harness: 19/19 suites pass (Node v26.8.1).
