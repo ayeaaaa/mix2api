@@ -7082,6 +7082,46 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       </div>
     </section>
 
+    <section data-cat="network" id="codeartsIntlSettingsSection">
+      <h2>CodeArts 国际接入 <em id="setCodeartsIntlState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        国际站（site=intl）使用独立 OAuth 登录与 token 配额，只支持 token 计费：
+        没有国内站的签到、成长任务与福利积分。启用后网关页会出现 CodeArts 国际
+        卡片，账号在「账号」页的 CodeArts 国际视图管理。
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;min-height:40px">
+          <input id="setCodeartsIntlEnabled" type="checkbox" style="width:16px;height:16px">
+          启用 CodeArts 国际出口
+        </label>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单账号并发</div>
+          <input id="setCodeartsIntlMaxConcurrent" type="number" min="1" max="20" value="1"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">管理超时（秒）</div>
+          <input id="setCodeartsIntlTimeout" type="number" min="1" max="600"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">流式超时（秒）</div>
+          <input id="setCodeartsIntlStreamTimeout" type="number" min="1" max="3600"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">模型缓存（秒）</div>
+          <input id="setCodeartsIntlModelsTtl" type="number" min="1" max="3600"
+                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button onclick="saveCodeartsIntlSettings(this)">保存 CodeArts 国际设置</button>
+        <button class="sec" onclick="testCodeartsIntlConnection(this)">测试连接</button>
+        <span id="setCodeartsIntlHint" style="font-size:12px;color:var(--dim)"></span>
+      </div>
+    </section>
+
     <section data-cat="network" id="raccoonSettingsSection">
       <h2>小浣熊接入 <em id="setRaccoonState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">第四个出口直接连商汤小浣熊：导入 auth.json 或本机回环授权后，模型发现、token 续期、冷却与失败切换都在本进程内完成。支持积分余额、积分任务和桌面端/移动端登录奖励，没有签到接口。</div>
@@ -11218,6 +11258,75 @@ async function testCodeartsConnection(btn){
   }
 }
 
+// 国际站只暴露两个站共用的字段：签到、成长任务与福利只属于国内站。
+function renderCodeartsIntlSettings(cfg){
+  if(!cfg) return;
+  const enabledOn = cfg.enabled === true || cfg.configured === true;
+  const enabled = document.getElementById("setCodeartsIntlEnabled");
+  if(enabled) enabled.checked = enabledOn;
+  const conc = document.getElementById("setCodeartsIntlMaxConcurrent");
+  if(conc) conc.value = cfg.max_concurrent || 1;
+  const timeout = document.getElementById("setCodeartsIntlTimeout");
+  if(timeout) timeout.value = cfg.timeout_seconds || 30;
+  const stream = document.getElementById("setCodeartsIntlStreamTimeout");
+  if(stream) stream.value = cfg.stream_timeout_seconds || 600;
+  const ttl = document.getElementById("setCodeartsIntlModelsTtl");
+  if(ttl) ttl.value = cfg.models_ttl_seconds || 300;
+  const state = document.getElementById("setCodeartsIntlState");
+  if(state){
+    state.textContent = enabledOn ? "(已启用)" : "(未启用)";
+    state.style.color = enabledOn ? "var(--accent2)" : "var(--dim)";
+  }
+  const hint = document.getElementById("setCodeartsIntlHint");
+  if(hint){
+    let text = (cfg.accounts || 0) + " 个账号，"
+      + (cfg.healthy || 0) + " 个健康";
+    // 设置接口不带配额；概览缓存已有数字时顺手写出来，单位固定为 Token。
+    const overview = (window.CODEARTS_OVERVIEWS || {})["codearts-intl"] || {};
+    const tokenQuota = (overview.stats || {}).credits;
+    if(typeof tokenQuota === "number" && isFinite(tokenQuota)){
+      text += "；剩余 " + fmtCredits(tokenQuota) + " Token";
+    }
+    hint.textContent = text + "；账号在「账号」页的 CodeArts 国际视图管理。";
+  }
+}
+
+async function saveCodeartsIntlSettings(btn){
+  const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  const payload = {
+    enabled: !!(document.getElementById("setCodeartsIntlEnabled") || {}).checked,
+    max_concurrent: parseInt(val("setCodeartsIntlMaxConcurrent"), 10) || 1,
+    timeout_seconds: parseFloat(val("setCodeartsIntlTimeout")) || 30,
+    stream_timeout_seconds: parseFloat(val("setCodeartsIntlStreamTimeout")) || 600,
+    models_ttl_seconds: parseFloat(val("setCodeartsIntlModelsTtl")) || 300,
+  };
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/settings/save", {"codearts-intl": payload});
+    if(r && r.warning) toast(r.warning, "warn");
+    else toast("CodeArts 国际设置已保存", "ok");
+    if(r && r["codearts-intl"]) renderCodeartsIntlSettings(r["codearts-intl"]);
+    await refreshActiveRealm();
+    window.updateUI();
+  }catch(e){
+    toast("保存失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function testCodeartsIntlConnection(btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON("/codearts-intl/test", {});
+    toast("CodeArts 国际连接正常（" + ((r.models != null) ? r.models : 0) + " 个模型）", "ok");
+  }catch(e){
+    toast("CodeArts 国际连接失败: " + e.message, "bad");
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 function renderRaccoonSettings(cfg){
   if(!cfg) return;
   const enabled = cfg.enabled === true || cfg.configured === true;
@@ -11888,7 +11997,7 @@ async function loadIntlTasks(){
 async function loadGrowthTasks(){
   const realm = window.VIEW_REALM || "intl";
   const sec = document.getElementById("sectionGrowthTasks");
-  if(realm === "raccoon" || realm === "codearts"){
+  if(realm === "raccoon" || realm === "codearts" || realm === "codearts-intl"){
     if(sec) sec.style.display = "none";
     if(realm === "raccoon") loadRaccoonTasks().catch(function(){});
     return;
@@ -18143,6 +18252,7 @@ async function loadSettings(showToast){
     }));
     renderKeyRows();
     renderCodeartsSettings(data.codearts);
+    renderCodeartsIntlSettings(data["codearts-intl"]);
     renderRaccoonSettings(data.raccoon);
     renderDoubaoSettings(data.doubao);
     updateUI();
@@ -20129,8 +20239,9 @@ function renderDeletedKeyRows(){
     const realmLbl = (k.realm === 'intl') ? '固定国际版出口'
       : ((k.realm === 'cn') ? '固定国内版出口'
         : ((k.realm === 'codearts') ? '固定 CodeArts 出口'
-          : ((k.realm === 'raccoon') ? '固定小浣熊出口'
-            : ((k.realm === 'doubao') ? '固定豆包 Work 出口' : '跟随面板切换'))));
+          : ((k.realm === 'codearts-intl') ? '固定 CodeArts 国际出口'
+            : ((k.realm === 'raccoon') ? '固定小浣熊出口'
+              : ((k.realm === 'doubao') ? '固定豆包 Work 出口' : '跟随面板切换')))));
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
       + '<span>' + esc(realmLbl) + '</span>'
@@ -20256,6 +20367,8 @@ function renderKeyRows(){
       ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
       : (row.realm === 'codearts')
       ? '<span class="realm-badge-codearts" style="font-size:11px">固定 CodeArts 出口</span>'
+      : (row.realm === 'codearts-intl')
+      ? '<span class="realm-badge-codearts" style="font-size:11px">固定 CodeArts 国际出口</span>'
       : (row.realm === 'raccoon')
       ? '<span class="realm-badge-raccoon" style="font-size:11px">固定小浣熊出口</span>'
       : (row.realm === 'doubao')
@@ -20406,7 +20519,7 @@ function filterKeyModelsForRealm(models, realm){
 // exit prefix) still match the upstream id on every exit through AllowsModelAny,
 // and wildcard prefixes keep matching by design; only a concrete exit prefix
 // would silently stop matching after the Key moves to another exit.
-const KEY_MODEL_REALMS = ['intl', 'cn', 'codearts', 'raccoon'];
+const KEY_MODEL_REALMS = ['intl', 'cn', 'codearts', 'codearts-intl', 'raccoon'];
 function keyModelRealmPrefix(pattern){
   const text = String(pattern || '').trim().toLowerCase();
   const slash = text.indexOf('/');
@@ -23356,6 +23469,7 @@ async function onKeyBeforeToggle(box){
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'gateway') return '<span class="badge ok" style="font-size:10px">全部提供商</span>';
+  if(k.realm === 'codearts-intl') return '<span class="realm-badge-codearts" style="font-size:10px">CodeArts 国际</span>';
   if(k.realm === 'codearts') return '<span class="realm-badge-codearts" style="font-size:10px">CodeArts</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
   if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';

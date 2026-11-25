@@ -123,6 +123,7 @@ func dashboardRoutes() []dashboardRoute {
 		action("/codearts-intl/accounts/oauth/callback", "/accounts/oauth/callback"),
 		post("/codearts-intl/credits/refresh"),
 		post("/codearts-intl/keepalive"),
+		post("/codearts-intl/test"),
 
 		get("/doubao/overview", false),
 		action("/doubao/accounts/import", "/doubao/accounts/"),

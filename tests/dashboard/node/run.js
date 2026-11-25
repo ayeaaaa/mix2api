@@ -22,6 +22,7 @@ const SUITES = [
   '_test_raccoon_daily_refresh.js',
   '_test_codearts_oauth_ui.js',
   '_test_codearts_intl_panel.js',
+  '_test_codearts_intl_settings.js',
   '_test_key_model_catalog.js',
   '_test_expiring_credits.js',
   '_test_analytics_realm_scope.js',
