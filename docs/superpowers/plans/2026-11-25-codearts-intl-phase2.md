@@ -293,7 +293,7 @@ Expected: PASS.
 5. Verify `POST /v1/chat/completions` with `model: "codearts-intl/GLM-5.2"` streams.
 6. Verify `/codearts-intl/overview` shows the 5M token package.
 
-If no fresh session is available, record the live smoke as blocked; fake-upstream tests still cover the code path.
+Live smoke passed: fresh session import -> `/v1/models?realm=codearts-intl` (4 models) -> non-stream GLM-5.2 -> stream glm-5.3 -> Qwen3-VL-235B -> overview 5M token package.
 
 - [ ] **Step 4: Commit final verification notes**
 
