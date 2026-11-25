@@ -21,6 +21,7 @@ const SUITES = [
   '_test_doubao_provider.js',
   '_test_raccoon_daily_refresh.js',
   '_test_codearts_oauth_ui.js',
+  '_test_codearts_oauth_lifecycle.js',
   '_test_codearts_intl_panel.js',
   '_test_codearts_intl_settings.js',
   '_test_key_model_catalog.js',

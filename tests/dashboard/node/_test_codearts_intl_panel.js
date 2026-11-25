@@ -152,6 +152,7 @@ page.API_KEY_ROWS = [];
     'stale mainland rows must be cleared the moment the view switches');
   assert.ok(staleHtml.includes('正在加载'),
     'a loading state must replace the stale rows while the overview is in flight');
+  assert.equal(dom.byId('codeartsAcctCount').textContent, '', 'loading must clear the previous station count');
   assert.equal(pending.length, 1, 'the intl overview request should be in flight');
   flushPending(0, intlOverview);
   await sw;
@@ -170,6 +171,55 @@ page.API_KEY_ROWS = [];
   const disableTargets = POSTS.filter(u => u.endsWith('/accounts/disable'));
   assert.equal(disableTargets.length, 2,
     'exactly one POST per row action: ' + disableTargets.join(','));
+
+  /* Settings can remove the viewed station. Both cross-station fallback
+   * directions must use the same immediate repaint as an explicit switch,
+   * whether the destination is cached or still needs a network load. */
+  for(const [from, to, oldOverview, nextOverview, oldName, nextName] of [
+    ['codearts-intl', 'codearts', intlOverview, mainlandOverview, 'Intl', 'Mainland'],
+    ['codearts', 'codearts-intl', mainlandOverview, intlOverview, 'Mainland', 'Intl'],
+  ]){
+    for(const cached of [true, false]){
+      page.REALM_OPTIONS = ['codearts', 'codearts-intl'];
+      page.CODEARTS_OVERVIEWS = {[from]: oldOverview};
+      if(cached) page.CODEARTS_OVERVIEWS[to] = nextOverview;
+      page.setViewRealm(from);
+      page.updateUI();
+      page.ACTIVE_GATEWAY_REALM = to;
+      page.REALM_OPTIONS = [to]; // saving disabled removes the viewed station
+      fetchMode = 'pending';
+      pending.length = 0;
+      calls.length = 0;
+      page.updateUI();
+      assert.equal(page.VIEW_REALM, to, 'disabled view must fall back to the available gateway');
+      const fallbackHtml = dom.byId('codeartsAccounts').innerHTML;
+      assert.ok(!fallbackHtml.includes(oldName), from + ' rows remained actionable under ' + to);
+      assert.ok(!fallbackHtml.includes("'" + from + "'"), 'old station action handlers survived fallback');
+      if(cached){
+        assert.ok(fallbackHtml.includes(nextName), 'cached destination rows must repaint immediately');
+      }else{
+        assert.ok(fallbackHtml.includes('正在加载'), 'uncached fallback must enter loading state');
+        assert.equal(pending.length, 1, 'uncached fallback must fetch the destination overview');
+        assert.ok(calls.includes(to === 'codearts' ? '/codearts/overview' : '/codearts-intl/overview?force=1'));
+        flushPending(0, nextOverview);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.ok(dom.byId('codeartsAccounts').innerHTML.includes(nextName), 'fallback load must paint destination rows');
+      }
+      assert.ok(!calls.includes('/codearts/overview?force=1'), 'fallback must preserve mainland cache behavior');
+      fetchMode = 'resolve';
+    }
+  }
+  page.REALM_OPTIONS = ['intl', 'cn', 'codearts', 'codearts-intl'];
+  page.setViewRealm('codearts-intl');
+
+  // A failed refresh must not leave a badge claiming that the old rows exist.
+  fetchMode = 'pending';
+  pending.length = 0;
+  const failedReq = page.loadCodeartsOverviewFor('codearts-intl', true);
+  pending[0]({status: 503, ok: false});
+  await failedReq;
+  assert.equal(dom.byId('codeartsAcctCount').textContent, '', 'error state must clear the old account count');
+  fetchMode = 'resolve';
 
   /* 并发两次同一站点的概览请求（后台预载不带 force、用户切换带 force，
    * 两条不同 URL 各自出网）：新请求先返回并提交，旧响应晚回来不得覆盖。 */

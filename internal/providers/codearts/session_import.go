@@ -79,6 +79,11 @@ func authFromSessionJSON(payload map[string]any, station Station) (Auth, *adminE
 		if stationType == "international" || stationType == "intl" {
 			return Auth{}, badAdminRequest("session_json belongs to the international station")
 		}
+		// International exports may omit stationType. Only explicit mainland
+		// sessions are safe here; legacy Auth documents use a separate importer.
+		if stationType != "mainland" && stationType != "cn" {
+			return Auth{}, badAdminRequest("session_json requires an explicit mainland station")
+		}
 	} else {
 		if stationType != "" && stationType != "international" && stationType != "intl" {
 			return Auth{}, badAdminRequest("session_json belongs to a different station")

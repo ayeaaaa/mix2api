@@ -16,9 +16,9 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `e5955fe893644b519f6f953f419a3c56f7800aba7a32245ae8f4f57ad5e34d03` |
+| v2 SHA-256 | `beaf91f7fde0629349cbacb4b3334a869df8569e892a943539398c2fffdebefc` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,445,669 bytes |
+| v2 size | 1,448,919 bytes |
 | Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, panel branding controls, and the CodeArts international card/account/settings panel; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
@@ -118,7 +118,7 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 ## Gate E checklist
 
 - [x] Dashboard SHA-256 matches the documented v2 digest
-      (`e5955fe8...`); the v2 asset adds the top-bar total-quota columns,
+      (`beaf91f7...`); the v2 asset adds the top-bar total-quota columns,
       daily-activity and branding controls, and the CodeArts international
       panel. HTML is embedded, not generated.
 - [x] `/`, `/dashboard.html`, and the v1 aliases serve identical bytes with

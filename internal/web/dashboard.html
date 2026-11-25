@@ -8414,7 +8414,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <textarea id="codeartsSessionJson" rows="4" placeholder='{"account":{"id":"..."},"accessKey":"...","secretKey":"...","securityToken":"..."}'
                 style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit;font-family:var(--mono,monospace);resize:vertical"></textarea>
       <div style="font-size:12px;color:var(--dim);margin-top:4px">
-        粘贴 CodeArts Agent 导出的 session JSON；国际站会话可以没有 stationType 字段。
+        粘贴 CodeArts Agent 导出的 session JSON；国内站只接受明确标记 stationType 为 mainland（或 cn）的会话，国际站会话可以没有 stationType 字段。
       </div>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="sec" onclick="importCodeartsSessionJson(this)">导入 session JSON</button>
@@ -8932,7 +8932,11 @@ function updateUI(){
       || (gw === "codearts-intl" && caIntlEnabled)
       || (gw === "raccoon" && raccoonEnabled)
       || (gw === "doubao" && doubaoEnabled));
-    window.VIEW_REALM = gwValid ? gw : "intl";
+    const fallback = gwValid ? gw : "intl";
+    setViewRealm(fallback);
+    if((fallback === "codearts" || fallback === "codearts-intl") && !codeartsOverviewFor(fallback)){
+      loadCodeartsOverviewFor(fallback, true).catch(function(){});
+    }
   }
   const isIntlView = (window.VIEW_REALM === "intl");
   const isCnView = (window.VIEW_REALM === "cn");
@@ -9549,6 +9553,8 @@ async function loadCodeartsOverviewFor(realm, force){
     if(window.VIEW_REALM === realm){
       window.CODEARTS_OVERVIEW = null;
       renderCodeartsCards({}, realm);
+      const count = document.getElementById("codeartsAcctCount");
+      if(count) count.textContent = "";
       if(box){
         box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
           + escapeHtml(e.message || "读取 CodeArts 失败")
@@ -9577,6 +9583,9 @@ function renderCodeartsViewNow(realm){
   if(box){
     box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">正在加载 CodeArts 概览…</div>';
   }
+  const count = document.getElementById("codeartsAcctCount");
+  if(count) count.textContent = "";
+  window.CODEARTS_OVERVIEW = null;
   renderCodeartsCards({}, realm);
 }
 
@@ -11002,9 +11011,23 @@ let CODEARTS_OAUTH_SESSION = "";
 let CODEARTS_OAUTH_TIMER = null;
 // 弹窗打开时捕获 realm：之后用户切视图也不能把已打开的授权/导入改到另一个站。
 let CODEARTS_OAUTH_REALM = "codearts";
+let CODEARTS_OAUTH_GENERATION = 0;
+let CODEARTS_OAUTH_CONTEXT = null;
 
-function codeartsOauthEndpoint(){
-  return codeartsRealmEndpoint(CODEARTS_OAUTH_REALM);
+function codeartsOauthCurrent(context){
+  return !!context && context === CODEARTS_OAUTH_CONTEXT
+    && context.generation === CODEARTS_OAUTH_GENERATION;
+}
+
+function codeartsOauthEndpoint(context){
+  return codeartsRealmEndpoint(context.realm);
+}
+
+function closeCodeartsOauthLater(context){
+  if(!codeartsOauthCurrent(context)) return;
+  setTimeout(function(){
+    if(codeartsOauthCurrent(context)) closeCodeartsOauthModal();
+  }, 900);
 }
 
 function setCodeartsOauthStatus(msg, ok){
@@ -11016,7 +11039,12 @@ function setCodeartsOauthStatus(msg, ok){
 
 function openCodeartsOauthModal(realm){
   const requested = realm || codeartsRealm();
+  closeCodeartsOauthModal();
   CODEARTS_OAUTH_REALM = requested === "codearts-intl" ? "codearts-intl" : "codearts";
+  // Each open owns immutable routing/lifetime data. Async work must retain this
+  // object, not consult the next open's realm/session after an await.
+  const context = Object.freeze({realm: CODEARTS_OAUTH_REALM, generation: ++CODEARTS_OAUTH_GENERATION});
+  CODEARTS_OAUTH_CONTEXT = context;
   const intl = CODEARTS_OAUTH_REALM === "codearts-intl";
   const modal = document.getElementById("codeartsOauthModal");
   if(modal) modal.classList.add("show");
@@ -11032,37 +11060,52 @@ function openCodeartsOauthModal(realm){
   if(cb) cb.value = "";
   const sj = document.getElementById("codeartsSessionJson");
   if(sj) sj.value = "";
-  startCodeartsOAuth();
+  startCodeartsOAuth(context);
 }
 
 function closeCodeartsOauthModal(){
+  ++CODEARTS_OAUTH_GENERATION;
+  CODEARTS_OAUTH_CONTEXT = null;
   if(CODEARTS_OAUTH_TIMER){ clearInterval(CODEARTS_OAUTH_TIMER); CODEARTS_OAUTH_TIMER = null; }
   CODEARTS_OAUTH_SESSION = "";
   const modal = document.getElementById("codeartsOauthModal");
-  if(modal) modal.classList.remove("show");
+  if(modal){
+    modal.classList.remove("show");
+    modal.querySelectorAll("button").forEach(function(btn){ btn.disabled = false; });
+  }
+  setCodeartsOauthStatus("", null);
+  const url = document.getElementById("codeartsOauthUrl");
+  if(url) url.textContent = "";
+  const cb = document.getElementById("codeartsOauthCallback");
+  if(cb) cb.value = "";
   const sj = document.getElementById("codeartsSessionJson");
   if(sj) sj.value = "";
 }
 
-async function startCodeartsOAuth(){
+async function startCodeartsOAuth(context = CODEARTS_OAUTH_CONTEXT){
+  if(!codeartsOauthCurrent(context)) return;
   try{
-    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/start", {});
+    const r = await postJSON(codeartsOauthEndpoint(context) + "/accounts/oauth/start", {});
+    if(!codeartsOauthCurrent(context)) return;
     CODEARTS_OAUTH_SESSION = r.session_id || "";
     const url = document.getElementById("codeartsOauthUrl");
     if(url) url.textContent = r.auth_url || "";
     setCodeartsOauthStatus("已生成链接，正在等待授权…", null);
     if(CODEARTS_OAUTH_TIMER) clearInterval(CODEARTS_OAUTH_TIMER);
-    CODEARTS_OAUTH_TIMER = setInterval(function(){ pollCodeartsOAuth(true); }, 2500);
+    CODEARTS_OAUTH_TIMER = setInterval(function(){ pollCodeartsOAuth(true, context); }, 2500);
   }catch(e){
-    setCodeartsOauthStatus("发起失败: " + e.message, false);
+    if(codeartsOauthCurrent(context)) setCodeartsOauthStatus("发起失败: " + e.message, false);
   }
 }
 
-async function pollCodeartsOAuth(silent){
-  if(!CODEARTS_OAUTH_SESSION) return;
+async function pollCodeartsOAuth(silent, context = CODEARTS_OAUTH_CONTEXT){
+  const sessionID = CODEARTS_OAUTH_SESSION;
+  if(!codeartsOauthCurrent(context) || !sessionID) return;
+  const current = () => codeartsOauthCurrent(context) && CODEARTS_OAUTH_SESSION === sessionID;
   try{
-    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/poll",
-                             {session_id: CODEARTS_OAUTH_SESSION});
+    const r = await postJSON(codeartsOauthEndpoint(context) + "/accounts/oauth/poll",
+                             {session_id: sessionID});
+    if(!current()) return;
     if(r.status === "pending"){
       setCodeartsOauthStatus(r.message || "等待浏览器完成授权…", null);
       return;
@@ -11071,30 +11114,35 @@ async function pollCodeartsOAuth(silent){
       setCodeartsOauthStatus("✓ " + (r.message || "登录成功"), true);
       if(CODEARTS_OAUTH_TIMER){ clearInterval(CODEARTS_OAUTH_TIMER); CODEARTS_OAUTH_TIMER = null; }
       CODEARTS_OAUTH_SESSION = "";
-      await loadCodeartsOverviewFor(CODEARTS_OAUTH_REALM, true);
-      setTimeout(closeCodeartsOauthModal, 900);
+      await loadCodeartsOverviewFor(context.realm, true);
+      closeCodeartsOauthLater(context);
       return;
     }
     setCodeartsOauthStatus("✗ " + (r.message || "授权失败"), false);
     if(CODEARTS_OAUTH_TIMER){ clearInterval(CODEARTS_OAUTH_TIMER); CODEARTS_OAUTH_TIMER = null; }
   }catch(e){
-    if(!silent) setCodeartsOauthStatus("查询失败: " + e.message, false);
+    if(current() && !silent) setCodeartsOauthStatus("查询失败: " + e.message, false);
   }
 }
 
 async function importCodeartsCallback(btn){
+  const context = CODEARTS_OAUTH_CONTEXT;
+  const sessionID = CODEARTS_OAUTH_SESSION;
+  if(!codeartsOauthCurrent(context)) return;
+  const current = () => codeartsOauthCurrent(context) && CODEARTS_OAUTH_SESSION === sessionID;
   const input = document.getElementById("codeartsOauthCallback");
   const callbackUrl = input ? input.value.trim() : "";
-  if(!CODEARTS_OAUTH_SESSION || !callbackUrl){
+  if(!sessionID || !callbackUrl){
     setCodeartsOauthStatus("请先发起授权，再粘贴完整回调地址", false);
     return;
   }
   if(btn) btn.disabled = true;
   try{
-    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/callback", {
-      session_id: CODEARTS_OAUTH_SESSION,
+    const r = await postJSON(codeartsOauthEndpoint(context) + "/accounts/oauth/callback", {
+      session_id: sessionID,
       callback_url: callbackUrl,
     });
+    if(!current()) return;
     if(input) input.value = "";
     if(r.next_url){
       const url = document.getElementById("codeartsOauthUrl");
@@ -11103,15 +11151,19 @@ async function importCodeartsCallback(btn){
     }else{
       setCodeartsOauthStatus(r.message || "回调已接收，继续等待授权…", null);
     }
-    setTimeout(function(){ pollCodeartsOAuth(true); }, 500);
+    setTimeout(function(){
+      if(current()) pollCodeartsOAuth(true, context);
+    }, 500);
   }catch(e){
-    setCodeartsOauthStatus("中转失败: " + e.message, false);
+    if(current()) setCodeartsOauthStatus("中转失败: " + e.message, false);
   }finally{
-    if(btn) btn.disabled = false;
+    if(btn && codeartsOauthCurrent(context)) btn.disabled = false;
   }
 }
 
 async function importCodeartsSessionJson(btn){
+  const context = CODEARTS_OAUTH_CONTEXT;
+  if(!codeartsOauthCurrent(context)) return;
   const input = document.getElementById("codeartsSessionJson");
   const raw = input ? String(input.value || "").trim() : "";
   if(!raw){
@@ -11122,7 +11174,8 @@ async function importCodeartsSessionJson(btn){
   try{
     parsed = JSON.parse(raw);
   }catch(e){
-    setCodeartsOauthStatus("session JSON 解析失败: " + e.message, false);
+    // Parser diagnostics may contain credential-bearing excerpts of the input.
+    setCodeartsOauthStatus("session JSON 解析失败，请检查 JSON 格式", false);
     return;
   }
   if(!parsed || typeof parsed !== "object" || Array.isArray(parsed)){
@@ -11131,19 +11184,21 @@ async function importCodeartsSessionJson(btn){
   }
   if(btn) btn.disabled = true;
   try{
-    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/import",
-                             {session_json: parsed});
+    // Keep numeric identifiers lossless after local validation.
+    const r = await postJSON(codeartsOauthEndpoint(context) + "/accounts/import",
+                             {session_json: raw});
+    if(!codeartsOauthCurrent(context)) return;
     if(input) input.value = "";
     setCodeartsOauthStatus("✓ 已导入账号 " + (r.uid || "（未知 UID）"), true);
     await Promise.all([
       refreshActiveRealm().catch(function(){}),
-      loadCodeartsOverviewFor(CODEARTS_OAUTH_REALM, true).catch(function(){}),
+      loadCodeartsOverviewFor(context.realm, true).catch(function(){}),
     ]);
-    setTimeout(closeCodeartsOauthModal, 900);
+    closeCodeartsOauthLater(context);
   }catch(e){
-    setCodeartsOauthStatus("导入失败: " + e.message, false);
+    if(codeartsOauthCurrent(context)) setCodeartsOauthStatus("导入失败: " + e.message, false);
   }finally{
-    if(btn) btn.disabled = false;
+    if(btn && codeartsOauthCurrent(context)) btn.disabled = false;
   }
 }
 
@@ -11154,6 +11209,8 @@ function openCodeartsAuthUrl(){
 }
 
 async function copyCodeartsAuthUrl(){
+  const context = CODEARTS_OAUTH_CONTEXT;
+  if(!codeartsOauthCurrent(context)) return;
   const el = document.getElementById("codeartsOauthUrl");
   const url = el ? el.textContent.trim() : "";
   if(!url){
@@ -11162,9 +11219,10 @@ async function copyCodeartsAuthUrl(){
   }
   try{
     await writeClipboard(url);
+    if(!codeartsOauthCurrent(context)) return;
     toast("授权链接已复制", "ok");
   }catch(e){
-    setCodeartsOauthStatus("复制失败: " + e.message, false);
+    if(codeartsOauthCurrent(context)) setCodeartsOauthStatus("复制失败: " + e.message, false);
   }
 }
 
@@ -20279,8 +20337,14 @@ function renderKeyRows(){
           ? [['raccoon', '固定小浣熊出口']] : [],
         (window.REALM_OPTIONS || []).includes('doubao')
           ? [['doubao', '固定豆包 Work 出口']] : []);
+      const editRealm = keyEditRealm(row);
+      // Availability controls new choices, not an existing/draft binding. A
+      // select without its saved option defaults to "" and silently unbinds it.
+      if(editRealm && !realmChoices.some(([val]) => val === editRealm)){
+        realmChoices.push([editRealm, '固定 ' + realmLabel(editRealm) + ' 出口（未启用 / 不可用）']);
+      }
       const options = realmChoices.map(([val, lbl]) =>
-        '<option value="' + val + '"' + (keyEditRealm(row) === val ? ' selected' : '') + '>' + lbl + '</option>'
+        '<option value="' + esc(val) + '"' + (editRealm === val ? ' selected' : '') + '>' + esc(lbl) + '</option>'
       ).join('');
       return '<div class="key-card" style="border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'

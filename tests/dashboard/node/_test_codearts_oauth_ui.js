@@ -50,8 +50,13 @@ async function runBehavior() {
   const posted = [];
   const bodies = [];
   const logs = [];
-  const originalLog = console.log;
-  console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+  const toasts = [];
+  const originalConsole = {};
+  for(const method of Object.keys(console)){
+    if(typeof console[method] !== 'function') continue;
+    originalConsole[method] = console[method];
+    console[method] = (...args) => { logs.push(args.map(String).join(' ')); };
+  }
 
   try {
     const page = loadDashboard({
@@ -84,6 +89,7 @@ async function runBehavior() {
         });
       },
     });
+    page.toast = (...args) => toasts.push(args.map(String).join(' '));
 
     const capturedRealm = () => vm.runInContext('CODEARTS_OAUTH_REALM', page);
 
@@ -134,16 +140,19 @@ async function runBehavior() {
       securityToken: 'ST-SECRET-MARKER',
       refresh_token: 'RT-SECRET-MARKER',
     };
-    dom.byId('codeartsSessionJson').value = JSON.stringify(session);
+    // A numeric UID above Number.MAX_SAFE_INTEGER must survive validation and
+    // serialization; parsing into a JS object before posting rounds this value.
+    const rawSession = JSON.stringify(session).replace('"intl-9"', '9007199254740993');
+    dom.byId('codeartsSessionJson').value = rawSession;
     await page.importCodeartsSessionJson(dom.makeElement('button'));
     const importCalls = bodies.filter(c => c.url.endsWith('/accounts/import'));
     assert.equal(importCalls.length, 1, 'exactly one session import request: ' + posted.join(','));
     assert.equal(importCalls[0].url, '/codearts-intl/accounts/import',
       'session import must use the captured international endpoint');
     const sent = JSON.parse(importCalls[0].body);
-    assert.ok(sent.session_json && typeof sent.session_json === 'object',
-      'session_json must be sent as a parsed object, not a raw string');
-    assert.equal(sent.session_json.account.id, 'intl-9');
+    assert.equal(sent.session_json, rawSession,
+      'session_json must preserve the original JSON, including the exact numeric UID');
+    assert.ok(sent.session_json.includes('9007199254740993'), 'large numeric UID was rounded');
     assert.equal(dom.byId('codeartsSessionJson').value, '',
       'the textarea must be cleared after a successful import');
     const status = dom.byId('codeartsOauthStatus').textContent;
@@ -157,11 +166,16 @@ async function runBehavior() {
 
     /* 解析失败：只提示，不发请求，也不回显原始 JSON。 */
     const beforeBad = posted.length;
-    dom.byId('codeartsSessionJson').value = '{"account":';
-    await page.importCodeartsSessionJson(dom.makeElement('button'));
-    assert.equal(posted.length, beforeBad, 'a malformed session JSON must not be posted');
-    assert.ok(/解析失败|JSON/.test(dom.byId('codeartsOauthStatus').textContent),
-      'a malformed session JSON should be reported in the status');
+    for(const malformed of ['SK-SECRET-MARKER', '{"secretKey":"SK-SECRET-MARKER",oops}', '{"account":']){
+      dom.byId('codeartsSessionJson').value = malformed;
+      await page.importCodeartsSessionJson(dom.makeElement('button'));
+      assert.equal(posted.length, beforeBad, 'a malformed session JSON must not be posted');
+      const parseStatus = dom.byId('codeartsOauthStatus').textContent;
+      assert.ok(/解析失败|JSON/.test(parseStatus), 'malformed JSON must report a validation error');
+      assert.ok(!parseStatus.includes('SECRET-MARKER'), 'parser errors must not echo credentials');
+      assert.ok(!toasts.join('\n').includes('SECRET-MARKER'), 'parser errors must not toast credentials');
+      assert.ok(!logs.join('\n').includes('SECRET-MARKER'), 'parser errors must not log credentials');
+    }
 
     /* 行级「重新登录」显式传入 realm 时，弹窗按该 realm 发起。 */
     page.VIEW_REALM = 'codearts';
@@ -175,7 +189,7 @@ async function runBehavior() {
 
     page.closeCodeartsOauthModal();
   } finally {
-    console.log = originalLog;
+    Object.assign(console, originalConsole);
   }
 }
 

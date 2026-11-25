@@ -36,13 +36,23 @@ for(const id of ['setCodeartsAutoCheckin', 'setCodeartsCheckinTime',
 }
 
 const posts = [];
+let realmOptions = ['intl', 'cn', 'codearts-intl'];
+let savedKeys = [];
 const page = loadDashboard({
   fetch: (url, opts) => {
     const body = opts && opts.body ? JSON.parse(String(opts.body)) : null;
     if(opts && opts.method === 'POST') posts.push({url: String(url), body: body});
-    let payload = {current: 'intl', options: ['intl', 'cn', 'codearts-intl']};
+    let payload = {current: 'intl', options: realmOptions};
     if(String(url).indexOf('/settings/save') === 0){
       payload = {'codearts-intl': Object.assign({enabled: true, accounts: 1, healthy: 1}, body && body['codearts-intl'])};
+      if(body && body['codearts-intl']){
+        realmOptions = body['codearts-intl'].enabled ? ['intl', 'cn', 'codearts-intl'] : ['intl', 'cn'];
+      }
+      if(body && body.api_keys) savedKeys = body.api_keys;
+    }else if(String(url) === '/settings'){
+      payload = {api_keys: savedKeys, deleted_api_keys: [], limits: {}};
+    }else if(String(url).startsWith('/v1/models')){
+      payload = {data: [{id: 'codearts-intl/glm-5.3', realm: 'codearts-intl'}]};
     }
     return Promise.resolve({status: 200, ok: true,
       json: () => Promise.resolve(payload),
@@ -74,6 +84,49 @@ const page = loadDashboard({
   assert.equal(JSON.stringify(reconciled.models), '[]',
     'codearts-intl canonical ids must be scoped to their realm');
   assert.equal(JSON.stringify(reconciled.dropped), JSON.stringify(['codearts-intl/glm-5.3']));
+
+  // The browser chooses the first option if no selected binding is rendered.
+  // Materialize that value from the real editor HTML, since the shared DOM
+  // stub intentionally does not parse innerHTML into select elements.
+  const renderedRealmOptions = () => {
+    const select = dom.byId('keyList').innerHTML.match(/<select id="editKeyRealm_0"[^>]*>([\s\S]*?)<\/select>/);
+    assert.ok(select, 'realm editor must render a select');
+    return Array.from(select[1].matchAll(/<option value="([^"]*)"([^>]*)>([^<]*)<\/option>/g))
+      .map(m => ({value: m[1], selected: /\bselected\b/.test(m[2]), label: m[3]}));
+  };
+  const originalKey = {id: 'intl-key', name: 'Before disable', realm: 'codearts-intl',
+    models: ['codearts-intl/glm-5.3'], enabled: true, masked: 'wb-****-test'};
+  savedKeys = [Object.assign({}, originalKey)];
+  await page.loadSettings();
+  dom.byId('setCodeartsIntlEnabled').checked = false;
+  await page.saveCodeartsIntlSettings();
+  assert.ok(!page.REALM_OPTIONS.includes('codearts-intl'), 'disabled realm must disappear from available choices');
+  page.openEditKey(0);
+  const options = renderedRealmOptions();
+  const selected = options.find(o => o.selected) || options[0];
+  page.document.getElementById('editKeyRealm_0').value = selected.value;
+  page.document.getElementById('editKeyName_0').value = 'Renamed while disabled';
+  page.document.getElementById('editKeyValue_0').value = '';
+  await page.saveSingleKey(0);
+  const renamed = posts.filter(p => p.url === '/settings/save' && p.body.api_keys).at(-1);
+  assert.ok(renamed, 'renaming must still save a key with canonical model restrictions');
+  assert.equal(renamed.body.api_keys[0].realm, 'codearts-intl', 'renaming must not drop a disabled realm binding');
+  assert.equal(renamed.body.api_keys[0].name, 'Renamed while disabled');
+  assert.equal(JSON.stringify(renamed.body.api_keys[0].models), '["codearts-intl/glm-5.3"]');
+  assert.ok(selected.label.includes('CodeArts 国际') && /未启用|不可用/.test(selected.label),
+    'the preserved binding must be labelled as unavailable');
+
+  // Also preserve an unsaved realm draft if availability changes mid-edit.
+  page.REALM_OPTIONS = ['intl', 'cn', 'codearts-intl'];
+  savedKeys = [Object.assign({}, originalKey, {realm: 'cn', models: []})];
+  await page.loadSettings();
+  page.openEditKey(0);
+  await page.changeKeyRealm(0, 'codearts-intl');
+  page.REALM_OPTIONS = ['intl', 'cn'];
+  page.renderKeyRows();
+  const draftSelected = renderedRealmOptions().find(o => o.selected);
+  assert.ok(draftSelected && draftSelected.value === 'codearts-intl', 'unavailable draft realm must remain selected');
+  assert.equal(page.API_KEY_ROWS[0].realm, 'cn', 'rendering must not commit the draft');
 
   /* 未启用时区块照样渲染，用户才能在这里打开它。 */
   page.renderCodeartsIntlSettings({

@@ -37,6 +37,7 @@ type adminError struct {
 	Status  int
 	Type    string
 	Message string
+	cause   error
 }
 
 func (e *adminError) Error() string {
@@ -44,6 +45,13 @@ func (e *adminError) Error() string {
 		return ""
 	}
 	return e.Message
+}
+
+func (e *adminError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 func badAdminRequest(message string) *adminError {
@@ -87,7 +95,7 @@ func adminErrorFrom(err error) *adminError {
 	case errors.Is(err, ErrOAuthSession):
 		return &adminError{
 			Status: http.StatusNotFound, Type: "invalid_request_error",
-			Message: oauthSessionMissingMessage,
+			Message: oauthSessionMissingMessage, cause: ErrOAuthSession,
 		}
 	case errors.Is(err, ErrOAuthState):
 		return badAdminRequest(oauthStateMessage)
@@ -876,7 +884,7 @@ func (p *Provider) oauthCallbackGETOnce(query url.Values) (int, string, bool) {
 		// sibling station. State mismatch, replay, exchange failure, and every
 		// other error are terminal for this provider.
 		return http.StatusBadRequest, callbackHTML(publicOAuthFailureMessage(failure)),
-			failure.Message != oauthSessionMissingMessage
+			!errors.Is(failure, ErrOAuthSession)
 	}
 	if result.Status == "continue" && result.NextURL != "" {
 		return http.StatusOK,

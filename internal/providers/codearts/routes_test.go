@@ -1502,6 +1502,20 @@ func TestCodeArtsIntlOAuthBrowserCallbackViaMainlandPeer(t *testing.T) {
 	}
 }
 
+func TestOAuthSessionMissClassificationIsIndependentOfMessage(t *testing.T) {
+	failure := adminErrorFrom(fmt.Errorf("wrapped session miss: %w", ErrOAuthSession))
+	failure.Message = "a different safe presentation message"
+	if !errors.Is(failure, ErrOAuthSession) {
+		t.Fatal("OAuth session-miss classification was lost when presentation text changed")
+	}
+	if errors.Is(badAdminRequest(oauthSessionMissingMessage), ErrOAuthSession) {
+		t.Fatal("an unrelated failure with matching presentation text became a session miss")
+	}
+	if errors.Is(adminErrorFrom(ErrOAuthState), ErrOAuthSession) || errors.Is(adminErrorFrom(ErrOAuthReplay), ErrOAuthSession) {
+		t.Fatal("state/replay errors must not permit peer dispatch")
+	}
+}
+
 func TestCodeArtsIntlOverviewIdentity(t *testing.T) {
 	p, err := NewWithStation(newTestStore(t), International)
 	if err != nil {
