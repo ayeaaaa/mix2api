@@ -367,16 +367,29 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, failure)
 		return
 	}
-	authPayload := payload
-	if nested, present := payload["auth"]; present {
-		object, ok := nested.(map[string]any)
-		if !ok {
-			writeAdminError(w, badAdminRequest("expected a JSON object"))
+	var auth Auth
+	if rawSession, present := payload["session_json"]; present {
+		session, sessionFailure := decodeSessionJSON(rawSession)
+		if sessionFailure != nil {
+			writeAdminError(w, sessionFailure)
 			return
 		}
-		authPayload = object
+		auth, failure = authFromSessionJSON(session, p.station)
+		if failure == nil && auth.UpdatedAt == 0 {
+			auth.UpdatedAt = p.nowTime().Unix()
+		}
+	} else {
+		authPayload := payload
+		if nested, present := payload["auth"]; present {
+			object, ok := nested.(map[string]any)
+			if !ok {
+				writeAdminError(w, badAdminRequest("expected a JSON object"))
+				return
+			}
+			authPayload = object
+		}
+		auth, failure = authFromAdminPayload(authPayload, p.nowTime(), p.station)
 	}
-	auth, failure := authFromAdminPayload(authPayload, p.nowTime())
 	if failure != nil {
 		writeAdminError(w, failure)
 		return
@@ -398,7 +411,7 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 // authFromAdminPayload accepts the flat v1 auth document or the same object
 // nested under "auth". The pool still enforces canonical-path ownership, so a
 // sanitized filename collision can never overwrite another account.
-func authFromAdminPayload(payload map[string]any, now time.Time) (Auth, *adminError) {
+func authFromAdminPayload(payload map[string]any, now time.Time, station Station) (Auth, *adminError) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Auth{}, badAdminRequest("invalid auth payload")
@@ -407,14 +420,26 @@ func authFromAdminPayload(payload map[string]any, now time.Time) (Auth, *adminEr
 	if err := json.Unmarshal(raw, &auth); err != nil {
 		return Auth{}, badAdminRequest("invalid auth payload")
 	}
+	station = stationOrDefault(station)
 	auth.UserID = strings.TrimSpace(auth.UserID)
 	auth.UserName = strings.TrimSpace(auth.UserName)
 	auth.CloudDragonToken = strings.TrimSpace(auth.CloudDragonToken)
+	auth.SecurityToken = strings.TrimSpace(auth.SecurityToken)
 	if auth.UserID == "" {
 		return Auth{}, badAdminRequest("auth payload requires user_id")
 	}
-	if auth.CloudDragonToken == "" {
-		return Auth{}, badAdminRequest("auth payload requires cloud_dragon_token")
+	if station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
+		auth.Station = station.ID
+	}
+	if !authBelongsToStation(auth, station) {
+		return Auth{}, badAdminRequest("auth payload belongs to a different station")
+	}
+	if station.ID == Mainland.ID {
+		if auth.CloudDragonToken == "" {
+			return Auth{}, badAdminRequest("auth payload requires cloud_dragon_token")
+		}
+	} else if !authHasSigningToken(auth) {
+		return Auth{}, badAdminRequest("auth payload requires security_token")
 	}
 	if auth.UpdatedAt == 0 {
 		auth.UpdatedAt = now.Unix()
