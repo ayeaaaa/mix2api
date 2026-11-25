@@ -5845,7 +5845,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
 
     <!-- 卡片 4: CodeArts 国际 (ap-southeast-1)。只有后端在 /realm 里上报
          codearts-intl（设置里启用）时 updateUI 才把它显示出来；配额按
-         token 计，卡片上的单位跟着概览走（codeartsQuotaLabel）。 -->
+         token 计，卡片上的单位固定为 Token（codeartsQuotaLabelFor）。 -->
     <div id="tabCodeartsIntl" class="realm-card" onclick="switchViewRealm('codearts-intl')" style="display:none">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="realm-badge-codearts">CodeArts 国际</span>
@@ -5857,7 +5857,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
       <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div class="credit-summary" style="display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;min-width:0">
           <span id="tabCodeartsIntlHealthy" style="font-size:22px;font-weight:700;color:var(--accent);letter-spacing:-.5px" title="健康账号数 / 账号总数">—</span>
-          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCodeartsIntlTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabCodeartsIntlModels" style="color:var(--fg);font-weight:600">0</span> 模型 · <span id="tabCodeartsIntlCredits" style="color:var(--fg);font-weight:600">— 积分</span></span>
+          <span style="font-size:12px;color:var(--dim)">/ <span id="tabCodeartsIntlTotal" style="color:var(--fg);font-weight:600">0</span> 账号 · <span id="tabCodeartsIntlModels" style="color:var(--fg);font-weight:600">0</span> 模型 · <span id="tabCodeartsIntlCredits" style="color:var(--fg);font-weight:600">— Token</span></span>
         </div>
         <span id="tabCodeartsIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
       </div>
@@ -9033,7 +9033,7 @@ function updateUI(){
   const ep = document.getElementById("activeEndpoint");
   if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2"
     : (isCnGw ? "https://copilot.tencent.com/v2"
-              : (isCaGw ? ((codeartsOverviewFor("codearts") || window.CODEARTS_OVERVIEW || {}).base_url || "华为云 CodeArts")
+              : (isCaGw ? ((codeartsOverviewFor("codearts") || {}).base_url || "华为云 CodeArts")
                 : (isCaIntlGw ? ((codeartsOverviewFor("codearts-intl") || {}).base_url || "华为云 CodeArts 国际")
                   : (isRcGw ? ((window.RACCOON_OVERVIEW || {}).base_url || "https://xiaohuanxiong.com")
                             : ((window.DOUBAO_OVERVIEW || {}).base_url || "https://www.doubao.com")))));
@@ -9197,8 +9197,9 @@ function updateUI(){
 
   // CodeArts 卡片：健康/总数、模型数、离线标记。没有积分——codearts2api 的
   // stats.credits 实际是健康账号数，不是余额。国内卡片只读国内站自己的概览
-  // 缓存（CODEARTS_OVERVIEW 会跟着当前视图切到国际站，不能拿来画国内卡）。
-  const ca = codeartsOverviewFor("codearts") || window.CODEARTS_OVERVIEW || {};
+  // 缓存（CODEARTS_OVERVIEW 会跟着当前视图切到国际站，不能拿来画国内卡），
+  // 没有数据就画空态，不做全局兜底。
+  const ca = codeartsOverviewFor("codearts") || {};
   const caStats = ca.stats || {};
   const caHealthy = (caStats.healthy != null) ? caStats.healthy : "—";
   const caTotal = (caStats.total != null) ? caStats.total : 0;
@@ -9233,7 +9234,7 @@ function updateUI(){
   const elCaiModels = document.getElementById("tabCodeartsIntlModels");
   if(elCaiModels) elCaiModels.textContent = caiModels;
   const elCaiCredits = document.getElementById("tabCodeartsIntlCredits");
-  if(elCaiCredits) elCaiCredits.textContent = fmtCredits(caiStats.credits) + " " + codeartsQuotaLabel(cai);
+  if(elCaiCredits) elCaiCredits.textContent = fmtCredits(caiStats.credits) + " " + codeartsQuotaLabelFor("codearts-intl", cai);
   const elCaiOffline = document.getElementById("tabCodeartsIntlOffline");
   if(elCaiOffline) elCaiOffline.style.display = (cai.online === false) ? "inline-block" : "none";
   const elCaiHost = document.getElementById("tabCodeartsIntlHost");
@@ -9347,6 +9348,10 @@ function updateUI(){
 function setViewRealm(r){
   window.VIEW_REALM = r;
   renderDisabled();
+  // 两个 CodeArts 站点共用一个账号表：切过去的瞬间就用该站的缓存重画，没有
+  // 缓存就清成加载态。否则新概览回来之前，旧站点的行还挂在页面上，行上的
+  // 操作虽然按行绑定端点，但视觉上已经张冠李戴。
+  if(r === 'codearts' || r === 'codearts-intl') renderCodeartsViewNow(r);
 }
 
 async function switchViewRealm(r){
@@ -9426,47 +9431,80 @@ async function toggleActiveGatewayRealm(){
 window.CODEARTS_OVERVIEW = null;
 // 每个站点一份概览缓存：两张卡片各自显示自己的数字，互不覆盖。
 window.CODEARTS_OVERVIEWS = {};
+// 每个站点的请求代次：同一站点并发两次拉取时，只有最新一次能写缓存 / 清缓存，
+// 旧响应晚回来既不能覆盖新数据，也不能把新数据删掉。
+window.CODEARTS_OVERVIEW_SEQ = {};
 window.REALM_OPTIONS = ["intl", "cn"];
 
 function codeartsRealm(){
   return window.VIEW_REALM === 'codearts-intl' ? 'codearts-intl' : 'codearts';
 }
 function codeartsEndpoint(){
-  return codeartsRealm() === 'codearts-intl' ? '/codearts-intl' : '/codearts';
+  return codeartsRealmEndpoint(codeartsRealm());
+}
+// 端点由调用方显式给定的 realm 决定（行级操作把行所属站点绑进 handler），
+// 不读可变的 VIEW_REALM，见 renderCodeartsAccounts。
+function codeartsRealmEndpoint(realm){
+  return realm === 'codearts-intl' ? '/codearts-intl' : '/codearts';
 }
 function codeartsOverviewFor(realm){
   return (window.CODEARTS_OVERVIEWS || {})[realm] || null;
 }
-// 配额单位跟站点走：国际站按 token 计（账号 credits.unit === 'token'），
-// 国内站仍是积分。返回值直接用于卡片与表格的单位文案。
+// 配额单位跟站点走：国际站按 token 计，国内站仍是积分。返回值直接用于卡片
+// 与表格的单位文案。
 function codeartsQuotaLabel(overview){
+  // 国际站的概览（后端给出 service/region）无论有没有账号都按 token 计，
+  // 空列表 / 加载中 / 失败回退都不会退回「积分」。
+  if(overview && (overview.service === 'codearts-intl' || overview.region === 'intl')){
+    return 'Token';
+  }
   const accounts = (overview && overview.accounts) || [];
   const token = accounts.some(a => a && a.credits && a.credits.unit === 'token');
   return token ? 'Token' : '积分';
 }
+// realm 已知（卡片 / 汇总条按固定站点渲染）时的单位：连概览都还没拿到，
+// 国际站也先按 Token 显示，不用等第一份数据回来才改口。
+function codeartsQuotaLabelFor(realm, overview){
+  if(realm === 'codearts-intl') return 'Token';
+  return codeartsQuotaLabel(overview);
+}
 
 async function loadCodeartsOverviewFor(realm, force){
   // URL 写成整段字面量：两个站点的请求路径一眼可辨，也不依赖运行时拼接。
+  // force 只对国际站生效：国内站的历史行为是不带 query（服务端缓存照常
+  // 命中），不能因为这次拆分悄悄改掉。
   const overviewPath = realm === 'codearts-intl' ? "/codearts-intl/overview" : "/codearts/overview";
+  const forceQs = (force && realm === 'codearts-intl') ? "?force=1" : "";
+  const seq = (window.CODEARTS_OVERVIEW_SEQ[realm] || 0) + 1;
+  window.CODEARTS_OVERVIEW_SEQ[realm] = seq;
+  const superseded = () => window.CODEARTS_OVERVIEW_SEQ[realm] !== seq;
   const box = document.getElementById("codeartsAccounts");
   try{
-    const r = await getJSON(overviewPath + (force ? "?force=1" : ""));
+    const r = await getJSON(overviewPath + forceQs);
+    if(superseded()) return;
     window.CODEARTS_OVERVIEWS[realm] = r;
     if(window.VIEW_REALM === realm) window.CODEARTS_OVERVIEW = r;
     await loadProxySlots();
+    if(superseded()) return;
     if(window.VIEW_REALM === realm){
-      renderCodeartsCards(r);
-      renderCodeartsAccounts(r);
+      renderCodeartsCards(r, realm);
+      renderCodeartsAccounts(r, realm);
     }
     window.updateUI();
   }catch(e){
+    if(superseded()) return;
     // 拉失败只清自己那份缓存；错误文案只在用户正看着这个站点时才渲染，
-    // 后台预载另一个站点的失败不打扰当前视图。
+    // 后台预载另一个站点的失败不打扰当前视图。当前视图的共享汇总条同步
+    // 回到空态，不再残留上一次的数据。
     if(window.CODEARTS_OVERVIEWS) delete window.CODEARTS_OVERVIEWS[realm];
-    if(window.VIEW_REALM === realm && box){
-      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
-        + escapeHtml(e.message || "读取 CodeArts 失败")
-        + '<div style="margin-top:8px;color:var(--dim);font-size:12px">检查「设置 → CodeArts 接入」的 Base URL 和 API Key。</div></div>';
+    if(window.VIEW_REALM === realm){
+      window.CODEARTS_OVERVIEW = null;
+      renderCodeartsCards({}, realm);
+      if(box){
+        box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--bad)">'
+          + escapeHtml(e.message || "读取 CodeArts 失败")
+          + '<div style="margin-top:8px;color:var(--dim);font-size:12px">检查「设置 → CodeArts 接入」的 Base URL 和 API Key。</div></div>';
+      }
     }
     window.updateUI();
   }
@@ -9476,21 +9514,40 @@ async function loadCodeartsOverview(force){
   return loadCodeartsOverviewFor(codeartsRealm(), force);
 }
 
+// 切进某个 CodeArts 站点时立即用缓存重画；没有缓存就把账号表清成加载态、
+// 汇总条回到空态——旧站点的行（连同行上的操作按钮）不能等到新概览回来
+// 才消失，否则那段时间里点旧行会把它的 UID 发到新站点的端点上。
+function renderCodeartsViewNow(realm){
+  const cached = codeartsOverviewFor(realm);
+  if(cached){
+    renderCodeartsCards(cached, realm);
+    renderCodeartsAccounts(cached, realm);
+    return;
+  }
+  const box = document.getElementById("codeartsAccounts");
+  if(box){
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--dim)">正在加载 CodeArts 概览…</div>';
+  }
+  renderCodeartsCards({}, realm);
+}
+
 function fmtCredits(value){
   if(value == null || value === "" || isNaN(Number(value))) return "—";
   return Number(value).toLocaleString(undefined, {maximumFractionDigits: 2});
 }
 
-function renderCodeartsCards(r){
+function renderCodeartsCards(r, realm){
   const box = document.getElementById("codeartsCards");
   if(!box) return;
-  const st = r.stats || {};
+  // r 为空对象时按空态渲染（切换即时重画 / 失败清屏），所有数字回到 —。
+  const data = r || {};
+  const st = data.stats || {};
   const healthy = (st.healthy != null) ? st.healthy : "—";
   const total = (st.total != null) ? st.total : 0;
   const credits = (st.credits != null) ? st.credits : null;
   const creditsTotal = (st.credits_total != null) ? st.credits_total : null;
   const creditsUsed = (st.credits_used != null) ? st.credits_used : null;
-  const quotaLabel = codeartsQuotaLabel(r);
+  const quotaLabel = codeartsQuotaLabelFor(realm, data);
   const creditSub = (creditsTotal != null)
     ? ("剩余 / 总 " + fmtCredits(creditsTotal)
        + (creditsUsed != null ? " · 已用 " + fmtCredits(creditsUsed) : ""))
@@ -9498,13 +9555,13 @@ function renderCodeartsCards(r){
   box.innerHTML =
     card("健康账号", healthy + "/" + total, "由本进程直接管理")
     + card(quotaLabel, fmtCredits(credits), creditSub)
-    + card("模型", (r.models || []).length, "CodeArts 目录")
+    + card("模型", (data.models || []).length, "CodeArts 目录")
     + card("限额", (st.limited != null) ? st.limited : 0, "积分/token 护栏")
     + card("冷却", (st.cooling != null) ? st.cooling : 0, "到点自动恢复")
     + card("停用", (st.disabled != null) ? st.disabled : 0, "手动/上游");
 }
 
-function codeartsSlotSelectHtml(a){
+function codeartsSlotSelectHtml(a, realm){
   const current = a.proxy_slot || '';
   const opts = ['<option value=""' + (current ? '' : ' selected') + '>直连</option>'];
   const known = PROXY_SLOTS.some(s => s.id === current);
@@ -9515,16 +9572,17 @@ function codeartsSlotSelectHtml(a){
     '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
     + esc(s.label || s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>'));
   const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
-  return '<select class="slot-select" onchange="codeartsSetProxy(&quot;' + uidAttr + '&quot;, this.value, this)">'
+  // 行所属站点绑定进 handler：即使页面已切到另一站，这行的出口仍写回它自己的账号池。
+  return '<select class="slot-select" onchange="codeartsSetProxy(&quot;' + uidAttr + '&quot;, this.value, this, &quot;' + (realm === 'codearts-intl' ? 'codearts-intl' : 'codearts') + '&quot;)">'
     + opts.join('') + '</select>';
 }
 
-async function codeartsSetProxy(uid, slotId, el){
+async function codeartsSetProxy(uid, slotId, el, realm){
   if(el) el.disabled = true;
   try{
-    await postJSON(codeartsEndpoint() + '/accounts/proxy', {uid: uid, slot_id: slotId});
+    await postJSON(codeartsRealmEndpoint(realm) + '/accounts/proxy', {uid: uid, slot_id: slotId});
     toast('出口已更新', 'ok');
-    await loadCodeartsOverview(true);
+    await loadCodeartsOverviewFor(realm, true);
   }catch(e){
     toast('出口更新失败: ' + e.message, 'bad');
   }finally{
@@ -9532,13 +9590,16 @@ async function codeartsSetProxy(uid, slotId, el){
   }
 }
 
-function renderCodeartsAccounts(r){
+function renderCodeartsAccounts(r, realm){
   const box = document.getElementById("codeartsAccounts");
   const count = document.getElementById("codeartsAcctCount");
-  const accounts = r.accounts || [];
+  const accounts = (r && r.accounts) || [];
   // 国际站与国内站共用这张表，但列与操作按站点裁剪：国际站配额列写 Token、
   // 没有签到列，也没有签到 / 任务两个操作（上游没有这两个接口）。
-  const intl = codeartsRealm() === 'codearts-intl';
+  // 行上的操作把 realm 显式绑进 handler，不读可变的 VIEW_REALM——页面切到
+  // 另一站后，旧行（即便短暂可见）也只会写回自己站点的端点。
+  const intl = realm === 'codearts-intl';
+  const realmArg = intl ? "'codearts-intl'" : "'codearts'";
   const quotaHeader = intl ? 'Token' : '积分';
   if(count) count.textContent = accounts.length ? (" · " + accounts.length) : "";
   if(!box) return;
@@ -9586,26 +9647,26 @@ function renderCodeartsAccounts(r){
     }
     const actions = [];
     if(a.disabled){
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'enable\',\'' + uidSafe + '\')">启用</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'enable\',\'' + uidSafe + '\',null,' + realmArg + ')">启用</button>');
     }else{
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uidSafe + '\')">停用</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uidSafe + '\',null,' + realmArg + ')">停用</button>');
     }
     actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uidSafe + '\')">重新登录</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uidSafe + '\')">清冷却</button>');
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uidSafe + '\')">测试</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uidSafe + '\',null,' + realmArg + ')">清冷却</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uidSafe + '\',null,' + realmArg + ')">测试</button>');
     // 国际站上游没有积分任务接口，任务开关只在国内站出现。
     if(!intl){
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'tasks\',\'' + uidSafe + '\',' + (!a.tasks_enabled) + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'tasks\',\'' + uidSafe + '\',' + (!a.tasks_enabled) + ',' + realmArg + ')">' + (a.tasks_enabled ? '停任务' : '开任务') + '</button>');
     }
-    actions.push('<button class="sec mini" onclick="codeartsEditNote(\'' + uidSafe + '\')">备注</button>');
+    actions.push('<button class="sec mini" onclick="codeartsEditNote(\'' + uidSafe + '\',' + realmArg + ')">备注</button>');
     if(!intl){
-      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'checkin\',\'' + uidSafe + '\')">签到</button>');
+      actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'checkin\',\'' + uidSafe + '\',null,' + realmArg + ')">签到</button>');
     }
-    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'delete\',\'' + uidSafe + '\')">删除</button>');
+    actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'delete\',\'' + uidSafe + '\',null,' + realmArg + ')">删除</button>');
     html += '<tr><td><b>' + name + '</b>' + note + '<div class="mono" style="color:var(--dim);font-size:11px">' + uid + '</div></td>'
       + '<td>' + status + (a.reason ? '<div style="font-size:11px;color:var(--dim)">' + escapeHtml(a.reason) + '</div>' : '') + '</td>'
       + '<td class="mono" style="font-size:11px">' + token + '</td>'
-      + '<td>' + codeartsSlotSelectHtml(a) + '</td>'
+      + '<td>' + codeartsSlotSelectHtml(a, realm) + '</td>'
       + '<td>' + credits + '</td>'
       + '<td>' + conc + '</td>' + (intl ? '' : '<td>' + checkin + '</td>')
       + '<td style="white-space:nowrap">' + actions.join(" ") + '</td></tr>';
@@ -9614,21 +9675,24 @@ function renderCodeartsAccounts(r){
   box.innerHTML = html;
 }
 
-async function codeartsAccountAction(action, uid, extra){
+async function codeartsAccountAction(action, uid, extra, realm){
   if(action === "delete"){
     if(!confirm("删除 CodeArts 账号 " + uid + "？\n\n会删除凭据并移出账号池，不可恢复。")) return;
   }
+  // 行级操作带显式 realm（默认当前视图）：写哪个站点的端点、刷哪个站点的
+  // 缓存都由行所属站点决定，不由可变的视图状态决定。
+  const target = realm === 'codearts-intl' ? 'codearts-intl' : 'codearts';
   const payload = {uid: uid};
   if(action === "tasks") payload.enabled = !!extra;
   if(action === "note") payload.note = String(extra == null ? "" : extra);
   try{
-    const r = await postJSON(codeartsEndpoint() + "/accounts/" + action, payload);
+    const r = await postJSON(codeartsRealmEndpoint(target) + "/accounts/" + action, payload);
     if(action === "test" && r && r.ok === false){
       toast("测试失败: " + (r.message || "未知错误"), "bad");
       return;
     }
     toast((r && r.message) || "操作成功", "ok");
-    await loadCodeartsOverview(true);
+    await loadCodeartsOverviewFor(target, true);
   }catch(e){
     toast("操作失败: " + e.message, "bad");
   }
@@ -9641,25 +9705,27 @@ function codeartsRelogin(uid){
   }, 50);
 }
 
-function codeartsEditNote(uid){
-  // 备注读当前站点的概览（CODEARTS_OVERVIEW 始终同步成当前视图的站点），
-  // 提交走当前站点的端点，国际站不会写到国内的 /codearts。
-  const acct = ((codeartsOverviewFor(codeartsRealm()) || {}).accounts || [])
+function codeartsEditNote(uid, realm){
+  // 备注读行所属站点的概览、提交也走行所属站点的端点：国际站的行不会
+  // 写到国内的 /codearts，反之亦然。
+  const target = realm === 'codearts-intl' ? 'codearts-intl' : 'codearts';
+  const acct = ((codeartsOverviewFor(target) || {}).accounts || [])
     .find(a => a.uid === uid) || {};
   const note = prompt("备注", acct.note || "");
   if(note === null) return;
-  codeartsAccountAction("note", uid, note);
+  codeartsAccountAction("note", uid, note, target);
 }
 
 async function refreshCodeartsCredits(btn){
   if(btn) btn.disabled = true;
+  const intl = codeartsRealm() === 'codearts-intl';
   try{
-    const r = await postJSON(codeartsRealm() === 'codearts-intl'
+    const r = await postJSON(intl
       ? "/codearts-intl/credits/refresh" : "/codearts/credits/refresh", {});
-    toast((r && r.message) || "已刷新积分", "ok");
+    toast((r && r.message) || (intl ? "已刷新 Token" : "已刷新积分"), "ok");
     await loadCodeartsOverview(true);
   }catch(e){
-    toast("刷新积分失败: " + e.message, "bad");
+    toast((intl ? "刷新 Token 失败: " : "刷新积分失败: ") + e.message, "bad");
   }finally{
     if(btn) btn.disabled = false;
   }
@@ -11186,10 +11252,11 @@ async function initRealm(){
   window.updateUI();
   // 两个 CodeArts 站都在 /realm 里上报时各拉一份概览：顶部的两张卡片要能同
   // 时显示各自的账号/配额数字，而不是等用户切过去才有。拉哪个站都只渲染
-  // 当前视图，另一份只进 CODEARTS_OVERVIEWS 缓存。
+  // 当前视图，另一份只进 CODEARTS_OVERVIEWS 缓存。国内站不带 force（保持
+  // 原来的缓存行为），国际站只在正被查看时才强制刷新。
   ['codearts', 'codearts-intl'].forEach(function(realm){
     if((window.REALM_OPTIONS || []).includes(realm)){
-      loadCodeartsOverviewFor(realm, true).catch(function(){});
+      loadCodeartsOverviewFor(realm, realm === window.VIEW_REALM).catch(function(){});
     }
   });
   if(window.VIEW_REALM === 'raccoon') loadRaccoonOverview(true);
@@ -15724,7 +15791,7 @@ function renderConsoleAccountHealth(accts){
   const isRaccoon = window.VIEW_REALM === 'raccoon';
   const all = (isCodearts || isCodeartsIntl || isRaccoon) ? [] : accountsInView();
   const groups = isCodearts ? (() => {
-    const st = (window.CODEARTS_OVERVIEW || {}).stats || {};
+    const st = (codeartsOverviewFor('codearts') || {}).stats || {};
     return [
       {label: 'CodeArts', total: Number(st.total || 0), ok: Number(st.healthy || 0)}
     ];
