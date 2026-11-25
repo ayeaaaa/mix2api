@@ -71,6 +71,7 @@ type PoolStats struct {
 //   - pool.mu is never held while account.mu is taken; account.mu is never held
 //     while pool.mu or stateMu is taken.
 type Pool struct {
+	station   Station
 	dir       string
 	folder    string
 	statePath string
@@ -127,6 +128,11 @@ type Pool struct {
 // unsupported state document is an error, because overwriting it would destroy
 // manual disables and notes.
 func NewPool(dir string, cfg Config) (*Pool, error) {
+	return NewPoolForStation(dir, Mainland, cfg)
+}
+
+func NewPoolForStation(dir string, station Station, cfg Config) (*Pool, error) {
+	station = stationOrDefault(station)
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, errors.New("codearts: accounts directory is empty")
@@ -134,9 +140,10 @@ func NewPool(dir string, cfg Config) (*Pool, error) {
 	dir = filepath.Clean(dir)
 
 	p := &Pool{
+		station:   station,
 		dir:       dir,
-		folder:    filepath.Join(dir, "codearts"),
-		statePath: filepath.Join(dir, "codearts", "state.json"),
+		folder:    filepath.Join(dir, station.AccountsFolder),
+		statePath: filepath.Join(dir, station.AccountsFolder, "state.json"),
 		cfg:       cfg,
 		affinity:  make(map[string]string),
 		preserved: make(map[string]AccountState),
@@ -242,7 +249,7 @@ func (p *Pool) loadAuthFiles() ([]loadedAuth, error) {
 	loaded := make([]loadedAuth, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(p.folder, name)
-		auth, err := LoadAuth(path)
+		auth, err := LoadAuthForStation(path, p.station)
 		if err != nil {
 			continue
 		}
@@ -250,7 +257,7 @@ func (p *Pool) loadAuthFiles() ([]loadedAuth, error) {
 		if uid == "" {
 			continue
 		}
-		canonicalPath, err := AuthPath(p.dir, uid)
+		canonicalPath, err := AuthPathForStation(p.dir, p.station, uid)
 		if err != nil {
 			continue
 		}
@@ -917,7 +924,7 @@ func (p *Pool) SetProxySlot(uid, slotID string) error {
 	account.mu.Unlock()
 
 	if path == "" {
-		path, err = AuthPath(p.dir, accountUID)
+		path, err = AuthPathForStation(p.dir, p.station, accountUID)
 		if err != nil {
 			return err
 		}
@@ -927,10 +934,10 @@ func (p *Pool) SetProxySlot(uid, slotID string) error {
 	}
 
 	auth.ProxySlot = slotID
-	if err := SaveAuth(path, auth); err != nil {
+	if err := SaveAuthForStation(path, auth, p.station); err != nil {
 		return fmt.Errorf("codearts: save proxy slot: %w", err)
 	}
-	saved, err := LoadAuth(path)
+	saved, err := LoadAuthForStation(path, p.station)
 	if err != nil {
 		return fmt.Errorf("codearts: reload proxy slot: %w", err)
 	}
@@ -1196,11 +1203,17 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	if auth.UserID == "" {
 		return nil, errors.New("codearts: auth requires user_id")
 	}
-	if strings.TrimSpace(auth.CloudDragonToken) == "" {
-		return nil, errors.New("codearts: auth requires cloud_dragon_token")
+	if p.station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
+		return nil, errors.New("codearts: international auth requires an explicit station")
+	}
+	if !authBelongsToStation(auth, p.station) {
+		return nil, errors.New("codearts: auth station does not match the account folder")
+	}
+	if !authHasSigningToken(auth) {
+		return nil, errors.New("codearts: auth requires a signing token")
 	}
 
-	path, err := AuthPath(p.dir, auth.UserID)
+	path, err := AuthPathForStation(p.dir, p.station, auth.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -1219,10 +1232,10 @@ func (p *Pool) addNewAccount(path string, auth Auth) (*Account, error) {
 	if err := p.verifyWritableAuth(path, uid); err != nil {
 		return nil, err
 	}
-	if err := SaveAuth(path, auth); err != nil {
+	if err := SaveAuthForStation(path, auth, p.station); err != nil {
 		return nil, err
 	}
-	saved, err := LoadAuth(path)
+	saved, err := LoadAuthForStation(path, p.station)
 	if err != nil {
 		return nil, err
 	}
@@ -1289,10 +1302,10 @@ func (p *Pool) reimportAccount(account *Account, path string, auth Auth) (*Accou
 	if err := p.verifyWritableAuth(path, uid); err != nil {
 		return nil, err
 	}
-	if err := SaveAuth(path, auth); err != nil {
+	if err := SaveAuthForStation(path, auth, p.station); err != nil {
 		return nil, err
 	}
-	saved, err := LoadAuth(path)
+	saved, err := LoadAuthForStation(path, p.station)
 	if err != nil {
 		return nil, err
 	}
@@ -1409,10 +1422,10 @@ func (p *Pool) authPathsForUID(uid string) ([]string, error) {
 	if uid == "" {
 		return paths, nil
 	}
-	if canonical, err := AuthPath(p.dir, uid); err == nil {
+	if canonical, err := AuthPathForStation(p.dir, p.station, uid); err == nil {
 		// The canonical filename can collide with a different sanitized UID.
 		// Delete it only when its embedded UID is verifiably this account.
-		if auth, loadErr := LoadAuth(canonical); loadErr == nil && strings.TrimSpace(auth.UserID) == uid {
+		if auth, loadErr := LoadAuthForStation(canonical, p.station); loadErr == nil && strings.TrimSpace(auth.UserID) == uid {
 			add(canonical)
 		}
 	}
@@ -1433,7 +1446,7 @@ func (p *Pool) authPathsForUID(uid string) ([]string, error) {
 			continue
 		}
 		path := filepath.Join(p.folder, name)
-		auth, err := LoadAuth(path)
+		auth, err := LoadAuthForStation(path, p.station)
 		if err != nil {
 			continue
 		}
@@ -1472,5 +1485,5 @@ func (p *Pool) proxyURLForSlot(slotID string) string {
 // verifyWritableAuth refuses to overwrite a file whose embedded UID differs or
 // whose contents cannot be verified. A missing file is fine.
 func (p *Pool) verifyWritableAuth(path, uid string) error {
-	return verifyAuthOwnership(path, uid)
+	return verifyAuthOwnershipForStation(path, uid, p.station)
 }

@@ -1970,3 +1970,80 @@ func TestOAuthCodePKCEChallengeMatches(t *testing.T) {
 		t.Fatalf("challenge length = %d, want 43", len(challenge))
 	}
 }
+
+func TestOAuthAuthorizeURLUsesStation(t *testing.T) {
+	intl := NewOAuthSessionsForStation(International)
+	url, err := intl.AuthorizeURL(12345, "challenge", "ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(url, "https://codearts.ap-southeast-1.huaweicloud.com/portal/authorize?") {
+		t.Fatalf("url = %s", url)
+	}
+	if !strings.Contains(url, "locale=en-us") {
+		t.Fatalf("url = %s", url)
+	}
+	if strings.Contains(url, "site=intl") || strings.Contains(url, "auth.huaweicloud.com") {
+		t.Fatalf("authorize URL should stay raw; login wrapper is separate: %s", url)
+	}
+}
+
+func TestOAuthBeginInternationalUsesLoginWrapper(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	sessions := NewOAuthSessionsForStation(International)
+	start, err := sessions.Begin(store, 54321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := url.Parse(start.AuthURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outer.Host != "auth.huaweicloud.com" || outer.Query().Get("site") != "intl" {
+		t.Fatalf("outer login URL = %s", start.AuthURL)
+	}
+	service, err := url.Parse(outer.Query().Get("service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Host != "codearts.ap-southeast-1.huaweicloud.com" ||
+		!strings.HasSuffix(service.Path, "/portal/authorize") {
+		t.Fatalf("service URL = %s", service.String())
+	}
+	if service.Query().Get("locale") != "en-us" {
+		t.Fatalf("service locale = %s", service.Query().Get("locale"))
+	}
+}
+
+func TestOAuthSaveUsesStationAccountPath(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	sessions := NewOAuthSessionsForStation(International)
+	session := &oauthSession{Verifier: "verifier", DPoPKey: json.RawMessage(`{}`)}
+	token := Token{
+		UserID:   "u1",
+		UserName: "U1",
+		Credentials: Credentials{
+			AccessKeyID:     "AK",
+			SecretAccessKey: "SK",
+			SecurityToken:   "ST",
+		},
+	}
+	auth, err := sessions.saveOAuthAuth(store, session, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.SecurityToken != "ST" {
+		t.Fatalf("security token = %q", auth.SecurityToken)
+	}
+	if auth.CloudDragonToken != "" {
+		t.Fatalf("international OAuth wrote cloud_dragon_token = %q", auth.CloudDragonToken)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codearts-intl", "codearts-u1.json")); err != nil {
+		t.Fatalf("intl auth path missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codearts", "codearts-u1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mainland path was written: %v", err)
+	}
+}

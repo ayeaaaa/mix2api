@@ -29,8 +29,13 @@ const (
 // interactive login. Ensuring a token for an expired account returns it.
 var ErrRefreshTokenMissing = errors.New("codearts: refresh_token is missing; account requires re-login")
 
+var ErrStationMismatch = errors.New("codearts: account belongs to a different station")
+
 // TokenManagerOptions configures a TokenManager.
 type TokenManagerOptions struct {
+	// Station is the CodeArts deployment whose STS endpoint receives refreshes.
+	Station Station
+
 	// Pool is the account pool Keepalive iterates. Ensure does not require it.
 	Pool *Pool
 
@@ -52,6 +57,7 @@ type TokenManagerOptions struct {
 // credentials are verified, persisted (0600), and only then published in
 // memory.
 type TokenManager struct {
+	station  Station
 	client   *transport.Client
 	timeout  time.Duration
 	now      func() time.Time
@@ -105,6 +111,7 @@ func NewTokenManager(client *transport.Client, opts TokenManagerOptions) *TokenM
 		}
 	}
 	return &TokenManager{
+		station:  stationOrDefault(opts.Station),
 		client:   client,
 		timeout:  timeout,
 		now:      now,
@@ -125,6 +132,9 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	snapshot := a.tokenSnapshot()
 	if snapshot.removed {
 		return ErrAccountNotFound
+	}
+	if !authBelongsToStation(snapshot.auth, m.station) {
+		return ErrStationMismatch
 	}
 	if snapshot.manualDisabled {
 		// A manual disable is an operator decision. Do not spend the
@@ -226,6 +236,9 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 	if snapshot.removed {
 		return ErrAccountNotFound
 	}
+	if !authBelongsToStation(snapshot.auth, m.station) {
+		return ErrStationMismatch
+	}
 	if snapshot.manualDisabled {
 		return nil
 	}
@@ -297,7 +310,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 		proxyURL = strings.TrimSpace(m.proxyURL(a))
 	}
 
-	token, err := requestTokenContextWith(requestCtx, m.client, proxyURL, form, auth.DPopPrivateKey)
+	token, err := requestTokenContextWith(requestCtx, m.client, proxyURL, form, auth.DPopPrivateKey, m.station)
 	if err != nil {
 		return m.handleRefreshFailure(a, snapshot, auth, err)
 	}
@@ -409,7 +422,9 @@ func (m *TokenManager) noteTerminalIfCurrent(
 func sameCredentialIdentity(current, previous Auth) bool {
 	return strings.TrimSpace(current.UserID) == strings.TrimSpace(previous.UserID) &&
 		strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
+		authStation(current) == authStation(previous) &&
 		current.CloudDragonToken == previous.CloudDragonToken &&
+		current.SecurityToken == previous.SecurityToken &&
 		current.AccessKeyID == previous.AccessKeyID &&
 		current.SecretAccessKey == previous.SecretAccessKey &&
 		current.ClientID == previous.ClientID &&
@@ -498,11 +513,11 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 	if path == "" {
 		return false, a.authGeneration, errors.New("codearts: token refresh requires an auth path")
 	}
-	if err := verifyAuthOwnership(path, uid); err != nil {
+	if err := verifyAuthOwnershipForStation(path, uid, m.station); err != nil {
 		return false, a.authGeneration, err
 	}
 
-	if err := SaveAuth(path, candidate); err != nil {
+	if err := SaveAuthForStation(path, candidate, m.station); err != nil {
 		return false, a.authGeneration, fmt.Errorf("codearts: save refreshed auth: %w", err)
 	}
 	a.Auth = candidate
@@ -550,7 +565,14 @@ func authFromRefreshToken(old Auth, token Token, now time.Time) Auth {
 	if value := strings.TrimSpace(token.DomainID); value != "" {
 		updated.DomainID = value
 	}
-	updated.CloudDragonToken = token.Credentials.SecurityToken
+	if authStation(old) == International.ID {
+		updated.SecurityToken = token.Credentials.SecurityToken
+	} else {
+		updated.CloudDragonToken = token.Credentials.SecurityToken
+		if strings.TrimSpace(old.SecurityToken) != "" {
+			updated.SecurityToken = token.Credentials.SecurityToken
+		}
+	}
 	updated.AccessKeyID = token.Credentials.AccessKeyID
 	updated.SecretAccessKey = token.Credentials.SecretAccessKey
 	updated.Expiration = parseExpirationText(token.Credentials.Expiration)

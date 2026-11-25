@@ -2163,3 +2163,21 @@ func TestChatGatewayKeyRealmAll(t *testing.T) {
 		t.Fatalf("opened cn=%d codearts=%d", len(cn.opened()), len(codearts.opened()))
 	}
 }
+
+func TestChatBareCodeArtsAmbiguous(t *testing.T) {
+	cn := &stubProvider{id: "codearts", realm: "codearts", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	intl := &stubProvider{id: "codearts-intl", realm: "codearts-intl", models: []providers.Model{{"id": "shared"}}, openStream: chatSuccessStream()}
+	srv := newTestHTTPServer(ServerOptions{Providers: []providers.Provider{cn, intl}})
+	rec := serveRequest(srv.Handler, http.MethodPost, "/v1/chat/completions",
+		`{"model":"shared","messages":[{"role":"user","content":"hi"}]}`, nil)
+	failure := requireErrorEnvelope(t, rec, http.StatusBadRequest, "invalid_request_error")
+	message, _ := failure["message"].(string)
+	for _, candidate := range []string{"codearts/shared", "codearts-intl/shared"} {
+		if !strings.Contains(message, candidate) {
+			t.Fatalf("message = %q, want %q", message, candidate)
+		}
+	}
+	if len(cn.opened()) != 0 || len(intl.opened()) != 0 {
+		t.Fatalf("ambiguous request reached providers cn=%d intl=%d", len(cn.opened()), len(intl.opened()))
+	}
+}

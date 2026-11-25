@@ -14,7 +14,7 @@ func (p *Provider) SettingsView(ctx context.Context) (map[string]any, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	cfg := LoadConfig(p.store)
+	cfg := LoadConfigForStation(p.store, p.station)
 	view := configValues(cfg)
 	view["configured"] = cfg.Enabled
 	pool := p.Pool()
@@ -26,7 +26,7 @@ func (p *Provider) SettingsView(ctx context.Context) (map[string]any, error) {
 		view["accounts"] = 0
 		view["healthy"] = 0
 	}
-	return map[string]any{"codearts": view}, nil
+	return map[string]any{p.station.SettingsKey: view}, nil
 }
 
 // SaveSettings merges only the codearts section. Unknown nested keys survive
@@ -38,7 +38,7 @@ func (p *Provider) SaveSettings(ctx context.Context, patch map[string]any) error
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	raw, present := patch["codearts"]
+	raw, present := patch[p.station.SettingsKey]
 	if !present {
 		return nil
 	}
@@ -46,7 +46,7 @@ func (p *Provider) SaveSettings(ctx context.Context, patch map[string]any) error
 	if !ok {
 		return fmt.Errorf("codearts must be an object")
 	}
-	_, err := SaveConfig(p.store, section)
+	_, err := SaveConfigForStation(p.store, p.station, section)
 	return err
 }
 

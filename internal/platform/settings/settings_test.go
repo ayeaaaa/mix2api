@@ -279,6 +279,42 @@ func TestAPIKeyAcceptsDoubaoRealm(t *testing.T) {
 	}
 }
 
+func TestAPIKeySaveAcceptsCodeartsIntlRealm(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	keyStore := keys.New(store)
+	provider := &settingsRealmOnlyProvider{realm: "codearts-intl", available: true}
+	service := New(Service{
+		Store: store, Keys: keyStore, Providers: []providers.Provider{provider},
+		AccountsDir: dir, UsageDir: filepath.Join(dir, "usage"),
+	})
+	_, err := service.Save(context.Background(), map[string]any{
+		"api_keys": []any{
+			map[string]any{"key": "intl-codearts-key", "name": "intl-codearts", "realm": "codearts-intl", "enabled": true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := keyStore.List(false)
+	if err != nil || len(entries) != 1 || entries[0].Realm != "codearts-intl" {
+		t.Fatalf("keys = %#v, err = %v", entries, err)
+	}
+
+	// Without a registered provider the same binding must be rejected.
+	unregistered := New(Service{
+		Store: store, Keys: keyStore,
+		AccountsDir: dir, UsageDir: filepath.Join(dir, "usage"),
+	})
+	if _, err := unregistered.Save(context.Background(), map[string]any{
+		"api_keys": []any{
+			map[string]any{"key": "intl-codearts-key-2", "name": "intl-codearts", "realm": "codearts-intl"},
+		},
+	}); err == nil {
+		t.Fatal("codearts-intl key accepted without a registered provider")
+	}
+}
+
 func TestRealmEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))
@@ -380,6 +416,30 @@ func TestRealmOptionsIncludeConfiguredExits(t *testing.T) {
 	}
 	if got := service.Active(context.Background()); got != "raccoon" {
 		t.Fatalf("active realm = %q, want raccoon", got)
+	}
+}
+
+func TestRealmOptionsIncludeCodeartsIntl(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	workbuddy := &settingsFakeProvider{realm: "intl", active: "intl"}
+	codeartsIntl := &settingsRealmOnlyProvider{realm: "codearts-intl", available: true}
+	service := NewRealm(store, dir, []providers.Provider{workbuddy, codeartsIntl})
+	options := service.Options()
+	want := []string{"intl", "cn", "codearts-intl"}
+	if len(options) != len(want) {
+		t.Fatalf("options = %#v, want %#v", options, want)
+	}
+	for i := range want {
+		if options[i] != want[i] {
+			t.Fatalf("options = %#v, want %#v", options, want)
+		}
+	}
+	if err := service.Set(context.Background(), "codearts-intl"); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.Active(context.Background()); got != "codearts-intl" {
+		t.Fatalf("active realm = %q", got)
 	}
 }
 

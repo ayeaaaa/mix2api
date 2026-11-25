@@ -993,6 +993,9 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if body["chat_id"] != conversationID || body["prompt_cache_key"] != conversationID {
 		t.Fatalf("chat_id/prompt_cache_key = %#v/%#v", body["chat_id"], body["prompt_cache_key"])
 	}
+	if _, ok := body["user_prompt"]; ok {
+		t.Fatalf("mainland body gained user_prompt: %#v", body)
+	}
 	wantSession := t5SHA("codearts-session:" + conversationID)
 	headers := capture.Header
 	if got := headers.Get("Chat-Id"); got != conversationID {
@@ -2371,5 +2374,168 @@ func TestChatReasoningEffortMapDisabled(t *testing.T) {
 	}
 	if got, _ := captures[0].Body["reasoning_effort"].(string); got != "auto" {
 		t.Fatalf("reasoning_effort = %q, want auto", got)
+	}
+}
+
+func TestIntlChatUsesStationHostAndSecurityToken(t *testing.T) {
+	t.Setenv("WB_CODEARTS_CLIENT_IP", "10.0.1.145")
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts"
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", []byte(`{"model":"GLM-5.2","messages":[]}`), []any{
+		map[string]any{"role": "user", "content": "hi"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Host != "snap-access.ap-southeast-1.myhuaweicloud.com" {
+		t.Fatalf("host = %s", req.URL.Host)
+	}
+	if req.Header.Get("x-language") != "en-us" {
+		t.Fatalf("language = %q", req.Header.Get("x-language"))
+	}
+	if req.Header.Get("x-auth-token") != "" {
+		t.Fatalf("x-auth-token = %q, want empty", req.Header.Get("x-auth-token"))
+	}
+	if req.Header.Get("X-Security-Token") != "sts" {
+		t.Fatalf("security token = %q", req.Header.Get("X-Security-Token"))
+	}
+	if req.Header.Get("User-Agent") != defaultIDEUserAgent ||
+		req.Header.Get("Accept") != "*/*" ||
+		req.Header.Get("Accept-Encoding") != "gzip, deflate, br, zstd" ||
+		req.Header.Get("Connection") != "keep-alive" {
+		t.Fatalf("transport fingerprint = %#v", req.Header)
+	}
+	if req.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("content type = %q", req.Header.Get("Content-Type"))
+	}
+	for _, key := range []string{"X-Encrypt-Capable", "x-session-affinity", "x-message-id", "app-id", "is_confidential", "Chat-Id", "Session-Id", "X-Sdk-Content-Sha256"} {
+		if got := req.Header.Get(key); got != "" {
+			t.Fatalf("%s = %q, want absent", key, got)
+		}
+	}
+	if req.Header.Get("model-id") != "GLM-5.2" || req.Header.Get("model-name") != "GLM-5.2" {
+		t.Fatalf("model metadata = %q/%q", req.Header.Get("model-id"), req.Header.Get("model-name"))
+	}
+	if req.Header.Get("user-session-id") != req.Header.Get("x-ot-session-id") ||
+		!strings.HasPrefix(req.Header.Get("user-session-id"), "ses_") {
+		t.Fatalf("session headers = %#v", req.Header)
+	}
+	if !strings.HasPrefix(req.Header.Get("user-msg-id"), "msg_") {
+		t.Fatalf("user-msg-id = %q", req.Header.Get("user-msg-id"))
+	}
+	if req.Header.Get("x-snap-traceid") != req.Header.Get("x-ot-trace-id")+"_"+req.Header.Get("x-ot-span-id") {
+		t.Fatalf("trace headers = %#v", req.Header)
+	}
+	authorization := req.Header.Get("Authorization")
+	if !strings.Contains(authorization, "SignedHeaders=client-ip;created-time;host;ide-name;ide-version;model-id;model-name;plugin-name;plugin-version;user-msg-id;user-session-id;x-language;x-ot-client-type;x-ot-client-version;x-ot-function;x-ot-parent-session-id;x-ot-session-id;x-ot-span-id;x-ot-trace-id;x-sdk-date;x-security-token;x-snap-traceid") {
+		t.Fatalf("SignedHeaders = %q", authorization)
+	}
+}
+
+func TestIntlChatStripsGatewayBodyFields(t *testing.T) {
+	fake := &t5Fake{}
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	intl := International
+	intl.SnapHost = server.URL
+	store := newTestStore(t)
+	if _, err := SaveConfigForStation(store, intl, map[string]any{
+		"enabled": true, "stream_timeout_seconds": 600, "models_ttl_seconds": 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := NewWithStation(store, intl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := testAuth("u1")
+	auth.CloudDragonToken = ""
+	auth.SecurityToken = "sts"
+	auth.Station = "international"
+	account, err := provider.Pool().Add(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAccountCatalog(t, account, []Model{{"id": "GLM-5.2", "max_tokens": int64(8192)}}, time.Now())
+
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":           "GLM-5.2",
+		"messages":        t5Messages(t5UserMessage("hi")),
+		"conversation_id": "0123456789abcdef0123456789abcdef",
+	}, "intl-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	captures := fake.snapshot()
+	if len(captures) != 1 {
+		t.Fatalf("calls = %d", len(captures))
+	}
+	body := captures[0].Body
+	if _, ok := body["chat_id"]; ok {
+		t.Fatalf("chat_id leaked into intl body: %#v", body)
+	}
+	if _, ok := body["prompt_cache_key"]; ok {
+		t.Fatalf("prompt_cache_key leaked into intl body: %#v", body)
+	}
+	if body["user_prompt"] != "hi" {
+		t.Fatalf("user_prompt = %#v, want hi", body["user_prompt"])
+	}
+}
+
+func TestIntlChatHasNoBenefitHeader(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "ST"
+	account.SetModelBenefit(map[string]bool{"GLM-5.2": true})
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", []byte(`{"model":"GLM-5.2","messages":[]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("maas_type"); got != "" {
+		t.Fatalf("maas_type = %q, want empty", got)
+	}
+}
+
+// The international work must not change the mainland wire shape. This test
+// pins the legacy body and the WB_CODEARTS_OT_SESSION opt-out.
+func TestMainlandChatKeepsLegacyBodyAndOTSwitch(t *testing.T) {
+	t.Setenv("WB_CODEARTS_OT_SESSION", "0")
+	fake, _ := newT5Fake(t, nil)
+	provider, _ := newT5Provider(t, "u1")
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":       "GLM-5.2",
+		"messages":    t5Messages(t5UserMessage("hi")),
+		"user_prompt": "client-supplied",
+	}, ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	_ = stream.Close()
+	captures := fake.snapshot()
+	if len(captures) != 1 {
+		t.Fatalf("calls = %d", len(captures))
+	}
+	body := captures[0].Body
+	if _, ok := body["user_prompt"]; ok {
+		t.Fatalf("mainland body gained user_prompt: %#v", body)
+	}
+	headers := captures[0].Header
+	if headers.Get("Chat-Id") == "" || headers.Get("Session-Id") == "" {
+		t.Fatalf("legacy identity headers missing: %#v", headers)
+	}
+	for _, name := range []string{"x-ot-session-id", "user-session-id", "x-ot-trace-id"} {
+		if got := headers.Get(name); got != "" {
+			t.Fatalf("%s = %q, want empty when WB_CODEARTS_OT_SESSION=0", name, got)
+		}
 	}
 }

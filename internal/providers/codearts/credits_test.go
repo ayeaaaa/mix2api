@@ -791,3 +791,63 @@ func TestCreditsRefreshMixedResultsSkipDisabledAndNoOverallFailure(t *testing.T)
 		t.Fatalf("disabled account appeared in result: %s", encoded)
 	}
 }
+
+func TestTokenQuotaParsing(t *testing.T) {
+	data := map[string]any{
+		"package": map[string]any{
+			"is_token_package": true,
+			"package_name_en":  "Free",
+			"spec_code":        "codearts.agent.trial",
+		},
+		"metrics": []any{
+			map[string]any{
+				"name":                 "usageTokenChatMessages",
+				"usage_token_num":      41170,
+				"package_token_amount": 5000000,
+				"package_token_remain": 4958830,
+			},
+		},
+		"start_date": "2026-11-25",
+		"end_date":   "2026-12-26",
+	}
+	info := parseAccountInfo(data, time.Unix(0, 0), International.ID)
+	if !info.IsTokenPackage {
+		t.Fatal("IsTokenPackage = false")
+	}
+	if info.Credits.Total == nil {
+		t.Fatal("Credits.Total = nil")
+	}
+	if info.Credits.Unit != "token" {
+		t.Fatalf("unit = %q, want token", info.Credits.Unit)
+	}
+	if info.Credits.Total.Amount != 5000000 || info.Credits.Total.Used != 41170 || info.Credits.Total.Remain != 4958830 {
+		t.Fatalf("total = %#v", info.Credits.Total)
+	}
+}
+
+func TestIntlUsageUsesStationHeaders(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts-intl"
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"package":{"is_token_package":true},"metrics":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	p.station.SnapHost = server.URL
+	if _, err := p.fetchInfo(context.Background(), account, true); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("X-Language") != "en-us" {
+		t.Fatalf("X-Language = %q", got.Get("X-Language"))
+	}
+	if got.Get("X-Security-Token") != "sts-intl" {
+		t.Fatalf("X-Security-Token = %q", got.Get("X-Security-Token"))
+	}
+}

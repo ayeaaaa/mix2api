@@ -100,6 +100,9 @@ func TestDashboardContract(t *testing.T) {
 		filepath.Join(root, "tests", "dashboard", "node", "_test_buddy_checkin_status.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_settings_update_ui.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_update_rollback_ui.js"),
+		filepath.Join(root, "tests", "dashboard", "node", "_test_codearts_intl_panel.js"),
+		filepath.Join(root, "tests", "dashboard", "node", "_test_codearts_oauth_lifecycle.js"),
+		filepath.Join(root, "tests", "dashboard", "node", "_test_codearts_intl_settings.js"),
 		filepath.Join(root, "tests", "oracle", "dashboard.md"),
 	} {
 		if _, err := os.Stat(path); err != nil {

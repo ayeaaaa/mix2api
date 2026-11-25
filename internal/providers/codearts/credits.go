@@ -122,10 +122,10 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 	signed.Set("Content-Type", "application/json")
 	afterSign := http.Header{}
 	afterSign.Set("Agent-Type", creditCheckinAgentType)
-	afterSign.Set("X-Language", creditCheckinLanguage)
+	afterSign.Set("X-Language", p.Station().Locale)
 	data, err := p.signedJSON(ctx, a, signedJSONRequest{
 		Method:    http.MethodGet,
-		URL:       snapManagerBase() + creditEndpointPlugin,
+		URL:       p.snapManagerBase() + creditEndpointPlugin,
 		Timeout:   creditInfoTimeout,
 		Signed:    signed,
 		AfterSign: afterSign,
@@ -134,7 +134,7 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 		return nil, err
 	}
 
-	info := parseAccountInfo(data, p.catalogNow())
+	info := parseAccountInfo(data, p.catalogNow(), p.Station().ID)
 	a.SetInfo(info)
 	return a.infoSnapshot(), nil
 }
@@ -142,10 +142,14 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 // parseAccountInfo normalizes the statistics/plugin response into the v1
 // panel shape. Missing metrics become nil buckets; present zero buckets stay
 // present so the panel can distinguish "0 used" from "not reported".
-func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
+func parseAccountInfo(data map[string]any, now time.Time, stationIDs ...string) *AccountInfo {
 	packageInfo := modelMap(data["package"])
 	isCredit, _ := packageInfo["is_credit_package"].(bool)
 	isToken, _ := packageInfo["is_token_package"].(bool)
+	// Token quota is an international-station shape. Mainland keeps its
+	// existing credit parsing byte-for-byte even if the payload reports a
+	// token package.
+	allowTokenQuota := len(stationIDs) > 0 && stationIDs[0] == International.ID
 	packageName := strings.TrimSpace(modelTruthyText(packageInfo["package_name_cn"]))
 	if packageName == "" {
 		packageName = strings.TrimSpace(modelTruthyText(packageInfo["package_name_en"]))
@@ -181,20 +185,28 @@ func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
 		})
 	}
 
+	total := creditMetric(metrics, creditTotalPackageMetric)
+	unit := "credit"
+	if allowTokenQuota && isToken {
+		if tokenTotal := tokenMetric(metrics); tokenTotal != nil {
+			total = tokenTotal
+			unit = "token"
+		}
+	}
 	return &AccountInfo{
 		IsCreditPackage: isCredit,
-		IsTokenPackage:  isToken,
+		IsTokenPackage:  allowTokenQuota && isToken,
 		SpecCode:        modelTruthyText(packageInfo["spec_code"]),
 		PackageName:     packageName,
 		PackageStatus:   modelTruthyText(packageInfo["status"]),
 		StartDate:       modelTruthyText(data["start_date"]),
 		EndDate:         modelTruthyText(data["end_date"]),
 		Credits: AccountCredits{
-			Total:    creditMetric(metrics, creditTotalPackageMetric),
+			Total:    total,
 			Basic:    creditMetric(metrics, creditBasicPackageMetric),
 			OnDemand: creditMetric(metrics, creditOnDemandMetric),
 			Bonus:    creditMetric(metrics, creditBonusPackageMetric),
-			Unit:     "credit",
+			Unit:     unit,
 		},
 		Models:    models,
 		FetchedAt: unixSeconds(now),
@@ -215,6 +227,28 @@ func creditMetric(metrics any, name string) *CreditTotal {
 			Remain:   creditNumber(item["package_credit_remain"]),
 			Expiring: creditNumber(item["package_credit_expiring_amount"]),
 		}
+	}
+	return nil
+}
+
+// tokenMetric maps the international token-plan metric onto the existing
+// CreditTotal shape so scheduling and the panel can share one remain check.
+func tokenMetric(metrics any) *CreditTotal {
+	for _, raw := range modelList(metrics) {
+		item := modelMap(raw)
+		if item == nil || modelText(item["name"]) != "usageTokenChatMessages" {
+			continue
+		}
+		amount := creditNumber(item["package_token_amount"])
+		used := creditNumber(item["usage_token_num"])
+		remain := creditNumber(item["package_token_remain"])
+		if _, ok := item["package_token_remain"]; !ok {
+			remain = amount - used
+		}
+		if remain < 0 {
+			remain = 0
+		}
+		return &CreditTotal{Amount: amount, Used: used, Remain: remain}
 	}
 	return nil
 }
@@ -393,7 +427,7 @@ func (p *Provider) signedJSON(ctx context.Context, a *Account, options signedJSO
 	credentials := SignCredentials{
 		AccessKeyID:     auth.AccessKeyID,
 		SecretAccessKey: auth.SecretAccessKey,
-		SecurityToken:   auth.CloudDragonToken,
+		SecurityToken:   auth.SigningSecurityToken(),
 	}
 	if err := SignRequest(request, body, credentials); err != nil {
 		return nil, errors.New("codearts: sign request failed")

@@ -462,6 +462,10 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		return s.resolveGatewayAmong(ctx, request.model)
 	}
 
+	if err := s.rejectAmbiguousCodeArts(ctx, request.model); err != nil {
+		return nil, err
+	}
+
 	if len(s.providers) == 0 {
 		return nil, localFailure(http.StatusBadRequest, "no provider is registered")
 	}
@@ -489,6 +493,36 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		}
 	}
 	return s.resolveAmong(ctx, candidates, request.model, "")
+}
+
+// rejectAmbiguousCodeArts fails closed when a bare model is advertised by both
+// CodeArts stations. Other providers keep their legacy first-match behavior;
+// only the dual CodeArts realms have independently billed quotas that must not
+// be selected silently.
+func (s *Server) rejectAmbiguousCodeArts(ctx context.Context, model string) error {
+	mainland := s.providerForRealm("codearts")
+	international := s.providerForRealm("codearts-intl")
+	if mainland == nil || international == nil {
+		return nil
+	}
+	// Read mainland first and stop when it does not advertise the model:
+	// ambiguity requires both stations, so the international catalog only
+	// needs a read when mainland already matches. This keeps the extra cost
+	// off bare-model requests that are not CodeArts models at all.
+	mainlandCtx, mainlandCancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+	mainlandModels, err := mainland.Models(mainlandCtx, false)
+	mainlandCancel()
+	if err != nil || !modelMatches(mainlandModels, model) {
+		return nil
+	}
+	internationalCtx, internationalCancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+	internationalModels, err := international.Models(internationalCtx, false)
+	internationalCancel()
+	if err != nil || !modelMatches(internationalModels, model) {
+		return nil
+	}
+	return localFailure(http.StatusBadRequest,
+		"model is available in both CodeArts stations; use realm/model: codearts/"+model+", codearts-intl/"+model)
 }
 
 // catalogResolutionTimeout bounds every catalog read used for model-to-realm

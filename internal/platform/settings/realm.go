@@ -218,6 +218,8 @@ func normalizeRealm(value string) string {
 		return "cn"
 	case "codearts":
 		return "codearts"
+	case "codearts-intl":
+		return "codearts-intl"
 	case "raccoon":
 		return "raccoon"
 	case "doubao":

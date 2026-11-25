@@ -93,21 +93,37 @@ func dashboardRoutes() []dashboardRoute {
 		post("/realm"),
 
 		get("/codearts/overview", false),
-		action("/codearts/accounts/checkin", "/codearts/accounts/"),
-		action("/codearts/accounts/clear-cooldown", "/codearts/accounts/"),
-		action("/codearts/accounts/delete", "/codearts/accounts/"),
-		action("/codearts/accounts/disable", "/codearts/accounts/"),
-		action("/codearts/accounts/enable", "/codearts/accounts/"),
-		action("/codearts/accounts/note", "/codearts/accounts/"),
-		action("/codearts/accounts/tasks", "/codearts/accounts/"),
-		action("/codearts/accounts/test", "/codearts/accounts/"),
-		action("/codearts/accounts/proxy", "/codearts/accounts/"),
-		action("/codearts/accounts/oauth/start", "/codearts/accounts/"),
-		action("/codearts/accounts/oauth/poll", "/codearts/accounts/"),
-		action("/codearts/accounts/oauth/callback", "/codearts/accounts/"),
+		// CodeArts account actions, OAuth and import are built from a realm-aware
+		// prefix plus these suffixes (codeartsRealmEndpoint(realm) + ...), so the
+		// page references the suffixes rather than the full mainland path.
+		action("/codearts/accounts/checkin", "/accounts/checkin"),
+		action("/codearts/accounts/clear-cooldown", "/accounts/"),
+		action("/codearts/accounts/delete", "/accounts/"),
+		action("/codearts/accounts/disable", "/accounts/"),
+		action("/codearts/accounts/enable", "/accounts/"),
+		action("/codearts/accounts/import", "/accounts/import"),
+		action("/codearts/accounts/note", "/accounts/"),
+		action("/codearts/accounts/tasks", "/accounts/"),
+		action("/codearts/accounts/test", "/accounts/"),
+		action("/codearts/accounts/proxy", "/accounts/proxy"),
+		action("/codearts/accounts/oauth/start", "/accounts/oauth/start"),
+		action("/codearts/accounts/oauth/poll", "/accounts/oauth/poll"),
+		action("/codearts/accounts/oauth/callback", "/accounts/oauth/callback"),
 		post("/codearts/credits/refresh"),
 		post("/codearts/keepalive"),
 		post("/codearts/test"),
+
+		// International CodeArts station: the panel requests these per-realm
+		// literals (codearts-intl overview/credits/keepalive/models refresh);
+		// its account actions reuse the /codearts-intl/accounts/ subtree.
+		get("/codearts-intl/overview", false),
+		action("/codearts-intl/accounts/import", "/accounts/import"),
+		action("/codearts-intl/accounts/oauth/start", "/accounts/oauth/start"),
+		action("/codearts-intl/accounts/oauth/poll", "/accounts/oauth/poll"),
+		action("/codearts-intl/accounts/oauth/callback", "/accounts/oauth/callback"),
+		post("/codearts-intl/credits/refresh"),
+		post("/codearts-intl/keepalive"),
+		post("/codearts-intl/test"),
 
 		get("/doubao/overview", false),
 		action("/doubao/accounts/import", "/doubao/accounts/"),
@@ -144,6 +160,7 @@ func dashboardRoutes() []dashboardRoute {
 		post("/raccoon/test"),
 		post("/raccoon/models/refresh"),
 		post("/codearts/models/refresh"),
+		post("/codearts-intl/models/refresh"),
 
 		get("/logs", false),
 		post("/logs/clear"),

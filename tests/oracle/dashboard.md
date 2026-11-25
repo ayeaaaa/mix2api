@@ -16,11 +16,10 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `aea48baf830e4424041c8665e0d393c9c648d39c3ff2c52c144c4d864730e536` |
+| v2 SHA-256 | `beaf91f7fde0629349cbacb4b3334a869df8569e892a943539398c2fffdebefc` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,419,650 bytes |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, and panel branding controls; otherwise identical to v1.6.5 |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, and panel branding controls; otherwise identical to v1.6.5 |
+| v2 size | 1,448,919 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, panel branding controls, and the CodeArts international card/account/settings panel; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
@@ -29,7 +28,8 @@ asset.
 `tests/dashboard/contract_test.go`, and the JS harness input all re-check the
 served digest. The v1 hash is kept beside the v2 hash; the intentional
 deltas from v1.6.5 are the top-bar total-quota columns, Raccoon
-daily-activity controls and panel branding controls.
+daily-activity controls, Doubao Work provider controls, panel branding
+controls, and the CodeArts international panel.
 
 ## Static contract
 
@@ -118,9 +118,9 @@ DASHBOARD_HTML=$PWD/internal/web/dashboard.html node tests/dashboard/node/run.js
 ## Gate E checklist
 
 - [x] Dashboard SHA-256 matches the documented v2 digest
-      (`80daa14a...`); the v2 asset adds the top-bar total-quota columns,
-daily-activity and branding controls. HTML is
-      embedded, not generated.
+      (`beaf91f7...`); the v2 asset adds the top-bar total-quota columns,
+      daily-activity and branding controls, and the CodeArts international
+      panel. HTML is embedded, not generated.
 - [x] `/`, `/dashboard.html`, and the v1 aliases serve identical bytes with
       `text/html`, `no-cache`, strong `ETag`/`304`, and no CORS.
 - [x] Every dashboard `fetch`/`getJSON`/`postJSON` path has a registered route;

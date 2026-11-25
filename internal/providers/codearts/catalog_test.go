@@ -1584,3 +1584,125 @@ func TestModelsLiveSettingsToggle(t *testing.T) {
 		t.Fatal("re-enabled Models returned an empty catalogue")
 	}
 }
+
+func TestIntlCatalogSkipsBenefitHost(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.benefitHost() != "" {
+		t.Fatalf("benefit host = %q, want empty", p.benefitHost())
+	}
+	if p.snapHost() != International.SnapHost {
+		t.Fatalf("snap host = %q", p.snapHost())
+	}
+}
+
+func TestMainlandCatalogKeepsBenefitHostAndSeeds(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), Mainland)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.benefitHost() != benefitHost() {
+		t.Fatalf("benefit host = %q, want %q", p.benefitHost(), benefitHost())
+	}
+	if p.snapHost() != snapHost() {
+		t.Fatalf("snap host = %q, want %q", p.snapHost(), snapHost())
+	}
+	if len(officialCoreModels()) == 0 {
+		t.Fatal("mainland official seed set is empty")
+	}
+}
+
+func TestIntlCatalogUsesOnlyInternationalColdSeeds(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.stationCoreModels(); len(got) != 0 {
+		t.Fatalf("intl station core models = %v, want none", got)
+	}
+	seeds := p.coldSeedModels()
+	want := map[string]bool{"glm-5.3": true, "GLM-5.2": true, "Qwen3-VL-235B": true}
+	for _, item := range seeds {
+		id := modelText(item["id"])
+		if !want[id] {
+			t.Fatalf("unexpected intl cold seed %q", id)
+		}
+		delete(want, id)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing intl cold seeds: %v", want)
+	}
+}
+
+func TestIntlCatalogUsesStationHeaders(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts-intl"
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	if _, err := p.catalogJSON(context.Background(), account, http.MethodGet, server.URL, nil, "PromptCenter"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("X-Language") != "en-us" {
+		t.Fatalf("X-Language = %q", got.Get("X-Language"))
+	}
+	if got.Get("X-Security-Token") != "sts-intl" {
+		t.Fatalf("X-Security-Token = %q", got.Get("X-Security-Token"))
+	}
+}
+
+func TestIntlCatalogFetchSkipsBenefitUpstream(t *testing.T) {
+	var paths []string
+	var pathsMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathsMu.Lock()
+		paths = append(paths, r.URL.Path)
+		pathsMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/agent-center/agents/useragents":
+			_, _ = w.Write([]byte(`{"agents":[{"agent_id":"agent-1","agent_name":"CodeAgent","is_primary_agent":true,"show_in_ide":true}]}`))
+		case "/v1/agent-center/agents/detail":
+			_, _ = w.Write([]byte(`{"gpts":{"models":[{"model_name":"GLM-5.2","model_parameters":{"model_id":"GLM-5.2","context_window":202752,"max_tokens":131072}},{"model_name":"GLM-5.3","model_parameters":{"model_id":"GLM-5.3","context_window":202752,"max_tokens":65535}}]}}`))
+		case "/v1/model/builtin":
+			_, _ = w.Write([]byte(`{"builtinModels":[]}`))
+		default:
+			t.Fatalf("unexpected intl catalog path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.station.SnapHost = server.URL
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "ST"
+	models, err := p.FetchModels(context.Background(), account, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || modelText(models[0]["id"]) != "GLM-5.2" {
+		t.Fatalf("models = %#v", models)
+	}
+	pathsMu.Lock()
+	snapshot := append([]string(nil), paths...)
+	pathsMu.Unlock()
+	for _, path := range snapshot {
+		if strings.Contains(path, "gateway/config") || strings.Contains(path, "benefit") {
+			t.Fatalf("intl catalog requested benefit path %q", path)
+		}
+	}
+}

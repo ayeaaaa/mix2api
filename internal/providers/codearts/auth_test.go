@@ -759,3 +759,91 @@ func entryNames(entries []os.DirEntry) []string {
 	}
 	return names
 }
+
+func TestAuthPathUsesStationFolder(t *testing.T) {
+	dir := t.TempDir()
+	cn, err := AuthPathForStation(dir, Mainland, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intl, err := AuthPathForStation(dir, International, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn != filepath.Join(dir, "codearts", "codearts-u1.json") {
+		t.Fatalf("cn path = %q", cn)
+	}
+	if intl != filepath.Join(dir, "codearts-intl", "codearts-u1.json") {
+		t.Fatalf("intl path = %q", intl)
+	}
+}
+
+func TestAuthSecurityTokenRoundTripAndFallback(t *testing.T) {
+	var old Auth
+	if err := json.Unmarshal([]byte(`{"user_id":"u1","cloud_dragon_token":"legacy"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.SecurityToken != "" || old.CloudDragonToken != "legacy" {
+		t.Fatalf("old auth = %#v", old)
+	}
+	var next Auth
+	if err := json.Unmarshal([]byte(`{"user_id":"u1","security_token":"sts"}`), &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.SecurityToken != "sts" {
+		t.Fatalf("security_token = %q", next.SecurityToken)
+	}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"security_token":"sts"`) {
+		t.Fatalf("round-trip = %s", raw)
+	}
+}
+
+func TestCodeartsSecretValuesIncludesIndependentSecurityToken(t *testing.T) {
+	auth := Auth{UserID: "u1", SecurityToken: "sts-secret"}
+	values := codeartsSecretValues(auth)
+	found := false
+	for _, value := range values {
+		if value == "sts-secret" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("security token missing from redaction list: %v", values)
+	}
+	if redacted := redactText("leak sts-secret here", values); strings.Contains(redacted, "sts-secret") {
+		t.Fatalf("security token not redacted: %q", redacted)
+	}
+}
+
+func TestAuthStationLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codearts-u1.json")
+	intlAuth := Auth{UserID: "u1", SecurityToken: "ST", Station: "international"}
+	if err := SaveAuthForStation(path, intlAuth, International); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadAuthForStation(path, International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Station != "international" || got.SecurityToken != "ST" {
+		t.Fatalf("got = %#v", got)
+	}
+	if _, err := LoadAuthForStation(path, Mainland); err == nil {
+		t.Fatal("mainland loaded international auth")
+	}
+	if err := SaveAuthForStation(path, Auth{UserID: "u2"}, International); err == nil {
+		t.Fatal("intl save accepted no signing token")
+	}
+}
+
+func TestSaveAuthForStationRejectsBlankIntlIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codearts-u1.json")
+	if err := SaveAuthForStation(path, Auth{UserID: "u1", CloudDragonToken: "legacy"}, International); err == nil {
+		t.Fatal("intl save accepted a blank station with mainland credentials")
+	}
+}

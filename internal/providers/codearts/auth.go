@@ -26,7 +26,9 @@ type Auth struct {
 	UserID           string `json:"user_id"`
 	UserName         string `json:"user_name"`
 	DomainID         string `json:"domain_id"`
+	Station          string `json:"station,omitempty"`
 	CloudDragonToken string `json:"cloud_dragon_token"`
+	SecurityToken    string `json:"security_token,omitempty"`
 	AccessKeyID      string `json:"access_key_id"`
 	SecretAccessKey  string `json:"secret_access_key"`
 	RefreshToken     string `json:"refresh_token"`
@@ -42,11 +44,37 @@ type Auth struct {
 	extraFields map[string]json.RawMessage
 }
 
+// SigningSecurityToken returns the token used for X-Security-Token: the
+// international field when present, otherwise the mainland cloud-dragon token.
+func (a Auth) SigningSecurityToken() string {
+	if token := strings.TrimSpace(a.SecurityToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(a.CloudDragonToken)
+}
+
+func authStation(auth Auth) string {
+	if station := strings.TrimSpace(auth.Station); station != "" {
+		return station
+	}
+	return Mainland.ID
+}
+
+func authBelongsToStation(auth Auth, station Station) bool {
+	return authStation(auth) == stationOrDefault(station).ID
+}
+
+func authHasSigningToken(auth Auth) bool {
+	return strings.TrimSpace(auth.SigningSecurityToken()) != ""
+}
+
 var knownAuthJSONKeys = map[string]struct{}{
 	"user_id":            {},
 	"user_name":          {},
 	"domain_id":          {},
+	"station":            {},
 	"cloud_dragon_token": {},
+	"security_token":     {},
 	"access_key_id":      {},
 	"secret_access_key":  {},
 	"refresh_token":      {},
@@ -72,7 +100,9 @@ func (a Auth) MarshalJSON() ([]byte, error) {
 		{"user_id", a.UserID},
 		{"user_name", a.UserName},
 		{"domain_id", a.DomainID},
+		{"station", a.Station},
 		{"cloud_dragon_token", a.CloudDragonToken},
+		{"security_token", a.SecurityToken},
 		{"access_key_id", a.AccessKeyID},
 		{"secret_access_key", a.SecretAccessKey},
 		{"refresh_token", a.RefreshToken},
@@ -84,6 +114,10 @@ func (a Auth) MarshalJSON() ([]byte, error) {
 		{"updated_at", a.UpdatedAt},
 	}
 	for _, field := range fields {
+		if (field.name == "security_token" && a.SecurityToken == "") ||
+			(field.name == "station" && a.Station == "") {
+			continue
+		}
 		if err := appendAuthField(&buf, &first, field.name, field.value); err != nil {
 			return nil, err
 		}
@@ -169,7 +203,9 @@ func (a *Auth) UnmarshalJSON(data []byte) error {
 		UserID:           decodeStringValue(raw["user_id"]),
 		UserName:         decodeStringValue(raw["user_name"]),
 		DomainID:         decodeStringValue(raw["domain_id"]),
+		Station:          decodeStringValue(raw["station"]),
 		CloudDragonToken: decodeStringValue(raw["cloud_dragon_token"]),
+		SecurityToken:    decodeStringValue(raw["security_token"]),
 		AccessKeyID:      decodeStringValue(raw["access_key_id"]),
 		SecretAccessKey:  decodeStringValue(raw["secret_access_key"]),
 		RefreshToken:     decodeStringValue(raw["refresh_token"]),
@@ -324,6 +360,13 @@ func parseExpirationText(text string) time.Time {
 // cloud_dragon_token or user_id, the two fields v1 requires before an account
 // enters the pool. Errors never include token values.
 func LoadAuth(path string) (Auth, error) {
+	return LoadAuthForStation(path, Mainland)
+}
+
+// LoadAuthForStation reads one auth document and verifies it belongs to the
+// station whose account folder contains it.
+func LoadAuthForStation(path string, station Station) (Auth, error) {
+	station = stationOrDefault(station)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Auth{}, fmt.Errorf("codearts: read auth file %s: %w", path, err)
@@ -336,8 +379,15 @@ func LoadAuth(path string) (Auth, error) {
 	if strings.TrimSpace(auth.UserID) == "" {
 		return Auth{}, fmt.Errorf("codearts: auth file %s: user_id is empty", path)
 	}
-	if strings.TrimSpace(auth.CloudDragonToken) == "" {
-		return Auth{}, fmt.Errorf("codearts: auth file %s: cloud_dragon_token is empty", path)
+	if !authBelongsToStation(auth, station) {
+		return Auth{}, fmt.Errorf("codearts: auth file %s belongs to station %q, not %q", path, authStation(auth), station.ID)
+	}
+	if station.ID == Mainland.ID {
+		if strings.TrimSpace(auth.CloudDragonToken) == "" {
+			return Auth{}, fmt.Errorf("codearts: auth file %s: cloud_dragon_token is empty", path)
+		}
+	} else if !authHasSigningToken(auth) {
+		return Auth{}, fmt.Errorf("codearts: auth file %s: security_token is empty", path)
 	}
 	return auth, nil
 }
@@ -346,6 +396,10 @@ func LoadAuth(path string) (Auth, error) {
 // differs or whose contents cannot be verified. A missing file is writable.
 // The path is included in errors; token values never are.
 func verifyAuthOwnership(path, uid string) error {
+	return verifyAuthOwnershipForStation(path, uid, Mainland)
+}
+
+func verifyAuthOwnershipForStation(path, uid string, station Station) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return errors.New("codearts: auth path is empty")
@@ -355,7 +409,7 @@ func verifyAuthOwnership(path, uid string) error {
 		return errors.New("codearts: auth uid is empty")
 	}
 
-	existing, err := LoadAuth(path)
+	existing, err := LoadAuthForStation(path, station)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -372,14 +426,37 @@ func verifyAuthOwnership(path, uid string) error {
 // parent directory if needed. Missing required identity fields are rejected.
 // Errors never include token values.
 func SaveAuth(path string, auth Auth) error {
+	return SaveAuthForStation(path, auth, Mainland)
+}
+
+// SaveAuthForStation writes one station's auth document. Mainland requires the
+// legacy cloud_dragon_token; international accepts an independent security
+// token and stamps the station on first save.
+func SaveAuthForStation(path string, auth Auth, station Station) error {
+	station = stationOrDefault(station)
 	if strings.TrimSpace(path) == "" {
 		return errors.New("codearts: auth path is empty")
 	}
 	if strings.TrimSpace(auth.UserID) == "" {
 		return errors.New("codearts: auth requires user_id")
 	}
-	if strings.TrimSpace(auth.CloudDragonToken) == "" {
-		return errors.New("codearts: auth requires cloud_dragon_token")
+	if station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
+		return errors.New("codearts: international auth requires an explicit station")
+	}
+	if !authBelongsToStation(auth, station) {
+		return errors.New("codearts: auth station does not match the account folder")
+	}
+	if station.ID == Mainland.ID {
+		if strings.TrimSpace(auth.CloudDragonToken) == "" {
+			return errors.New("codearts: auth requires cloud_dragon_token")
+		}
+	} else {
+		if !authHasSigningToken(auth) {
+			return errors.New("codearts: auth requires security_token")
+		}
+		if strings.TrimSpace(auth.Station) == "" {
+			auth.Station = station.ID
+		}
 	}
 
 	data, err := json.MarshalIndent(auth, "", "  ")
@@ -397,11 +474,17 @@ func SaveAuth(path string, auth Auth) error {
 	return nil
 }
 
-// AuthPath returns the v1 auth path for uid under accountsDir:
+// AuthPath returns the v1 mainland auth path for uid under accountsDir:
 // accountsDir/codearts/codearts-<safe-uid>.json. UID is untrusted, so path
 // separators and non [A-Za-z0-9._-] characters are replaced with underscores.
 // An empty UID keeps v1's "unknown" filename fallback.
 func AuthPath(accountsDir, uid string) (string, error) {
+	return AuthPathForStation(accountsDir, Mainland, uid)
+}
+
+// AuthPathForStation returns the auth path for uid under the station folder.
+func AuthPathForStation(accountsDir string, station Station, uid string) (string, error) {
+	station = stationOrDefault(station)
 	text := strings.TrimSpace(uid)
 	if text == "" {
 		text = "unknown"
@@ -410,5 +493,5 @@ func AuthPath(accountsDir, uid string) (string, error) {
 	if safe == "" {
 		safe = "unknown"
 	}
-	return filepath.Join(accountsDir, "codearts", "codearts-"+safe+".json"), nil
+	return filepath.Join(accountsDir, station.AccountsFolder, "codearts-"+safe+".json"), nil
 }

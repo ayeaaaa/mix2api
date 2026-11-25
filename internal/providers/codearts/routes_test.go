@@ -1406,3 +1406,145 @@ func TestCodeArtsAdminErrorsNeverExposeFilesystemDetail(t *testing.T) {
 		t.Fatalf("response leaked a filesystem path: %#v", body)
 	}
 }
+
+func TestCodeArtsIntlRoutesUsePrefix(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOAuth := map[string]bool{
+		"/codearts-intl/accounts/oauth/start":    false,
+		"/codearts-intl/accounts/oauth/poll":     false,
+		"/codearts-intl/accounts/oauth/callback": false,
+	}
+	for _, route := range p.Routes() {
+		if route.Path == "/oauth/callback" {
+			t.Fatalf("intl must not register the public callback route")
+		}
+		if !strings.HasPrefix(route.Path, "/codearts-intl/") {
+			t.Fatalf("route %q does not use intl prefix", route.Path)
+		}
+		if _, ok := wantOAuth[route.Path]; ok {
+			wantOAuth[route.Path] = true
+		}
+	}
+	for path, found := range wantOAuth {
+		if !found {
+			t.Fatalf("intl is missing oauth route %q", path)
+		}
+	}
+}
+
+func TestCodeArtsIntlOAuthBrowserCallbackViaMainlandPeer(t *testing.T) {
+	fake, server := newOAuthFake(t)
+
+	intl := International
+	intl.STS = server.URL
+	intl.SnapHost = server.URL
+	intl.Portal = "https://portal.example.test/portal"
+	intl.LoginURL = "https://auth.example.test/authui/login?site=intl"
+
+	store := newTestStore(t)
+	mainland, err := NewWithStation(store, Mainland)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intlProvider, err := NewWithStation(store, intl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainland.SetListenerPort(54321)
+	intlProvider.SetListenerPort(54321)
+	mainland.SetOAuthPeer(intlProvider)
+	mux := http.NewServeMux()
+	api.RegisterProviderRoutes(mux, mainland)
+	api.RegisterProviderRoutes(mux, intlProvider)
+
+	startReq := httptest.NewRequest(http.MethodPost, "/codearts-intl/accounts/oauth/start", strings.NewReader(`{}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	mux.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("intl start status=%d body=%s", startRec.Code, startRec.Body)
+	}
+	start := decodeRoutesJSON(t, startRec)
+	outer, err := url.Parse(routesText(start["auth_url"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := url.Parse(outer.Query().Get("service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := service.Query().Get("ticket_id")
+	if ticket == "" {
+		t.Fatalf("intl start has no ticket: %s", startRec.Body)
+	}
+
+	callbackReq := httptest.NewRequest(http.MethodGet,
+		"/oauth/callback?code=oauth-code&ticket_id="+url.QueryEscape(ticket), nil)
+	callbackRec := httptest.NewRecorder()
+	mux.ServeHTTP(callbackRec, callbackReq)
+	if callbackRec.Code != http.StatusOK || !strings.Contains(callbackRec.Body.String(), "登录成功") {
+		t.Fatalf("intl browser callback status=%d body=%s", callbackRec.Code, callbackRec.Body)
+	}
+	fake.mu.Lock()
+	tokenCalls := fake.tokenCalls
+	fake.mu.Unlock()
+	if tokenCalls != 1 {
+		t.Fatalf("intl token exchange calls = %d", tokenCalls)
+	}
+	if _, err := LoadAuthForStation(filepath.Join(filepath.Dir(store.Path), "codearts-intl", "codearts-u1.json"), intl); err != nil {
+		t.Fatalf("intl auth file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(store.Path), "codearts", "codearts-u1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mainland auth file was written: %v", err)
+	}
+}
+
+func TestOAuthSessionMissClassificationIsIndependentOfMessage(t *testing.T) {
+	failure := adminErrorFrom(fmt.Errorf("wrapped session miss: %w", ErrOAuthSession))
+	failure.Message = "a different safe presentation message"
+	if !errors.Is(failure, ErrOAuthSession) {
+		t.Fatal("OAuth session-miss classification was lost when presentation text changed")
+	}
+	if errors.Is(badAdminRequest(oauthSessionMissingMessage), ErrOAuthSession) {
+		t.Fatal("an unrelated failure with matching presentation text became a session miss")
+	}
+	if errors.Is(adminErrorFrom(ErrOAuthState), ErrOAuthSession) || errors.Is(adminErrorFrom(ErrOAuthReplay), ErrOAuthSession) {
+		t.Fatal("state/replay errors must not permit peer dispatch")
+	}
+}
+
+func TestCodeArtsIntlOverviewIdentity(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveConfigForStation(p.store, International, map[string]any{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := p.Overview(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := overview.(map[string]any)
+	if body["service"] != "codearts-intl" || body["region"] != "intl" {
+		t.Fatalf("overview identity = %#v", body)
+	}
+}
+
+func TestIntlCheckinUnavailable(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Checkin(context.Background(), "u1"); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("Checkin error = %v", err)
+	}
+	for _, route := range p.Routes() {
+		if strings.HasSuffix(route.Path, "/checkin") {
+			t.Fatalf("intl exposes check-in route %q", route.Path)
+		}
+	}
+}

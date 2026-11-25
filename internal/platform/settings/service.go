@@ -354,10 +354,13 @@ func (s *Service) Save(ctx context.Context, patch map[string]any) (map[string]an
 				realm = strings.ToLower(strings.TrimSpace(textValue(rawRealm)))
 			}
 			if !s.realmAllowed(realm) {
-				return nil, errors.New("realm must be intl, cn, codearts, raccoon, doubao or empty")
+				return nil, errors.New("realm must be intl, cn, codearts, codearts-intl, raccoon, doubao or empty")
 			}
 			if realm == "codearts" && !s.providerRealmRegistered("codearts") {
 				return nil, errors.New("codearts realm is not configured; enable it in settings first")
+			}
+			if realm == "codearts-intl" && !s.providerRealmRegistered("codearts-intl") {
+				return nil, errors.New("codearts-intl realm is not configured; enable it in settings first")
 			}
 			if realm == "raccoon" && !s.providerRealmRegistered("raccoon") {
 				return nil, errors.New("raccoon realm is not configured; enable it in settings first")
@@ -763,7 +766,7 @@ func (s *Service) RevealKey(id string) (string, bool) {
 
 func (s *Service) realmAllowed(realm string) bool {
 	switch realm {
-	case "", "intl", "cn", "codearts", "raccoon", "doubao":
+	case "", "intl", "cn", "codearts", "codearts-intl", "raccoon", "doubao":
 		return true
 	default:
 		return false

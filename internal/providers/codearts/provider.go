@@ -14,6 +14,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -38,6 +39,7 @@ const (
 // provider configuration, shared core transport, token manager, and OAuth
 // session table. The generic API only sees providers.Provider.
 type Provider struct {
+	station     Station
 	store       *config.Store
 	accountsDir string
 
@@ -52,6 +54,10 @@ type Provider struct {
 	oauthSessions *OAuthSessions
 	oauthPortMu   sync.RWMutex
 	oauthPort     int
+
+	// oauthPeer lets the single public callback route look up a session owned
+	// by the sibling station. The peer is set once during app composition.
+	oauthPeer *Provider
 
 	healthMu    sync.Mutex
 	healthCache healthCacheEntry
@@ -89,13 +95,18 @@ type healthCacheEntry struct {
 var _ providers.Provider = (*Provider)(nil)
 var _ providers.HTTPError = (*APIError)(nil)
 
-// New returns the production CodeArts provider. The accounts directory is the
+// New returns the mainland CodeArts provider. The accounts directory is the
 // directory containing the shared settings file, matching v1's layout.
 //
-// Task 9 composition must create exactly one Provider/Pool per accounts
+// Composition must create exactly one Provider/Pool per station accounts
 // directory in a process: Pool locks are instance-local, so two Pools over the
 // same state.json would still race with each other.
 func New(store *config.Store) (*Provider, error) {
+	return NewWithStation(store, Mainland)
+}
+
+// NewWithStation returns a CodeArts provider for one station.
+func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 	if store == nil || strings.TrimSpace(store.Path) == "" {
 		return nil, errors.New("codearts: config store is required")
 	}
@@ -103,9 +114,12 @@ func New(store *config.Store) (*Provider, error) {
 	if strings.TrimSpace(accountsDir) == "" {
 		return nil, errors.New("codearts: accounts directory is empty")
 	}
+	if station.ID == "" {
+		station = Mainland
+	}
 
-	cfg := LoadConfig(store)
-	pool, err := NewPool(accountsDir, cfg)
+	cfg := LoadConfigForStation(store, station)
+	pool, err := NewPoolForStation(accountsDir, station, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -114,8 +128,17 @@ func New(store *config.Store) (*Provider, error) {
 	if timeout <= 0 {
 		timeout = defaultTokenRefreshTimeout
 	}
-	client := transport.NewClient(transport.ClientOptions{RefuseRedirects: true})
+	clientOptions := transport.ClientOptions{RefuseRedirects: true}
+	if station.Region == "intl" {
+		bridge, bridgeErr := utlsbridge.CodeArtsDefault()
+		if bridgeErr != nil {
+			return nil, bridgeErr
+		}
+		clientOptions.UTLSBridge = bridge
+	}
+	client := transport.NewClient(clientOptions)
 	manager := NewTokenManager(client, TokenManagerOptions{
+		Station:  station,
 		Pool:     pool,
 		Timeout:  timeout,
 		Now:      func() time.Time { return pool.nowTime() },
@@ -123,13 +146,14 @@ func New(store *config.Store) (*Provider, error) {
 	})
 
 	provider := &Provider{
+		station:            station,
 		store:              store,
 		accountsDir:        accountsDir,
 		cfg:                cfg,
 		pool:               pool,
 		transport:          client,
 		tokenManager:       manager,
-		oauthSessions:      NewOAuthSessions(),
+		oauthSessions:      NewOAuthSessionsForStation(station),
 		catalogHTTPTimeout: catalogHTTPTimeout,
 	}
 	if _, err := provider.applySettings(); err != nil {
@@ -193,6 +217,14 @@ func (p *Provider) listenerPort() int {
 	return port
 }
 
+// SetOAuthPeer assigns the sibling provider used for public callback dispatch.
+func (p *Provider) SetOAuthPeer(peer *Provider) {
+	if p == nil {
+		return
+	}
+	p.oauthPeer = peer
+}
+
 // applySettings reloads the shared settings, projects config/proxy slots onto
 // the pool, and returns the clamped provider config. Missing settings are
 // defaults; only a real read error is returned. Route handlers call this before
@@ -205,7 +237,7 @@ func (p *Provider) applySettings() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("codearts: load settings: %w", err)
 	}
-	raw, _ := settings["codearts"].(map[string]any)
+	raw, _ := settings[p.station.SettingsKey].(map[string]any)
 	cfg := normalizeConfig(raw)
 	p.mu.Lock()
 	previousEnabled := p.cfg.Enabled
@@ -276,16 +308,50 @@ func (p *Provider) invalidateHealth() {
 	p.healthMu.Unlock()
 }
 
+// snapHost is the provider's resolved snap-access root.
+func (p *Provider) snapHost() string {
+	return p.Station().ResolvedSnapHost()
+}
+
+// benefitHost is the provider's resolved opengw root; empty for stations
+// without a benefit channel.
+func (p *Provider) benefitHost() string {
+	return p.Station().ResolvedBenefitHost()
+}
+
+// snapManagerBase is the provider's resolved snap-manager root.
+func (p *Provider) snapManagerBase() string {
+	return p.Station().SnapManagerBase()
+}
+
+// Station returns the CodeArts deployment this provider serves.
+func (p *Provider) Station() Station {
+	if p == nil {
+		return Mainland
+	}
+	return p.station
+}
+
 // ID returns the stable provider implementation identifier.
-func (p *Provider) ID() string { return ProviderID }
+func (p *Provider) ID() string {
+	if p == nil || p.station.ProviderID == "" {
+		return ProviderID
+	}
+	return p.station.ProviderID
+}
 
 // Realm returns the unique realm this instance serves.
-func (p *Provider) Realm() string { return ProviderRealm }
+func (p *Provider) Realm() string {
+	if p == nil || p.station.Realm == "" {
+		return ProviderRealm
+	}
+	return p.station.Realm
+}
 
 // Jobs returns the provider's background jobs. The daily check-in job follows
 // the shared WorkBuddy check-in slots and is gated by credits_auto_claim.
 func (p *Provider) Jobs() []scheduler.Job {
-	if p == nil {
+	if p == nil || !p.Station().SupportsCheckin {
 		return nil
 	}
 	p.jobsOnce.Do(func() {
@@ -329,7 +395,7 @@ func (p *Provider) Health(ctx context.Context, force bool) (providers.Health, er
 		"configured": cfg.Enabled,
 		"accounts":   stats.Total,
 		"healthy":    stats.Healthy,
-		"base_url":   snapHost(),
+		"base_url":   p.snapHost(),
 	}
 	p.healthMu.Lock()
 	p.healthCache = healthCacheEntry{at: now, value: cloneHealth(value)}
@@ -371,10 +437,10 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"service":  ProviderID,
-		"region":   "cn",
+		"service":  p.ID(),
+		"region":   p.Station().Region,
 		"online":   health["ok"] == true,
-		"base_url": snapHost(),
+		"base_url": p.snapHost(),
 		"stats":    p.statsPayload(),
 		"accounts": p.pool.List(),
 		"models":   p.overviewModels(),
@@ -496,8 +562,14 @@ func (p *Provider) overviewModels() []map[string]any {
 		}
 	}
 	if len(out) == 0 {
-		for _, id := range seedModels {
-			add(id, "", "")
+		if p.Station().ID == Mainland.ID {
+			for _, id := range seedModels {
+				add(id, "", "")
+			}
+		} else {
+			for _, id := range p.Station().ModelSeeds {
+				add(id, "", "")
+			}
 		}
 	}
 	return out

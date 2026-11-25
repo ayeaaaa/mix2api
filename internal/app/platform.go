@@ -522,6 +522,7 @@ func (p *Platform) Close() {
 			_ = p.LogStore.Close()
 		}
 		_ = utlsbridge.CloseDefault()
+		_ = utlsbridge.CloseCodeArtsDefault()
 	})
 }
 

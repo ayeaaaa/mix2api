@@ -301,7 +301,6 @@ func (p *Provider) openChatAccount(
 		return nil, clampErr
 	}
 
-	sessionID := chatSHA256Hex32("codearts-session:" + build.ChatID)
 	delay := p.chatRetryDelay
 	if delay <= 0 {
 		delay = chatConcurrencyDelay
@@ -309,7 +308,7 @@ func (p *Provider) openChatAccount(
 
 	var lastErr error
 	for attempt := 0; attempt < chatConcurrencyAttempts; attempt++ {
-		stream, attemptErr := p.sendModelChatAttempt(ctx, account, model, build.ChatID, sessionID, body, streamTimeout)
+		stream, attemptErr := p.sendModelChatAttempt(ctx, account, model, build.ChatID, body, streamTimeout)
 		if attemptErr == nil {
 			return stream, nil
 		}
@@ -345,7 +344,7 @@ func currentAccountAuth(account *Account) Auth {
 func (p *Provider) sendModelChatAttempt(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
 	body map[string]any,
 	streamTimeout time.Duration,
 ) (providers.ChatStream, error) {
@@ -369,12 +368,24 @@ func (p *Provider) sendModelChatAttempt(
 	for index, spelling := range spellings {
 		attemptBody := cloneChatBody(body)
 		attemptBody["model"] = spelling
+		messages, _ := attemptBody["messages"].([]any)
+		if p.Station().Region == "intl" {
+			// The real IDE body has no gateway-only cache fields and carries
+			// user_prompt. Mainland keeps its legacy body unchanged.
+			delete(attemptBody, "chat_id")
+			delete(attemptBody, "prompt_cache_key")
+			if prompt := ideUserPrompt(messages); prompt != "" {
+				attemptBody["user_prompt"] = prompt
+			} else {
+				delete(attemptBody, "user_prompt")
+			}
+		}
 		raw, err := json.Marshal(attemptBody)
 		if err != nil {
 			return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
 				Message: "codearts: chat request body is not valid JSON"}
 		}
-		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, sessionID, raw, streamTimeout)
+		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, messages, raw, streamTimeout)
 		if err == nil {
 			if index > 0 {
 				account.chatModelIDs.Store(key, spelling)
@@ -430,12 +441,13 @@ func isCodeArtsModelIDError(err error) bool {
 func (p *Provider) sendChatAttempt(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
+	messages []any,
 	raw []byte,
 	streamTimeout time.Duration,
 ) (providers.ChatStream, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	request, err := p.newChatRequest(streamCtx, account, model, chatID, sessionID, raw)
+	request, err := p.newChatRequest(streamCtx, account, model, chatID, raw, messages)
 	if err != nil {
 		cancel()
 		return nil, newChatError(KindUpstream, http.StatusBadGateway,
@@ -516,17 +528,19 @@ func sleepChatContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// newChatRequest builds and signs one chat request. Chat-Id, Session-Id, and
-// the x-ot-* headers are appended after signing so they are not part of
-// SignedHeaders, matching v1.
+// newChatRequest builds and signs one chat request with the application-layer
+// fingerprint emitted by CodeArts Agent 26.11.300. The client currently
+// advertises SM4 capability but falls back to plaintext when key exchange is
+// rejected, so this phase keeps the body plaintext.
 func (p *Provider) newChatRequest(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
 	raw []byte,
+	messages []any,
 ) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, snapHost()+chatCompletionsPath, bytes.NewReader(raw),
+		ctx, http.MethodPost, p.station.ResolvedSnapHost()+chatCompletionsPath, bytes.NewReader(raw),
 	)
 	if err != nil {
 		return nil, err
@@ -537,31 +551,85 @@ func (p *Provider) newChatRequest(
 	uid := account.uidLocked()
 	account.mu.Unlock()
 
+	if p.Station().Region != "intl" {
+		return p.newLegacyChatRequest(request, auth, uid, model, chatID, raw, account.IsBenefit(model))
+	}
+
+	fingerprint, err := newIDEFingerprint(uid, model, chatID, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only these headers are signed by the real CodeArts Agent chat request.
+	// Content-Type, User-Agent, Accept, Accept-Encoding, Connection and
+	// Content-Length are merged by the AI SDK transport after signing.
+	if fingerprint.ClientIP != "" {
+		request.Header.Set("client-ip", fingerprint.ClientIP)
+	}
+	request.Header.Set("created-time", fingerprint.CreatedAt)
+	request.Header.Set("ide-name", fingerprint.IDEName)
+	request.Header.Set("ide-version", fingerprint.IDEVersion)
+	request.Header.Set("model-id", fingerprint.ModelID)
+	request.Header.Set("model-name", fingerprint.ModelName)
+	request.Header.Set("plugin-name", fingerprint.PluginName)
+	request.Header.Set("plugin-version", fingerprint.PluginVersion)
+	request.Header.Set("user-msg-id", fingerprint.MessageID)
+	request.Header.Set("user-session-id", fingerprint.SessionID)
+	request.Header.Set("x-language", p.station.Locale)
+	request.Header.Set("x-ot-client-type", fingerprint.ClientType)
+	request.Header.Set("x-ot-client-version", fingerprint.ClientVersion)
+	request.Header.Set("x-ot-function", fingerprint.Function)
+	request.Header.Set("x-ot-parent-session-id", "")
+	request.Header.Set("x-ot-session-id", fingerprint.SessionID)
+	request.Header.Set("x-ot-span-id", fingerprint.SpanID)
+	request.Header.Set("x-ot-trace-id", fingerprint.TraceID)
+	request.Header.Set("x-snap-traceid", fingerprint.TraceID+"_"+fingerprint.SpanID)
+
+	if err := SignRequestIDEFingerprint(request, raw, SignCredentials{
+		AccessKeyID:     auth.AccessKeyID,
+		SecretAccessKey: auth.SecretAccessKey,
+		SecurityToken:   auth.SigningSecurityToken(),
+	}, ""); err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", fingerprint.UserAgent)
+	request.Header.Set("Accept", "*/*")
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	request.Header.Set("Connection", "keep-alive")
+	return request, nil
+}
+
+func (p *Provider) newLegacyChatRequest(
+	request *http.Request, auth Auth, uid, model, chatID string, raw []byte, benefit bool,
+) (*http.Request, error) {
 	traceID, err := randomHex(16)
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("x-auth-token", auth.CloudDragonToken)
+	if strings.TrimSpace(auth.CloudDragonToken) != "" {
+		request.Header.Set("x-auth-token", auth.CloudDragonToken)
+	}
 	request.Header.Set("x-snap-traceid", traceID)
-	request.Header.Set("X-Language", "zh-cn")
+	request.Header.Set("X-Language", p.station.Locale)
 	request.Header.Set("app-id", "CodeAgent3.0")
 	request.Header.Set("is_confidential", "false")
-	if account.IsBenefit(model) {
+	if p.Station().SupportsBenefit && benefit {
 		request.Header.Set(headerMaasType, maasBenefit)
 	}
 
 	if err := SignRequest(request, raw, SignCredentials{
 		AccessKeyID:     auth.AccessKeyID,
 		SecretAccessKey: auth.SecretAccessKey,
-		SecurityToken:   auth.CloudDragonToken,
+		SecurityToken:   auth.SigningSecurityToken(),
 	}); err != nil {
 		return nil, err
 	}
 
 	request.Header.Set("Chat-Id", chatID)
-	request.Header.Set("Session-Id", sessionID)
+	request.Header.Set("Session-Id", chatSHA256Hex32("codearts-session:"+chatID))
 	if otSessionEnabled() {
 		otSession := chatSHA256Hex32("codearts-ot-session:" + uid)
 		otTrace, traceErr := randomHex(16)

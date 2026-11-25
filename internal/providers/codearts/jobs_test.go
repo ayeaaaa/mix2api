@@ -361,3 +361,15 @@ func TestCodeArtsCheckinRetryIntervalSetting(t *testing.T) {
 		t.Fatalf("clamped retry = %d, want %d", got, maxCheckinRetryMinutes)
 	}
 }
+
+func TestIntlHasNoCheckinJob(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range p.Jobs() {
+		if strings.Contains(strings.ToLower(job.Name()), "checkin") {
+			t.Fatalf("intl job = %#v", job)
+		}
+	}
+}

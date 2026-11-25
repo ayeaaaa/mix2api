@@ -37,6 +37,7 @@ type adminError struct {
 	Status  int
 	Type    string
 	Message string
+	cause   error
 }
 
 func (e *adminError) Error() string {
@@ -44,6 +45,13 @@ func (e *adminError) Error() string {
 		return ""
 	}
 	return e.Message
+}
+
+func (e *adminError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 func badAdminRequest(message string) *adminError {
@@ -87,7 +95,7 @@ func adminErrorFrom(err error) *adminError {
 	case errors.Is(err, ErrOAuthSession):
 		return &adminError{
 			Status: http.StatusNotFound, Type: "invalid_request_error",
-			Message: oauthSessionMissingMessage,
+			Message: oauthSessionMissingMessage, cause: ErrOAuthSession,
 		}
 	case errors.Is(err, ErrOAuthState):
 		return badAdminRequest(oauthStateMessage)
@@ -311,29 +319,47 @@ func (p *Provider) RouteNotFoundMessage() string {
 // browser OAuth callback is public and validates its own state.
 func (p *Provider) Routes() []providers.Route {
 	panel := providers.AuthPanel
-	return []providers.Route{
-		{Method: http.MethodGet, Path: "/codearts/overview", Auth: panel, Handler: p.handleOverview},
-		{Method: http.MethodGet, Path: "/codearts/accounts", Auth: panel, Handler: p.handleAccounts},
-		{Method: http.MethodPost, Path: "/codearts/accounts/import", Auth: panel, Handler: p.handleImport},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
-		{Method: http.MethodPost, Path: "/codearts/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
-		{Method: http.MethodPost, Path: "/codearts/accounts/enable", Auth: panel, Handler: p.handleAccountAction("enable")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/disable", Auth: panel, Handler: p.handleAccountAction("disable")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/clear-cooldown", Auth: panel, Handler: p.handleAccountAction("clear-cooldown")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/tasks", Auth: panel, Handler: p.handleAccountAction("tasks")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
-		{Method: http.MethodPost, Path: "/codearts/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
-		{Method: http.MethodPost, Path: "/codearts/checkin", Auth: panel, Handler: p.handleCheckin},
-		{Method: http.MethodPost, Path: "/codearts/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
-		{Method: http.MethodPost, Path: "/codearts/keepalive", Auth: panel, Handler: p.handleKeepalive},
-		{Method: http.MethodPost, Path: "/codearts/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
-		{Method: http.MethodPost, Path: "/codearts/test", Auth: panel, Handler: p.handleConnectionTest},
-		{Method: http.MethodGet, Path: "/oauth/callback", Auth: providers.AuthNone, Handler: p.handleCallbackGET},
+	prefix := strings.TrimRight(p.Station().RoutePrefix, "/")
+	if prefix == "" {
+		prefix = "/codearts"
 	}
+	routes := []providers.Route{
+		{Method: http.MethodGet, Path: prefix + "/overview", Auth: panel, Handler: p.handleOverview},
+		{Method: http.MethodGet, Path: prefix + "/accounts", Auth: panel, Handler: p.handleAccounts},
+		{Method: http.MethodPost, Path: prefix + "/accounts/import", Auth: panel, Handler: p.handleImport},
+		{Method: http.MethodPost, Path: prefix + "/accounts/enable", Auth: panel, Handler: p.handleAccountAction("enable")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/disable", Auth: panel, Handler: p.handleAccountAction("disable")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/clear-cooldown", Auth: panel, Handler: p.handleAccountAction("clear-cooldown")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/note", Auth: panel, Handler: p.handleAccountAction("note")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/tasks", Auth: panel, Handler: p.handleAccountAction("tasks")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
+		{Method: http.MethodPost, Path: prefix + "/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
+		{Method: http.MethodPost, Path: prefix + "/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
+		{Method: http.MethodPost, Path: prefix + "/keepalive", Auth: panel, Handler: p.handleKeepalive},
+		{Method: http.MethodPost, Path: prefix + "/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
+		{Method: http.MethodPost, Path: prefix + "/test", Auth: panel, Handler: p.handleConnectionTest},
+	}
+	if p.Station().SupportsCheckin {
+		routes = append(routes,
+			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
+			providers.Route{Method: http.MethodPost, Path: prefix + "/checkin", Auth: panel, Handler: p.handleCheckin},
+		)
+	}
+	routes = append(routes,
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
+	)
+	if p.Station().ID == Mainland.ID {
+		// The public callback path is single-registered: mainland owns it and
+		// dispatches to the international peer when its own session table has
+		// no exact match.
+		routes = append(routes,
+			providers.Route{Method: http.MethodGet, Path: "/oauth/callback", Auth: providers.AuthNone, Handler: p.handleCallbackGET},
+		)
+	}
+	return routes
 }
 
 func (p *Provider) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -353,7 +379,7 @@ func (p *Provider) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	overview, _ := value.(map[string]any)
 	writeAdminJSON(w, http.StatusOK, map[string]any{
-		"provider": ProviderID,
+		"provider": p.ID(),
 		"accounts": overview["accounts"],
 		"stats":    overview["stats"],
 		"models":   overview["models"],
@@ -367,16 +393,29 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, failure)
 		return
 	}
-	authPayload := payload
-	if nested, present := payload["auth"]; present {
-		object, ok := nested.(map[string]any)
-		if !ok {
-			writeAdminError(w, badAdminRequest("expected a JSON object"))
+	var auth Auth
+	if rawSession, present := payload["session_json"]; present {
+		session, sessionFailure := decodeSessionJSON(rawSession)
+		if sessionFailure != nil {
+			writeAdminError(w, sessionFailure)
 			return
 		}
-		authPayload = object
+		auth, failure = authFromSessionJSON(session, p.station)
+		if failure == nil && auth.UpdatedAt == 0 {
+			auth.UpdatedAt = p.nowTime().Unix()
+		}
+	} else {
+		authPayload := payload
+		if nested, present := payload["auth"]; present {
+			object, ok := nested.(map[string]any)
+			if !ok {
+				writeAdminError(w, badAdminRequest("expected a JSON object"))
+				return
+			}
+			authPayload = object
+		}
+		auth, failure = authFromAdminPayload(authPayload, p.nowTime(), p.station)
 	}
-	auth, failure := authFromAdminPayload(authPayload, p.nowTime())
 	if failure != nil {
 		writeAdminError(w, failure)
 		return
@@ -398,7 +437,7 @@ func (p *Provider) handleImport(w http.ResponseWriter, r *http.Request) {
 // authFromAdminPayload accepts the flat v1 auth document or the same object
 // nested under "auth". The pool still enforces canonical-path ownership, so a
 // sanitized filename collision can never overwrite another account.
-func authFromAdminPayload(payload map[string]any, now time.Time) (Auth, *adminError) {
+func authFromAdminPayload(payload map[string]any, now time.Time, station Station) (Auth, *adminError) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Auth{}, badAdminRequest("invalid auth payload")
@@ -407,14 +446,26 @@ func authFromAdminPayload(payload map[string]any, now time.Time) (Auth, *adminEr
 	if err := json.Unmarshal(raw, &auth); err != nil {
 		return Auth{}, badAdminRequest("invalid auth payload")
 	}
+	station = stationOrDefault(station)
 	auth.UserID = strings.TrimSpace(auth.UserID)
 	auth.UserName = strings.TrimSpace(auth.UserName)
 	auth.CloudDragonToken = strings.TrimSpace(auth.CloudDragonToken)
+	auth.SecurityToken = strings.TrimSpace(auth.SecurityToken)
 	if auth.UserID == "" {
 		return Auth{}, badAdminRequest("auth payload requires user_id")
 	}
-	if auth.CloudDragonToken == "" {
-		return Auth{}, badAdminRequest("auth payload requires cloud_dragon_token")
+	if station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
+		return Auth{}, badAdminRequest("international auth requires station=international")
+	}
+	if !authBelongsToStation(auth, station) {
+		return Auth{}, badAdminRequest("auth payload belongs to a different station")
+	}
+	if station.ID == Mainland.ID {
+		if auth.CloudDragonToken == "" {
+			return Auth{}, badAdminRequest("auth payload requires cloud_dragon_token")
+		}
+	} else if !authHasSigningToken(auth) {
+		return Auth{}, badAdminRequest("auth payload requires security_token")
 	}
 	if auth.UpdatedAt == 0 {
 		auth.UpdatedAt = now.Unix()
@@ -435,7 +486,7 @@ func (p *Provider) saveAccountAndEnable(auth Auth) (*Account, error) {
 		return nil, err
 	}
 	if p.store != nil {
-		if _, err := SaveConfig(p.store, map[string]any{"enabled": true}); err != nil {
+		if _, err := SaveConfigForStation(p.store, p.station, map[string]any{"enabled": true}); err != nil {
 			return nil, err
 		}
 	}
@@ -690,11 +741,11 @@ func (p *Provider) syncOAuthAccount(uid string) error {
 	// may be a re-login of an existing UID, in which case the in-memory
 	// credentials are stale until this reimport. Running the same path again on
 	// a later poll also retries after a partial add/enable failure.
-	path, err := AuthPath(p.accountsDir, uid)
+	path, err := AuthPathForStation(p.accountsDir, p.station, uid)
 	if err != nil {
 		return err
 	}
-	auth, err := LoadAuth(path)
+	auth, err := LoadAuthForStation(path, p.station)
 	if err != nil {
 		return err
 	}
@@ -794,6 +845,17 @@ func (p *Provider) handleCallbackGET(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
+	status, body, handled := p.oauthCallbackGETOnce(query)
+	if !handled && p.oauthPeer != nil && p.oauthPeer != p {
+		status, body, handled = p.oauthPeer.oauthCallbackGETOnce(query)
+	}
+	if !handled {
+		return http.StatusBadRequest, callbackHTML("登录会话不存在或已过期，请回到看板重新发起。")
+	}
+	return status, body
+}
+
+func (p *Provider) oauthCallbackGETOnce(query url.Values) (int, string, bool) {
 	value := func(key string) string {
 		return strings.TrimSpace(query.Get(key))
 	}
@@ -803,7 +865,7 @@ func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
 	if ticketID == "" && secret == "" && state == "" {
 		return http.StatusBadRequest, callbackHTML(
 			"回调缺少会话标识，请回到看板粘贴完整回调地址。",
-		)
+		), true
 	}
 
 	host := "127.0.0.1"
@@ -818,14 +880,18 @@ func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
 	}).String()
 	result, failure := p.oauthCallback("", callbackURL, "", "")
 	if failure != nil {
-		return http.StatusBadRequest, callbackHTML(publicOAuthFailureMessage(failure))
+		// Only an exact no-matching-session result may fall through to the
+		// sibling station. State mismatch, replay, exchange failure, and every
+		// other error are terminal for this provider.
+		return http.StatusBadRequest, callbackHTML(publicOAuthFailureMessage(failure)),
+			!errors.Is(failure, ErrOAuthSession)
 	}
 	if result.Status == "continue" && result.NextURL != "" {
 		return http.StatusOK,
 			`<meta http-equiv="refresh" content="0;url=` + html.EscapeString(result.NextURL) +
-				`"><h3>正在继续华为云授权…</h3>`
+				`"><h3>正在继续华为云授权…</h3>`, true
 	}
-	return http.StatusOK, callbackHTML("CodeArts 登录成功，可以关闭此页面。")
+	return http.StatusOK, callbackHTML("CodeArts 登录成功，可以关闭此页面。"), true
 }
 
 func callbackHTML(message string) string {

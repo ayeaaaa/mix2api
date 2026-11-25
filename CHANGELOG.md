@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Added / 新增
+
+- 新增 CodeArts 国际站（`codearts-intl`）作为独立 Provider：独立设置、账号目录、
+  OAuth（`site=intl`）、Agent session JSON 导入、DPoP 刷新和 Token 额度显示；
+  国际站与国内站的凭证、账号和计费相互隔离。国内站的设置与聊天行为不变。
+- 国际站请求对齐 CodeArts Agent 26.11.300 的应用层与 TLS 指纹：聊天 header 和
+  签名子集、`user_prompt`、独立 uTLS ClientHello（无 ALPN、HTTP/1.1）。
+- 面板新增国际站网关卡、账号页、独立设置区和按 realm 的 OAuth/会话导入；
+  国际站不提供签到、成长任务和福利积分。
+- `codearts-intl` 已加入 `/realm`、设置保存和 API Key 绑定；裸模型在两个
+  CodeArts 站同时可用时要求显式 `realm/model`。
+- Adds the CodeArts international station (`codearts-intl`) as a separate
+  provider with its own settings, account folder, OAuth (`site=intl`), Agent
+  session JSON import, DPoP refresh, and token quota display. Credentials,
+  accounts, and billing are isolated from the mainland station, whose settings
+  and chat behavior are unchanged.
+- International requests follow the CodeArts Agent 26.11.300 application and TLS
+  fingerprint: chat header/signature subset, `user_prompt`, and a separate uTLS
+  ClientHello (no ALPN, HTTP/1.1).
+- The panel adds the international gateway card, account tab, settings section,
+  and realm-aware OAuth/session import. The international station has no
+  check-in, growth tasks, or benefit credits.
+- `codearts-intl` is accepted by `/realm`, settings saves, and API-key bindings;
+  bare models available on both CodeArts stations require an explicit
+  `realm/model`.
+
 ## [2.8.21] - 2026-11-24
 
 ### 中文
