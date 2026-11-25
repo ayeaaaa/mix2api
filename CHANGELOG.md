@@ -3,9 +3,11 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
-## [Unreleased]
+## [2.9.0] - 2026-11-25
 
-### Added / 新增
+### 中文
+
+#### 新增
 
 - 新增 CodeArts 国际站（`codearts-intl`）作为独立 Provider：独立设置、账号目录、
   OAuth（`site=intl`）、Agent session JSON 导入、DPoP 刷新和 Token 额度显示；
@@ -16,6 +18,15 @@ Keep a Changelog and the project uses semantic versioning.
   国际站不提供签到、成长任务和福利积分。
 - `codearts-intl` 已加入 `/realm`、设置保存和 API Key 绑定；裸模型在两个
   CodeArts 站同时可用时要求显式 `realm/model`。
+
+#### 验证
+
+- `make check`、`make race` 全量通过；dashboard JS 20/20。
+
+### English
+
+#### Added
+
 - Adds the CodeArts international station (`codearts-intl`) as a separate
   provider with its own settings, account folder, OAuth (`site=intl`), Agent
   session JSON import, DPoP refresh, and token quota display. Credentials,
@@ -30,6 +41,10 @@ Keep a Changelog and the project uses semantic versioning.
 - `codearts-intl` is accepted by `/realm`, settings saves, and API-key bindings;
   bare models available on both CodeArts stations require an explicit
   `realm/model`.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 20/20.
 
 ## [2.8.21] - 2026-11-24
 
