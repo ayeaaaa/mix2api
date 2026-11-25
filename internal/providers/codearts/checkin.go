@@ -178,6 +178,9 @@ func (p *Provider) Checkin(ctx context.Context, uid string) (CheckinResult, erro
 	if p == nil {
 		return CheckinResult{}, errors.New("codearts: provider is nil")
 	}
+	if !p.Station().SupportsCheckin {
+		return CheckinResult{}, errors.New("codearts: check-in is not available on this station")
+	}
 	if p.pool == nil {
 		return CheckinResult{}, errors.New("codearts: account pool is nil")
 	}

@@ -14,8 +14,10 @@ func decodeSessionJSON(raw any) (map[string]any, *adminError) {
 	case map[string]any:
 		return value, nil
 	case string:
+		decoder := json.NewDecoder(strings.NewReader(value))
+		decoder.UseNumber()
 		var decoded map[string]any
-		if err := json.Unmarshal([]byte(value), &decoded); err != nil || decoded == nil {
+		if err := decoder.Decode(&decoded); err != nil || decoded == nil {
 			return nil, badAdminRequest("session_json is not a JSON object")
 		}
 		return decoded, nil
@@ -95,11 +97,8 @@ func authFromSessionJSON(payload map[string]any, station Station) (Auth, *adminE
 	var privateKey json.RawMessage
 	if value := dpop["privateKeyJwk"]; value != nil {
 		privateKey = sessionRawJSON(value)
-	} else {
-		privateKey = sessionRawJSON(sessionText(
-			payload["dpop_private_key"],
-			payload["dpopPrivateKey"],
-		))
+	} else if value := sessionFirstValue(payload["dpop_private_key"], payload["dpopPrivateKey"]); value != nil {
+		privateKey = sessionRawJSON(value)
 	}
 
 	auth := Auth{
@@ -125,6 +124,15 @@ func authFromSessionJSON(payload map[string]any, station Station) (Auth, *adminE
 		auth.ClientID = oauthClientID()
 	}
 	return auth, nil
+}
+
+func sessionFirstValue(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func sessionText(values ...any) string {
@@ -168,8 +176,10 @@ func sessionUIDFromJWT(token string) string {
 	if err != nil {
 		return ""
 	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
 	var claims map[string]any
-	if err := json.Unmarshal(raw, &claims); err != nil {
+	if err := decoder.Decode(&claims); err != nil {
 		return ""
 	}
 	profile := modelMap(claims["user_profile"])

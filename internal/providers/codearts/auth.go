@@ -441,7 +441,7 @@ func SaveAuthForStation(path string, auth Auth, station Station) error {
 		return errors.New("codearts: auth requires user_id")
 	}
 	if station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
-		auth.Station = station.ID
+		return errors.New("codearts: international auth requires an explicit station")
 	}
 	if !authBelongsToStation(auth, station) {
 		return errors.New("codearts: auth station does not match the account folder")

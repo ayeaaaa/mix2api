@@ -191,32 +191,42 @@ func tokenTestAuth(uid string, expiration time.Time) Auth {
 
 func tokenTestPool(t *testing.T, auths ...Auth) (*Pool, string) {
 	t.Helper()
+	return tokenTestPoolForStation(t, Mainland, auths...)
+}
+
+func tokenTestPoolForStation(t *testing.T, station Station, auths ...Auth) (*Pool, string) {
+	t.Helper()
 	dir := t.TempDir()
 	for _, auth := range auths {
-		path, err := AuthPath(dir, auth.UserID)
+		path, err := AuthPathForStation(dir, station, auth.UserID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := SaveAuth(path, auth); err != nil {
-			t.Fatalf("SaveAuth(%s): %v", auth.UserID, err)
+		if err := SaveAuthForStation(path, auth, station); err != nil {
+			t.Fatalf("SaveAuthForStation(%s): %v", auth.UserID, err)
 		}
 	}
-	pool, err := NewPool(dir, Config{MaxConcurrent: 1, TimeoutSeconds: 5})
+	pool, err := NewPoolForStation(dir, station, Config{MaxConcurrent: 1, TimeoutSeconds: 5})
 	if err != nil {
-		t.Fatalf("NewPool: %v", err)
+		t.Fatalf("NewPoolForStation: %v", err)
 	}
 	return pool, dir
 }
 
-func newTokenTestManager(t *testing.T, now time.Time) *TokenManager {
+func newTokenTestManager(t *testing.T, now time.Time, stations ...Station) *TokenManager {
 	t.Helper()
-	return newTokenTestManagerTimeout(t, now, 5*time.Second)
+	return newTokenTestManagerTimeout(t, now, 5*time.Second, stations...)
 }
 
-func newTokenTestManagerTimeout(t *testing.T, now time.Time, timeout time.Duration) *TokenManager {
+func newTokenTestManagerTimeout(t *testing.T, now time.Time, timeout time.Duration, stations ...Station) *TokenManager {
 	t.Helper()
 	client := transport.NewClient(transport.ClientOptions{})
+	station := Mainland
+	if len(stations) > 0 {
+		station = stations[0]
+	}
 	manager := NewTokenManager(client, TokenManagerOptions{
+		Station:  station,
 		Timeout:  timeout,
 		Now:      func() time.Time { return now },
 		ProxyURL: func(a *Account) string { return a.ProxyURL() },
@@ -1427,11 +1437,14 @@ func TestTokenProviderWiresManager(t *testing.T) {
 
 func TestTokenRefreshRotatesIndependentSecurityToken(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
-	fake, _ := newTokenRefreshFake(t)
-	manager := newTokenTestManager(t, now)
+	fake, server := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now, International)
+	manager.station.STS = server.URL
 	auth := tokenTestAuth("u1", now.Add(10*time.Minute))
+	auth.Station = "international"
+	auth.CloudDragonToken = ""
 	auth.SecurityToken = "ST-old"
-	pool, _ := tokenTestPool(t, auth)
+	pool, _ := tokenTestPoolForStation(t, International, auth)
 	account := pool.Get("u1")
 	fake.payload = func(form url.Values) map[string]any {
 		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
@@ -1439,11 +1452,34 @@ func TestTokenRefreshRotatesIndependentSecurityToken(t *testing.T) {
 	if err := manager.Ensure(context.Background(), account); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
+	calls, _, _, _, _ := fake.snapshot()
+	if calls != 1 {
+		t.Fatalf("STS calls = %d, want 1", calls)
+	}
 	if account.Auth.SecurityToken != "ST-new-u1" {
 		t.Fatalf("security token = %q, want rotated", account.Auth.SecurityToken)
 	}
 	if got := account.Auth.SigningSecurityToken(); got != "ST-new-u1" {
 		t.Fatalf("signing token = %q", got)
+	}
+	if account.Auth.CloudDragonToken != "" {
+		t.Fatalf("intl refresh populated cloud_dragon_token = %q", account.Auth.CloudDragonToken)
+	}
+}
+
+func TestTokenEnsureRejectsStationMismatchBeforeSTS(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now, International)
+	auth := tokenTestAuth("u1", now.Add(10*time.Minute))
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	if err := manager.Ensure(context.Background(), account); err == nil {
+		t.Fatal("Ensure accepted a mainland account in the intl manager")
+	}
+	calls, _, _, _, _ := fake.snapshot()
+	if calls != 0 {
+		t.Fatalf("STS calls = %d, want 0", calls)
 	}
 }
 

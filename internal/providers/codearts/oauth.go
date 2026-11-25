@@ -965,6 +965,7 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 		UpdatedAt:        s.nowTime().Unix(),
 	}
 	if s.Station().ID != Mainland.ID {
+		auth.Station = s.Station().ID
 		auth.SecurityToken = token.Credentials.SecurityToken
 	}
 	if err := SaveAuthForStation(path, auth, s.Station()); err != nil {

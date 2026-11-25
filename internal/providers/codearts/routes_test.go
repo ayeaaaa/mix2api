@@ -1439,3 +1439,18 @@ func TestCodeArtsIntlOverviewIdentity(t *testing.T) {
 		t.Fatalf("overview identity = %#v", body)
 	}
 }
+
+func TestIntlCheckinUnavailable(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Checkin(context.Background(), "u1"); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("Checkin error = %v", err)
+	}
+	for _, route := range p.Routes() {
+		if strings.HasSuffix(route.Path, "/checkin") {
+			t.Fatalf("intl exposes check-in route %q", route.Path)
+		}
+	}
+}

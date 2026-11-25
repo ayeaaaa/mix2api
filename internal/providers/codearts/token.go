@@ -29,6 +29,8 @@ const (
 // interactive login. Ensuring a token for an expired account returns it.
 var ErrRefreshTokenMissing = errors.New("codearts: refresh_token is missing; account requires re-login")
 
+var ErrStationMismatch = errors.New("codearts: account belongs to a different station")
+
 // TokenManagerOptions configures a TokenManager.
 type TokenManagerOptions struct {
 	// Station is the CodeArts deployment whose STS endpoint receives refreshes.
@@ -131,6 +133,9 @@ func (m *TokenManager) Ensure(ctx context.Context, a *Account) error {
 	if snapshot.removed {
 		return ErrAccountNotFound
 	}
+	if !authBelongsToStation(snapshot.auth, m.station) {
+		return ErrStationMismatch
+	}
 	if snapshot.manualDisabled {
 		// A manual disable is an operator decision. Do not spend the
 		// account's one-time refresh token until Enable clears it.
@@ -230,6 +235,9 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 	snapshot := a.tokenSnapshot()
 	if snapshot.removed {
 		return ErrAccountNotFound
+	}
+	if !authBelongsToStation(snapshot.auth, m.station) {
+		return ErrStationMismatch
 	}
 	if snapshot.manualDisabled {
 		return nil
@@ -414,6 +422,7 @@ func (m *TokenManager) noteTerminalIfCurrent(
 func sameCredentialIdentity(current, previous Auth) bool {
 	return strings.TrimSpace(current.UserID) == strings.TrimSpace(previous.UserID) &&
 		strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
+		authStation(current) == authStation(previous) &&
 		current.CloudDragonToken == previous.CloudDragonToken &&
 		current.SecurityToken == previous.SecurityToken &&
 		current.AccessKeyID == previous.AccessKeyID &&
@@ -556,9 +565,13 @@ func authFromRefreshToken(old Auth, token Token, now time.Time) Auth {
 	if value := strings.TrimSpace(token.DomainID); value != "" {
 		updated.DomainID = value
 	}
-	updated.CloudDragonToken = token.Credentials.SecurityToken
-	if strings.TrimSpace(old.SecurityToken) != "" {
+	if authStation(old) == International.ID {
 		updated.SecurityToken = token.Credentials.SecurityToken
+	} else {
+		updated.CloudDragonToken = token.Credentials.SecurityToken
+		if strings.TrimSpace(old.SecurityToken) != "" {
+			updated.SecurityToken = token.Credentials.SecurityToken
+		}
 	}
 	updated.AccessKeyID = token.Credentials.AccessKeyID
 	updated.SecretAccessKey = token.Credentials.SecretAccessKey

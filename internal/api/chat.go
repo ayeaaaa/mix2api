@@ -462,6 +462,10 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		return s.resolveGatewayAmong(ctx, request.model)
 	}
 
+	if err := s.rejectAmbiguousCodeArts(ctx, request.model); err != nil {
+		return nil, err
+	}
+
 	if len(s.providers) == 0 {
 		return nil, localFailure(http.StatusBadRequest, "no provider is registered")
 	}
@@ -489,6 +493,35 @@ func (s *Server) resolveChatProvider(ctx context.Context, request *chatHTTPReque
 		}
 	}
 	return s.resolveAmong(ctx, candidates, request.model, "")
+}
+
+// rejectAmbiguousCodeArts fails closed when a bare model is advertised by both
+// CodeArts stations. Other providers keep their legacy first-match behavior;
+// only the dual CodeArts realms have independently billed quotas that must not
+// be selected silently.
+func (s *Server) rejectAmbiguousCodeArts(ctx context.Context, model string) error {
+	mainland := s.providerForRealm("codearts")
+	international := s.providerForRealm("codearts-intl")
+	if mainland == nil || international == nil {
+		return nil
+	}
+	matches := make([]string, 0, 2)
+	for _, provider := range []providers.Provider{mainland, international} {
+		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+		models, err := provider.Models(lookupCtx, false)
+		cancel()
+		if err != nil {
+			return nil
+		}
+		if modelMatches(models, model) {
+			matches = append(matches, provider.Realm())
+		}
+	}
+	if len(matches) < 2 {
+		return nil
+	}
+	return localFailure(http.StatusBadRequest,
+		"model is available in both CodeArts stations; use realm/model: codearts/"+model+", codearts-intl/"+model)
 }
 
 // catalogResolutionTimeout bounds every catalog read used for model-to-realm

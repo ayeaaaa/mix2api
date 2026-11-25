@@ -840,3 +840,10 @@ func TestAuthStationLifecycle(t *testing.T) {
 		t.Fatal("intl save accepted no signing token")
 	}
 }
+
+func TestSaveAuthForStationRejectsBlankIntlIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codearts-u1.json")
+	if err := SaveAuthForStation(path, Auth{UserID: "u1", CloudDragonToken: "legacy"}, International); err == nil {
+		t.Fatal("intl save accepted a blank station with mainland credentials")
+	}
+}

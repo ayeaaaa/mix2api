@@ -327,12 +327,16 @@ func (p *Provider) Routes() []providers.Route {
 		{Method: http.MethodPost, Path: prefix + "/accounts/test", Auth: panel, Handler: p.handleAccountAction("test")},
 		{Method: http.MethodPost, Path: prefix + "/accounts/proxy", Auth: panel, Handler: p.handleAccountAction("proxy")},
 		{Method: http.MethodPost, Path: prefix + "/accounts/delete", Auth: panel, Handler: p.handleAccountAction("delete")},
-		{Method: http.MethodPost, Path: prefix + "/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
-		{Method: http.MethodPost, Path: prefix + "/checkin", Auth: panel, Handler: p.handleCheckin},
 		{Method: http.MethodPost, Path: prefix + "/credits/refresh", Auth: panel, Handler: p.handleCreditsRefresh},
 		{Method: http.MethodPost, Path: prefix + "/keepalive", Auth: panel, Handler: p.handleKeepalive},
 		{Method: http.MethodPost, Path: prefix + "/models/refresh", Auth: panel, Handler: p.handleModelsRefresh},
 		{Method: http.MethodPost, Path: prefix + "/test", Auth: panel, Handler: p.handleConnectionTest},
+	}
+	if p.Station().SupportsCheckin {
+		routes = append(routes,
+			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/checkin", Auth: panel, Handler: p.handleCheckin},
+			providers.Route{Method: http.MethodPost, Path: prefix + "/checkin", Auth: panel, Handler: p.handleCheckin},
+		)
 	}
 	if p.Station().ID == Mainland.ID {
 		routes = append(routes,
@@ -438,7 +442,7 @@ func authFromAdminPayload(payload map[string]any, now time.Time, station Station
 		return Auth{}, badAdminRequest("auth payload requires user_id")
 	}
 	if station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
-		auth.Station = station.ID
+		return Auth{}, badAdminRequest("international auth requires station=international")
 	}
 	if !authBelongsToStation(auth, station) {
 		return Auth{}, badAdminRequest("auth payload belongs to a different station")

@@ -1203,8 +1203,8 @@ func (p *Pool) Add(auth Auth) (*Account, error) {
 	if auth.UserID == "" {
 		return nil, errors.New("codearts: auth requires user_id")
 	}
-	if strings.TrimSpace(auth.Station) == "" {
-		auth.Station = p.station.ID
+	if p.station.ID != Mainland.ID && strings.TrimSpace(auth.Station) == "" {
+		return nil, errors.New("codearts: international auth requires an explicit station")
 	}
 	if !authBelongsToStation(auth, p.station) {
 		return nil, errors.New("codearts: auth station does not match the account folder")

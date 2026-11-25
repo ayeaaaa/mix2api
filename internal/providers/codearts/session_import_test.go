@@ -98,3 +98,34 @@ func TestSessionJSONImportAcceptsStringPayload(t *testing.T) {
 	}
 	_ = json.Valid([]byte(raw))
 }
+
+func TestSessionJSONImportPreservesLargeNumericUID(t *testing.T) {
+	raw := `{"account":{"id":9007199254740993},"accessKey":"AK","secretKey":"SK","securityToken":"ST","stationType":"international"}`
+	session, failure := decodeSessionJSON(raw)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	auth, failure := authFromSessionJSON(session, International)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	if auth.UserID != "9007199254740993" {
+		t.Fatalf("uid = %q", auth.UserID)
+	}
+}
+
+func TestSessionJSONImportKeepsObjectDPoPAlias(t *testing.T) {
+	payload := map[string]any{
+		"account":   map[string]any{"id": "u1"},
+		"accessKey": "AK", "secretKey": "SK", "securityToken": "ST",
+		"stationType":      "international",
+		"dpop_private_key": map[string]any{"kty": "EC", "d": "secret"},
+	}
+	auth, failure := authFromSessionJSON(payload, International)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	if !strings.Contains(string(auth.DPopPrivateKey), `"kty":"EC"`) {
+		t.Fatalf("dpop = %s", auth.DPopPrivateKey)
+	}
+}
