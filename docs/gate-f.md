@@ -368,6 +368,19 @@ window. `make check`, `make race`, and the 17/17 dashboard JS harness pass.
 Published as `v2.8.21` at `74ba686`; evidence:
 `docs/smoke/2026-11-24-release-2.8.21.md`. No media or Windows SCM gate changed.
 
+**v2.9.0 addendum:** adds the CodeArts international station (`codearts-intl`)
+as a separate provider with an isolated settings key, account folder,
+credentials, OAuth (`site=intl`), Agent session JSON import, DPoP refresh, token
+quota display, panel card/tab/settings, and realm/API-key bindings. International
+chat requests follow the CodeArts Agent 26.11.300 application and TLS
+fingerprint (signed header subset, `user_prompt`, separate uTLS ClientHello with
+no ALPN and HTTP/1.1). Mainland wire shape, `WB_CODEARTS_OT_SESSION`, credit
+quota parsing, and settings remain unchanged; the dual-station ambiguity probe
+only runs when the international station is enabled. `make check`, `make race`,
+and the 20/20 dashboard JS harness pass. Published as `v2.9.0` at `8a70c74`;
+evidence: `docs/smoke/2026-11-25-release-2.9.0.md`. No media or Windows SCM gate
+changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
