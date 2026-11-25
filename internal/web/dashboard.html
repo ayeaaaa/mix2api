@@ -8349,11 +8349,11 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
 <div class="modal-mask" id="codeartsOauthModal">
   <div class="modal" role="dialog" aria-modal="true" style="width:min(640px,100%)">
     <div class="modal-hd">
-      <h2>添加 CodeArts 账号</h2>
+      <h2 id="codeartsOauthTitle">添加 CodeArts 账号</h2>
       <button class="modal-x" onclick="closeCodeartsOauthModal()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <div style="font-size:12px;color:var(--dim);margin-bottom:10px">
+      <div id="codeartsOauthHelp" style="font-size:12px;color:var(--dim);margin-bottom:10px">
         用华为云账号完成授权。授权链接不会自动打开；请复制到本机浏览器打开。
         浏览器和本网关不在同一台机器时，回调地址会打不开；把地址栏里的完整地址粘贴到下面，点「中转回调」。
       </div>
@@ -8369,6 +8369,15 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
              style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="sec" onclick="importCodeartsCallback(this)">中转回调</button>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin:14px 0 4px">或导入 CodeArts Agent session JSON</div>
+      <textarea id="codeartsSessionJson" rows="4" placeholder='{"account":{"id":"..."},"accessKey":"...","secretKey":"...","securityToken":"..."}'
+                style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit;font-family:var(--mono,monospace);resize:vertical"></textarea>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">
+        粘贴 CodeArts Agent 导出的 session JSON；国际站会话可以没有 stationType 字段。
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="sec" onclick="importCodeartsSessionJson(this)">导入 session JSON</button>
       </div>
       <div id="codeartsOauthStatus" style="font-size:12px;color:var(--dim);margin-top:12px;min-height:18px"></div>
     </div>
@@ -9651,7 +9660,7 @@ function renderCodeartsAccounts(r, realm){
     }else{
       actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'disable\',\'' + uidSafe + '\',null,' + realmArg + ')">停用</button>');
     }
-    actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uidSafe + '\')">重新登录</button>');
+    actions.push('<button class="sec mini" onclick="codeartsRelogin(\'' + uidSafe + '\',' + realmArg + ')">重新登录</button>');
     actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'clear-cooldown\',\'' + uidSafe + '\',null,' + realmArg + ')">清冷却</button>');
     actions.push('<button class="sec mini" onclick="codeartsAccountAction(\'test\',\'' + uidSafe + '\',null,' + realmArg + ')">测试</button>');
     // 国际站上游没有积分任务接口，任务开关只在国内站出现。
@@ -9698,8 +9707,8 @@ async function codeartsAccountAction(action, uid, extra, realm){
   }
 }
 
-function codeartsRelogin(uid){
-  openCodeartsOauthModal();
+function codeartsRelogin(uid, realm){
+  openCodeartsOauthModal(realm);
   setTimeout(function(){
     setCodeartsOauthStatus("请用账号 " + uid + " 完成授权；同 UID 会更新现有账号。", null);
   }, 50);
@@ -10951,6 +10960,12 @@ async function importRaccoonAuth(btn){
 
 let CODEARTS_OAUTH_SESSION = "";
 let CODEARTS_OAUTH_TIMER = null;
+// 弹窗打开时捕获 realm：之后用户切视图也不能把已打开的授权/导入改到另一个站。
+let CODEARTS_OAUTH_REALM = "codearts";
+
+function codeartsOauthEndpoint(){
+  return codeartsRealmEndpoint(CODEARTS_OAUTH_REALM);
+}
 
 function setCodeartsOauthStatus(msg, ok){
   const el = document.getElementById("codeartsOauthStatus");
@@ -10959,13 +10974,24 @@ function setCodeartsOauthStatus(msg, ok){
   el.style.color = (ok === true) ? "var(--accent2)" : (ok === false ? "var(--bad)" : "var(--dim)");
 }
 
-function openCodeartsOauthModal(){
+function openCodeartsOauthModal(realm){
+  const requested = realm || codeartsRealm();
+  CODEARTS_OAUTH_REALM = requested === "codearts-intl" ? "codearts-intl" : "codearts";
+  const intl = CODEARTS_OAUTH_REALM === "codearts-intl";
   const modal = document.getElementById("codeartsOauthModal");
   if(modal) modal.classList.add("show");
+  const title = document.getElementById("codeartsOauthTitle");
+  if(title) title.textContent = intl ? "添加 CodeArts 国际账号" : "添加 CodeArts 账号";
+  const help = document.getElementById("codeartsOauthHelp");
+  if(help) help.textContent = intl
+    ? "用华为云国际站账号完成授权。授权链接不会自动打开；请复制到本机浏览器打开。浏览器和本网关不在同一台机器时，回调地址会打不开；把地址栏里的完整地址粘贴到下面，点「中转回调」。"
+    : "用华为云账号完成授权。授权链接不会自动打开；请复制到本机浏览器打开。浏览器和本网关不在同一台机器时，回调地址会打不开；把地址栏里的完整地址粘贴到下面，点「中转回调」。";
   const url = document.getElementById("codeartsOauthUrl");
   if(url) url.textContent = "";
   const cb = document.getElementById("codeartsOauthCallback");
   if(cb) cb.value = "";
+  const sj = document.getElementById("codeartsSessionJson");
+  if(sj) sj.value = "";
   startCodeartsOAuth();
 }
 
@@ -10974,11 +11000,13 @@ function closeCodeartsOauthModal(){
   CODEARTS_OAUTH_SESSION = "";
   const modal = document.getElementById("codeartsOauthModal");
   if(modal) modal.classList.remove("show");
+  const sj = document.getElementById("codeartsSessionJson");
+  if(sj) sj.value = "";
 }
 
 async function startCodeartsOAuth(){
   try{
-    const r = await postJSON("/codearts/accounts/oauth/start", {});
+    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/start", {});
     CODEARTS_OAUTH_SESSION = r.session_id || "";
     const url = document.getElementById("codeartsOauthUrl");
     if(url) url.textContent = r.auth_url || "";
@@ -10993,7 +11021,7 @@ async function startCodeartsOAuth(){
 async function pollCodeartsOAuth(silent){
   if(!CODEARTS_OAUTH_SESSION) return;
   try{
-    const r = await postJSON("/codearts/accounts/oauth/poll",
+    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/poll",
                              {session_id: CODEARTS_OAUTH_SESSION});
     if(r.status === "pending"){
       setCodeartsOauthStatus(r.message || "等待浏览器完成授权…", null);
@@ -11003,7 +11031,7 @@ async function pollCodeartsOAuth(silent){
       setCodeartsOauthStatus("✓ " + (r.message || "登录成功"), true);
       if(CODEARTS_OAUTH_TIMER){ clearInterval(CODEARTS_OAUTH_TIMER); CODEARTS_OAUTH_TIMER = null; }
       CODEARTS_OAUTH_SESSION = "";
-      await loadCodeartsOverview(true);
+      await loadCodeartsOverviewFor(CODEARTS_OAUTH_REALM, true);
       setTimeout(closeCodeartsOauthModal, 900);
       return;
     }
@@ -11023,7 +11051,7 @@ async function importCodeartsCallback(btn){
   }
   if(btn) btn.disabled = true;
   try{
-    const r = await postJSON("/codearts/accounts/oauth/callback", {
+    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/oauth/callback", {
       session_id: CODEARTS_OAUTH_SESSION,
       callback_url: callbackUrl,
     });
@@ -11038,6 +11066,42 @@ async function importCodeartsCallback(btn){
     setTimeout(function(){ pollCodeartsOAuth(true); }, 500);
   }catch(e){
     setCodeartsOauthStatus("中转失败: " + e.message, false);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function importCodeartsSessionJson(btn){
+  const input = document.getElementById("codeartsSessionJson");
+  const raw = input ? String(input.value || "").trim() : "";
+  if(!raw){
+    setCodeartsOauthStatus("请粘贴 CodeArts Agent session JSON", false);
+    return;
+  }
+  let parsed;
+  try{
+    parsed = JSON.parse(raw);
+  }catch(e){
+    setCodeartsOauthStatus("session JSON 解析失败: " + e.message, false);
+    return;
+  }
+  if(!parsed || typeof parsed !== "object" || Array.isArray(parsed)){
+    setCodeartsOauthStatus("session JSON 必须是对象", false);
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON(codeartsOauthEndpoint() + "/accounts/import",
+                             {session_json: parsed});
+    if(input) input.value = "";
+    setCodeartsOauthStatus("✓ 已导入账号 " + (r.uid || "（未知 UID）"), true);
+    await Promise.all([
+      refreshActiveRealm().catch(function(){}),
+      loadCodeartsOverviewFor(CODEARTS_OAUTH_REALM, true).catch(function(){}),
+    ]);
+    setTimeout(closeCodeartsOauthModal, 900);
+  }catch(e){
+    setCodeartsOauthStatus("导入失败: " + e.message, false);
   }finally{
     if(btn) btn.disabled = false;
   }
