@@ -54,6 +54,10 @@ type Provider struct {
 	oauthPortMu   sync.RWMutex
 	oauthPort     int
 
+	// oauthPeer lets the single public callback route look up a session owned
+	// by the sibling station. The peer is set once during app composition.
+	oauthPeer *Provider
+
 	healthMu    sync.Mutex
 	healthCache healthCacheEntry
 
@@ -202,6 +206,14 @@ func (p *Provider) listenerPort() int {
 	port := p.oauthPort
 	p.oauthPortMu.RUnlock()
 	return port
+}
+
+// SetOAuthPeer assigns the sibling provider used for public callback dispatch.
+func (p *Provider) SetOAuthPeer(peer *Provider) {
+	if p == nil {
+		return
+	}
+	p.oauthPeer = peer
 }
 
 // applySettings reloads the shared settings, projects config/proxy slots onto

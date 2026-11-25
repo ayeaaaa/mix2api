@@ -1988,6 +1988,34 @@ func TestOAuthAuthorizeURLUsesStation(t *testing.T) {
 	}
 }
 
+func TestOAuthBeginInternationalUsesLoginWrapper(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	sessions := NewOAuthSessionsForStation(International)
+	start, err := sessions.Begin(store, 54321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := url.Parse(start.AuthURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outer.Host != "auth.huaweicloud.com" || outer.Query().Get("site") != "intl" {
+		t.Fatalf("outer login URL = %s", start.AuthURL)
+	}
+	service, err := url.Parse(outer.Query().Get("service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Host != "codearts.ap-southeast-1.huaweicloud.com" ||
+		!strings.HasSuffix(service.Path, "/portal/authorize") {
+		t.Fatalf("service URL = %s", service.String())
+	}
+	if service.Query().Get("locale") != "en-us" {
+		t.Fatalf("service locale = %s", service.Query().Get("locale"))
+	}
+}
+
 func TestOAuthSaveUsesStationAccountPath(t *testing.T) {
 	dir := t.TempDir()
 	store := config.New(filepath.Join(dir, "settings.json"))
@@ -2008,6 +2036,9 @@ func TestOAuthSaveUsesStationAccountPath(t *testing.T) {
 	}
 	if auth.SecurityToken != "ST" {
 		t.Fatalf("security token = %q", auth.SecurityToken)
+	}
+	if auth.CloudDragonToken != "" {
+		t.Fatalf("international OAuth wrote cloud_dragon_token = %q", auth.CloudDragonToken)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "codearts-intl", "codearts-u1.json")); err != nil {
 		t.Fatalf("intl auth path missing: %v", err)

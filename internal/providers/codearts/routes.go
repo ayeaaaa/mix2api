@@ -338,11 +338,16 @@ func (p *Provider) Routes() []providers.Route {
 			providers.Route{Method: http.MethodPost, Path: prefix + "/checkin", Auth: panel, Handler: p.handleCheckin},
 		)
 	}
+	routes = append(routes,
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
+		providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
+	)
 	if p.Station().ID == Mainland.ID {
+		// The public callback path is single-registered: mainland owns it and
+		// dispatches to the international peer when its own session table has
+		// no exact match.
 		routes = append(routes,
-			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/start", Auth: panel, Handler: p.handleOAuthStart},
-			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/poll", Auth: panel, Handler: p.handleOAuthPoll},
-			providers.Route{Method: http.MethodPost, Path: prefix + "/accounts/oauth/callback", Auth: panel, Handler: p.handleOAuthCallback},
 			providers.Route{Method: http.MethodGet, Path: "/oauth/callback", Auth: providers.AuthNone, Handler: p.handleCallbackGET},
 		)
 	}
@@ -832,6 +837,17 @@ func (p *Provider) handleCallbackGET(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
+	status, body, handled := p.oauthCallbackGETOnce(query)
+	if !handled && p.oauthPeer != nil && p.oauthPeer != p {
+		status, body, handled = p.oauthPeer.oauthCallbackGETOnce(query)
+	}
+	if !handled {
+		return http.StatusBadRequest, callbackHTML("登录会话不存在或已过期，请回到看板重新发起。")
+	}
+	return status, body
+}
+
+func (p *Provider) oauthCallbackGETOnce(query url.Values) (int, string, bool) {
 	value := func(key string) string {
 		return strings.TrimSpace(query.Get(key))
 	}
@@ -841,7 +857,7 @@ func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
 	if ticketID == "" && secret == "" && state == "" {
 		return http.StatusBadRequest, callbackHTML(
 			"回调缺少会话标识，请回到看板粘贴完整回调地址。",
-		)
+		), true
 	}
 
 	host := "127.0.0.1"
@@ -856,14 +872,18 @@ func (p *Provider) oauthCallbackGET(query url.Values) (int, string) {
 	}).String()
 	result, failure := p.oauthCallback("", callbackURL, "", "")
 	if failure != nil {
-		return http.StatusBadRequest, callbackHTML(publicOAuthFailureMessage(failure))
+		// Only an exact no-matching-session result may fall through to the
+		// sibling station. State mismatch, replay, exchange failure, and every
+		// other error are terminal for this provider.
+		return http.StatusBadRequest, callbackHTML(publicOAuthFailureMessage(failure)),
+			failure.Message != oauthSessionMissingMessage
 	}
 	if result.Status == "continue" && result.NextURL != "" {
 		return http.StatusOK,
 			`<meta http-equiv="refresh" content="0;url=` + html.EscapeString(result.NextURL) +
-				`"><h3>正在继续华为云授权…</h3>`
+				`"><h3>正在继续华为云授权…</h3>`, true
 	}
-	return http.StatusOK, callbackHTML("CodeArts 登录成功，可以关闭此页面。")
+	return http.StatusOK, callbackHTML("CodeArts 登录成功，可以关闭此页面。"), true
 }
 
 func callbackHTML(message string) string {

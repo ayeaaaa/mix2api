@@ -500,7 +500,7 @@ func (s *OAuthSessions) Begin(store *config.Store, port int) (OAuthStart, error)
 		}
 	}
 
-	authURL := s.authorizeURL(port, challenge, ticketID)
+	authURL := s.LoginURL(s.authorizeURL(port, challenge, ticketID))
 	session := &oauthSession{
 		ID:        sessionID,
 		TicketID:  ticketID,
@@ -951,20 +951,21 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 		return Auth{}, err
 	}
 	auth := Auth{
-		UserID:           uid,
-		UserName:         name,
-		DomainID:         domain,
-		CloudDragonToken: token.Credentials.SecurityToken,
-		AccessKeyID:      token.Credentials.AccessKeyID,
-		SecretAccessKey:  token.Credentials.SecretAccessKey,
-		RefreshToken:     token.RefreshToken,
-		CodeVerifier:     session.Verifier,
-		ClientID:         oauthClientID(),
-		Expiration:       parseExpirationText(token.Credentials.Expiration),
-		DPopPrivateKey:   append(json.RawMessage(nil), session.DPoPKey...),
-		UpdatedAt:        s.nowTime().Unix(),
+		UserID:          uid,
+		UserName:        name,
+		DomainID:        domain,
+		AccessKeyID:     token.Credentials.AccessKeyID,
+		SecretAccessKey: token.Credentials.SecretAccessKey,
+		RefreshToken:    token.RefreshToken,
+		CodeVerifier:    session.Verifier,
+		ClientID:        oauthClientID(),
+		Expiration:      parseExpirationText(token.Credentials.Expiration),
+		DPopPrivateKey:  append(json.RawMessage(nil), session.DPoPKey...),
+		UpdatedAt:       s.nowTime().Unix(),
 	}
-	if s.Station().ID != Mainland.ID {
+	if s.Station().ID == Mainland.ID {
+		auth.CloudDragonToken = token.Credentials.SecurityToken
+	} else {
 		auth.Station = s.Station().ID
 		auth.SecurityToken = token.Credentials.SecurityToken
 	}

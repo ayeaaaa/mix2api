@@ -112,6 +112,9 @@ func Build(paths Paths) (*Setup, error) {
 	if err := registry.Register(codeartsIntlProvider); err != nil {
 		return nil, fmt.Errorf("app: register codearts intl provider: %w", err)
 	}
+	// The public /oauth/callback path is registered only by mainland; it
+	// dispatches to the international session table on an exact miss.
+	codeartsProvider.SetOAuthPeer(codeartsIntlProvider)
 
 	// WorkBuddy registers one instance per realm. Both share the same code and
 	// settings file but own separate account pools filtered by realm.
