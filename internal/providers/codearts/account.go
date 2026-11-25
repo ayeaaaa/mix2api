@@ -896,6 +896,7 @@ func codeartsSecretValues(auth Auth) []string {
 	values := make([]string, 0, 6)
 	for _, value := range []string{
 		auth.CloudDragonToken,
+		auth.SecurityToken,
 		auth.AccessKeyID,
 		auth.SecretAccessKey,
 		auth.RefreshToken,

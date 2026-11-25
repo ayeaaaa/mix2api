@@ -1635,3 +1635,29 @@ func TestIntlCatalogUsesOnlyInternationalColdSeeds(t *testing.T) {
 		t.Fatalf("missing intl cold seeds: %v", want)
 	}
 }
+
+func TestIntlCatalogUsesStationHeaders(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts-intl"
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	if _, err := p.catalogJSON(context.Background(), account, http.MethodGet, server.URL, nil, "PromptCenter"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("X-Language") != "en-us" {
+		t.Fatalf("X-Language = %q", got.Get("X-Language"))
+	}
+	if got.Get("X-Security-Token") != "sts-intl" {
+		t.Fatalf("X-Security-Token = %q", got.Get("X-Security-Token"))
+	}
+}

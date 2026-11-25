@@ -801,3 +801,21 @@ func TestAuthSecurityTokenRoundTripAndFallback(t *testing.T) {
 		t.Fatalf("round-trip = %s", raw)
 	}
 }
+
+func TestCodeartsSecretValuesIncludesIndependentSecurityToken(t *testing.T) {
+	auth := Auth{UserID: "u1", SecurityToken: "sts-secret"}
+	values := codeartsSecretValues(auth)
+	found := false
+	for _, value := range values {
+		if value == "sts-secret" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("security token missing from redaction list: %v", values)
+	}
+	if redacted := redactText("leak sts-secret here", values); strings.Contains(redacted, "sts-secret") {
+		t.Fatalf("security token not redacted: %q", redacted)
+	}
+}

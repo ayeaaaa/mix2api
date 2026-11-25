@@ -1424,3 +1424,33 @@ func TestTokenProviderWiresManager(t *testing.T) {
 		t.Fatalf("token manager timeout = %v, want 30s", provider.TokenManager().timeout)
 	}
 }
+
+func TestTokenRefreshRotatesIndependentSecurityToken(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	fake, _ := newTokenRefreshFake(t)
+	manager := newTokenTestManager(t, now)
+	auth := tokenTestAuth("u1", now.Add(10*time.Minute))
+	auth.SecurityToken = "ST-old"
+	pool, _ := tokenTestPool(t, auth)
+	account := pool.Get("u1")
+	fake.payload = func(form url.Values) map[string]any {
+		return tokenTestPayload("u1", "refresh-u1-new", now.Add(time.Hour))
+	}
+	if err := manager.Ensure(context.Background(), account); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if account.Auth.SecurityToken != "ST-new-u1" {
+		t.Fatalf("security token = %q, want rotated", account.Auth.SecurityToken)
+	}
+	if got := account.Auth.SigningSecurityToken(); got != "ST-new-u1" {
+		t.Fatalf("signing token = %q", got)
+	}
+}
+
+func TestSameCredentialIdentityIncludesSecurityToken(t *testing.T) {
+	left := Auth{UserID: "u1", SecurityToken: "ST-old"}
+	right := Auth{UserID: "u1", SecurityToken: "ST-new"}
+	if sameCredentialIdentity(left, right) {
+		t.Fatal("sameCredentialIdentity ignored security token change")
+	}
+}

@@ -1104,7 +1104,7 @@ func (p *Provider) catalogJSON(
 		return nil, errors.New("codearts: build model discovery request failed")
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Language", "zh-cn")
+	request.Header.Set("X-Language", p.Station().Locale)
 	if agentType != "" {
 		request.Header.Set("Agent-Type", agentType)
 	}
@@ -1117,7 +1117,7 @@ func (p *Provider) catalogJSON(
 	credentials := SignCredentials{
 		AccessKeyID:     auth.AccessKeyID,
 		SecretAccessKey: auth.SecretAccessKey,
-		SecurityToken:   auth.CloudDragonToken,
+		SecurityToken:   auth.SigningSecurityToken(),
 	}
 	if err := SignRequest(request, body, credentials); err != nil {
 		return nil, errors.New("codearts: sign model discovery request failed")

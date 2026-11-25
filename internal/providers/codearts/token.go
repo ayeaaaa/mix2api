@@ -415,6 +415,7 @@ func sameCredentialIdentity(current, previous Auth) bool {
 	return strings.TrimSpace(current.UserID) == strings.TrimSpace(previous.UserID) &&
 		strings.TrimSpace(current.RefreshToken) == strings.TrimSpace(previous.RefreshToken) &&
 		current.CloudDragonToken == previous.CloudDragonToken &&
+		current.SecurityToken == previous.SecurityToken &&
 		current.AccessKeyID == previous.AccessKeyID &&
 		current.SecretAccessKey == previous.SecretAccessKey &&
 		current.ClientID == previous.ClientID &&
@@ -556,6 +557,9 @@ func authFromRefreshToken(old Auth, token Token, now time.Time) Auth {
 		updated.DomainID = value
 	}
 	updated.CloudDragonToken = token.Credentials.SecurityToken
+	if strings.TrimSpace(old.SecurityToken) != "" {
+		updated.SecurityToken = token.Credentials.SecurityToken
+	}
 	updated.AccessKeyID = token.Credentials.AccessKeyID
 	updated.SecretAccessKey = token.Credentials.SecretAccessKey
 	updated.Expiration = parseExpirationText(token.Credentials.Expiration)

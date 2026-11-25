@@ -96,6 +96,9 @@ func (a Auth) MarshalJSON() ([]byte, error) {
 		{"updated_at", a.UpdatedAt},
 	}
 	for _, field := range fields {
+		if field.name == "security_token" && a.SecurityToken == "" {
+			continue
+		}
 		if err := appendAuthField(&buf, &first, field.name, field.value); err != nil {
 			return nil, err
 		}

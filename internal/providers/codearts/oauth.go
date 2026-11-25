@@ -907,7 +907,7 @@ func (s *OAuthSessions) Callback(store *config.Store, sessionID, code, state str
 	snapshot := *session
 	s.mu.Unlock()
 
-	token, err := ExchangeCode(code, snapshot.Verifier, snapshot.Port, snapshot.DPoPKey)
+	token, err := ExchangeCodeForStation(s.Station(), code, snapshot.Verifier, snapshot.Port, snapshot.DPoPKey)
 	if err != nil {
 		failMessage := redactOAuthValues(err.Error(), code, snapshot.Verifier,
 			snapshot.Secret, snapshot.TicketID, string(snapshot.DPoPKey), dpopPrivateScalar(snapshot.DPoPKey))
@@ -943,7 +943,7 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 		name = uid
 	}
 	accountsDir := filepath.Dir(store.Path)
-	path, err := AuthPath(accountsDir, uid)
+	path, err := AuthPathForStation(accountsDir, s.Station(), uid)
 	if err != nil {
 		return Auth{}, err
 	}
@@ -963,6 +963,9 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 		Expiration:       parseExpirationText(token.Credentials.Expiration),
 		DPopPrivateKey:   append(json.RawMessage(nil), session.DPoPKey...),
 		UpdatedAt:        s.nowTime().Unix(),
+	}
+	if s.Station().ID != Mainland.ID {
+		auth.SecurityToken = token.Credentials.SecurityToken
 	}
 	if err := SaveAuth(path, auth); err != nil {
 		return Auth{}, err
@@ -1260,7 +1263,7 @@ func lookupOAuthIdentity(creds Credentials, station Station) (uid, name, domain 
 		CloudDragonToken: creds.SecurityToken,
 	}
 	firstUID, firstName, firstDomain := "", "", ""
-	if data, err := oauthSignedIdentityGet(holder, station.ResolvedSTS()+"/v5/caller-identity"); err == nil {
+	if data, err := oauthSignedIdentityGet(holder, station.ResolvedSTS()+"/v5/caller-identity", station); err == nil {
 		firstUID = oauthFirstNonEmpty(modelText(data["principal_id"]), modelText(data["account_id"]))
 		urn := strings.TrimSpace(modelText(data["principal_urn"]))
 		if index := strings.LastIndex(urn, "/"); index >= 0 {
@@ -1271,7 +1274,7 @@ func lookupOAuthIdentity(creds Credentials, station Station) (uid, name, domain 
 			return firstUID, firstName, firstDomain
 		}
 	}
-	if data, err := oauthSignedIdentityGet(holder, station.SnapManagerBase()+"/v1/current/user"); err == nil {
+	if data, err := oauthSignedIdentityGet(holder, station.SnapManagerBase()+"/v1/current/user", station); err == nil {
 		currentUID := strings.TrimSpace(modelText(data["user_id"]))
 		currentName := strings.TrimSpace(modelText(data["user_name"]))
 		currentDomain := strings.TrimSpace(modelText(data["domain_id"]))
@@ -1296,7 +1299,7 @@ func oauthFirstNonEmpty(values ...string) string {
 // oauthSignedIdentityGet performs one signed GET with the STS temporary
 // credentials. The response must be a JSON object; any transport/HTTP/decode
 // failure is returned to the best-effort caller without credential text.
-func oauthSignedIdentityGet(holder Auth, endpoint string) (map[string]any, error) {
+func oauthSignedIdentityGet(holder Auth, endpoint string, station Station) (map[string]any, error) {
 	if strings.TrimSpace(holder.AccessKeyID) == "" ||
 		strings.TrimSpace(holder.SecretAccessKey) == "" ||
 		strings.TrimSpace(holder.CloudDragonToken) == "" {
@@ -1309,11 +1312,11 @@ func oauthSignedIdentityGet(holder Auth, endpoint string) (map[string]any, error
 		return nil, errors.New("codearts: identity lookup request is invalid")
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Language", "zh-cn")
+	request.Header.Set("X-Language", stationOrDefault(station).Locale)
 	if err := SignRequest(request, nil, SignCredentials{
 		AccessKeyID:     holder.AccessKeyID,
 		SecretAccessKey: holder.SecretAccessKey,
-		SecurityToken:   holder.CloudDragonToken,
+		SecurityToken:   holder.SigningSecurityToken(),
 	}); err != nil {
 		return nil, errors.New("codearts: identity lookup signing failed")
 	}
@@ -1413,6 +1416,12 @@ func normalizeTokenPayload(raw []byte) (Token, error) {
 // ExchangeCode redeems one authorization code with PKCE and DPoP. The form and
 // redirect URI match v1.6.5 exactly.
 func ExchangeCode(code, verifier string, port int, dpopJWK json.RawMessage) (Token, error) {
+	return ExchangeCodeForStation(Mainland, code, verifier, port, dpopJWK)
+}
+
+// ExchangeCodeForStation redeems an authorization code with the given
+// station's STS endpoint.
+func ExchangeCodeForStation(station Station, code, verifier string, port int, dpopJWK json.RawMessage) (Token, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return Token{}, ErrOAuthCode
@@ -1429,13 +1438,18 @@ func ExchangeCode(code, verifier string, port int, dpopJWK json.RawMessage) (Tok
 	form.Set("code_verifier", verifier)
 	form.Set("grant_type", "authorization_code")
 	form.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d%s", port, oauthRedirectPath))
-	return RequestToken(form, dpopJWK)
+	return RequestTokenForStation(station, form, dpopJWK)
 }
 
 // RequestToken POSTs a form to the STS token endpoint with a DPoP proof and
 // returns the normalized response. It is also the building block for refresh.
 func RequestToken(form url.Values, dpopJWK json.RawMessage) (Token, error) {
-	return RequestTokenContext(context.Background(), form, dpopJWK)
+	return RequestTokenForStation(Mainland, form, dpopJWK)
+}
+
+// RequestTokenForStation is RequestToken bound to one station's STS endpoint.
+func RequestTokenForStation(station Station, form url.Values, dpopJWK json.RawMessage) (Token, error) {
+	return requestTokenContextWith(context.Background(), oauthEndpointDoer{}, "", form, dpopJWK, station)
 }
 
 // RequestTokenContext is RequestToken with a caller context.

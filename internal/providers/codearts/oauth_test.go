@@ -1987,3 +1987,32 @@ func TestOAuthAuthorizeURLUsesStation(t *testing.T) {
 		t.Fatalf("authorize URL should stay raw; login wrapper is separate: %s", url)
 	}
 }
+
+func TestOAuthSaveUsesStationAccountPath(t *testing.T) {
+	dir := t.TempDir()
+	store := config.New(filepath.Join(dir, "settings.json"))
+	sessions := NewOAuthSessionsForStation(International)
+	session := &oauthSession{Verifier: "verifier", DPoPKey: json.RawMessage(`{}`)}
+	token := Token{
+		UserID:   "u1",
+		UserName: "U1",
+		Credentials: Credentials{
+			AccessKeyID:     "AK",
+			SecretAccessKey: "SK",
+			SecurityToken:   "ST",
+		},
+	}
+	auth, err := sessions.saveOAuthAuth(store, session, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.SecurityToken != "ST" {
+		t.Fatalf("security token = %q", auth.SecurityToken)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codearts-intl", "codearts-u1.json")); err != nil {
+		t.Fatalf("intl auth path missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codearts", "codearts-u1.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mainland path was written: %v", err)
+	}
+}

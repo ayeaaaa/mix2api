@@ -122,7 +122,7 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 	signed.Set("Content-Type", "application/json")
 	afterSign := http.Header{}
 	afterSign.Set("Agent-Type", creditCheckinAgentType)
-	afterSign.Set("X-Language", creditCheckinLanguage)
+	afterSign.Set("X-Language", p.Station().Locale)
 	data, err := p.signedJSON(ctx, a, signedJSONRequest{
 		Method:    http.MethodGet,
 		URL:       p.snapManagerBase() + creditEndpointPlugin,
@@ -423,7 +423,7 @@ func (p *Provider) signedJSON(ctx context.Context, a *Account, options signedJSO
 	credentials := SignCredentials{
 		AccessKeyID:     auth.AccessKeyID,
 		SecretAccessKey: auth.SecretAccessKey,
-		SecurityToken:   auth.CloudDragonToken,
+		SecurityToken:   auth.SigningSecurityToken(),
 	}
 	if err := SignRequest(request, body, credentials); err != nil {
 		return nil, errors.New("codearts: sign request failed")

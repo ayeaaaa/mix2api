@@ -824,3 +824,30 @@ func TestTokenQuotaParsing(t *testing.T) {
 		t.Fatalf("total = %#v", info.Credits.Total)
 	}
 }
+
+func TestIntlUsageUsesStationHeaders(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts-intl"
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"package":{"is_token_package":true},"metrics":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	p.station.SnapHost = server.URL
+	if _, err := p.fetchInfo(context.Background(), account, true); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("X-Language") != "en-us" {
+		t.Fatalf("X-Language = %q", got.Get("X-Language"))
+	}
+	if got.Get("X-Security-Token") != "sts-intl" {
+		t.Fatalf("X-Security-Token = %q", got.Get("X-Security-Token"))
+	}
+}
