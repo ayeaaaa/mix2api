@@ -504,11 +504,11 @@ func (m *TokenManager) writeAuth(a *Account, snapshot tokenAccountSnapshot, cand
 	if path == "" {
 		return false, a.authGeneration, errors.New("codearts: token refresh requires an auth path")
 	}
-	if err := verifyAuthOwnership(path, uid); err != nil {
+	if err := verifyAuthOwnershipForStation(path, uid, m.station); err != nil {
 		return false, a.authGeneration, err
 	}
 
-	if err := SaveAuth(path, candidate); err != nil {
+	if err := SaveAuthForStation(path, candidate, m.station); err != nil {
 		return false, a.authGeneration, fmt.Errorf("codearts: save refreshed auth: %w", err)
 	}
 	a.Auth = candidate

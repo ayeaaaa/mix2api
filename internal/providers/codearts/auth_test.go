@@ -819,3 +819,24 @@ func TestCodeartsSecretValuesIncludesIndependentSecurityToken(t *testing.T) {
 		t.Fatalf("security token not redacted: %q", redacted)
 	}
 }
+
+func TestAuthStationLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codearts-u1.json")
+	intlAuth := Auth{UserID: "u1", SecurityToken: "ST", Station: "international"}
+	if err := SaveAuthForStation(path, intlAuth, International); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadAuthForStation(path, International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Station != "international" || got.SecurityToken != "ST" {
+		t.Fatalf("got = %#v", got)
+	}
+	if _, err := LoadAuthForStation(path, Mainland); err == nil {
+		t.Fatal("mainland loaded international auth")
+	}
+	if err := SaveAuthForStation(path, Auth{UserID: "u2"}, International); err == nil {
+		t.Fatal("intl save accepted no signing token")
+	}
+}

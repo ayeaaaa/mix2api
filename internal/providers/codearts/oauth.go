@@ -947,7 +947,7 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 	if err != nil {
 		return Auth{}, err
 	}
-	if err := verifyAuthOwnership(path, uid); err != nil {
+	if err := verifyAuthOwnershipForStation(path, uid, s.Station()); err != nil {
 		return Auth{}, err
 	}
 	auth := Auth{
@@ -967,10 +967,10 @@ func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession
 	if s.Station().ID != Mainland.ID {
 		auth.SecurityToken = token.Credentials.SecurityToken
 	}
-	if err := SaveAuth(path, auth); err != nil {
+	if err := SaveAuthForStation(path, auth, s.Station()); err != nil {
 		return Auth{}, err
 	}
-	saved, err := LoadAuth(path)
+	saved, err := LoadAuthForStation(path, s.Station())
 	if err != nil {
 		return Auth{}, err
 	}

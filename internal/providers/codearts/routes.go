@@ -694,7 +694,7 @@ func (p *Provider) syncOAuthAccount(uid string) error {
 	if err != nil {
 		return err
 	}
-	auth, err := LoadAuth(path)
+	auth, err := LoadAuthForStation(path, p.station)
 	if err != nil {
 		return err
 	}

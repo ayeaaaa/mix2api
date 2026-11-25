@@ -1313,3 +1313,14 @@ func TestPoolUsesStationFolder(t *testing.T) {
 		t.Fatalf("intl folder = %q", intl.folder)
 	}
 }
+
+func TestPoolAddRejectsWrongStation(t *testing.T) {
+	dir := t.TempDir()
+	pool, err := NewPoolForStation(dir, International, defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Add(Auth{UserID: "u1", SecurityToken: "ST", Station: "mainland"}); err == nil {
+		t.Fatal("intl pool accepted mainland auth")
+	}
+}
