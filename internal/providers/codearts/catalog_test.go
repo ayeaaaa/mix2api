@@ -1664,8 +1664,11 @@ func TestIntlCatalogUsesStationHeaders(t *testing.T) {
 
 func TestIntlCatalogFetchSkipsBenefitUpstream(t *testing.T) {
 	var paths []string
+	var pathsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathsMu.Lock()
 		paths = append(paths, r.URL.Path)
+		pathsMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/agent-center/agents/useragents":
@@ -1694,7 +1697,10 @@ func TestIntlCatalogFetchSkipsBenefitUpstream(t *testing.T) {
 	if len(models) != 2 || modelText(models[0]["id"]) != "GLM-5.2" {
 		t.Fatalf("models = %#v", models)
 	}
-	for _, path := range paths {
+	pathsMu.Lock()
+	snapshot := append([]string(nil), paths...)
+	pathsMu.Unlock()
+	for _, path := range snapshot {
 		if strings.Contains(path, "gateway/config") || strings.Contains(path, "benefit") {
 			t.Fatalf("intl catalog requested benefit path %q", path)
 		}

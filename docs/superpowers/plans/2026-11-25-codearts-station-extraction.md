@@ -372,7 +372,7 @@ Expected: FAIL.
 - `x-auth-token` only when `CloudDragonToken != ""`.
 - `SignCredentials.SecurityToken` uses `SecurityToken` if non-empty, else `CloudDragonToken`.
 - Keep current `stop` normalization; do not add station-specific behavior.
-- Keep `Content-Type` signing unchanged; add `SignOptions` only if Task 7's golden test proves it is needed.
+- Keep `Content-Type` signing unchanged; add `SignOptions` only if a later international live-verification golden test proves it is needed.
 
 - [ ] **Step 4: Run tests**
 

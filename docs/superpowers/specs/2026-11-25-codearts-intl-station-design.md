@@ -139,7 +139,7 @@ CodeArts 应沿用同样模式，但使用独立账号目录，避免两个 Pool
 
 - 一个 `codearts` package
 - `Station` 结构体描述站点差异
-- `New(store, station)` 构造，注册 `codearts` 和 `codearts-intl` 两个 instance
+- `NewWithStation(store, station)` 构造，注册 `codearts` 和 `codearts-intl` 两个 instance
 - 配置/账号目录按 station 分开
 
 优点：共用最多代码；差异显式；新增站点只需 profile；符合 WorkBuddy 先例。
@@ -212,9 +212,8 @@ var International = Station{ ... }
 `codearts.New(store)` 保持为国内站兼容入口；新增：
 
 ```go
-func New(store *config.Store, station Station) (*Provider, error)
-func NewMainland(store *config.Store) (*Provider, error)
-func NewInternational(store *config.Store) (*Provider, error)
+func New(store *config.Store) (*Provider, error) // mainland compatibility wrapper
+func NewWithStation(store *config.Store, station Station) (*Provider, error)
 ```
 
 `internal/app/providers.go` 注册两个：
@@ -402,7 +401,7 @@ SecurityToken string `json:"security_token,omitempty"` // 国际站 X-Security-T
    - 国际签名 golden vector（含/不含 content-type 两个变体）
 5. Chat：
    - 国际 host / locale / `x-auth-token` 行为
-   - `stop` 国内删除、国际数组化
+   - `stop` 国内保持现有 mix2api 行为、国际数组化
    - 国际不发送 `maas_type`
 6. Catalog：
    - 国际跳过 opengw
@@ -523,3 +522,11 @@ SecurityToken string `json:"security_token,omitempty"` // 国际站 X-Security-T
 - 国际站 `stop` 已验证只接受数组；国内站是否也应改成删除，需要单独实测，不在本设计内改。
 - 面板前端是否需要新组件，取决于现有 provider 页面是否按 realm 动态渲染；若现有页面已按 realm 分组，只加标签/隐藏字段。
 - 国际站账号可用性：当前 Windows 客户端可用于导出 session；CI 里用 fake STS/snap upstream，不依赖真实账号。
+## 13. Phase 2 Verification (2026-11-25)
+
+- Registered `codearts-intl` as a second CodeArts realm with separate settings/accounts.
+- Added station-aware `Auth` loading/saving/verification and a CodeArts Agent session-JSON importer.
+- Verified intl catalog discovery against a fake upstream: no opengw/benefit request, no domestic seed leakage, `owned_by=codearts-intl`.
+- Verified intl chat request host, `en-us`, empty `x-auth-token`, independent `X-Security-Token`, and no `maas_type`.
+- `go test ./...`, `go vet`, and `go test -race ./internal/providers/codearts` pass.
+- Live intl smoke is deferred: the current Windows client session was expired and no fresh export was available in this phase. A fresh session import is required before claiming live upstream success.
