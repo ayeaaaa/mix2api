@@ -2399,3 +2399,21 @@ func TestIntlChatUsesStationHostAndSecurityToken(t *testing.T) {
 		t.Fatalf("security token = %q", req.Header.Get("X-Security-Token"))
 	}
 }
+
+func TestIntlChatHasNoBenefitHeader(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "ST"
+	account.SetModelBenefit(map[string]bool{"GLM-5.2": true})
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", "session", []byte(`{"model":"GLM-5.2","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("maas_type"); got != "" {
+		t.Fatalf("maas_type = %q, want empty", got)
+	}
+}

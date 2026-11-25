@@ -1661,3 +1661,42 @@ func TestIntlCatalogUsesStationHeaders(t *testing.T) {
 		t.Fatalf("X-Security-Token = %q", got.Get("X-Security-Token"))
 	}
 }
+
+func TestIntlCatalogFetchSkipsBenefitUpstream(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/agent-center/agents/useragents":
+			_, _ = w.Write([]byte(`{"agents":[{"agent_id":"agent-1","agent_name":"CodeAgent","is_primary_agent":true,"show_in_ide":true}]}`))
+		case "/v1/agent-center/agents/detail":
+			_, _ = w.Write([]byte(`{"gpts":{"models":[{"model_name":"GLM-5.2","model_parameters":{"model_id":"GLM-5.2","context_window":202752,"max_tokens":131072}},{"model_name":"GLM-5.3","model_parameters":{"model_id":"GLM-5.3","context_window":202752,"max_tokens":65535}}]}}`))
+		case "/v1/model/builtin":
+			_, _ = w.Write([]byte(`{"builtinModels":[]}`))
+		default:
+			t.Fatalf("unexpected intl catalog path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.station.SnapHost = server.URL
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "ST"
+	models, err := p.FetchModels(context.Background(), account, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || modelText(models[0]["id"]) != "GLM-5.2" {
+		t.Fatalf("models = %#v", models)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "gateway/config") || strings.Contains(path, "benefit") {
+			t.Fatalf("intl catalog requested benefit path %q", path)
+		}
+	}
+}

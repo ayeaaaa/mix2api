@@ -550,7 +550,7 @@ func (p *Provider) newChatRequest(
 	request.Header.Set("X-Language", p.station.Locale)
 	request.Header.Set("app-id", "CodeAgent3.0")
 	request.Header.Set("is_confidential", "false")
-	if account.IsBenefit(model) {
+	if p.Station().SupportsBenefit && account.IsBenefit(model) {
 		request.Header.Set(headerMaasType, maasBenefit)
 	}
 
