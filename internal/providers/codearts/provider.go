@@ -38,6 +38,7 @@ const (
 // provider configuration, shared core transport, token manager, and OAuth
 // session table. The generic API only sees providers.Provider.
 type Provider struct {
+	station     Station
 	store       *config.Store
 	accountsDir string
 
@@ -89,19 +90,27 @@ type healthCacheEntry struct {
 var _ providers.Provider = (*Provider)(nil)
 var _ providers.HTTPError = (*APIError)(nil)
 
-// New returns the production CodeArts provider. The accounts directory is the
+// New returns the mainland CodeArts provider. The accounts directory is the
 // directory containing the shared settings file, matching v1's layout.
 //
-// Task 9 composition must create exactly one Provider/Pool per accounts
+// Composition must create exactly one Provider/Pool per station accounts
 // directory in a process: Pool locks are instance-local, so two Pools over the
 // same state.json would still race with each other.
 func New(store *config.Store) (*Provider, error) {
+	return NewWithStation(store, Mainland)
+}
+
+// NewWithStation returns a CodeArts provider for one station.
+func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 	if store == nil || strings.TrimSpace(store.Path) == "" {
 		return nil, errors.New("codearts: config store is required")
 	}
 	accountsDir := filepath.Dir(store.Path)
 	if strings.TrimSpace(accountsDir) == "" {
 		return nil, errors.New("codearts: accounts directory is empty")
+	}
+	if station.ID == "" {
+		station = Mainland
 	}
 
 	cfg := LoadConfig(store)
@@ -123,6 +132,7 @@ func New(store *config.Store) (*Provider, error) {
 	})
 
 	provider := &Provider{
+		station:            station,
 		store:              store,
 		accountsDir:        accountsDir,
 		cfg:                cfg,
@@ -276,11 +286,29 @@ func (p *Provider) invalidateHealth() {
 	p.healthMu.Unlock()
 }
 
+// Station returns the CodeArts deployment this provider serves.
+func (p *Provider) Station() Station {
+	if p == nil {
+		return Mainland
+	}
+	return p.station
+}
+
 // ID returns the stable provider implementation identifier.
-func (p *Provider) ID() string { return ProviderID }
+func (p *Provider) ID() string {
+	if p == nil || p.station.ProviderID == "" {
+		return ProviderID
+	}
+	return p.station.ProviderID
+}
 
 // Realm returns the unique realm this instance serves.
-func (p *Provider) Realm() string { return ProviderRealm }
+func (p *Provider) Realm() string {
+	if p == nil || p.station.Realm == "" {
+		return ProviderRealm
+	}
+	return p.station.Realm
+}
 
 // Jobs returns the provider's background jobs. The daily check-in job follows
 // the shared WorkBuddy check-in slots and is gated by credits_auto_claim.
