@@ -7,8 +7,13 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 )
 
+func newTestStore(t *testing.T) *config.Store {
+	t.Helper()
+	return config.New(filepath.Join(t.TempDir(), "settings.json"))
+}
+
 func TestProviderUsesStationIdentity(t *testing.T) {
-	store := config.New(filepath.Join(t.TempDir(), "settings.json"))
+	store := newTestStore(t)
 	cn, err := New(store)
 	if err != nil {
 		t.Fatal(err)

@@ -2373,3 +2373,29 @@ func TestChatReasoningEffortMapDisabled(t *testing.T) {
 		t.Fatalf("reasoning_effort = %q, want auto", got)
 	}
 }
+
+func TestIntlChatUsesStationHostAndSecurityToken(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &Account{Auth: testAuth("u1")}
+	account.Auth.CloudDragonToken = ""
+	account.Auth.SecurityToken = "sts"
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", "session", []byte(`{"model":"GLM-5.2","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Host != "snap-access.ap-southeast-1.myhuaweicloud.com" {
+		t.Fatalf("host = %s", req.URL.Host)
+	}
+	if req.Header.Get("X-Language") != "en-us" {
+		t.Fatalf("language = %q", req.Header.Get("X-Language"))
+	}
+	if req.Header.Get("x-auth-token") != "" {
+		t.Fatalf("x-auth-token = %q, want empty", req.Header.Get("x-auth-token"))
+	}
+	if req.Header.Get("X-Security-Token") != "sts" {
+		t.Fatalf("security token = %q", req.Header.Get("X-Security-Token"))
+	}
+}

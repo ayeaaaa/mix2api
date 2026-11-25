@@ -777,3 +777,27 @@ func TestAuthPathUsesStationFolder(t *testing.T) {
 		t.Fatalf("intl path = %q", intl)
 	}
 }
+
+func TestAuthSecurityTokenRoundTripAndFallback(t *testing.T) {
+	var old Auth
+	if err := json.Unmarshal([]byte(`{"user_id":"u1","cloud_dragon_token":"legacy"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.SecurityToken != "" || old.CloudDragonToken != "legacy" {
+		t.Fatalf("old auth = %#v", old)
+	}
+	var next Auth
+	if err := json.Unmarshal([]byte(`{"user_id":"u1","security_token":"sts"}`), &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.SecurityToken != "sts" {
+		t.Fatalf("security_token = %q", next.SecurityToken)
+	}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"security_token":"sts"`) {
+		t.Fatalf("round-trip = %s", raw)
+	}
+}

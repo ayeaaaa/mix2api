@@ -27,6 +27,7 @@ type Auth struct {
 	UserName         string `json:"user_name"`
 	DomainID         string `json:"domain_id"`
 	CloudDragonToken string `json:"cloud_dragon_token"`
+	SecurityToken    string `json:"security_token,omitempty"`
 	AccessKeyID      string `json:"access_key_id"`
 	SecretAccessKey  string `json:"secret_access_key"`
 	RefreshToken     string `json:"refresh_token"`
@@ -42,11 +43,21 @@ type Auth struct {
 	extraFields map[string]json.RawMessage
 }
 
+// SigningSecurityToken returns the token used for X-Security-Token: the
+// international field when present, otherwise the mainland cloud-dragon token.
+func (a Auth) SigningSecurityToken() string {
+	if token := strings.TrimSpace(a.SecurityToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(a.CloudDragonToken)
+}
+
 var knownAuthJSONKeys = map[string]struct{}{
 	"user_id":            {},
 	"user_name":          {},
 	"domain_id":          {},
 	"cloud_dragon_token": {},
+	"security_token":     {},
 	"access_key_id":      {},
 	"secret_access_key":  {},
 	"refresh_token":      {},
@@ -73,6 +84,7 @@ func (a Auth) MarshalJSON() ([]byte, error) {
 		{"user_name", a.UserName},
 		{"domain_id", a.DomainID},
 		{"cloud_dragon_token", a.CloudDragonToken},
+		{"security_token", a.SecurityToken},
 		{"access_key_id", a.AccessKeyID},
 		{"secret_access_key", a.SecretAccessKey},
 		{"refresh_token", a.RefreshToken},
@@ -170,6 +182,7 @@ func (a *Auth) UnmarshalJSON(data []byte) error {
 		UserName:         decodeStringValue(raw["user_name"]),
 		DomainID:         decodeStringValue(raw["domain_id"]),
 		CloudDragonToken: decodeStringValue(raw["cloud_dragon_token"]),
+		SecurityToken:    decodeStringValue(raw["security_token"]),
 		AccessKeyID:      decodeStringValue(raw["access_key_id"]),
 		SecretAccessKey:  decodeStringValue(raw["secret_access_key"]),
 		RefreshToken:     decodeStringValue(raw["refresh_token"]),

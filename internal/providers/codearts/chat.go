@@ -526,7 +526,7 @@ func (p *Provider) newChatRequest(
 	raw []byte,
 ) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, snapHost()+chatCompletionsPath, bytes.NewReader(raw),
+		ctx, http.MethodPost, p.station.ResolvedSnapHost()+chatCompletionsPath, bytes.NewReader(raw),
 	)
 	if err != nil {
 		return nil, err
@@ -543,9 +543,11 @@ func (p *Provider) newChatRequest(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("x-auth-token", auth.CloudDragonToken)
+	if strings.TrimSpace(auth.CloudDragonToken) != "" {
+		request.Header.Set("x-auth-token", auth.CloudDragonToken)
+	}
 	request.Header.Set("x-snap-traceid", traceID)
-	request.Header.Set("X-Language", "zh-cn")
+	request.Header.Set("X-Language", p.station.Locale)
 	request.Header.Set("app-id", "CodeAgent3.0")
 	request.Header.Set("is_confidential", "false")
 	if account.IsBenefit(model) {
@@ -555,7 +557,7 @@ func (p *Provider) newChatRequest(
 	if err := SignRequest(request, raw, SignCredentials{
 		AccessKeyID:     auth.AccessKeyID,
 		SecretAccessKey: auth.SecretAccessKey,
-		SecurityToken:   auth.CloudDragonToken,
+		SecurityToken:   auth.SigningSecurityToken(),
 	}); err != nil {
 		return nil, err
 	}
