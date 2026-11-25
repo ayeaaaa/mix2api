@@ -134,7 +134,7 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 		return nil, err
 	}
 
-	info := parseAccountInfo(data, p.catalogNow())
+	info := parseAccountInfo(data, p.catalogNow(), p.Station().ID)
 	a.SetInfo(info)
 	return a.infoSnapshot(), nil
 }
@@ -142,10 +142,14 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 // parseAccountInfo normalizes the statistics/plugin response into the v1
 // panel shape. Missing metrics become nil buckets; present zero buckets stay
 // present so the panel can distinguish "0 used" from "not reported".
-func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
+func parseAccountInfo(data map[string]any, now time.Time, stationIDs ...string) *AccountInfo {
 	packageInfo := modelMap(data["package"])
 	isCredit, _ := packageInfo["is_credit_package"].(bool)
 	isToken, _ := packageInfo["is_token_package"].(bool)
+	// Token quota is an international-station shape. Mainland keeps its
+	// existing credit parsing byte-for-byte even if the payload reports a
+	// token package.
+	allowTokenQuota := len(stationIDs) > 0 && stationIDs[0] == International.ID
 	packageName := strings.TrimSpace(modelTruthyText(packageInfo["package_name_cn"]))
 	if packageName == "" {
 		packageName = strings.TrimSpace(modelTruthyText(packageInfo["package_name_en"]))
@@ -183,7 +187,7 @@ func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
 
 	total := creditMetric(metrics, creditTotalPackageMetric)
 	unit := "credit"
-	if isToken {
+	if allowTokenQuota && isToken {
 		if tokenTotal := tokenMetric(metrics); tokenTotal != nil {
 			total = tokenTotal
 			unit = "token"
@@ -191,7 +195,7 @@ func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
 	}
 	return &AccountInfo{
 		IsCreditPackage: isCredit,
-		IsTokenPackage:  isToken,
+		IsTokenPackage:  allowTokenQuota && isToken,
 		SpecCode:        modelTruthyText(packageInfo["spec_code"]),
 		PackageName:     packageName,
 		PackageStatus:   modelTruthyText(packageInfo["status"]),

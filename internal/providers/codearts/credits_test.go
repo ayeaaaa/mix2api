@@ -810,7 +810,7 @@ func TestTokenQuotaParsing(t *testing.T) {
 		"start_date": "2026-11-25",
 		"end_date":   "2026-12-26",
 	}
-	info := parseAccountInfo(data, time.Unix(0, 0))
+	info := parseAccountInfo(data, time.Unix(0, 0), International.ID)
 	if !info.IsTokenPackage {
 		t.Fatal("IsTokenPackage = false")
 	}

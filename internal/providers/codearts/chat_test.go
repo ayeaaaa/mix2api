@@ -993,8 +993,8 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if body["chat_id"] != conversationID || body["prompt_cache_key"] != conversationID {
 		t.Fatalf("chat_id/prompt_cache_key = %#v/%#v", body["chat_id"], body["prompt_cache_key"])
 	}
-	if body["user_prompt"] != "hi" {
-		t.Fatalf("user_prompt = %#v, want hi", body["user_prompt"])
+	if _, ok := body["user_prompt"]; ok {
+		t.Fatalf("mainland body gained user_prompt: %#v", body)
 	}
 	wantSession := t5SHA("codearts-session:" + conversationID)
 	headers := capture.Header
@@ -2503,5 +2503,39 @@ func TestIntlChatHasNoBenefitHeader(t *testing.T) {
 	}
 	if got := req.Header.Get("maas_type"); got != "" {
 		t.Fatalf("maas_type = %q, want empty", got)
+	}
+}
+
+// The international work must not change the mainland wire shape. This test
+// pins the legacy body and the WB_CODEARTS_OT_SESSION opt-out.
+func TestMainlandChatKeepsLegacyBodyAndOTSwitch(t *testing.T) {
+	t.Setenv("WB_CODEARTS_OT_SESSION", "0")
+	fake, _ := newT5Fake(t, nil)
+	provider, _ := newT5Provider(t, "u1")
+	stream, err := provider.OpenChat(context.Background(), t5Request(t, map[string]any{
+		"model":       "GLM-5.2",
+		"messages":    t5Messages(t5UserMessage("hi")),
+		"user_prompt": "client-supplied",
+	}, ""))
+	if err != nil {
+		t.Fatalf("OpenChat: %v", err)
+	}
+	_ = stream.Close()
+	captures := fake.snapshot()
+	if len(captures) != 1 {
+		t.Fatalf("calls = %d", len(captures))
+	}
+	body := captures[0].Body
+	if _, ok := body["user_prompt"]; ok {
+		t.Fatalf("mainland body gained user_prompt: %#v", body)
+	}
+	headers := captures[0].Header
+	if headers.Get("Chat-Id") == "" || headers.Get("Session-Id") == "" {
+		t.Fatalf("legacy identity headers missing: %#v", headers)
+	}
+	for _, name := range []string{"x-ot-session-id", "user-session-id", "x-ot-trace-id"} {
+		if got := headers.Get(name); got != "" {
+			t.Fatalf("%s = %q, want empty when WB_CODEARTS_OT_SESSION=0", name, got)
+		}
 	}
 }

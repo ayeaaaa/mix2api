@@ -505,19 +505,20 @@ func (s *Server) rejectAmbiguousCodeArts(ctx context.Context, model string) erro
 	if mainland == nil || international == nil {
 		return nil
 	}
-	matches := make([]string, 0, 2)
-	for _, provider := range []providers.Provider{mainland, international} {
-		lookupCtx, cancel := context.WithTimeout(ctx, catalogResolutionTimeout)
-		models, err := provider.Models(lookupCtx, false)
-		cancel()
-		if err != nil {
-			return nil
-		}
-		if modelMatches(models, model) {
-			matches = append(matches, provider.Realm())
-		}
+	// Read mainland first and stop when it does not advertise the model:
+	// ambiguity requires both stations, so the international catalog only
+	// needs a read when mainland already matches. This keeps the extra cost
+	// off bare-model requests that are not CodeArts models at all.
+	mainlandCtx, mainlandCancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+	mainlandModels, err := mainland.Models(mainlandCtx, false)
+	mainlandCancel()
+	if err != nil || !modelMatches(mainlandModels, model) {
+		return nil
 	}
-	if len(matches) < 2 {
+	internationalCtx, internationalCancel := context.WithTimeout(ctx, catalogResolutionTimeout)
+	internationalModels, err := international.Models(internationalCtx, false)
+	internationalCancel()
+	if err != nil || !modelMatches(internationalModels, model) {
 		return nil
 	}
 	return localFailure(http.StatusBadRequest,

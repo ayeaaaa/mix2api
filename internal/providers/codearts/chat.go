@@ -67,7 +67,6 @@ var chatAllowedFields = map[string]struct{}{
 	"response_format":       {},
 	"top_k":                 {},
 	"parallel_tool_calls":   {},
-	"user_prompt":           {},
 }
 
 var chatToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -369,17 +368,23 @@ func (p *Provider) sendModelChatAttempt(
 	for index, spelling := range spellings {
 		attemptBody := cloneChatBody(body)
 		attemptBody["model"] = spelling
+		messages, _ := attemptBody["messages"].([]any)
 		if p.Station().Region == "intl" {
-			// The real IDE body has no gateway-only cache fields.
+			// The real IDE body has no gateway-only cache fields and carries
+			// user_prompt. Mainland keeps its legacy body unchanged.
 			delete(attemptBody, "chat_id")
 			delete(attemptBody, "prompt_cache_key")
+			if prompt := ideUserPrompt(messages); prompt != "" {
+				attemptBody["user_prompt"] = prompt
+			} else {
+				delete(attemptBody, "user_prompt")
+			}
 		}
 		raw, err := json.Marshal(attemptBody)
 		if err != nil {
 			return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
 				Message: "codearts: chat request body is not valid JSON"}
 		}
-		messages, _ := attemptBody["messages"].([]any)
 		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, messages, raw, streamTimeout)
 		if err == nil {
 			if index > 0 {
@@ -625,15 +630,28 @@ func (p *Provider) newLegacyChatRequest(
 
 	request.Header.Set("Chat-Id", chatID)
 	request.Header.Set("Session-Id", chatSHA256Hex32("codearts-session:"+chatID))
-	otSession := chatSHA256Hex32("codearts-ot-session:" + uid)
-	otTrace, traceErr := randomHex(16)
-	if traceErr != nil {
-		return nil, traceErr
+	if otSessionEnabled() {
+		otSession := chatSHA256Hex32("codearts-ot-session:" + uid)
+		otTrace, traceErr := randomHex(16)
+		if traceErr != nil {
+			return nil, traceErr
+		}
+		request.Header.Set("x-ot-session-id", otSession)
+		request.Header.Set("user-session-id", otSession)
+		request.Header.Set("x-ot-trace-id", otTrace)
 	}
-	request.Header.Set("x-ot-session-id", otSession)
-	request.Header.Set("user-session-id", otSession)
-	request.Header.Set("x-ot-trace-id", otTrace)
 	return request, nil
+}
+
+// otSessionEnabled mirrors v1's WB_CODEARTS_OT_SESSION switch. The default is
+// on; only 0/false/no/off disables the gateway session headers.
+func otSessionEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(envString("WB_CODEARTS_OT_SESSION", ""))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func classifyChatHTTP(status int, raw []byte, auth Auth) *APIError {
@@ -813,11 +831,6 @@ func buildChatBodyWithOptions(req providers.ChatRequest, mapReasoningEffort bool
 			Message: "messages is empty"}
 	}
 	body["messages"] = messages
-	if prompt := ideUserPrompt(messages); prompt != "" {
-		body["user_prompt"] = prompt
-	} else {
-		delete(body, "user_prompt")
-	}
 
 	normalizeChatTools(body)
 	normalizeChatToolChoice(body)
