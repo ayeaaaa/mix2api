@@ -183,6 +183,41 @@ func seedFallbackModels() []Model {
 	return out
 }
 
+func stationSeedModels(ids []string) []Model {
+	out := make([]Model, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, Model{
+			"id":              id,
+			"name":            id,
+			"benefit":         false,
+			"supports_images": knownVision(id),
+		})
+	}
+	return out
+}
+
+// stationCoreModels are the always-visible published models for the station.
+// International has none: its catalogue is only what discovery returns.
+func (p *Provider) stationCoreModels() []Model {
+	if p.Station().ID == Mainland.ID {
+		return officialCoreModels()
+	}
+	return nil
+}
+
+// coldSeedModels are used only when an account has never had a successful
+// catalogue and every source failed.
+func (p *Provider) coldSeedModels() []Model {
+	if p.Station().ID == Mainland.ID {
+		return seedFallbackModels()
+	}
+	return stationSeedModels(p.Station().ModelSeeds)
+}
+
 // modelCatalog is an insertion-ordered, case-insensitive core catalogue union.
 type modelCatalog struct {
 	order []string
@@ -665,9 +700,14 @@ func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account, epoch uint
 		items []Model
 		err   error
 	}
-	results := make([]sourceResult, 3)
+	benefit := strings.TrimSpace(p.benefitHost()) != ""
+	sourceCount := 2
+	if benefit {
+		sourceCount = 3
+	}
+	results := make([]sourceResult, sourceCount)
 	var wait sync.WaitGroup
-	wait.Add(3)
+	wait.Add(sourceCount)
 	go func() {
 		defer wait.Done()
 		items, err := p.fetchAgentModels(ctx, a)
@@ -678,15 +718,17 @@ func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account, epoch uint
 		items, err := p.fetchBuiltinModels(ctx, a)
 		results[1] = sourceResult{name: "builtin", items: items, err: err}
 	}()
-	go func() {
-		defer wait.Done()
-		items, err := p.fetchBenefitModels(ctx, a)
-		results[2] = sourceResult{name: "benefit", items: items, err: err}
-	}()
+	if benefit {
+		go func() {
+			defer wait.Done()
+			items, err := p.fetchBenefitModels(ctx, a)
+			results[2] = sourceResult{name: "benefit", items: items, err: err}
+		}()
+	}
 	wait.Wait()
 
-	sets := make([][]Model, 0, 3)
-	failures := make([]error, 0, 3)
+	sets := make([][]Model, 0, sourceCount)
+	failures := make([]error, 0, sourceCount)
 	successes := 0
 	for _, result := range results {
 		if result.err != nil {
@@ -712,7 +754,7 @@ func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account, epoch uint
 				base = prior
 			}
 		}
-		merged := mergeModelCatalogs(base, officialCoreModels())
+		merged := mergeModelCatalogs(base, p.stationCoreModels())
 		p.storeAccountModels(a, merged, now, epoch)
 		return cloneModels(merged), nil
 	}
@@ -725,7 +767,7 @@ func (p *Provider) fetchModelsLocked(ctx context.Context, a *Account, epoch uint
 		p.noteModelAttempt(a, now, epoch)
 		return prior, failure
 	}
-	seed := seedFallbackModels()
+	seed := p.coldSeedModels()
 	p.storeAccountModels(a, seed, now, epoch)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return cloneModels(seed), ctxErr
@@ -830,7 +872,7 @@ func (p *Provider) fetchAgentModels(ctx context.Context, a *Account) ([]Model, e
 	query.Set("limit", "100")
 	query.Set("is_primary_agent", "true")
 	listing, err := p.catalogJSON(ctx, a, http.MethodGet,
-		snapHost()+catalogEndpointAgentList+"?"+query.Encode(), nil, "PromptCenter")
+		p.snapHost()+catalogEndpointAgentList+"?"+query.Encode(), nil, "PromptCenter")
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +885,7 @@ func (p *Provider) fetchAgentModels(ctx context.Context, a *Account) ([]Model, e
 	detailQuery := url.Values{}
 	detailQuery.Set("agent_id", agentID)
 	detail, err := p.catalogJSON(ctx, a, http.MethodGet,
-		snapHost()+catalogEndpointAgentDetail+"?"+detailQuery.Encode(), nil, "PromptCenter")
+		p.snapHost()+catalogEndpointAgentDetail+"?"+detailQuery.Encode(), nil, "PromptCenter")
 	if err != nil {
 		return nil, err
 	}
@@ -924,7 +966,7 @@ func selectAgentID(agents []any) string {
 
 func (p *Provider) fetchBuiltinModels(ctx context.Context, a *Account) ([]Model, error) {
 	data, err := p.catalogJSON(ctx, a, http.MethodGet,
-		snapHost()+catalogEndpointBuiltin, nil, "PromptCenter")
+		p.snapHost()+catalogEndpointBuiltin, nil, "PromptCenter")
 	if err != nil {
 		return nil, err
 	}
@@ -962,10 +1004,10 @@ func (p *Provider) fetchBenefitModels(ctx context.Context, a *Account) ([]Model,
 	if p.poolBenefitAutoClaim() {
 		// Claim failures never block reading the benefit catalogue.
 		_, _ = p.catalogJSON(ctx, a, http.MethodPost,
-			benefitHost()+catalogEndpointClaim, map[string]any{}, "")
+			p.benefitHost()+catalogEndpointClaim, map[string]any{}, "")
 	}
 	data, err := p.catalogJSON(ctx, a, http.MethodGet,
-		benefitHost()+catalogEndpointBenefit, nil, "")
+		p.benefitHost()+catalogEndpointBenefit, nil, "")
 	if err != nil {
 		return nil, err
 	}

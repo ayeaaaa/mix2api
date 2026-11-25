@@ -1584,3 +1584,54 @@ func TestModelsLiveSettingsToggle(t *testing.T) {
 		t.Fatal("re-enabled Models returned an empty catalogue")
 	}
 }
+
+func TestIntlCatalogSkipsBenefitHost(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.benefitHost() != "" {
+		t.Fatalf("benefit host = %q, want empty", p.benefitHost())
+	}
+	if p.snapHost() != International.SnapHost {
+		t.Fatalf("snap host = %q", p.snapHost())
+	}
+}
+
+func TestMainlandCatalogKeepsBenefitHostAndSeeds(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), Mainland)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.benefitHost() != benefitHost() {
+		t.Fatalf("benefit host = %q, want %q", p.benefitHost(), benefitHost())
+	}
+	if p.snapHost() != snapHost() {
+		t.Fatalf("snap host = %q, want %q", p.snapHost(), snapHost())
+	}
+	if len(officialCoreModels()) == 0 {
+		t.Fatal("mainland official seed set is empty")
+	}
+}
+
+func TestIntlCatalogUsesOnlyInternationalColdSeeds(t *testing.T) {
+	p, err := NewWithStation(newTestStore(t), International)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.stationCoreModels(); len(got) != 0 {
+		t.Fatalf("intl station core models = %v, want none", got)
+	}
+	seeds := p.coldSeedModels()
+	want := map[string]bool{"glm-5.3": true, "GLM-5.2": true, "Qwen3-VL-235B": true}
+	for _, item := range seeds {
+		id := modelText(item["id"])
+		if !want[id] {
+			t.Fatalf("unexpected intl cold seed %q", id)
+		}
+		delete(want, id)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing intl cold seeds: %v", want)
+	}
+}

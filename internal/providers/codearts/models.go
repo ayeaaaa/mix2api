@@ -89,7 +89,9 @@ func (p *Provider) Models(ctx context.Context, force bool) ([]Model, error) {
 	}
 
 	merged := mergeModelCatalogs(sets...)
-	merged = mergeModelCatalogs(merged, officialCoreModels(), benefitSeedCoreModels())
+	if p.Station().ID == Mainland.ID {
+		merged = mergeModelCatalogs(merged, officialCoreModels(), benefitSeedCoreModels())
+	}
 	return p.wireModels(merged), nil
 }
 
@@ -129,8 +131,8 @@ func (p *Provider) wireModels(models []Model) []Model {
 			"id":       wireID,
 			"object":   "model",
 			"created":  created,
-			"owned_by": "codearts",
-			"provider": "codearts",
+			"owned_by": p.Station().ProviderID,
+			"provider": p.Station().ProviderID,
 			"name":     name,
 		}
 

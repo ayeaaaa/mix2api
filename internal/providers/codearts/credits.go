@@ -125,7 +125,7 @@ func (p *Provider) fetchInfo(ctx context.Context, a *Account, force bool) (*Acco
 	afterSign.Set("X-Language", creditCheckinLanguage)
 	data, err := p.signedJSON(ctx, a, signedJSONRequest{
 		Method:    http.MethodGet,
-		URL:       snapManagerBase() + creditEndpointPlugin,
+		URL:       p.snapManagerBase() + creditEndpointPlugin,
 		Timeout:   creditInfoTimeout,
 		Signed:    signed,
 		AfterSign: afterSign,

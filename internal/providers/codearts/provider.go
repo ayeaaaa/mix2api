@@ -287,6 +287,22 @@ func (p *Provider) invalidateHealth() {
 	p.healthMu.Unlock()
 }
 
+// snapHost is the provider's resolved snap-access root.
+func (p *Provider) snapHost() string {
+	return p.Station().ResolvedSnapHost()
+}
+
+// benefitHost is the provider's resolved opengw root; empty for stations
+// without a benefit channel.
+func (p *Provider) benefitHost() string {
+	return p.Station().ResolvedBenefitHost()
+}
+
+// snapManagerBase is the provider's resolved snap-manager root.
+func (p *Provider) snapManagerBase() string {
+	return p.Station().SnapManagerBase()
+}
+
 // Station returns the CodeArts deployment this provider serves.
 func (p *Provider) Station() Station {
 	if p == nil {
@@ -358,7 +374,7 @@ func (p *Provider) Health(ctx context.Context, force bool) (providers.Health, er
 		"configured": cfg.Enabled,
 		"accounts":   stats.Total,
 		"healthy":    stats.Healthy,
-		"base_url":   snapHost(),
+		"base_url":   p.snapHost(),
 	}
 	p.healthMu.Lock()
 	p.healthCache = healthCacheEntry{at: now, value: cloneHealth(value)}
@@ -403,7 +419,7 @@ func (p *Provider) Overview(ctx context.Context, force bool) (any, error) {
 		"service":  ProviderID,
 		"region":   "cn",
 		"online":   health["ok"] == true,
-		"base_url": snapHost(),
+		"base_url": p.snapHost(),
 		"stats":    p.statsPayload(),
 		"accounts": p.pool.List(),
 		"models":   p.overviewModels(),

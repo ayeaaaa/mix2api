@@ -330,7 +330,7 @@ func (p *Provider) runCheckin(ctx context.Context, account *Account) (CheckinRes
 	signed := checkinSignedHeaders()
 	data, err := p.signedJSON(ctx, account, signedJSONRequest{
 		Method:  http.MethodGet,
-		URL:     snapHost() + creditEndpointDelivery + "?channel=" + creditCheckinChannel,
+		URL:     p.snapHost() + creditEndpointDelivery + "?channel=" + creditCheckinChannel,
 		Timeout: checkinTimeout,
 		Signed:  signed,
 	})
@@ -463,7 +463,7 @@ func (p *Provider) claimCampaign(ctx context.Context, account *Account, campaign
 	}
 	_, err := p.signedJSON(ctx, account, signedJSONRequest{
 		Method:  http.MethodPost,
-		URL:     snapHost() + creditEndpointClaim,
+		URL:     p.snapHost() + creditEndpointClaim,
 		Payload: payload,
 		Timeout: checkinTimeout,
 		Signed:  checkinSignedHeaders(),
@@ -474,7 +474,7 @@ func (p *Provider) claimCampaign(ctx context.Context, account *Account, campaign
 func (p *Provider) confirmCampaign(ctx context.Context, account *Account, campaignID any) error {
 	_, err := p.signedJSON(ctx, account, signedJSONRequest{
 		Method:  http.MethodPost,
-		URL:     snapHost() + creditEndpointConfirm,
+		URL:     p.snapHost() + creditEndpointConfirm,
 		Payload: map[string]any{"campaignId": campaignID},
 		Timeout: checkinTimeout,
 		Signed:  checkinSignedHeaders(),
