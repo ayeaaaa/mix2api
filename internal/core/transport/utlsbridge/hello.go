@@ -2,6 +2,7 @@ package utlsbridge
 
 import (
 	"crypto/tls"
+	"strings"
 
 	utls "github.com/refraction-networking/utls"
 )
@@ -70,5 +71,24 @@ func officialHelloSpec() *utls.ClientHelloSpec {
 				tls.VersionTLS12,
 			}},
 		},
+	}
+}
+
+// codeartsHelloSpec is the CodeArts Agent 26.11.300 ClientHello captured from
+// the Windows client. It is the WorkBuddy Node profile plus the trailing
+// padding extension (21, 230 bytes). The real client offers no ALPN and
+// negotiates HTTP/1.1.
+func codeartsHelloSpec() *utls.ClientHelloSpec {
+	spec := officialHelloSpec()
+	spec.Extensions = append(spec.Extensions, &utls.UtlsPaddingExtension{PaddingLen: 230, WillPad: true})
+	return spec
+}
+
+func helloSpecForProfile(profile string) *utls.ClientHelloSpec {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "codearts":
+		return codeartsHelloSpec()
+	default:
+		return officialHelloSpec()
 	}
 }

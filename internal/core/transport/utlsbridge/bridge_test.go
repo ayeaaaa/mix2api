@@ -27,6 +27,9 @@ import (
 const (
 	officialJA3    = "771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-13-51-45-43,29-23-24,0"
 	officialJA3MD5 = "71dc8c533dd919ae9f4963224a4ba8fd"
+
+	codeartsJA3    = "771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-13-51-45-43-21,29-23-24,0"
+	codeartsJA3MD5 = "51bddd625044f75a235ba857ac8b0145"
 	officialJA4    = "t13d120a00_5d04281c6031_78e6aca7449b"
 )
 
@@ -98,6 +101,63 @@ func TestOfficialClientHelloFingerprint(t *testing.T) {
 		}
 		if len(raw) != 255 {
 			t.Fatalf("TLS record length = %d, want 255", len(raw))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ClientHello")
+	}
+}
+
+func TestCodeArtsClientHelloFingerprint(t *testing.T) {
+	bridge, err := utlsbridge.NewWithConfig(utlsbridge.Config{Profile: "codearts", ServerName: "snap-access.ap-southeast-1.myhuaweicloud.com"})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	defer bridge.Close()
+
+	addr, rawCh := captureClientHello(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = bridge.DialTLS(ctx, addr, "")
+
+	select {
+	case raw := <-rawCh:
+		fields := parseClientHello(t, raw)
+		gotJA3 := fmt.Sprintf("%d,%s,%s,%s,%s",
+			fields.legacyVersion,
+			joinInts(fields.ciphers, "-"),
+			joinInts(fields.extensions, "-"),
+			joinInts(fields.groups, "-"),
+			joinInts(fields.ecpf, "-"))
+		if gotJA3 != codeartsJA3 {
+			t.Fatalf("JA3 = %q, want %q", gotJA3, codeartsJA3)
+		}
+		sum := md5.Sum([]byte(gotJA3))
+		if got := hex.EncodeToString(sum[:]); got != codeartsJA3MD5 {
+			t.Fatalf("JA3 md5 = %q, want %q", got, codeartsJA3MD5)
+		}
+		if len(fields.extensions) == 0 || fields.extensions[len(fields.extensions)-1] != 21 {
+			t.Fatalf("extensions = %v, want trailing padding(21)", fields.extensions)
+		}
+		if fields.sessionIDLen != 32 {
+			t.Fatalf("session id length = %d, want 32", fields.sessionIDLen)
+		}
+		if fields.legacyVersion != 0x0303 {
+			t.Fatalf("legacy version = %d, want 771", fields.legacyVersion)
+		}
+		if fmt.Sprint(fields.compression) != "[0]" {
+			t.Fatalf("compression = %v, want [0]", fields.compression)
+		}
+		if fmt.Sprint(fields.sigalgs) != "[1027 2052 1025 1283 2053 1281 2054 1537 513]" {
+			t.Fatalf("signature algorithms = %v", fields.sigalgs)
+		}
+		if fmt.Sprint(fields.supportedVersions) != "[772 771]" {
+			t.Fatalf("supported versions = %v, want [772 771]", fields.supportedVersions)
+		}
+		if fmt.Sprint(fields.keyShareGroups) != "[29]" {
+			t.Fatalf("key share groups = %v, want [29]", fields.keyShareGroups)
+		}
+		if fields.hasALPN {
+			t.Fatal("CodeArts ClientHello unexpectedly advertises ALPN")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for ClientHello")

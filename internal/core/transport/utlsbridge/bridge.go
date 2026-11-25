@@ -45,6 +45,11 @@ type Config struct {
 	// dialing a loopback server.
 	ServerName string
 
+	// Profile selects the ClientHello profile. Empty/"workbuddy" uses the
+	// original WorkBuddy Node profile; "codearts" uses the captured CodeArts
+	// Agent profile with padding(21).
+	Profile string
+
 	// Listen overrides the loopback listen address. The bridge refuses a
 	// non-loopback address.
 	Listen string
@@ -64,6 +69,7 @@ type Bridge struct {
 	secret           string
 	rootCAs          *x509.CertPool
 	serverName       string
+	profile          string
 	dialTimeout      time.Duration
 	handshakeTimeout time.Duration
 
@@ -108,6 +114,7 @@ func NewWithConfig(cfg Config) (*Bridge, error) {
 		secret:           hex.EncodeToString(secretBytes),
 		rootCAs:          cfg.RootCAs,
 		serverName:       strings.TrimSpace(cfg.ServerName),
+		profile:          cfg.Profile,
 		dialTimeout:      dialTimeout,
 		handshakeTimeout: handshakeTimeout,
 		conns:            make(map[net.Conn]struct{}),
@@ -326,7 +333,7 @@ func (b *Bridge) serve(conn net.Conn) {
 		RootCAs:    b.rootCAs,
 		MinVersion: tls.VersionTLS12,
 	}, utls.HelloCustom)
-	if err := tlsConn.ApplyPreset(officialHelloSpec()); err != nil {
+	if err := tlsConn.ApplyPreset(helloSpecForProfile(b.profile)); err != nil {
 		writeHTTPErrorDetail(conn, http.StatusBadGateway, "TLS Fingerprint Failed", err)
 		return
 	}

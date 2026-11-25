@@ -1,7 +1,7 @@
 # CodeArts IDE Request Fingerprint Alignment Design
 
 Date: 2026-11-25
-Status: application-layer parity verified against a real Windows wire capture
+Status: application + TLS parity verified against real Windows captures
 
 ## 1. Intent
 
@@ -72,6 +72,20 @@ max_tokens, messages, model, stream, tool_stream, user_prompt
 plus `tools`, `tool_choice`, and `reasoning_effort` when the request uses
 tools. The body does **not** contain `chat_id` or `prompt_cache_key`.
 
+A transparent CONNECT tunnel captured the real TLS handshake to
+`snap-access.ap-southeast-1.myhuaweicloud.com` (no MITM certificate). It is
+TLS 1.3 with no ALPN, so the actual HTTP protocol is HTTP/1.1. The ClientHello
+has the same 18 cipher suites, groups, signature algorithms, and 10 extensions
+as the WorkBuddy Node profile, plus a trailing padding extension (21, 230
+bytes). The captured JA3 is:
+
+```text
+771,4865-4866-4867-49199-49195-49200-49196-49191-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-13-51-45-43-21,29-23-24,0
+```
+
+with MD5 `51bddd625044f75a235ba857ac8b0145`. The server selected TLS 1.3 and
+no ALPN; no HTTP/2 settings or pseudo-header fingerprint applies here.
+
 The Bun kernel contains an SM4-GCM encryption path, but the live key exchange
 returns HTTP 400 and the client falls back to plaintext. The real captured body
 is plaintext, so no SM4 implementation is needed for this phase.
@@ -87,13 +101,14 @@ is plaintext, so no SM4 implementation is needed for this phase.
 5. Mainland chat behavior remains on the legacy path.
 6. Tests pin the exact header set, signed subset, body fields, and absence of
    non-observed headers.
+7. International HTTPS requests use a CodeArts-specific uTLS ClientHello with
+   the captured JA3 and no ALPN.
 
 ## 4. Non-goals
 
 - SM4-GCM encryption/key exchange. The real client currently fails that path
   and falls back to plaintext.
-- TLS/HTTP2/uTLS fingerprint parity. This needs a separate ClientHello/ALPN
-  capture; the request is HTTP/1.1.
+- HTTP/2 fingerprinting: the real client offers no ALPN and uses HTTP/1.1.
 - Byte-for-byte header ordering. Go's `http.Transport` writes a canonical
   order; the captured order is listed above for future custom-writer work.
 - Copying the Windows client's actual session/message/trace IDs. Those are
@@ -154,7 +169,16 @@ removed. Mainland keeps those fields and its existing headers.
 The deployment can set `WB_CODEARTS_CLIENT_IP=10.0.1.145` to reproduce the
 Windows client's captured value.
 
-### 5.4 Version identity
+### 5.4 TLS profile
+
+The CodeArts provider initializes a separate process-wide uTLS bridge
+(`utlsbridge.CodeArtsDefault`) for the international station. Its ClientHello
+is the WorkBuddy Node profile plus `UtlsPaddingExtension{PaddingLen: 230,
+WillPad: true}`. The bridge creates a fresh `ClientHelloSpec` per connection
+because uTLS mutates extension state. The profile advertises no ALPN, so the
+HTTP transport stays on HTTP/1.1 (`ForceAttemptHTTP2=false`).
+
+### 5.5 Version identity
 
 Defaults are the captured Windows client values:
 
@@ -178,10 +202,14 @@ WB_CODEARTS_IDE_FUNCTION       agent-general
   - `/codearts-intl/overview`: 5M token package still present.
 - The live test used `WB_CODEARTS_CLIENT_IP=10.0.1.145` to match the Windows
   capture, and the upstream accepted the request.
+- The uTLS profile test asserts the captured JA3, MD5, extension order, 32-byte
+  session ID, and absence of ALPN.
+- Repeated live requests through the uTLS bridge succeeded: two non-stream
+  `GLM-5.2` requests and one streamed `glm-5.3` request returned `OK`.
 
 ## 7. Remaining gap
 
 Header order is still Go's canonical transport order rather than the captured
 order. Exact order requires a custom HTTP/1.1 writer; it is not attempted here.
-TLS/HTTP2 fingerprint parity is also separate. The SM4 path is not used because
-the real client's key exchange currently fails and falls back to plaintext.
+The SM4 path is not used because the real client's key exchange currently fails
+and falls back to plaintext.

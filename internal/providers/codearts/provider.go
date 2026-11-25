@@ -14,6 +14,7 @@ import (
 	"github.com/ayeaaaa/mix2api-v2/internal/core/config"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/scheduler"
 	"github.com/ayeaaaa/mix2api-v2/internal/core/transport"
+	"github.com/ayeaaaa/mix2api-v2/internal/core/transport/utlsbridge"
 	"github.com/ayeaaaa/mix2api-v2/internal/providers"
 )
 
@@ -127,7 +128,15 @@ func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 	if timeout <= 0 {
 		timeout = defaultTokenRefreshTimeout
 	}
-	client := transport.NewClient(transport.ClientOptions{RefuseRedirects: true})
+	clientOptions := transport.ClientOptions{RefuseRedirects: true}
+	if station.Region == "intl" {
+		bridge, bridgeErr := utlsbridge.CodeArtsDefault()
+		if bridgeErr != nil {
+			return nil, bridgeErr
+		}
+		clientOptions.UTLSBridge = bridge
+	}
+	client := transport.NewClient(clientOptions)
 	manager := NewTokenManager(client, TokenManagerOptions{
 		Station:  station,
 		Pool:     pool,
