@@ -79,7 +79,7 @@ Expected: FAIL because the station-aware functions/field are missing.
 - Add `authStation(auth)` (empty -> `"mainland"`), `authBelongsToStation`, `authHasSigningToken` helpers.
 - `LoadAuthForStation` decodes, requires `UserID` and a signing token, then rejects a station mismatch.
 - `LoadAuth` calls `LoadAuthForStation(..., Mainland)`.
-- `SaveAuthForStation` requires `UserID`; mainland requires `CloudDragonToken`, international requires `SigningSecurityToken()`; rejects station mismatch; for intl, stamp `Station=international` if empty before write.
+- `SaveAuthForStation` requires `UserID`; mainland requires `CloudDragonToken`, international requires `SigningSecurityToken()` **and an explicit `Station=international`**; rejects a blank or mismatched station. Do not stamp a blank station: legacy mainland docs must remain stationless.
 - `verifyAuthOwnershipForStation` uses `LoadAuthForStation`; keep wrapper.
 - Pool `loadAuthFiles`/`Add`/`addNewAccount`/reimport use station-aware load/save/verify and reject wrong station.
 - OAuth save and token refresh use the station-aware path/verify; refresh preserves `Station`.
@@ -145,7 +145,7 @@ Expected: FAIL because `authFromSessionJSON` is undefined.
   - `expiresAt`/`expires_at` via `parseExpirationText`.
   - nested `loginContext.pkcePair.codeVerifier` and `loginContext.dpopKeyPair.privateKeyJwk`.
 - `handleImport` checks `payload["session_json"]` first, then falls back to flat/nested auth.
-- `authFromAdminPayload` takes `station` and stamps/rejects station.
+- `authFromAdminPayload` takes `station`, requires an explicit intl station, and rejects a mainland session on the intl route.
 - Handler test: call `p.handleImport` directly with a `session_json` body; it writes into `accounts/codearts-intl` and enables the realm. Route-prefix integration belongs to Task 3.
 
 - [ ] **Step 4: Run tests**
@@ -225,6 +225,8 @@ git commit -m "feat(codearts): register international realm"
 
 - [ ] **Step 1: Write failing tests**
 
+Add `internal/api/chat_test.go` coverage that a bare model advertised by both `codearts` and `codearts-intl` is rejected with both qualified candidates; an exit prefix, realm hint, or key binding must remain the way to choose a station.
+
 ```go
 func TestIntlCatalogFetchSkipsBenefitUpstream(t *testing.T) {
     p, _ := NewWithStation(newTestStore(t), International)
@@ -250,6 +252,7 @@ Expected: FAIL because chat still sets `maas_type` from `account.IsBenefit`.
 - Gate the benefit header on `p.Station().SupportsBenefit` in `newChatRequest`.
 - Ensure intl catalog never calls `fetchBenefitModels` (already guarded by empty `benefitHost`; add a regression test).
 - Ensure intl models `owned_by/provider` are `codearts-intl` (already parameterized; add test).
+- Add a fail-closed bare-model guard in `internal/api/chat.go` for the two CodeArts realms; do not change resolution for other providers.
 - If the fake agent detail requires a `real_agent_id` and `selectAgentID` returns none, add a station default agent ID field only if the live intl endpoint proves it is required.
 
 - [ ] **Step 4: Run tests**
