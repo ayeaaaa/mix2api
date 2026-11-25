@@ -1970,3 +1970,20 @@ func TestOAuthCodePKCEChallengeMatches(t *testing.T) {
 		t.Fatalf("challenge length = %d, want 43", len(challenge))
 	}
 }
+
+func TestOAuthAuthorizeURLUsesStation(t *testing.T) {
+	intl := NewOAuthSessionsForStation(International)
+	url, err := intl.AuthorizeURL(12345, "challenge", "ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(url, "https://codearts.ap-southeast-1.huaweicloud.com/portal/authorize?") {
+		t.Fatalf("url = %s", url)
+	}
+	if !strings.Contains(url, "locale=en-us") {
+		t.Fatalf("url = %s", url)
+	}
+	if strings.Contains(url, "site=intl") || strings.Contains(url, "auth.huaweicloud.com") {
+		t.Fatalf("authorize URL should stay raw; login wrapper is separate: %s", url)
+	}
+}

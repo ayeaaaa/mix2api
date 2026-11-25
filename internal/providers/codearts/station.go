@@ -12,6 +12,7 @@ type Station struct {
 	SettingsKey     string
 	AccountsFolder  string
 	SnapHost        string
+	STS             string
 	BenefitHost     string // empty for international
 	Portal          string
 	LoginURL        string // empty for mainland; intl auth page
@@ -31,6 +32,7 @@ var Mainland = Station{
 	SettingsKey:     "codearts",
 	AccountsFolder:  "codearts",
 	SnapHost:        oauthDefaultSnapHost,
+	STS:             oauthDefaultSTS,
 	BenefitHost:     catalogDefaultBenefitHost,
 	Portal:          oauthDefaultPortal,
 	Locale:          "zh-cn",
@@ -50,6 +52,7 @@ var International = Station{
 	SettingsKey:     "codearts-intl",
 	AccountsFolder:  "codearts-intl",
 	SnapHost:        "https://snap-access.ap-southeast-1.myhuaweicloud.com",
+	STS:             oauthDefaultSTS,
 	BenefitHost:     "",
 	Portal:          "https://codearts.ap-southeast-1.huaweicloud.com/portal",
 	LoginURL:        "https://auth.huaweicloud.com/authui/login?site=intl",
@@ -61,10 +64,50 @@ var International = Station{
 	ModelSeeds:      []string{"glm-5.3", "GLM-5.2", "Qwen3-VL-235B"},
 }
 
+// ResolvedSnapHost returns the station's snap host. Mainland keeps the legacy
+// WB_CODEARTS_* env override so existing tests and private deployments work.
+func (s Station) ResolvedSnapHost() string {
+	if s.ID == "mainland" {
+		return strings.TrimRight(snapHost(), "/")
+	}
+	return strings.TrimRight(s.SnapHost, "/")
+}
+
+// ResolvedPortal returns the station's portal host, preserving the mainland
+// WB_CODEARTS_PORTAL_HOST override.
+func (s Station) ResolvedPortal() string {
+	if s.ID == "mainland" {
+		return strings.TrimRight(portalHost(), "/")
+	}
+	return strings.TrimRight(s.Portal, "/")
+}
+
+// ResolvedSTS returns the station's STS host, preserving the mainland
+// WB_CODEARTS_STS_HOST override.
+func (s Station) ResolvedSTS() string {
+	if s.ID == "mainland" {
+		return strings.TrimRight(stsHost(), "/")
+	}
+	return strings.TrimRight(s.STS, "/")
+}
+
+// ResolvedBenefitHost returns the station's benefit host, preserving the
+// mainland WB_CODEARTS_BENEFIT_HOST override.
+func (s Station) ResolvedBenefitHost() string {
+	if s.ID == "mainland" {
+		return strings.TrimRight(benefitHost(), "/")
+	}
+	return strings.TrimRight(s.BenefitHost, "/")
+}
+
 // SnapManagerBase returns the station's snap-manager root without a trailing
-// slash.
+// slash. Mainland keeps the WB_CODEARTS_SNAP_MANAGER override used by tests and
+// private deployments.
 func (s Station) SnapManagerBase() string {
-	return strings.TrimRight(s.SnapHost, "/") + "/snap-manager"
+	if s.ID == "mainland" {
+		return snapManagerBase()
+	}
+	return s.ResolvedSnapHost() + "/snap-manager"
 }
 
 func stationOrDefault(station Station) Station {

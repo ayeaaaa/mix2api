@@ -235,19 +235,34 @@ type oauthSession struct {
 // path. A Provider may keep its own instance; the package-level BeginOAuth,
 // PollOAuth, and HandleOAuthCallback use DefaultOAuthSessions.
 type OAuthSessions struct {
+	station Station
 	mu      sync.Mutex
 	byStore map[string]map[string]*oauthSession
 	now     func() time.Time
 	client  *http.Client
 }
 
-// NewOAuthSessions returns an empty session table.
+// NewOAuthSessions returns an empty mainland session table.
 func NewOAuthSessions() *OAuthSessions {
+	return NewOAuthSessionsForStation(Mainland)
+}
+
+// NewOAuthSessionsForStation returns an empty session table for one station.
+func NewOAuthSessionsForStation(station Station) *OAuthSessions {
 	return &OAuthSessions{
+		station: stationOrDefault(station),
 		byStore: make(map[string]map[string]*oauthSession),
 		now:     time.Now,
 		client:  oauthHTTPClient,
 	}
+}
+
+// Station returns the deployment whose OAuth flow this table serves.
+func (s *OAuthSessions) Station() Station {
+	if s == nil {
+		return Mainland
+	}
+	return stationOrDefault(s.station)
 }
 
 // DefaultOAuthSessions backs the package-level OAuth functions.
@@ -358,14 +373,15 @@ func oauthStateMatches(session *oauthSession, state string) bool {
 	return false
 }
 
-func oauthAuthorizeURL(port int, challenge, ticketID string) string {
+func (s *OAuthSessions) authorizeURL(port int, challenge, ticketID string) string {
+	station := s.Station()
 	clientID := oauthClientID()
 	pairs := []struct {
 		key   string
 		value string
 	}{
 		{"theme", "2"},
-		{"locale", "zh-cn"},
+		{"locale", station.Locale},
 		{"uri_scheme", clientID},
 		{"client_id", clientID},
 		{"port", strconv.Itoa(port)},
@@ -376,7 +392,7 @@ func oauthAuthorizeURL(port int, challenge, ticketID string) string {
 		{"plugin-version", oauthPluginVersion()},
 	}
 	var builder strings.Builder
-	builder.WriteString(portalHost())
+	builder.WriteString(station.ResolvedPortal())
 	builder.WriteString("/authorize?")
 	for i, pair := range pairs {
 		if i > 0 {
@@ -387,6 +403,34 @@ func oauthAuthorizeURL(port int, challenge, ticketID string) string {
 		builder.WriteString(url.QueryEscape(pair.value))
 	}
 	return builder.String()
+}
+
+// AuthorizeURL returns the station's portal authorize URL without the optional
+// international login-page wrapper.
+func (s *OAuthSessions) AuthorizeURL(port int, challenge, ticketID string) (string, error) {
+	if port < 1 || port > 65535 {
+		return "", errors.New("codearts: OAuth port is out of range")
+	}
+	if strings.TrimSpace(challenge) == "" || strings.TrimSpace(ticketID) == "" {
+		return "", errors.New("codearts: OAuth challenge and ticket are required")
+	}
+	return s.authorizeURL(port, challenge, ticketID), nil
+}
+
+// LoginURL wraps an authorize URL in the station's identity-provider login
+// page when the station has one. The international page must carry site=intl
+// or it falls back to the mainland identity UI.
+func (s *OAuthSessions) LoginURL(authorizeURL string) string {
+	station := s.Station()
+	if strings.TrimSpace(station.LoginURL) == "" {
+		return authorizeURL
+	}
+	separator := "?"
+	if strings.Contains(station.LoginURL, "?") {
+		separator = "&"
+	}
+	return station.LoginURL + separator + "locale=" + url.QueryEscape(station.Locale) +
+		"&service=" + url.QueryEscape(authorizeURL)
 }
 
 // Begin creates one pending OAuth session and returns the official authorize
@@ -456,7 +500,7 @@ func (s *OAuthSessions) Begin(store *config.Store, port int) (OAuthStart, error)
 		}
 	}
 
-	authURL := oauthAuthorizeURL(port, challenge, ticketID)
+	authURL := s.authorizeURL(port, challenge, ticketID)
 	session := &oauthSession{
 		ID:        sessionID,
 		TicketID:  ticketID,
@@ -764,7 +808,7 @@ func (s *OAuthSessions) finishTicketPoll(
 }
 
 func (s *OAuthSessions) pollTicket(ticketID, secret string) (Token, error) {
-	endpoint := snapManagerBase() + oauthTicketEndpoint
+	endpoint := s.Station().SnapManagerBase() + oauthTicketEndpoint
 	query := url.Values{}
 	query.Set("ticket_id", ticketID)
 	query.Set("secret", secret)
@@ -891,7 +935,7 @@ func (s *OAuthSessions) Callback(store *config.Store, sessionID, code, state str
 }
 
 func (s *OAuthSessions) saveOAuthAuth(store *config.Store, session *oauthSession, token Token) (Auth, error) {
-	uid, name, domain := oauthIdentity(token)
+	uid, name, domain := oauthIdentity(token, s.Station())
 	if strings.TrimSpace(uid) == "" {
 		return Auth{}, errors.New("codearts: token response has no usable identity")
 	}
@@ -973,7 +1017,7 @@ func (s *OAuthSessions) Continue(store *config.Store, sessionID, secret, redirec
 	}
 	s.mu.Unlock()
 
-	if !safeOAuthRedirect(redirect) {
+	if !safeOAuthRedirect(redirect, s.Station().ResolvedPortal()) {
 		return OAuthPoll{}, ErrOAuthRedirect
 	}
 
@@ -999,12 +1043,12 @@ func (s *OAuthSessions) Continue(store *config.Store, sessionID, secret, redirec
 	return poll, nil
 }
 
-func safeOAuthRedirect(raw string) bool {
+func safeOAuthRedirect(raw, portalHost string) bool {
 	target, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || target.Hostname() == "" || target.User != nil {
 		return false
 	}
-	portal, err := url.Parse(portalHost())
+	portal, err := url.Parse(portalHost)
 	if err != nil || portal.Hostname() == "" {
 		return false
 	}
@@ -1174,12 +1218,12 @@ func effectivePort(target *url.URL) string {
 	}
 }
 
-func oauthIdentity(token Token) (uid, name, domain string) {
+func oauthIdentity(token Token, station Station) (uid, name, domain string) {
 	uid = strings.TrimSpace(token.UserID)
 	name = strings.TrimSpace(token.UserName)
 	domain = strings.TrimSpace(token.DomainID)
 	if uid == "" || name == "" {
-		lookedUID, lookedName, lookedDomain := lookupOAuthIdentity(token.Credentials)
+		lookedUID, lookedName, lookedDomain := lookupOAuthIdentity(token.Credentials, station)
 		if uid == "" {
 			uid = lookedUID
 		}
@@ -1208,14 +1252,15 @@ func oauthIdentity(token Token) (uid, name, domain string) {
 // requests are best effort with a 10s bound and never use a proxy slot. The
 // credential values are used only for request signing and are never returned
 // or included in an error.
-func lookupOAuthIdentity(creds Credentials) (uid, name, domain string) {
+func lookupOAuthIdentity(creds Credentials, station Station) (uid, name, domain string) {
+	station = stationOrDefault(station)
 	holder := Auth{
 		AccessKeyID:      creds.AccessKeyID,
 		SecretAccessKey:  creds.SecretAccessKey,
 		CloudDragonToken: creds.SecurityToken,
 	}
 	firstUID, firstName, firstDomain := "", "", ""
-	if data, err := oauthSignedIdentityGet(holder, stsHost()+"/v5/caller-identity"); err == nil {
+	if data, err := oauthSignedIdentityGet(holder, station.ResolvedSTS()+"/v5/caller-identity"); err == nil {
 		firstUID = oauthFirstNonEmpty(modelText(data["principal_id"]), modelText(data["account_id"]))
 		urn := strings.TrimSpace(modelText(data["principal_urn"]))
 		if index := strings.LastIndex(urn, "/"); index >= 0 {
@@ -1226,7 +1271,7 @@ func lookupOAuthIdentity(creds Credentials) (uid, name, domain string) {
 			return firstUID, firstName, firstDomain
 		}
 	}
-	if data, err := oauthSignedIdentityGet(holder, snapManagerBase()+"/v1/current/user"); err == nil {
+	if data, err := oauthSignedIdentityGet(holder, station.SnapManagerBase()+"/v1/current/user"); err == nil {
 		currentUID := strings.TrimSpace(modelText(data["user_id"]))
 		currentName := strings.TrimSpace(modelText(data["user_name"]))
 		currentDomain := strings.TrimSpace(modelText(data["domain_id"]))
@@ -1395,7 +1440,7 @@ func RequestToken(form url.Values, dpopJWK json.RawMessage) (Token, error) {
 
 // RequestTokenContext is RequestToken with a caller context.
 func RequestTokenContext(ctx context.Context, form url.Values, dpopJWK json.RawMessage) (Token, error) {
-	return requestTokenContextWith(ctx, oauthEndpointDoer{}, "", form, dpopJWK)
+	return requestTokenContextWith(ctx, oauthEndpointDoer{}, "", form, dpopJWK, Mainland)
 }
 
 // requestTokenContextWith is the shared token request implementation. The
@@ -1407,6 +1452,7 @@ func requestTokenContextWith(
 	proxyURL string,
 	form url.Values,
 	dpopJWK json.RawMessage,
+	stations ...Station,
 ) (Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1414,7 +1460,11 @@ func requestTokenContextWith(
 	if doer == nil {
 		return Token{}, fmt.Errorf("%w: token request transport is missing", ErrTokenTransport)
 	}
-	endpoint := stsHost() + oauthTokenEndpoint
+	station := Mainland
+	if len(stations) > 0 {
+		station = stationOrDefault(stations[0])
+	}
+	endpoint := station.ResolvedSTS() + oauthTokenEndpoint
 	proof, err := DPoPProof(dpopJWK, http.MethodPost, endpoint, "")
 	if err != nil {
 		return Token{}, err

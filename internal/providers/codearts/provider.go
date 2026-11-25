@@ -125,6 +125,7 @@ func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 	}
 	client := transport.NewClient(transport.ClientOptions{RefuseRedirects: true})
 	manager := NewTokenManager(client, TokenManagerOptions{
+		Station:  station,
 		Pool:     pool,
 		Timeout:  timeout,
 		Now:      func() time.Time { return pool.nowTime() },
@@ -139,7 +140,7 @@ func NewWithStation(store *config.Store, station Station) (*Provider, error) {
 		pool:               pool,
 		transport:          client,
 		tokenManager:       manager,
-		oauthSessions:      NewOAuthSessions(),
+		oauthSessions:      NewOAuthSessionsForStation(station),
 		catalogHTTPTimeout: catalogHTTPTimeout,
 	}
 	if _, err := provider.applySettings(); err != nil {

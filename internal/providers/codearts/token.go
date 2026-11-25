@@ -31,6 +31,9 @@ var ErrRefreshTokenMissing = errors.New("codearts: refresh_token is missing; acc
 
 // TokenManagerOptions configures a TokenManager.
 type TokenManagerOptions struct {
+	// Station is the CodeArts deployment whose STS endpoint receives refreshes.
+	Station Station
+
 	// Pool is the account pool Keepalive iterates. Ensure does not require it.
 	Pool *Pool
 
@@ -52,6 +55,7 @@ type TokenManagerOptions struct {
 // credentials are verified, persisted (0600), and only then published in
 // memory.
 type TokenManager struct {
+	station  Station
 	client   *transport.Client
 	timeout  time.Duration
 	now      func() time.Time
@@ -105,6 +109,7 @@ func NewTokenManager(client *transport.Client, opts TokenManagerOptions) *TokenM
 		}
 	}
 	return &TokenManager{
+		station:  stationOrDefault(opts.Station),
 		client:   client,
 		timeout:  timeout,
 		now:      now,
@@ -297,7 +302,7 @@ func (m *TokenManager) refresh(ctx context.Context, a *Account) error {
 		proxyURL = strings.TrimSpace(m.proxyURL(a))
 	}
 
-	token, err := requestTokenContextWith(requestCtx, m.client, proxyURL, form, auth.DPopPrivateKey)
+	token, err := requestTokenContextWith(requestCtx, m.client, proxyURL, form, auth.DPopPrivateKey, m.station)
 	if err != nil {
 		return m.handleRefreshFailure(a, snapshot, auth, err)
 	}
