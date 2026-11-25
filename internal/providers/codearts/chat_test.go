@@ -969,6 +969,7 @@ func TestChatNestedToolSchemaNormalization(t *testing.T) {
 }
 
 func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
+	t.Setenv("WB_CODEARTS_CLIENT_IP", "10.0.1.145")
 	fake, _ := newT5Fake(t, nil)
 	provider, accounts := newT5Provider(t, "u1")
 	accounts["u1"].SetModelBenefit(map[string]bool{"glm-5.2": true})
@@ -993,13 +994,9 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if body["chat_id"] != conversationID || body["prompt_cache_key"] != conversationID {
 		t.Fatalf("chat_id/prompt_cache_key = %#v/%#v", body["chat_id"], body["prompt_cache_key"])
 	}
-	wantSession := t5SHA("codearts-session:" + conversationID)
 	headers := capture.Header
-	if got := headers.Get("Chat-Id"); got != conversationID {
-		t.Fatalf("Chat-Id = %q, want %q", got, conversationID)
-	}
-	if got := headers.Get("Session-Id"); got != wantSession {
-		t.Fatalf("Session-Id = %q, want %q", got, wantSession)
+	if headers.Get("Chat-Id") != "" || headers.Get("Session-Id") != "" {
+		t.Fatalf("legacy chat/session headers survived: %#v", t5HeaderMap(headers))
 	}
 	if got := headers.Get("x-auth-token"); got != "cloud-token-u1" {
 		t.Fatalf("x-auth-token = %q", got)
@@ -1010,12 +1007,38 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if headers.Get("maas_type") != "benefit" {
 		t.Fatalf("maas_type = %q, want benefit", headers.Get("maas_type"))
 	}
-	if len(headers.Get("x-snap-traceid")) != 32 || len(headers.Get("x-ot-trace-id")) != 32 {
-		t.Fatalf("trace headers = %q/%q", headers.Get("x-snap-traceid"), headers.Get("x-ot-trace-id"))
+	if headers.Get("User-Agent") != defaultIDEUserAgent ||
+		headers.Get("X-Encrypt-Capable") != "sm4-gcm" ||
+		headers.Get("x-ot-function") != "agent-general" ||
+		headers.Get("x-ot-client-type") != "IDE" ||
+		headers.Get("x-ot-client-version") != "26.11.300" ||
+		headers.Get("plugin-name") != "codemate_vscode" ||
+		headers.Get("plugin-version") != "26.11.300" ||
+		headers.Get("ide-name") != "VSCode" ||
+		headers.Get("ide-version") != "26.11.300" ||
+		headers.Get("client-ip") != "10.0.1.145" {
+		t.Fatalf("ide fingerprint headers = %#v", t5HeaderMap(headers))
 	}
-	wantOT := t5SHA("codearts-ot-session:u1")
-	if headers.Get("x-ot-session-id") != wantOT || headers.Get("user-session-id") != wantOT {
-		t.Fatalf("ot session headers = %q/%q, want %q", headers.Get("x-ot-session-id"), headers.Get("user-session-id"), wantOT)
+	if headers.Get("model-id") != "GLM-5.2" || headers.Get("model-name") != "GLM-5.2" {
+		t.Fatalf("model metadata = %q/%q", headers.Get("model-id"), headers.Get("model-name"))
+	}
+	if len(headers.Get("x-ot-trace-id")) != 32 || len(headers.Get("x-ot-span-id")) != 16 ||
+		headers.Get("x-snap-traceid") != headers.Get("x-ot-trace-id")+"_"+headers.Get("x-ot-span-id") {
+		t.Fatalf("trace headers = %#v", t5HeaderMap(headers))
+	}
+	wantSession := "ses_" + ideStableID("u1|"+conversationID, 26)
+	wantMessage := "msg_" + ideStableID(conversationID+"|hi", 26)
+	if headers.Get("x-ot-session-id") != wantSession ||
+		headers.Get("user-session-id") != wantSession ||
+		headers.Get("x-session-affinity") != wantSession {
+		t.Fatalf("session headers = %#v, want %q", t5HeaderMap(headers), wantSession)
+	}
+	if headers.Get("user-msg-id") != wantMessage || headers.Get("x-message-id") != wantMessage {
+		t.Fatalf("message headers = %q/%q, want %q",
+			headers.Get("user-msg-id"), headers.Get("x-message-id"), wantMessage)
+	}
+	if body["user_prompt"] != "hi" {
+		t.Fatalf("user_prompt = %#v, want hi", body["user_prompt"])
 	}
 	sum := sha256.Sum256(capture.Raw)
 	if got := headers.Get("X-Sdk-Content-Sha256"); got != hex.EncodeToString(sum[:]) {
@@ -1026,11 +1049,9 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if !strings.HasPrefix(authorization, "SDK-HMAC-SHA256 ") || !strings.Contains(lowerAuth, "signedheaders=") {
 		t.Fatalf("Authorization is not a Huawei signature: %q", authorization)
 	}
-	if !strings.Contains(lowerAuth, "x-auth-token") {
-		t.Fatalf("identity headers were not signed: %q", authorization)
-	}
-	if strings.Contains(lowerAuth, "chat-id") || strings.Contains(lowerAuth, "session-id") {
-		t.Fatalf("post-sign identity headers leaked into SignedHeaders: %q", authorization)
+	if !strings.Contains(lowerAuth, "x-auth-token") || !strings.Contains(lowerAuth, "x-ot-trace-id") ||
+		!strings.Contains(lowerAuth, "x-snap-traceid") || !strings.Contains(lowerAuth, "user-msg-id") {
+		t.Fatalf("fingerprint headers were not signed: %q", authorization)
 	}
 
 	sessionKey := "sess-abc"
@@ -1048,8 +1069,9 @@ func TestChatIdentityHeadersChatIDAndPromptCache(t *testing.T) {
 	if second.Body["chat_id"] != wantChatID || second.Body["prompt_cache_key"] != wantChatID {
 		t.Fatalf("session chat id = %#v, want %q", second.Body["chat_id"], wantChatID)
 	}
-	if second.Header.Get("x-ot-session-id") != wantOT {
-		t.Fatalf("ot session is not stable per account: %q vs %q", second.Header.Get("x-ot-session-id"), wantOT)
+	wantSecondSession := "ses_" + ideStableID("u1|"+wantChatID, 26)
+	if second.Header.Get("x-ot-session-id") != wantSecondSession {
+		t.Fatalf("session id = %q, want %q", second.Header.Get("x-ot-session-id"), wantSecondSession)
 	}
 	if second.Header.Get("x-ot-trace-id") == capture.Header.Get("x-ot-trace-id") {
 		t.Fatal("x-ot-trace-id did not change between requests")
@@ -2382,7 +2404,7 @@ func TestIntlChatUsesStationHostAndSecurityToken(t *testing.T) {
 	account := &Account{Auth: testAuth("u1")}
 	account.Auth.CloudDragonToken = ""
 	account.Auth.SecurityToken = "sts"
-	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", "session", []byte(`{"model":"GLM-5.2","messages":[]}`))
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", []byte(`{"model":"GLM-5.2","messages":[]}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2409,7 +2431,7 @@ func TestIntlChatHasNoBenefitHeader(t *testing.T) {
 	account.Auth.CloudDragonToken = ""
 	account.Auth.SecurityToken = "ST"
 	account.SetModelBenefit(map[string]bool{"GLM-5.2": true})
-	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", "session", []byte(`{"model":"GLM-5.2","messages":[]}`))
+	req, err := p.newChatRequest(context.Background(), account, "GLM-5.2", "chat", []byte(`{"model":"GLM-5.2","messages":[]}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

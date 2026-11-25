@@ -67,6 +67,7 @@ var chatAllowedFields = map[string]struct{}{
 	"response_format":       {},
 	"top_k":                 {},
 	"parallel_tool_calls":   {},
+	"user_prompt":           {},
 }
 
 var chatToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -301,7 +302,6 @@ func (p *Provider) openChatAccount(
 		return nil, clampErr
 	}
 
-	sessionID := chatSHA256Hex32("codearts-session:" + build.ChatID)
 	delay := p.chatRetryDelay
 	if delay <= 0 {
 		delay = chatConcurrencyDelay
@@ -309,7 +309,7 @@ func (p *Provider) openChatAccount(
 
 	var lastErr error
 	for attempt := 0; attempt < chatConcurrencyAttempts; attempt++ {
-		stream, attemptErr := p.sendModelChatAttempt(ctx, account, model, build.ChatID, sessionID, body, streamTimeout)
+		stream, attemptErr := p.sendModelChatAttempt(ctx, account, model, build.ChatID, body, streamTimeout)
 		if attemptErr == nil {
 			return stream, nil
 		}
@@ -345,7 +345,7 @@ func currentAccountAuth(account *Account) Auth {
 func (p *Provider) sendModelChatAttempt(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
 	body map[string]any,
 	streamTimeout time.Duration,
 ) (providers.ChatStream, error) {
@@ -374,7 +374,8 @@ func (p *Provider) sendModelChatAttempt(
 			return nil, &APIError{Kind: KindBadRequest, Status: http.StatusBadRequest,
 				Message: "codearts: chat request body is not valid JSON"}
 		}
-		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, sessionID, raw, streamTimeout)
+		messages, _ := attemptBody["messages"].([]any)
+		stream, err := p.sendChatAttempt(ctx, account, spelling, chatID, messages, raw, streamTimeout)
 		if err == nil {
 			if index > 0 {
 				account.chatModelIDs.Store(key, spelling)
@@ -430,12 +431,13 @@ func isCodeArtsModelIDError(err error) bool {
 func (p *Provider) sendChatAttempt(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
+	messages []any,
 	raw []byte,
 	streamTimeout time.Duration,
 ) (providers.ChatStream, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	request, err := p.newChatRequest(streamCtx, account, model, chatID, sessionID, raw)
+	request, err := p.newChatRequest(streamCtx, account, model, chatID, raw, messages)
 	if err != nil {
 		cancel()
 		return nil, newChatError(KindUpstream, http.StatusBadGateway,
@@ -516,14 +518,16 @@ func sleepChatContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// newChatRequest builds and signs one chat request. Chat-Id, Session-Id, and
-// the x-ot-* headers are appended after signing so they are not part of
-// SignedHeaders, matching v1.
+// newChatRequest builds and signs one chat request with the application-layer
+// fingerprint emitted by CodeArts Agent 26.11.300. The client currently
+// advertises SM4 capability but falls back to plaintext when key exchange is
+// rejected, so this phase keeps the body plaintext.
 func (p *Provider) newChatRequest(
 	ctx context.Context,
 	account *Account,
-	model, chatID, sessionID string,
+	model, chatID string,
 	raw []byte,
+	messages []any,
 ) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, p.station.ResolvedSnapHost()+chatCompletionsPath, bytes.NewReader(raw),
@@ -537,17 +541,41 @@ func (p *Provider) newChatRequest(
 	uid := account.uidLocked()
 	account.mu.Unlock()
 
-	traceID, err := randomHex(16)
+	fingerprint, err := newIDEFingerprint(uid, model, chatID, messages)
 	if err != nil {
 		return nil, err
 	}
+
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("User-Agent", fingerprint.UserAgent)
 	if strings.TrimSpace(auth.CloudDragonToken) != "" {
 		request.Header.Set("x-auth-token", auth.CloudDragonToken)
 	}
-	request.Header.Set("x-snap-traceid", traceID)
+	request.Header.Set("X-Encrypt-Capable", fingerprint.EncryptCap)
+	request.Header.Set("x-session-affinity", fingerprint.SessionID)
+	request.Header.Set("x-ot-trace-id", fingerprint.TraceID)
+	request.Header.Set("x-ot-span-id", fingerprint.SpanID)
+	request.Header.Set("x-snap-traceid", fingerprint.TraceID+"_"+fingerprint.SpanID)
+	request.Header.Set("x-ot-session-id", fingerprint.SessionID)
+	request.Header.Set("x-ot-parent-session-id", "")
+	request.Header.Set("user-session-id", fingerprint.SessionID)
+	request.Header.Set("x-ot-function", fingerprint.Function)
 	request.Header.Set("X-Language", p.station.Locale)
+	request.Header.Set("user-msg-id", fingerprint.MessageID)
+	request.Header.Set("x-message-id", fingerprint.MessageID)
+	request.Header.Set("created-time", fingerprint.CreatedAt)
+	request.Header.Set("model-id", fingerprint.ModelID)
+	request.Header.Set("model-name", fingerprint.ModelName)
+	request.Header.Set("x-ot-client-type", fingerprint.ClientType)
+	request.Header.Set("x-ot-client-version", fingerprint.ClientVersion)
+	request.Header.Set("plugin-name", fingerprint.PluginName)
+	request.Header.Set("plugin-version", fingerprint.PluginVersion)
+	request.Header.Set("ide-name", fingerprint.IDEName)
+	request.Header.Set("ide-version", fingerprint.IDEVersion)
+	if fingerprint.ClientIP != "" {
+		request.Header.Set("client-ip", fingerprint.ClientIP)
+	}
 	request.Header.Set("app-id", "CodeAgent3.0")
 	request.Header.Set("is_confidential", "false")
 	if p.Station().SupportsBenefit && account.IsBenefit(model) {
@@ -561,31 +589,7 @@ func (p *Provider) newChatRequest(
 	}); err != nil {
 		return nil, err
 	}
-
-	request.Header.Set("Chat-Id", chatID)
-	request.Header.Set("Session-Id", sessionID)
-	if otSessionEnabled() {
-		otSession := chatSHA256Hex32("codearts-ot-session:" + uid)
-		otTrace, traceErr := randomHex(16)
-		if traceErr != nil {
-			return nil, traceErr
-		}
-		request.Header.Set("x-ot-session-id", otSession)
-		request.Header.Set("user-session-id", otSession)
-		request.Header.Set("x-ot-trace-id", otTrace)
-	}
 	return request, nil
-}
-
-// otSessionEnabled mirrors v1's WB_CODEARTS_OT_SESSION switch. The default is
-// on; only 0/false/no/off disables the gateway session headers.
-func otSessionEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(envString("WB_CODEARTS_OT_SESSION", ""))) {
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
 }
 
 func classifyChatHTTP(status int, raw []byte, auth Auth) *APIError {
@@ -765,6 +769,11 @@ func buildChatBodyWithOptions(req providers.ChatRequest, mapReasoningEffort bool
 			Message: "messages is empty"}
 	}
 	body["messages"] = messages
+	if prompt := ideUserPrompt(messages); prompt != "" {
+		body["user_prompt"] = prompt
+	} else {
+		delete(body, "user_prompt")
+	}
 
 	normalizeChatTools(body)
 	normalizeChatToolChoice(body)
