@@ -330,7 +330,7 @@ func (p *Provider) Realm() string {
 // Jobs returns the provider's background jobs. The daily check-in job follows
 // the shared WorkBuddy check-in slots and is gated by credits_auto_claim.
 func (p *Provider) Jobs() []scheduler.Job {
-	if p == nil {
+	if p == nil || !p.Station().SupportsCheckin {
 		return nil
 	}
 	p.jobsOnce.Do(func() {

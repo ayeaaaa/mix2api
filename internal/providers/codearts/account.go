@@ -242,6 +242,9 @@ func (a *Account) reserveBlockedLocked() bool {
 	if a.reserveCredits <= 0 || a.Info == nil || a.Info.Credits.Total == nil {
 		return false
 	}
+	if a.Info.Credits.Unit == "token" {
+		return false
+	}
 	return int64(a.Info.Credits.Total.Remain) <= a.reserveCredits
 }
 
@@ -739,12 +742,19 @@ func publicCredits(info *AccountInfo) *CreditsView {
 		return nil
 	}
 	total := *info.Credits.Total
+	unit := "credit"
+	if info.IsTokenPackage {
+		unit = info.Credits.Unit
+		if unit == "" {
+			unit = "token"
+		}
+	}
 	return &CreditsView{
 		Remain:   total.Remain,
 		Amount:   total.Amount,
 		Used:     total.Used,
 		Expiring: total.Expiring,
-		Unit:     "credit",
+		Unit:     unit,
 		Package:  info.PackageName,
 		EndDate:  info.EndDate,
 	}

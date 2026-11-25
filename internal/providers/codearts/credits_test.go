@@ -791,3 +791,36 @@ func TestCreditsRefreshMixedResultsSkipDisabledAndNoOverallFailure(t *testing.T)
 		t.Fatalf("disabled account appeared in result: %s", encoded)
 	}
 }
+
+func TestTokenQuotaParsing(t *testing.T) {
+	data := map[string]any{
+		"package": map[string]any{
+			"is_token_package": true,
+			"package_name_en":  "Free",
+			"spec_code":        "codearts.agent.trial",
+		},
+		"metrics": []any{
+			map[string]any{
+				"name":                 "usageTokenChatMessages",
+				"usage_token_num":      41170,
+				"package_token_amount": 5000000,
+				"package_token_remain": 4958830,
+			},
+		},
+		"start_date": "2026-11-25",
+		"end_date":   "2026-12-26",
+	}
+	info := parseAccountInfo(data, time.Unix(0, 0))
+	if !info.IsTokenPackage {
+		t.Fatal("IsTokenPackage = false")
+	}
+	if info.Credits.Total == nil {
+		t.Fatal("Credits.Total = nil")
+	}
+	if info.Credits.Unit != "token" {
+		t.Fatalf("unit = %q, want token", info.Credits.Unit)
+	}
+	if info.Credits.Total.Amount != 5000000 || info.Credits.Total.Used != 41170 || info.Credits.Total.Remain != 4958830 {
+		t.Fatalf("total = %#v", info.Credits.Total)
+	}
+}

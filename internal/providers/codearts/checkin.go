@@ -211,6 +211,9 @@ func (p *Provider) checkinAccounts(ctx context.Context, pendingOnly bool) (Check
 	if p == nil {
 		return CheckinResult{}, errors.New("codearts: provider is nil")
 	}
+	if !p.Station().SupportsCheckin {
+		return CheckinResult{}, errors.New("codearts: check-in is not available on this station")
+	}
 	if p.pool == nil {
 		return CheckinResult{}, errors.New("codearts: account pool is nil")
 	}

@@ -181,6 +181,14 @@ func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
 		})
 	}
 
+	total := creditMetric(metrics, creditTotalPackageMetric)
+	unit := "credit"
+	if isToken {
+		if tokenTotal := tokenMetric(metrics); tokenTotal != nil {
+			total = tokenTotal
+			unit = "token"
+		}
+	}
 	return &AccountInfo{
 		IsCreditPackage: isCredit,
 		IsTokenPackage:  isToken,
@@ -190,11 +198,11 @@ func parseAccountInfo(data map[string]any, now time.Time) *AccountInfo {
 		StartDate:       modelTruthyText(data["start_date"]),
 		EndDate:         modelTruthyText(data["end_date"]),
 		Credits: AccountCredits{
-			Total:    creditMetric(metrics, creditTotalPackageMetric),
+			Total:    total,
 			Basic:    creditMetric(metrics, creditBasicPackageMetric),
 			OnDemand: creditMetric(metrics, creditOnDemandMetric),
 			Bonus:    creditMetric(metrics, creditBonusPackageMetric),
-			Unit:     "credit",
+			Unit:     unit,
 		},
 		Models:    models,
 		FetchedAt: unixSeconds(now),
@@ -215,6 +223,28 @@ func creditMetric(metrics any, name string) *CreditTotal {
 			Remain:   creditNumber(item["package_credit_remain"]),
 			Expiring: creditNumber(item["package_credit_expiring_amount"]),
 		}
+	}
+	return nil
+}
+
+// tokenMetric maps the international token-plan metric onto the existing
+// CreditTotal shape so scheduling and the panel can share one remain check.
+func tokenMetric(metrics any) *CreditTotal {
+	for _, raw := range modelList(metrics) {
+		item := modelMap(raw)
+		if item == nil || modelText(item["name"]) != "usageTokenChatMessages" {
+			continue
+		}
+		amount := creditNumber(item["package_token_amount"])
+		used := creditNumber(item["usage_token_num"])
+		remain := creditNumber(item["package_token_remain"])
+		if _, ok := item["package_token_remain"]; !ok {
+			remain = amount - used
+		}
+		if remain < 0 {
+			remain = 0
+		}
+		return &CreditTotal{Amount: amount, Used: used, Remain: remain}
 	}
 	return nil
 }
