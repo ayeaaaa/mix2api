@@ -21,6 +21,15 @@ import (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
+// The default brand icon. The SVG is the source asset; the ICO carries the
+// 16/32/48/64 px variants used by clients that request /favicon.ico directly.
+//
+//go:embed favicon.svg
+var faviconSVG []byte
+
+//go:embed favicon.ico
+var faviconICO []byte
+
 // DashboardSHA256 is the lowercase hex digest of the embedded dashboard. It is
 // recorded in tests/oracle/dashboard.md and checked by the contract test.
 const DashboardSHA256 = "86ba42b2567ce6cb08e5329861448d557527c7237724f01f39c46c103353dee9"
@@ -40,6 +49,16 @@ func DashboardHTML() []byte {
 	return append([]byte(nil), dashboardHTML...)
 }
 
+// FaviconSVG returns a copy of the embedded default SVG icon.
+func FaviconSVG() []byte {
+	return append([]byte(nil), faviconSVG...)
+}
+
+// FaviconICO returns a copy of the embedded multi-size default ICO.
+func FaviconICO() []byte {
+	return append([]byte(nil), faviconICO...)
+}
+
 // DashboardETag returns the strong validator for the static response. The body
 // is immutable for the lifetime of the process, so a content hash is complete.
 func DashboardETag() string {
@@ -52,10 +71,10 @@ func DashboardETag() string {
 	return etag
 }
 
-// Handler serves the dashboard at "/" and its documented aliases. It is an
-// exact-path handler: any other path is a 404, so mounting it under a catch-all
-// mux entry cannot turn into a directory server. GET and HEAD are accepted;
-// other methods get 405 with an Allow header.
+// Handler serves the dashboard at "/", its documented aliases, and the
+// embedded default favicons. It is an exact-path handler: any other path is a
+// 404, so mounting it under a catch-all mux entry cannot turn into a directory
+// server. GET and HEAD are accepted; other methods get 405 with an Allow header.
 func Handler() http.Handler {
 	return http.HandlerFunc(serve)
 }
@@ -77,11 +96,24 @@ func serve(w http.ResponseWriter, r *http.Request) {
 	case "/", "/dashboard", "/dashboard.html", "/ui", "/classic", "/classic/":
 		serveDashboard(w, r)
 	case "/favicon.ico":
-		w.Header().Set("Cache-Control", "no-store")
-		http.NotFound(w, r)
+		serveFavicon(w, r, faviconICO, "image/x-icon")
+	case "/favicon.svg":
+		serveFavicon(w, r, faviconSVG, "image/svg+xml")
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func serveFavicon(w http.ResponseWriter, r *http.Request, body []byte, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 func serveDashboard(w http.ResponseWriter, r *http.Request) {

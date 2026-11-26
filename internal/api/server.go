@@ -490,7 +490,8 @@ func (s *Server) mountDashboard() {
 	}
 	handler := web.Handler()
 	for _, pattern := range []string{
-		"/{$}", "/dashboard", "/dashboard.html", "/ui", "/classic", "/classic/{$}", "/favicon.ico",
+		"/{$}", "/dashboard", "/dashboard.html", "/ui", "/classic", "/classic/{$}",
+		"/favicon.ico", "/favicon.svg",
 	} {
 		s.mux.Handle(pattern, handler)
 	}

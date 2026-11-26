@@ -153,9 +153,23 @@ func TestDashboardStaticContract(t *testing.T) {
 		t.Fatalf("POST dashboard Allow = %q", method.Header.Get("Allow"))
 	}
 
-	favicon := fixture.get("/favicon.ico", "")
-	if favicon.Status != http.StatusNotFound {
-		t.Fatalf("favicon = %d", favicon.Status)
+	for _, icon := range []struct {
+		path        string
+		contentType string
+	}{
+		{"/favicon.ico", "image/x-icon"},
+		{"/favicon.svg", "image/svg+xml"},
+	} {
+		favicon := fixture.get(icon.path, "")
+		if favicon.Status != http.StatusOK {
+			t.Fatalf("%s = %d", icon.path, favicon.Status)
+		}
+		if got := favicon.Header.Get("Content-Type"); got != icon.contentType {
+			t.Fatalf("%s content-type = %q", icon.path, got)
+		}
+		if got := favicon.Header.Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s cache-control = %q", icon.path, got)
+		}
 	}
 }
 
