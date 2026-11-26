@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.9.2] - 2026-11-26
+
+### 中文
+
+#### 修复
+
+- 设置页的「前缀缓存调度」现在归入「稳定性」分组，和「更稳的会话粘滞键」放在
+  一起；此前分组映射没有收录它，会落到「系统」分组。
+- 稳定性分组说明补充前缀缓存。
+
+#### 验证
+
+- `make check`、`make race` 通过；dashboard JS 20/20。
+
+### English
+
+#### Fixed
+
+- The "prefix cache routing" settings section now belongs to the Stability group
+  next to the sticky-key control; the group map previously missed it and it fell
+  back to System.
+- The Stability group description now mentions prefix caching.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 20/20.
+
 ## [2.9.1] - 2026-11-26
 
 ### 中文
