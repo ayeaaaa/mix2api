@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [2.9.1] - 2026-11-26
+
+### 中文
+
+#### 修复
+
+- 设置页的「CodeArts 国际接入」区块现在归入「提供商」分组；此前面板分组匹配
+  不到它，会把它落到「系统」分组，点「提供商」时看不到。
+- 提供商分组说明补充 CodeArts 国际。
+
+#### 验证
+
+- `make check`、`make race` 全部通过；dashboard JS 20/20。
+
+### English
+
+#### Fixed
+
+- The "CodeArts international" settings section now appears under the Providers
+  group. The panel group matcher previously fell back to System, so the section
+  was missing when Providers was selected.
+- The Providers group description now names CodeArts international.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 20/20.
+
 ## [2.9.0] - 2026-11-25
 
 ### 中文
