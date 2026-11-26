@@ -381,6 +381,13 @@ and the 20/20 dashboard JS harness pass. Published as `v2.9.0` at `8a70c74`;
 evidence: `docs/smoke/2026-11-25-release-2.9.0.md`. No media or Windows SCM gate
 changed.
 
+**v2.9.1 addendum:** the CodeArts international settings section now belongs to
+the panel's Providers group instead of falling back to System, and the Providers
+group description names it. Dashboard digest and oracle are synchronized.
+`make check`, `make race`, and the 20/20 dashboard JS harness pass. Published as
+`v2.9.1` at `98babfb`; evidence: `docs/smoke/2026-11-26-release-2.9.1.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
