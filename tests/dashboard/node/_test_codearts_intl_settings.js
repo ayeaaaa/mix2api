@@ -24,6 +24,8 @@ for(const id of ['codeartsIntlSettingsSection', 'setCodeartsIntlEnabled',
 assert.ok(script.includes('function saveCodeartsIntlSettings'), 'missing international settings save');
 assert.ok(script.includes('function renderCodeartsIntlSettings'), 'missing international settings render');
 assert.ok(script.includes('codearts-intl'), 'missing international realm labels');
+assert.ok(script.includes("items: ['API Key', 'CodeArts 接入', 'CodeArts 国际接入'"),
+  'CodeArts 国际接入 should be listed in the providers settings group');
 
 /* 国内站设置里的签到/福利字段不能出现在国际站这一节。 */
 const section = html.slice(html.indexOf('id="codeartsIntlSettingsSection"'));
