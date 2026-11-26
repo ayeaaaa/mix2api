@@ -17,13 +17,17 @@ const script = dashboardScript();
 
 // One shared fake DOM for every dashboard suite: tests/_dom_stub.js.
 const dom = require('./_dom_stub.js');
-dom.installDom();
+const mark = dom.makeElement('div');
+dom.installDom({querySelector: {'#nextSidebar .next-brand-mark': mark}});
 const element = id => dom.byId(id);
 
 /* 三把 Key：两把跟随面板切换、一把固定国际版出口，其中一把带模型白名单。
    价估算总开关故意设成关，好顺带检查它有没有被写回复选框与 body 类。 */
+const CUSTOM_ICON = 'https://example.com/icon.png';
 const SETTINGS = {
   panel_password_is_default: false,
+  site_title: '自定义标题',
+  site_icon: CUSTOM_ICON,
   api_keys: [
     {id: 'k1', name: 'Cursor', realm: '', models: [], enabled: true,
      masked: 'wb-aaaa****1111', created_at: '2026-09-01'},
@@ -184,6 +188,30 @@ global.__toasts = toasts;
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',
     '窗口限高状态文案没写回');
+
+  /* 品牌外观必须走完整的 /settings 往返：自定义 URL 同时落到标签页、侧栏和
+     设置预览；随后清空 site_icon 的响应要回到内置默认图标。 */
+  const lastMark = () => mark.children[mark.children.length - 1];
+  assert.equal(element('siteFavicon').href, CUSTOM_ICON,
+    '自定义图标没有写回浏览器标签页');
+  assert.equal(lastMark().src, CUSTOM_ICON,
+    '自定义图标没有写回侧栏品牌位');
+  assert.equal(element('setSiteIconPreview').src, CUSTOM_ICON,
+    '自定义图标没有写回设置预览');
+  assert.equal(element('setSiteIconState').textContent, '已设置图标',
+    '自定义图标状态没有写回');
+
+  SETTINGS.site_title = '';
+  SETTINGS.site_icon = '';
+  await api.loadSettings(true);
+  assert.equal(element('siteFavicon').href, '/favicon.svg',
+    '清空 site_icon 后没有回到默认标签页图标');
+  assert.equal(lastMark().src, '/favicon.svg',
+    '清空 site_icon 后没有回到默认侧栏图标');
+  assert.equal(element('setSiteIconPreview').src, '/favicon.svg',
+    '清空 site_icon 后没有回到默认预览');
+  assert.equal(element('setSiteIconState').textContent, '默认图标',
+    '清空 site_icon 后没有显示默认图标状态');
 
   /* 6. 标记里每个 id 只能出现一次：`getElementById` 静默取文档顺序上的第一个，
      重复出来的第二个永远不会被回填，按钮改的也是第一个副本。实测 v1.9.2 设置页有两张

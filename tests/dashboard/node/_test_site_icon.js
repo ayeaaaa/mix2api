@@ -5,8 +5,14 @@
  */
 'use strict';
 const assert = require('assert');
-const {dashboardScript} = require('./_dashboard_source.js');
+const {dashboardHtml, dashboardScript} = require('./_dashboard_source.js');
 const dom = require('./_dom_stub.js');
+
+const html = dashboardHtml();
+assert.ok(html.includes('<link id="siteFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg">'),
+  'first-paint head must point at the default SVG favicon');
+assert.ok(html.includes('<div class="next-brand-mark"><img src="/favicon.svg" alt="" decoding="async"></div>'),
+  'first-paint sidebar must show the default SVG icon');
 
 const script = dashboardScript();
 const mark = dom.makeElement('div');
