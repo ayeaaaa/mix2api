@@ -1,8 +1,11 @@
 'use strict';
 const assert = require('node:assert');
 const {loadDashboard} = require('./_dashboard_sandbox.js');
+const {dashboardScript} = require('./_dashboard_source.js');
 const dom = require('./_dom_stub.js');
 const page = loadDashboard();
+assert.ok(dashboardScript().includes("'更稳的会话粘滞键', '前缀缓存调度'"),
+  '前缀缓存调度 should be listed in the stability settings group');
 const posts=[];
 page.postJSON=async (url,body)=>{posts.push({url,body:JSON.parse(JSON.stringify(body))});return {ok:true};};
 page.loadSettings=async ()=>{};

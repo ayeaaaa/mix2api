@@ -16,9 +16,9 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `5361f2af6b38551eb42e49a12fcd98e36149819322e9e28f161d0bca24dfbf25` |
+| v2 SHA-256 | `86ba42b2567ce6cb08e5329861448d557527c7237724f01f39c46c103353dee9` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,448,962 bytes |
+| v2 size | 1,448,999 bytes |
 | Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, panel branding controls, and the CodeArts international card/account/settings panel; otherwise identical to v1.6.5 |
 | Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
