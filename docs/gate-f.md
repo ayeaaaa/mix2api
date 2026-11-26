@@ -388,6 +388,14 @@ group description names it. Dashboard digest and oracle are synchronized.
 `v2.9.1` at `98babfb`; evidence: `docs/smoke/2026-11-26-release-2.9.1.md`. No
 media or Windows SCM gate changed.
 
+**v2.9.2 addendum:** the prefix cache routing settings section now belongs to
+the panel's Stability group next to the sticky-key control instead of falling
+back to System, and the Stability description mentions prefix caching. A
+dashboard regression assertion and the synchronized digest/oracle cover it.
+`make check`, `make race`, and the 20/20 dashboard JS harness pass. Published as
+`v2.9.2` at `4a14984`; evidence: `docs/smoke/2026-11-26-release-2.9.2.md`. No
+media or Windows SCM gate changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
