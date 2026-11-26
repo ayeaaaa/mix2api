@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## [Unreleased]
+
+### 中文
+
+#### 新增
+
+- 控制台新增内置品牌图标（负形 M）：`site_icon` 为空时用于浏览器标签和侧栏，
+  设置里的自定义图标仍然优先。
+- 新增公开的 `/favicon.svg` 和 `/favicon.ico`，不再返回 404。
+
+#### 验证
+
+- `make check`、`make race` 通过；dashboard JS 21/21。
+
+### English
+
+#### Added
+
+- Added the built-in negative-space M brand icon: it is used for the browser tab
+  and sidebar when `site_icon` is empty, while a custom icon still wins.
+- Added public `/favicon.svg` and `/favicon.ico` endpoints instead of 404s.
+
+#### Verification
+
+- `make check` and `make race` pass; dashboard JS suites 21/21.
+
 ## [2.9.2] - 2026-11-26
 
 ### 中文
