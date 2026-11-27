@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>mix2api 控制台</title>
-<link id="siteFavicon" rel="icon" href="data:,">
+<link id="siteFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- 首帧判定：必须留在 <head>、在任何页面内容之前同步执行。
      没有面板会话令牌（无痕 / 首次访问 / 已登出）→ 不动 markup 上的 display:flex，
      登录闸门随首帧一起出现，看板骨架不会被先画出来再盖住。
@@ -2647,6 +2647,7 @@ html[data-console-layout="on"] #classicTitle {display:none}
     '图标 URL（http/https）': 'Icon URL (http/https)',
     '或上传图标': 'Or upload an icon',
     '未设置图标': 'No icon set',
+    '默认图标': 'Default icon',
     '已设置图标': 'Icon set',
     '保存品牌外观': 'Save branding',
     '清除图标': 'Clear icon',
@@ -3923,6 +3924,7 @@ html[data-console-layout="on"] #classicTitle {display:none}
     "刷新明细": "重新整理明細",
     "刷新积分": "重新整理積分",
     "刷新 Token": "重新整理 Token",
+    "默认图标": "預設圖示",
     "CodeArts 国际": "CodeArts 國際",
     "（CodeArts 国际）": "（CodeArts 國際）",
     "固定 CodeArts 国际出口": "固定 CodeArts 國際出口",
@@ -5648,7 +5650,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
 <div id="nextShell">
   <aside id="nextSidebar" aria-label="主导航">
     <div class="next-brand">
-      <div class="next-brand-mark">m</div>
+      <div class="next-brand-mark"><img src="/favicon.svg" alt="" decoding="async"></div>
       <div class="next-brand-text"><b>mix2api</b><span>gateway console</span></div>
     </div>
     <nav class="next-nav" id="nextNav">
@@ -6933,7 +6935,7 @@ html[data-ui="next"] #pageAnalytics .pagehead .pagesub{display:block!important}
         </div>
         <div style="display:flex;align-items:center;gap:8px;min-height:40px">
           <img id="setSiteIconPreview" alt="" style="width:32px;height:32px;border-radius:8px;object-fit:cover;display:none;background:var(--panel2)">
-          <span id="setSiteIconState" style="font-size:12px;color:var(--dim)">未设置图标</span>
+          <span id="setSiteIconState" style="font-size:12px;color:var(--dim)">默认图标</span>
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
@@ -17759,6 +17761,7 @@ async function saveWinMaxHeight(btn){
 // ==== 面板窗口限高结束 ====
 
 let SITE_ICON_VALUE = '';
+const DEFAULT_SITE_ICON = '/favicon.svg';
 
 function setBrandIconState(icon, title){
   const preview = document.getElementById('setSiteIconPreview');
@@ -17767,10 +17770,10 @@ function setBrandIconState(icon, title){
   SITE_ICON_VALUE = String(icon || '').trim();
   if(url) url.value = SITE_ICON_VALUE.startsWith('data:') ? '' : SITE_ICON_VALUE;
   if(preview){
-    if(SITE_ICON_VALUE){ preview.src = SITE_ICON_VALUE; preview.style.display = 'block'; }
-    else { preview.removeAttribute('src'); preview.style.display = 'none'; }
+    preview.src = SITE_ICON_VALUE || DEFAULT_SITE_ICON;
+    preview.style.display = 'block';
   }
-  if(state) state.textContent = SITE_ICON_VALUE ? '已设置图标' : '未设置图标';
+  if(state) state.textContent = SITE_ICON_VALUE ? '已设置图标' : '默认图标';
   if(title !== undefined){
     const titleInput = document.getElementById('setSiteTitle');
     if(titleInput) titleInput.value = title;
@@ -17784,16 +17787,13 @@ function applyBranding(data){
   document.title = tabTitle;
   const brandTitle = document.querySelector('#nextSidebar .next-brand-text b');
   if(brandTitle) brandTitle.textContent = rawTitle || 'mix2api';
+  const icon = rawIcon || DEFAULT_SITE_ICON;
   const mark = document.querySelector('#nextSidebar .next-brand-mark');
   if(mark){
     mark.textContent = '';
-    if(rawIcon){
-      const img = document.createElement('img');
-      img.alt = ''; img.decoding = 'async'; img.src = rawIcon;
-      mark.appendChild(img);
-    } else {
-      mark.textContent = 'm';
-    }
+    const img = document.createElement('img');
+    img.alt = ''; img.decoding = 'async'; img.src = icon;
+    mark.appendChild(img);
   }
   let favicon = document.getElementById('siteFavicon');
   if(!favicon){
@@ -17801,7 +17801,9 @@ function applyBranding(data){
     favicon.id = 'siteFavicon'; favicon.rel = 'icon';
     document.head.appendChild(favicon);
   }
-  favicon.href = rawIcon || 'data:,';
+  favicon.href = icon;
+  if(rawIcon) favicon.removeAttribute('type');
+  else favicon.setAttribute('type', 'image/svg+xml');
   const state = document.getElementById('setBrandState');
   if(state) state.textContent = (rawTitle || rawIcon) ? '(已自定义)' : '(默认)';
   setBrandIconState(rawIcon, rawTitle);

@@ -1,10 +1,10 @@
 # Dashboard oracle (Gate E)
 
 The v2 binary serves the v1.6.5 dashboard plus the top-bar total-quota
-columns (`tabIntlTotal` / `tabCnTotal`) and the Raccoon daily-activity
-settings/task controls. This document records the asset
-provenance, the static contract, the API inventory the page uses, and the
-Gate E checks. The original repository
+columns (`tabIntlTotal` / `tabCnTotal`), the Raccoon daily-activity
+settings/task controls, and the built-in mix2api brand icon. This document
+records the asset provenance, the static contract, the API inventory the page
+uses, and the Gate E checks. The original repository
 `/root/opencode/mix2api` is read-only; the copy below is the only committed
 asset.
 
@@ -16,11 +16,11 @@ asset.
 | v1 path | `app/dashboard.html` |
 | v2 path | `internal/web/dashboard.html` |
 | v1 SHA-256 | `70aa3ddf8c9a1164f140d64e785941d99a7754c3c44887b044a50127e0a96793` |
-| v2 SHA-256 | `86ba42b2567ce6cb08e5329861448d557527c7237724f01f39c46c103353dee9` |
+| v2 SHA-256 | `44d9f5d6162652ea0e06f61606c494f3703e19b11d4610e181c608eec86d7ed2` |
 | v1 size | 1,284,387 bytes |
-| v2 size | 1,448,999 bytes |
-| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, panel branding controls, and the CodeArts international card/account/settings panel; otherwise identical to v1.6.5 |
-| Embedding | `//go:embed dashboard.html` in `internal/web/assets.go` |
+| v2 size | 1,449,162 bytes |
+| Delta | top-bar total-quota columns (`tabIntlTotal` / `tabCnTotal`), Raccoon daily-activity controls, Doubao Work provider controls, panel branding controls, the CodeArts international card/account/settings panel, and the built-in brand icon; otherwise identical to v1.6.5 |
+| Embedding | `//go:embed dashboard.html`, `favicon.svg` and `favicon.ico` in `internal/web/assets.go` |
 | License | MIT, preserved from the upstream project |
 
 `internal/web/assets.go` exposes `web.DashboardSHA256` and the original
@@ -38,7 +38,8 @@ controls, and the CodeArts international panel.
 | `GET /` | embedded dashboard, `text/html; charset=utf-8` |
 | `GET /dashboard.html` | same bytes |
 | `GET /dashboard`, `/ui`, `/classic`, `/classic/` | v1-compatible aliases, same bytes |
-| `GET /favicon.ico` | `404`, `Cache-Control: no-store` (v1 has no favicon asset) |
+| `GET /favicon.ico` | embedded multi-size icon, `image/x-icon`, `Cache-Control: no-store` |
+| `GET /favicon.svg` | embedded default icon, `image/svg+xml`, `Cache-Control: no-store` |
 | Other paths | `404`; traversal/encoded traversal paths are never opened from disk |
 | `HEAD` | same headers and `Content-Length`, no body |
 | Other methods | `405`, `Allow: GET, HEAD` |
@@ -78,15 +79,15 @@ route. Groups:
 | models/agents | `GET /v1/models`, `/agents`, `/agents/available`, `/agents/model-selection`; `POST /agents/model-selection`, `/agents/apply`, `/agents/restore` |
 | proxy/updates | `GET /proxy/slots`, `POST /proxy/slots/save`, `/proxy/slots/test`, `/proxy/discover`; `GET /updates`, `/updates/backups`, `POST /updates/check`, `/updates/install`, `/updates/rollback` |
 | host controls | `POST /shutdown`; `GET /console/state`, `POST /console/toggle` (kept for old panel builds) |
-| static/monitor | `GET /`, `/dashboard.html`, `/dashboard?tab=logs`, `/health` |
+| static/monitor | `GET /`, `/dashboard.html`, `/dashboard?tab=logs`, `/favicon.ico`, `/favicon.svg`, `/health` |
 
 Provider-owned routes remain provider-owned; `internal/web` imports only the
 standard library and cannot pull a provider into the static surface.
 
 ## Auth and no-secrets rules
 
-- `/`, `/dashboard.html`, aliases, `/favicon.ico`, `/health`, and
-  `/panel/status` are public.
+- `/`, `/dashboard.html`, aliases, `/favicon.ico`, `/favicon.svg`, `/health`,
+  and `/panel/status` are public.
 - Every management route above fails closed with the v1 JSON error envelope
   when no panel session or API key is supplied; unknown paths under a
   management prefix also fail closed.

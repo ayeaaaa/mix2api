@@ -317,8 +317,20 @@ func TestDashboardStaticAliases(t *testing.T) {
 			t.Fatalf("%s content-type = %q", path, contentType)
 		}
 	}
-	if favicon := fixture.get("/favicon.ico", ""); favicon.Status != http.StatusNotFound {
-		t.Fatalf("/favicon.ico = %d", favicon.Status)
+	for _, icon := range []struct {
+		path        string
+		contentType string
+	}{
+		{"/favicon.ico", "image/x-icon"},
+		{"/favicon.svg", "image/svg+xml"},
+	} {
+		favicon := fixture.get(icon.path, "")
+		if favicon.Status != http.StatusOK {
+			t.Fatalf("%s = %d", icon.path, favicon.Status)
+		}
+		if got := favicon.Header.Get("Content-Type"); got != icon.contentType {
+			t.Fatalf("%s content-type = %q", icon.path, got)
+		}
 	}
 }
 

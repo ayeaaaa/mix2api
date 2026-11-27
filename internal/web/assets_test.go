@@ -134,13 +134,25 @@ func TestDashboardRejectsUnknownAndTraversalPaths(t *testing.T) {
 		}
 	}
 
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("favicon status = %d", rec.Code)
-	}
-	if rec.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("favicon cache-control = %q", rec.Header().Get("Cache-Control"))
+}
+
+func TestDashboardServesFavicons(t *testing.T) {
+	handler := Handler()
+	for _, test := range []struct{ path, contentType string }{
+		{"/favicon.svg", "image/svg+xml"},
+		{"/favicon.ico", "image/x-icon"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", test.path, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != test.contentType {
+			t.Fatalf("%s content-type = %q", test.path, got)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s cache-control = %q", test.path, got)
+		}
 	}
 }
 

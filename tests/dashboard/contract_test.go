@@ -96,6 +96,7 @@ func TestDashboardContract(t *testing.T) {
 		filepath.Join(root, "tests", "dashboard", "node", "_test_expiring_credits.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_analytics_realm_scope.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_settings_load.js"),
+		filepath.Join(root, "tests", "dashboard", "node", "_test_site_icon.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_daily_chat_pending.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_buddy_checkin_status.js"),
 		filepath.Join(root, "tests", "dashboard", "node", "_test_settings_update_ui.js"),
@@ -153,9 +154,23 @@ func TestDashboardStaticContract(t *testing.T) {
 		t.Fatalf("POST dashboard Allow = %q", method.Header.Get("Allow"))
 	}
 
-	favicon := fixture.get("/favicon.ico", "")
-	if favicon.Status != http.StatusNotFound {
-		t.Fatalf("favicon = %d", favicon.Status)
+	for _, icon := range []struct {
+		path        string
+		contentType string
+	}{
+		{"/favicon.ico", "image/x-icon"},
+		{"/favicon.svg", "image/svg+xml"},
+	} {
+		favicon := fixture.get(icon.path, "")
+		if favicon.Status != http.StatusOK {
+			t.Fatalf("%s = %d", icon.path, favicon.Status)
+		}
+		if got := favicon.Header.Get("Content-Type"); got != icon.contentType {
+			t.Fatalf("%s content-type = %q", icon.path, got)
+		}
+		if got := favicon.Header.Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s cache-control = %q", icon.path, got)
+		}
 	}
 }
 
