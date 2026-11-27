@@ -396,6 +396,15 @@ dashboard regression assertion and the synchronized digest/oracle cover it.
 `v2.9.2` at `4a14984`; evidence: `docs/smoke/2026-11-26-release-2.9.2.md`. No
 media or Windows SCM gate changed.
 
+**v2.9.3 addendum:** adds the built-in negative-space M brand icon for the
+browser tab, sidebar, and settings preview when `site_icon` is empty, while a
+custom icon still wins; `/favicon.svg` and `/favicon.ico` are now public static
+assets with `no-store`, `nosniff`, and GET/HEAD-only semantics. Dashboard
+digest/oracle and JS coverage are synchronized. `make check`, `make race`, and
+the 21/21 dashboard JS harness pass. Published as `v2.9.3` at `6b7f5f0`;
+evidence: `docs/smoke/2026-11-27-release-2.9.3.md`. No media or Windows SCM gate
+changed.
+
 ## Required signoff
 
 | Role | Name | Date | Result |
