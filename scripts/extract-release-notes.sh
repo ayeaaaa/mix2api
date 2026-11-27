@@ -2,7 +2,7 @@
 # Print only the CHANGELOG section for one release version.
 #
 # Usage: scripts/extract-release-notes.sh VERSION [CHANGELOG]
-# VERSION is the semantic version without a leading v, for example 2.9.2.
+# VERSION is the semantic version without a leading v, for example 2.9.3.
 set -eu
 
 version=${1:-}
